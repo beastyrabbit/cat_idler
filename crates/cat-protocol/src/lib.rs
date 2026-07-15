@@ -1133,6 +1133,18 @@ pub struct BuildingSnapshot {
     pub inbound_cargo: Vec<ResourceStackSnapshot>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub outbound_cargo: Vec<ResourceStackSnapshot>,
+    /// Pinned construction bill owned by an incomplete scaffold.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub construction_required: Vec<ResourceStackSnapshot>,
+    /// Units that physically reached this scaffold.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub construction_delivered: Vec<ResourceStackSnapshot>,
+    /// Units removed from a source pile and currently carried toward this scaffold.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub construction_in_transit: Vec<ResourceStackSnapshot>,
+    /// Stable physical logistics state for the scaffold inspector.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub construction_block_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2994,6 +3006,10 @@ mod tests {
         assert_eq!(decoded.inbound_haul, 0.0);
         assert!(decoded.available_recipes.is_empty());
         assert_eq!(decoded.required_recipe_study, None);
+        assert!(decoded.construction_required.is_empty());
+        assert!(decoded.construction_delivered.is_empty());
+        assert!(decoded.construction_in_transit.is_empty());
+        assert_eq!(decoded.construction_block_reason, None);
         // The pre-existing footprint back-compat default is untouched by this change.
         assert_eq!(
             decoded.footprint,
@@ -3002,6 +3018,39 @@ mod tests {
                 height: 1
             }
         );
+    }
+
+    #[test]
+    fn scaffold_physical_inputs_round_trip_with_additive_wire_fields() {
+        let building = BuildingSnapshot {
+            id: "workshop-scaffold".to_owned(),
+            building_type: BuildingType::Workshop,
+            construction_required: vec![ResourceStackSnapshot {
+                kind: ResourceKind::Lumber,
+                amount: 2.0,
+            }],
+            construction_delivered: vec![ResourceStackSnapshot {
+                kind: ResourceKind::Lumber,
+                amount: 1.0,
+            }],
+            construction_in_transit: vec![ResourceStackSnapshot {
+                kind: ResourceKind::Blocks,
+                amount: 2.0,
+            }],
+            construction_block_reason: Some("materials_in_transit".to_owned()),
+            ..BuildingSnapshot::default()
+        };
+
+        let encoded = serde_json::to_value(&building).expect("serialize scaffold");
+        assert_eq!(encoded["constructionRequired"][0]["kind"], json!("lumber"));
+        assert_eq!(encoded["constructionDelivered"][0]["amount"], json!(1.0));
+        assert_eq!(encoded["constructionInTransit"][0]["kind"], json!("blocks"));
+        assert_eq!(
+            encoded["constructionBlockReason"],
+            json!("materials_in_transit")
+        );
+        let decoded: BuildingSnapshot = serde_json::from_value(encoded).expect("round trip");
+        assert_eq!(decoded, building);
     }
 
     #[test]

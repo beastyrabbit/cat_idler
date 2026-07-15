@@ -25,7 +25,12 @@ Verified foundations include:
   selected-colony action/snapshot routing;
 - the native and browser Bevy clients, bounded world streaming, reconnect/action feedback, and a
   same-origin non-root production image with `/health`, `/ready`, compression, and Origin checks;
-- atomic placement/reservations/scaffold recovery; label-free roofed homes and explicit open
+- atomic placement plus conserved physical scaffold inputs: exact type-local costs are pinned from
+  visible piles, a living builder carries Lumber/Planks and Blocks through persisted transit/input
+  ledgers, and progress cannot start before full delivery. Death, source loss, reassignment,
+  removal, and restart conserve the bill; old funded scaffolds remain compatible. Its label-free
+  inspector truth is accepted in a live 2048×1152 own-framebuffer, and the four touched crates pass
+  their complete test and strict-Clippy gates. Label-free roofed homes and explicit open
   compositions for all 25 current protocol building variants, including an integrated legal
   Accounting Tent that retains all three founding Dens; exterior crop/logging production with
   distinct roofless processing stations, persisted outside-wall agriculture, and an accepted
@@ -91,9 +96,10 @@ Verified foundations include:
   counts each pile for five game-seconds, and returns to the tent. Per-pile and aggregate reports
   remain stale until that contact, blocked piles stay stale for a later round, and in-progress
   routes survive SQLite restart. The HUD, stockpile inspector, and Accounting Tent inspector expose
-  stale estimates and current round progress without leaking authoritative inventory totals. No
-  tent, a vacant Accountant office, or an unassigned completed tent remains stale indefinitely;
-  there is no periodic authoritative fallback.
+  stale estimates and current round progress. However, the owner WebSocket snapshot still includes
+  exact colony resources, exact per-pile contents, and an accuracy oracle alongside those reports,
+  so Accountant confidentiality is not complete at the wire boundary. No tent, a vacant Accountant
+  office, or an unassigned completed tent receives a periodic authoritative recount.
 
 The founding/housing integration replaced the archived five-cat loop and passed its full
 simulation, protocol, server, client, persistence, guided-action, determinism, and framebuffer
@@ -119,11 +125,10 @@ so a correct scout route cannot conceal a missing founding dispatch.
    recipe. Preserve the now-verified rule that the three P16 founding benches need no placement
    study and that future studies gate recipes instead. Migrate tools/weapons/armor toward finite
    item authority without double-counting the
-   compatibility scalar fields. Construction is not yet part of that physical contract: plan-time
-   costs are pinned, but player commit and autonomous break-ground subtract aggregate Lumber or
-   Planks plus Blocks before the builder travels. Reserve finite source goods, carry them to a
-   scaffold-local input store, and require delivery before on-site progress while preserving paid
-   scaffold recovery and exact plan-time escalation.
+   compatibility scalar fields. Preserve the verified construction contract: player and autonomous
+   scaffolds reserve finite Lumber/Planks plus Blocks at exact visible sources, builders carry those
+   goods through persisted transit/input ledgers, and timed work begins only after on-site delivery.
+   Keep paid-scaffold recovery and exact type-local escalation intact.
 
    The finite founding storehouse and complete physical
    logs→Sawmill→lumber, grain→Mill→flour+food, Materials→Workshop→Refined, and
@@ -133,9 +138,13 @@ so a correct scout route cannot conceal a missing founding dispatch.
    Exterior farming now follows the same physical truth through plot work, bounded baskets, local
    handoff, and storage delivery. Steward-managed exact-resource piles now feed all four physical
    processors through conserved balancing trips without consuming the player's designation budget.
+   Fresh player and Leader scaffolds use the same conserved source→transit→scaffold contract and
+   do not begin timed work until the pinned bill arrives.
    Apply that contract to the remaining sources and workshops, then complete recipe/material
    breadth. Physical Accountant rounds now keep reports truthful one visited pile at a time, and
-   vacancy never performs a hidden recount. All 19 maintained labor skills have truthful gain sources, bounded effects, persistence,
+   vacancy never performs a hidden recount; remove the exact `resources`, stockpile `contents`, and
+   accuracy oracle from player-facing owner snapshots so the wire cannot bypass those books. All 19
+   maintained labor skills have truthful gain sources, bounded effects, persistence,
    and inspector visibility. Signed per-cat preferences and all four physical processors' real
    editable queues are live; extend the generic queue control as additional physical recipes land.
    Preserve the verified tool productivity, type-local escalating costs, shrine faucets, and
@@ -158,7 +167,7 @@ so a correct scout route cannot conceal a missing founding dispatch.
    unattended twins. Rail and Shipping studies are now truthful blueprint entitlements:
    Shipping cannot make a walking cat enter water and Rail cannot accelerate a long walk merely
    from ownership. Preserve those guardrails while adding built tracks, vehicles, docks, boarding,
-   and staffed routes, making fine biomes own their promised physical resource ecology, and
+   vessels, and staffed routes, making fine biomes own their promised physical resource ecology, and
    extending physical logistics to the remaining workshops. Item durability now has a real
    wear/break/repair consumer. Food Storage, Water Bowl, and Smithy capacity studies are now
    target-correct across clamp, physical routing, snapshot, trade, and persistence. Keep the other
@@ -169,11 +178,17 @@ so a correct scout route cannot conceal a missing founding dispatch.
    catalog-derived Sawmill logging entitlement and the verified authority split: the Leader owns
    the daily strategic study choice, while
    research labor/building automation and rituals remain Loremaster-owned.
+   Complete the maintained Forester contract as well: felled trees currently become permanent
+   stump overlays, so add physical replanting and timed regrowth without bypassing mapped-terrain,
+   occupancy, vacancy, or persistence rules.
    Authored stone-road placement is mechanically exact but still instant: one signed action paints
    the whole validated path and removes aggregate Materials without a worker or cargo. Treat a
    physical road-building route as a P2 consistency enhancement unless the maintained vision is
    tightened to make road hauling a core acceptance condition.
-4. **Prove the whole game.** Rerun unattended true-live and long proxy campaigns after every
+4. **Finish semantic HUD art, then prove the whole game.** Eleven of the 23 resource mappings still
+   reuse terrain, farm, prop, or furniture sprites despite P18's icon-driven HUD contract. Replace
+   them with truthful tracked Board Game/Fish glyphs and own-framebuffer-check all 23 at supported
+   bounds. Rerun unattended true-live and long proxy campaigns after every
    balance slice, then run the guided matrix in `docs/IMPLEMENTATION_AUDIT.md` across native,
    WASM, persistence/restart, multiple villages, and all target resolutions. The Forgejo quality
    workflow is committed; its first pushed run is still unverified. Transfer-weight optimization

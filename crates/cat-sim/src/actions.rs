@@ -878,7 +878,11 @@ fn plan_building(
         JobRequester::Player,
         Some(architect),
         JobMetadata::Construction {
-            phase: ConstructionPhase::ConstructHouse,
+            phase: if building_id.is_some() {
+                ConstructionPhase::GatherMaterials
+            } else {
+                ConstructionPhase::ConstructHouse
+            },
             building_type,
             building_id,
             site,
@@ -2032,7 +2036,11 @@ fn visible_resource_amount(colony: &ColonyRuntime, kind: stockpiles::ResourceKin
         .stockpiles
         .iter()
         .filter(|pile| !pile.is_station_local())
-        .map(|pile| stockpiles::resource_amount(&pile.contents, kind))
+        .map(|pile| {
+            (stockpiles::resource_amount(&pile.contents, kind)
+                - crate::world_tick::construction_reserved_from_pile(colony, &pile.id, kind))
+            .max(0.0)
+        })
         .sum()
 }
 
@@ -2044,7 +2052,7 @@ fn deduct_visible_resource(
     if amount <= 0.0 {
         return true;
     }
-    if stockpiles::resource_amount(&colony.resources, kind) + f64::EPSILON < amount
+    if crate::world_tick::construction_spendable_resource(colony, kind) + f64::EPSILON < amount
         || visible_resource_amount(colony, kind) + f64::EPSILON < amount
     {
         return false;
@@ -2059,7 +2067,13 @@ fn deduct_visible_resource(
     indices.sort_by(|left, right| left.0.cmp(&right.0));
     let mut remaining = amount;
     for (_, index) in indices {
-        let available = stockpiles::resource_amount(&colony.stockpiles[index].contents, kind);
+        let available = (stockpiles::resource_amount(&colony.stockpiles[index].contents, kind)
+            - crate::world_tick::construction_reserved_from_pile(
+                colony,
+                &colony.stockpiles[index].id,
+                kind,
+            ))
+        .max(0.0);
         let taken = available.min(remaining);
         stockpiles::add_resource(&mut colony.stockpiles[index].contents, kind, -taken);
         remaining -= taken;
@@ -2443,7 +2457,8 @@ fn offer_village_trade(
         return fail("This village already has too many open trade offers.");
     }
     let offered_kind = proto_to_sim_resource_kind(offered_kind);
-    if stockpiles::resource_amount(&source.resources, offered_kind) + f64::EPSILON < offered_amount
+    if crate::world_tick::construction_spendable_resource(source, offered_kind) + f64::EPSILON
+        < offered_amount
     {
         return fail("The offering village lacks those resources.");
     }
@@ -2526,13 +2541,17 @@ fn accept_village_trade(
     {
         return fail("The villages have not discovered one another.");
     }
-    if stockpiles::resource_amount(&source.resources, offer.offered_kind) + f64::EPSILON
+    if crate::world_tick::construction_spendable_resource(source, offer.offered_kind) + f64::EPSILON
         < offer.offered_amount
+        || visible_resource_amount(source, offer.offered_kind) + f64::EPSILON < offer.offered_amount
     {
         return fail("The offering village no longer has enough resources.");
     }
-    if stockpiles::resource_amount(&target.resources, offer.requested_kind) + f64::EPSILON
+    if crate::world_tick::construction_spendable_resource(target, offer.requested_kind)
+        + f64::EPSILON
         < offer.requested_amount
+        || visible_resource_amount(target, offer.requested_kind) + f64::EPSILON
+            < offer.requested_amount
     {
         return fail("This village does not have enough requested resources.");
     }
@@ -2542,53 +2561,22 @@ fn accept_village_trade(
         return fail("A receiving village lacks storage for this trade.");
     }
 
-    stockpiles::add_resource(
-        &mut source.resources,
-        offer.offered_kind,
-        -offer.offered_amount,
-    );
-    stockpiles::add_resource(
-        &mut target.resources,
-        offer.requested_kind,
-        -offer.requested_amount,
-    );
-    // Reconcile the outgoing halves first so their vacated physical slots are
-    // available to receive the other village's goods.
-    reconcile_colony_stockpiles(source);
-    reconcile_colony_stockpiles(target);
     let Some(source_plan) =
         trade_deposit_plan(source, offer.requested_kind, offer.requested_amount)
     else {
-        stockpiles::add_resource(
-            &mut source.resources,
-            offer.offered_kind,
-            offer.offered_amount,
-        );
-        stockpiles::add_resource(
-            &mut target.resources,
-            offer.requested_kind,
-            offer.requested_amount,
-        );
-        reconcile_colony_stockpiles(source);
-        reconcile_colony_stockpiles(target);
         return fail("A receiving village lacks storage for this trade.");
     };
     let Some(target_plan) = trade_deposit_plan(target, offer.offered_kind, offer.offered_amount)
     else {
-        stockpiles::add_resource(
-            &mut source.resources,
-            offer.offered_kind,
-            offer.offered_amount,
-        );
-        stockpiles::add_resource(
-            &mut target.resources,
-            offer.requested_kind,
-            offer.requested_amount,
-        );
-        reconcile_colony_stockpiles(source);
-        reconcile_colony_stockpiles(target);
         return fail("A receiving village lacks storage for this trade.");
     };
+    let source_removed = deduct_visible_resource(source, offer.offered_kind, offer.offered_amount);
+    let target_removed =
+        deduct_visible_resource(target, offer.requested_kind, offer.requested_amount);
+    debug_assert!(
+        source_removed && target_removed,
+        "preflighted physical trade debits"
+    );
     store_trade_incoming(
         source,
         offer.requested_kind,
@@ -3681,6 +3669,34 @@ fn buildings_snapshot(colony: &ColonyRuntime) -> Vec<proto::BuildingSnapshot> {
                         amount,
                     })
                     .collect(),
+                construction_required: crate::world_tick::building_construction_required(building)
+                    .into_iter()
+                    .map(|(kind, amount)| proto::ResourceStackSnapshot {
+                        kind: sim_to_proto_resource_kind(kind),
+                        amount,
+                    })
+                    .collect(),
+                construction_delivered: crate::world_tick::building_construction_delivered(
+                    building,
+                )
+                .into_iter()
+                .map(|(kind, amount)| proto::ResourceStackSnapshot {
+                    kind: sim_to_proto_resource_kind(kind),
+                    amount,
+                })
+                .collect(),
+                construction_in_transit: crate::world_tick::building_construction_in_transit(
+                    colony, building,
+                )
+                .into_iter()
+                .map(|(kind, amount)| proto::ResourceStackSnapshot {
+                    kind: sim_to_proto_resource_kind(kind),
+                    amount,
+                })
+                .collect(),
+                construction_block_reason: crate::world_tick::building_construction_block_reason(
+                    colony, building,
+                ),
             })
         })
         .collect()
@@ -4635,8 +4651,8 @@ mod tests {
     use crate::storage::GRANARY_BONUS;
     use crate::village_layout::VILLAGE_ANCHOR;
     use crate::world_tick::{
-        BuildingRuntime, TraderRuntime, found_colony, found_global_colony, new_world,
-        stockpile_placement_error,
+        BuildingRuntime, ConstructionCargoReservation, ConstructionCargoState, TraderRuntime,
+        found_colony, found_global_colony, new_world, stockpile_placement_error,
     };
 
     fn ctx() -> ActionCtx {
@@ -4671,6 +4687,7 @@ mod tests {
             automated_by: None,
             production_queue: crate::world_tick::default_production_queue(building_type),
             production_paused: false,
+            construction_cargo: None,
         }
     }
 
@@ -4814,6 +4831,7 @@ mod tests {
         colony.resources.lumber = 40.0;
         colony.resources.planks = 40.0;
         colony.resources.blocks = 40.0;
+        reconcile_colony_stockpiles(colony);
         colony
             .officers
             .insert(OfficerRole::Steward, colony.cats[0].id.clone());
@@ -4848,11 +4866,7 @@ mod tests {
         );
         assert!(placed.ok, "exact founding bench denied: {placed:?}");
         let paid = world.colonies[0].clone();
-        assert!(paid.resources.blocks < before.resources.blocks);
-        assert!(
-            paid.resources.lumber < before.resources.lumber
-                || paid.resources.planks < before.resources.planks
-        );
+        assert_eq!(paid.resources, before.resources);
         assert!(paid.buildings.iter().any(|building| {
             building.building_type == BuildingType::WoodCutter
                 && building.position == site
@@ -4871,6 +4885,7 @@ mod tests {
         unfunded.resources.lumber = 0.0;
         unfunded.resources.planks = 0.0;
         unfunded.resources.blocks = 0.0;
+        reconcile_colony_stockpiles(&mut unfunded);
         let mut unfunded_world = WorldState {
             world_seed: world.world_seed,
             colonies: vec![unfunded],
@@ -6293,6 +6308,7 @@ mod tests {
             automated_by: None,
             production_queue: crate::world_tick::default_production_queue(BuildingType::Workshop),
             production_paused: false,
+            construction_cargo: None,
         });
 
         let snapshot = build_snapshot(&world, 1_000_000, 1);
@@ -6646,6 +6662,7 @@ mod tests {
                     prerequisite.building,
                 ),
                 production_paused: false,
+                construction_cargo: None,
             });
         }
     }
@@ -8069,6 +8086,66 @@ mod tests {
         assert_eq!(world.colonies[0].resources.planks, planks_before + 1.0);
 
         world.colonies[0].cats[0].death_time = None;
+        let reserved_source = world.colonies[0]
+            .stockpiles
+            .iter()
+            .find(|pile| {
+                !pile.is_station_local()
+                    && stockpiles::resource_amount(&pile.contents, stockpiles::ResourceKind::Planks)
+                        >= 1.0
+            })
+            .expect("visible repair plank")
+            .id
+            .clone();
+        let pinned_planks = stockpiles::resource_amount(
+            &world.colonies[0]
+                .stockpiles
+                .iter()
+                .find(|pile| pile.id == reserved_source)
+                .unwrap()
+                .contents,
+            stockpiles::ResourceKind::Planks,
+        );
+        world.colonies[0].buildings.push(BuildingRuntime {
+            id: "repair-reservation-scaffold".to_owned(),
+            building_type: BuildingType::Den,
+            is_complete: false,
+            construction_progress: 0,
+            construction_cargo: Some(ConstructionCargoState {
+                required_planks: pinned_planks,
+                reservations: vec![ConstructionCargoReservation {
+                    source_stockpile_id: reserved_source.clone(),
+                    kind: stockpiles::ResourceKind::Planks,
+                    amount: pinned_planks,
+                }],
+                ..ConstructionCargoState::default()
+            }),
+            ..BuildingRuntime::default()
+        });
+        let reserved_denied = apply_action(&mut world, &action, &ctx());
+        assert!(
+            !reserved_denied.ok,
+            "a repair cannot spend the scaffold's pinned plank"
+        );
+        assert_eq!(world.colonies[0].resources.planks, planks_before + 1.0);
+        assert_eq!(
+            stockpiles::resource_amount(
+                &world.colonies[0]
+                    .stockpiles
+                    .iter()
+                    .find(|pile| pile.id == reserved_source)
+                    .unwrap()
+                    .contents,
+                stockpiles::ResourceKind::Planks,
+            ),
+            pinned_planks
+        );
+
+        seed_visible_resource(
+            &mut world.colonies[0],
+            stockpiles::ResourceKind::Planks,
+            1.0,
+        );
         let repaired = apply_action(&mut world, &action, &ctx());
         assert!(repaired.ok, "{:?}", repaired.message);
         assert!(
@@ -8078,7 +8155,19 @@ mod tests {
                 .unwrap()
                 .is_pristine()
         );
-        assert_eq!(world.colonies[0].resources.planks, planks_before);
+        assert_eq!(
+            world.colonies[0].resources.planks,
+            planks_before + 1.0,
+            "repair spends only the unreserved plank"
+        );
+        assert_eq!(
+            crate::world_tick::construction_reserved_from_pile(
+                &world.colonies[0],
+                &reserved_source,
+                stockpiles::ResourceKind::Planks,
+            ),
+            pinned_planks
+        );
     }
 
     #[test]

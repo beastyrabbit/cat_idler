@@ -147,6 +147,7 @@ fn install_completed_building(
         automated_by: None,
         production_queue: cat_sim::world_tick::default_production_queue(building_type),
         production_paused: false,
+        construction_cargo: None,
     });
 }
 

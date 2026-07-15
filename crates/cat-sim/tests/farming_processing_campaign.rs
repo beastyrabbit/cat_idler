@@ -15,7 +15,8 @@ use cat_sim::{
     world_gen::tile_to_chunk,
     world_tick::{
         BuildingRuntime, ColonyRuntime, JobMetadata, TilePos, WorldState,
-        farm_designation_route_blocker, footprint_for, found_colony, inside_village_interior,
+        farm_designation_route_blocker, footprint_for, found_colony, found_global_colony,
+        inside_village_interior,
     },
     zones::ZoneRect,
 };
@@ -49,6 +50,7 @@ fn building(
         automated_by: None,
         production_queue: cat_sim::world_tick::default_production_queue(building_type),
         production_paused: false,
+        construction_cargo: None,
     }
 }
 
@@ -857,7 +859,7 @@ fn run_signed_player_farm_smoke_from_preearned_research(seed: u32) -> WorldState
     const PRE_EARNED_RESEARCH_POINTS: f64 = 200.0;
     let mut world = WorldState {
         world_seed: seed,
-        colonies: vec![found_colony(seed, "colony-1", START_MS, seed)],
+        colonies: vec![found_global_colony(seed, "colony-1", START_MS, seed)],
     };
     // This campaign's scope is player-guided construction and physical production.
     // Begin with a bounded bank earned before the observation window, but spend it
@@ -1004,6 +1006,11 @@ fn run_signed_player_farm_smoke_from_preearned_research(seed: u32) -> WorldState
             }
         }
 
+        // This smoke drives the maintained Grand Commons rather than pretending a
+        // fresh personal village should rush twenty buildings. Its legitimate communal
+        // blueprint starts at fifteen completed non-shrine buildings; Workshop, Mill,
+        // water, school, and timber processing form a useful signed-action portfolio
+        // that reaches the real level-4 boundary without eleven duplicate granaries.
         let complete_non_shrine = world.colonies[0]
             .buildings
             .iter()
@@ -1016,12 +1023,25 @@ fn run_signed_player_farm_smoke_from_preearned_research(seed: u32) -> WorldState
             .contains_key(&cat_sim::officers::OfficerRole::Steward)
             && complete_non_shrine < 20
         {
-            if !has_pending_building(&world.colonies[0], BuildingType::FoodStorage) {
-                let _ =
-                    try_plan_at_claimed_site(&mut world, proto::BuildingType::FoodStorage, now_ms);
+            for (sim_type, proto_type) in [
+                (BuildingType::WaterBowl, proto::BuildingType::WaterBowl),
+                (BuildingType::Sawmill, proto::BuildingType::Sawmill),
+                (BuildingType::School, proto::BuildingType::School),
+            ] {
+                if !world.colonies[0]
+                    .buildings
+                    .iter()
+                    .any(|building| building.building_type == sim_type && building.is_complete)
+                    && !has_pending_building(&world.colonies[0], sim_type)
+                {
+                    let _ = try_plan_at_claimed_site(&mut world, proto_type, now_ms);
+                }
+                manual_access_road_built |=
+                    try_pave_reserved_build_access(&mut world, sim_type, now_ms);
+                if has_pending_building(&world.colonies[0], sim_type) {
+                    break;
+                }
             }
-            manual_access_road_built |=
-                try_pave_reserved_build_access(&mut world, BuildingType::FoodStorage, now_ms);
         }
 
         let field_complete = world.colonies[0]

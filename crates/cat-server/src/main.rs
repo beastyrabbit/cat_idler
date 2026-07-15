@@ -1847,6 +1847,15 @@ mod tests {
         // The test isolates authenticated housing, so give both unattended twins
         // the legal established core that owns their survival/prosperity loop.
         establish_campaign_core(&mut colony);
+        // Keep this comparison about the signed player's extra Den. A staffed
+        // Steward legitimately starts its own housing scaffold before the first
+        // migrant's probation is observed; now that scaffold inputs are physical,
+        // it can still be hauling when the signed request arrives. Leaving the
+        // already-researched Workshop in place but vacating the office prevents a
+        // competing autonomous project in both otherwise-identical branches.
+        colony
+            .officers
+            .remove(&cat_sim::officers::OfficerRole::Steward);
         initial_world.colonies.push(colony);
         let guided = build_test_state_from_world(initial_world.clone(), started_at);
         let unattended = build_test_state_from_world(initial_world, started_at);
@@ -3682,6 +3691,7 @@ mod tests {
         colony.resources.lumber = 40.0;
         colony.resources.planks = 40.0;
         colony.resources.blocks = 40.0;
+        cat_sim::world_tick::reconcile_colony_stockpiles(colony);
         colony.officers.insert(
             cat_sim::officers::OfficerRole::Steward,
             colony.cats[0].id.clone(),
@@ -3717,15 +3727,6 @@ mod tests {
         .await;
         let session_id = presence.fields["sessionId"].clone();
         let sig = presence.fields["sig"].clone();
-        let accelerated = send_action(
-            &state,
-            &mut socket,
-            &ClientAction::SetTestAcceleration {
-                preset: AccelerationPreset::Ludicrous,
-            },
-        )
-        .await;
-        assert!(accelerated.result.ok, "test acceleration: {accelerated:?}");
         let signed_plan = |building_type, site| ClientAction::PlanBuilding {
             session_id: session_id.clone(),
             nickname: "Builder".to_owned(),
@@ -3771,7 +3772,21 @@ mod tests {
         let scaffold = paid.buildings.last().expect("exact scaffold");
         assert_eq!(scaffold.position, site);
         assert!(!scaffold.is_complete);
-        assert!(paid.resources.blocks < before.resources.blocks);
+        assert_eq!(paid.resources, before.resources);
+        assert!(scaffold.construction_cargo.is_some());
+        {
+            let world = state.world.lock().await;
+            let snapshot = build_snapshot(&world, started_at, 1);
+            let physical = snapshot.colonies[0]
+                .buildings
+                .iter()
+                .find(|building| building.id == scaffold.id)
+                .expect("new scaffold is inspectable");
+            assert!(!physical.construction_required.is_empty());
+            assert!(physical.construction_delivered.is_empty());
+            assert!(physical.construction_in_transit.is_empty());
+            assert!(physical.construction_block_reason.is_some());
+        }
 
         let overlap = send_action(
             &state,
@@ -3795,10 +3810,9 @@ mod tests {
         let completed_id = scaffold.id.clone();
         {
             let mut world = state.world.lock().await;
-            let _ = world_tick(&mut world, started_at + 1_000);
-            let ends_at = world.colonies[0]
+            world.colonies[0]
                 .jobs
-                .iter()
+                .iter_mut()
                 .find(|job| {
                     matches!(
                         &job.metadata,
@@ -3808,9 +3822,35 @@ mod tests {
                         } if id == &completed_id
                     )
                 })
-                .and_then(|job| job.ends_at)
-                .expect("exact construction promoted");
-            let _ = world_tick(&mut world, ends_at);
+                .expect("signed scaffold owns one construction job")
+                .duration_ms = 10_000;
+            let mut tick_at = started_at + 1_000;
+            for _ in 0..1_200 {
+                let _ = world_tick(&mut world, tick_at);
+                if world.colonies[0]
+                    .buildings
+                    .iter()
+                    .find(|building| building.id == completed_id)
+                    .is_some_and(|building| building.is_complete)
+                {
+                    break;
+                }
+                tick_at = world.colonies[0]
+                    .jobs
+                    .iter()
+                    .find(|job| {
+                        matches!(
+                            &job.metadata,
+                            cat_sim::world_tick::JobMetadata::Construction {
+                                building_id: Some(id),
+                                ..
+                            } if id == &completed_id
+                        )
+                    })
+                    .and_then(|job| job.ends_at)
+                    .filter(|ends_at| *ends_at > tick_at)
+                    .unwrap_or(tick_at + 1_000);
+            }
             let building = world.colonies[0]
                 .buildings
                 .iter()
@@ -3833,7 +3873,30 @@ mod tests {
                             .collect::<Vec<_>>()
                     )
                 });
-            assert!(building.is_complete);
+            assert!(
+                building.is_complete,
+                "physical construction stalled: building={building:?} job={:?} builders={:?} resources={:?} piles={:?}",
+                world.colonies[0].jobs.iter().find(|job| {
+                    matches!(
+                        &job.metadata,
+                        cat_sim::world_tick::JobMetadata::Construction {
+                            building_id: Some(id),
+                            ..
+                        } if id == &completed_id
+                    )
+                }),
+                world.colonies[0]
+                    .cats
+                    .iter()
+                    .filter(|cat| cat.current_task == Some(cat_sim::types::TaskType::Build))
+                    .collect::<Vec<_>>(),
+                world.colonies[0].resources,
+                world.colonies[0]
+                    .stockpiles
+                    .iter()
+                    .map(|pile| (&pile.id, &pile.contents))
+                    .collect::<Vec<_>>()
+            );
             assert_eq!(building.position, site);
         }
         save_current_world(&state)

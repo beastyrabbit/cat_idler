@@ -9778,6 +9778,34 @@ fn building_inspector_text(building: &BuildingSnapshot, colony: &ColonySnapshot)
             progress_bar(building.construction_progress / 100.0, 10),
             progress_pct(building.construction_progress / 100.0),
         ));
+        if !building.construction_required.is_empty() {
+            out.push_str(&format!(
+                "\nconstruction required: {}\nconstruction delivered: {}\nconstruction in transit: {}",
+                resource_stacks_text(&building.construction_required),
+                if building.construction_delivered.is_empty() {
+                    "none".to_owned()
+                } else {
+                    resource_stacks_text(&building.construction_delivered)
+                },
+                if building.construction_in_transit.is_empty() {
+                    "none".to_owned()
+                } else {
+                    resource_stacks_text(&building.construction_in_transit)
+                },
+            ));
+            out.push_str(&format!(
+                "\nconstruction stage: {}",
+                if building.construction_progress > 0.0 {
+                    "building".to_owned()
+                } else {
+                    building
+                        .construction_block_reason
+                        .as_deref()
+                        .unwrap_or("waiting_for_materials")
+                        .replace('_', " ")
+                }
+            ));
+        }
     } else {
         out.push_str("\noperational");
     }
@@ -13623,6 +13651,108 @@ mod tests {
         );
         assert_eq!(officer_holder_name(colony, OfficerRole::Steward), None); // vacant
         assert_eq!(officer_holder_name(colony, OfficerRole::Captain), None); // dangling id
+    }
+
+    fn empty_inspector_test_colony() -> ColonySnapshot {
+        let json = r#"{
+            "now": 0, "worldSeed": 1, "onlineCount": 1,
+            "colonies": [{
+                "id":"c1","name":"A","status":"thriving",
+                "resources":{"food":1,"water":1,"herbs":0,"materials":0,"refined":0,"weapons":0,"armor":0,"blessings":0},
+                "storage":{"capacities":{"food":200,"water":200,"herbs":100,"materials":100,"refined":100,"weapons":50,"armor":50},"foodCapacity":200,"titheRates":{"food":20,"refined":5}},
+                "leader":null,"cats":[],"jobs":[],"upgrades":[],"events":[],
+                "housing":{"population":0,"capacity":4,"pressure":0.0,"villageLevel":1},
+                "research":{"ownedNodeIds":[],"researchPoints":0,"researcherCount":0,"blessings":0,"nextTarget":null},
+                "election":null,"voteKick":null,"zones":[],
+                "threat":{"pressure":0,"band":"calm","raidActive":false,"warriors":0,"weapons":0,"armor":0},
+                "raiders":[],"buildings":[],"stockpiles":[],"claimedTiles":[],
+                "villageGate":null,"villageRadius":4,"anchor":{"x":6,"y":6}
+            }]
+        }"#;
+        serde_json::from_str::<WorldSnapshot>(json)
+            .expect("parse inspector fixture")
+            .colonies
+            .remove(0)
+    }
+
+    #[test]
+    fn incomplete_scaffold_inspector_names_empty_physical_input_stages() {
+        let colony = empty_inspector_test_colony();
+        let scaffold = BuildingSnapshot {
+            id: "workshop-scaffold".to_owned(),
+            building_type: BuildingType::Workshop,
+            level: 1,
+            construction_progress: 0.0,
+            construction_required: vec![
+                ResourceStackSnapshot {
+                    kind: ResourceKind::Planks,
+                    amount: 2.0,
+                },
+                ResourceStackSnapshot {
+                    kind: ResourceKind::Blocks,
+                    amount: 2.0,
+                },
+            ],
+            construction_block_reason: Some("fetching_construction_materials".to_owned()),
+            ..BuildingSnapshot::default()
+        };
+
+        let text = building_inspector_text(&scaffold, &colony);
+        assert!(text.contains("construction required: planks 2.0, blocks 2.0"));
+        assert!(text.contains("construction delivered: none"));
+        assert!(text.contains("construction in transit: none"));
+        assert!(text.contains("construction stage: fetching construction materials"));
+    }
+
+    #[test]
+    fn incomplete_scaffold_inspector_reports_partial_inputs_and_building_stage() {
+        let colony = empty_inspector_test_colony();
+        let mut scaffold = BuildingSnapshot {
+            id: "workshop-scaffold".to_owned(),
+            building_type: BuildingType::Workshop,
+            level: 1,
+            construction_progress: 0.0,
+            construction_required: vec![
+                ResourceStackSnapshot {
+                    kind: ResourceKind::Planks,
+                    amount: 2.0,
+                },
+                ResourceStackSnapshot {
+                    kind: ResourceKind::Blocks,
+                    amount: 2.0,
+                },
+            ],
+            construction_delivered: vec![ResourceStackSnapshot {
+                kind: ResourceKind::Planks,
+                amount: 1.0,
+            }],
+            construction_in_transit: vec![ResourceStackSnapshot {
+                kind: ResourceKind::Blocks,
+                amount: 1.0,
+            }],
+            construction_block_reason: Some("materials_in_transit".to_owned()),
+            ..BuildingSnapshot::default()
+        };
+
+        let blocked = building_inspector_text(&scaffold, &colony);
+        assert!(blocked.contains("construction required: planks 2.0, blocks 2.0"));
+        assert!(blocked.contains("construction delivered: planks 1.0"));
+        assert!(blocked.contains("construction in transit: blocks 1.0"));
+        assert!(blocked.contains("construction stage: materials in transit"));
+
+        scaffold.construction_progress = 35.0;
+        let building = building_inspector_text(&scaffold, &colony);
+        assert!(building.contains("construction delivered: planks 1.0"));
+        assert!(building.contains("construction in transit: blocks 1.0"));
+        assert!(building.contains("construction stage: building"));
+
+        scaffold.construction_progress = 0.0;
+        scaffold.construction_block_reason = Some("building".to_owned());
+        let just_started = building_inspector_text(&scaffold, &colony);
+        assert!(
+            just_started.contains("construction stage: building"),
+            "consumed inputs at zero timer progress are already in the build stage"
+        );
     }
 
     #[test]

@@ -179,6 +179,7 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             productionPaused INTEGER NOT NULL DEFAULT 0,
             productionQueueInitialized INTEGER NOT NULL DEFAULT 0,
             physicalRefinerQueueInitialized INTEGER NOT NULL DEFAULT 0,
+            constructionCargo TEXT,
             -- Buildings are colony-scoped: type-derived ids (e.g. "shrine") are
             -- only unique within a colony, so the key is (colonyId, id).
             PRIMARY KEY (colonyId, id)
@@ -334,6 +335,7 @@ fn migrate_add_missing_columns(conn: &Connection) -> rusqlite::Result<()> {
             "physicalRefinerQueueInitialized",
             "INTEGER NOT NULL DEFAULT 0",
         ),
+        ("buildings", "constructionCargo", "TEXT"),
     ];
     for (table, column, decl) in ADDITIONS {
         if !column_exists(conn, table, column)? {
@@ -1068,8 +1070,8 @@ fn save_building(
             id, colonyId, type, level, position, constructionProgress,
             productionProgress, isComplete, assignedCatId, automatedOfficerRole,
             productionQueue, productionPaused, productionQueueInitialized,
-            physicalRefinerQueueInitialized
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 1, 1)",
+            physicalRefinerQueueInitialized, constructionCargo
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 1, 1, ?13)",
         params![
             scoped_storage_id(colony_id, &building.id),
             colony_id,
@@ -1083,6 +1085,12 @@ fn save_building(
             automated_officer_role,
             serde_json::to_string(&building.production_queue).map_err(to_sql_json)?,
             building.production_paused,
+            building
+                .construction_cargo
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()
+                .map_err(to_sql_json)?,
         ],
     )?;
     Ok(())
@@ -1092,7 +1100,7 @@ fn load_buildings(conn: &Connection, colony_id: &str) -> rusqlite::Result<Vec<Bu
     let mut stmt = conn.prepare(
         "SELECT id, type, level, position, constructionProgress, productionProgress,
                 isComplete, assignedCatId, automatedOfficerRole, productionQueue,
-                productionPaused
+                productionPaused, constructionCargo
          FROM buildings WHERE colonyId = ?1 ORDER BY rowid",
     )?;
     let rows = stmt.query_map([colony_id], |row| {
@@ -1121,6 +1129,10 @@ fn load_buildings(conn: &Connection, colony_id: &str) -> rusqlite::Result<Vec<Bu
                 .transpose()?,
             production_queue,
             production_paused: row.get("productionPaused")?,
+            construction_cargo: row
+                .get::<_, Option<String>>("constructionCargo")?
+                .map(|raw| serde_json::from_str(&raw).map_err(from_sql_json))
+                .transpose()?,
         })
     })?;
     rows.collect()
@@ -2457,6 +2469,193 @@ mod tests {
         assert_eq!(colony.buildings.last().unwrap().production_queue.len(), 1);
         assert!(!colony.buildings.last().unwrap().production_queue[0].repeat);
         assert!(colony.buildings.last().unwrap().production_paused);
+    }
+
+    #[test]
+    fn scaffold_contract_reservations_local_goods_and_carrier_resume_exactly_after_restart() {
+        let conn = open_database(":memory:").expect("database");
+        let mut world = new_world(8_182);
+        let mut colony = found_colony(world.world_seed, "colony-1", 10_000, 8_182);
+        colony.jobs.clear();
+        let building_id = "restart-scaffold";
+        let source_id = colony
+            .stockpiles
+            .iter()
+            .find(|pile| !pile.is_station_local())
+            .expect("visible source pile")
+            .id
+            .clone();
+        let transit_id = cat_sim::stockpiles::construction_transit_id(building_id);
+        let input_id = cat_sim::stockpiles::construction_input_id(building_id);
+        colony.buildings.push(BuildingRuntime {
+            id: building_id.to_owned(),
+            building_type: BuildingType::Workshop,
+            position: TilePos { x: 18, y: 18 },
+            is_complete: false,
+            construction_progress: 0,
+            assigned_cat: Some(colony.cats[0].id.clone()),
+            construction_cargo: Some(cat_sim::world_tick::ConstructionCargoState {
+                required_lumber: 2.0,
+                required_planks: 0.0,
+                required_blocks: 2.0,
+                delivered_lumber: 0.0,
+                delivered_planks: 0.0,
+                delivered_blocks: 1.0,
+                reservations: vec![cat_sim::world_tick::ConstructionCargoReservation {
+                    source_stockpile_id: source_id,
+                    kind: cat_sim::stockpiles::ResourceKind::Blocks,
+                    amount: 1.0,
+                }],
+                consumed: false,
+            }),
+            ..BuildingRuntime::default()
+        });
+        colony.stockpiles.push(Stockpile {
+            id: transit_id.clone(),
+            rect: ZoneRect {
+                x1: 18,
+                y1: 18,
+                x2: 19,
+                y2: 19,
+            },
+            accepts: [
+                cat_sim::stockpiles::ResourceKind::Lumber,
+                cat_sim::stockpiles::ResourceKind::Blocks,
+            ]
+            .into_iter()
+            .collect(),
+            contents: Resources {
+                lumber: 2.0,
+                ..Resources::default()
+            },
+        });
+        colony.stockpiles.push(Stockpile {
+            id: input_id,
+            rect: ZoneRect {
+                x1: 18,
+                y1: 18,
+                x2: 19,
+                y2: 19,
+            },
+            accepts: [
+                cat_sim::stockpiles::ResourceKind::Lumber,
+                cat_sim::stockpiles::ResourceKind::Blocks,
+            ]
+            .into_iter()
+            .collect(),
+            contents: Resources {
+                blocks: 1.0,
+                ..Resources::default()
+            },
+        });
+        let builder_id = colony.cats[0].id.clone();
+        colony.cats[0].carrying = Some(Carrying {
+            kind: CarryingKind::Lumber,
+            amount: 2.0,
+            job_ended_at: 10_000,
+            source_gather_spot: Some(format!("construction-in|{building_id}|{transit_id}")),
+        });
+        colony.cats[0].destination = Some(Position {
+            map: MapType::World,
+            x: 17.0,
+            y: 18.0,
+        });
+        colony.jobs.push(JobRuntime {
+            id: "restart-scaffold-build".to_owned(),
+            kind: JobKind::BuildHouse,
+            status: JobStatus::Active,
+            requested_by: JobRequester::Player,
+            assigned_cat: Some(builder_id),
+            duration_ms: 600_000,
+            created_at: 10_000,
+            metadata: JobMetadata::Construction {
+                phase: ConstructionPhase::GatherMaterials,
+                building_type: BuildingType::Workshop,
+                building_id: Some(building_id.to_owned()),
+                site: Some(TilePos { x: 18, y: 18 }),
+            },
+            ..JobRuntime::default()
+        });
+        world.colonies.push(colony);
+
+        save_world(&conn, &world).expect("save mid-scaffold haul");
+        let restarted = load_world(&conn)
+            .expect("load mid-scaffold haul")
+            .expect("persisted world");
+
+        assert_eq!(restarted, world);
+        assert_eq!(
+            restarted.colonies[0]
+                .buildings
+                .last()
+                .unwrap()
+                .construction_cargo,
+            world.colonies[0]
+                .buildings
+                .last()
+                .unwrap()
+                .construction_cargo
+        );
+    }
+
+    #[test]
+    fn legacy_incomplete_scaffold_with_null_contract_stays_funded_after_restart() {
+        let conn = open_database(":memory:").expect("database");
+        let mut world = new_world(8_183);
+        let mut colony = found_colony(world.world_seed, "colony-1", 10_000, 8_183);
+        colony.jobs.clear();
+        colony.resources.planks = 7.0;
+        colony.resources.blocks = 9.0;
+        let building_id = "legacy-funded-scaffold";
+        colony.buildings.push(BuildingRuntime {
+            id: building_id.to_owned(),
+            building_type: BuildingType::Workshop,
+            position: TilePos { x: 18, y: 18 },
+            is_complete: false,
+            construction_progress: 35,
+            assigned_cat: Some(colony.cats[0].id.clone()),
+            construction_cargo: None,
+            ..BuildingRuntime::default()
+        });
+        colony.jobs.push(JobRuntime {
+            id: "legacy-funded-build".to_owned(),
+            kind: JobKind::BuildHouse,
+            status: JobStatus::Active,
+            requested_by: JobRequester::Leader,
+            assigned_cat: Some(colony.cats[0].id.clone()),
+            duration_ms: 600_000,
+            created_at: 10_000,
+            metadata: JobMetadata::Construction {
+                phase: ConstructionPhase::GatherMaterials,
+                building_type: BuildingType::Workshop,
+                building_id: Some(building_id.to_owned()),
+                site: Some(TilePos { x: 18, y: 18 }),
+            },
+            ..JobRuntime::default()
+        });
+        world.colonies.push(colony);
+        save_world(&conn, &world).expect("save legacy scaffold");
+        let restarted = load_world(&conn)
+            .expect("load legacy scaffold")
+            .expect("persisted world");
+        assert_eq!(
+            restarted.colonies[0]
+                .buildings
+                .last()
+                .unwrap()
+                .construction_cargo,
+            None
+        );
+        assert_eq!(restarted.colonies[0].resources.planks, 7.0);
+        assert_eq!(restarted.colonies[0].resources.blocks, 9.0);
+        let stored_contract: Option<String> = conn
+            .query_row(
+                "SELECT constructionCargo FROM buildings WHERE colonyId = ?1 AND isComplete = 0",
+                ["colony-1"],
+                |row| row.get(0),
+            )
+            .expect("legacy nullable contract row");
+        assert_eq!(stored_contract, None);
     }
 
     #[test]
@@ -4820,6 +5019,7 @@ mod tests {
             automated_by: Some(OfficerRole::Captain),
             production_queue: Vec::new(),
             production_paused: false,
+            construction_cargo: None,
         });
         colony.events.push(EventLog {
             id: "event-audit".to_owned(),

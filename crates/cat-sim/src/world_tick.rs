@@ -491,6 +491,53 @@ pub struct BuildingRuntime {
     pub production_queue: Vec<ProductionQueueEntry>,
     /// Pausing stops recipe work, but does not strand completed output at the station.
     pub production_paused: bool,
+    /// Fresh scaffolds own an explicit finite material contract. `None` is the
+    /// safe legacy shape: an incomplete scaffold persisted before physical
+    /// construction logistics is grandfathered as already funded and is never
+    /// charged a second time.
+    pub construction_cargo: Option<ConstructionCargoState>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConstructionCargoReservation {
+    pub source_stockpile_id: String,
+    pub kind: ResourceKind,
+    pub amount: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ConstructionCargoState {
+    pub required_lumber: f64,
+    pub required_planks: f64,
+    pub required_blocks: f64,
+    pub delivered_lumber: f64,
+    pub delivered_planks: f64,
+    pub delivered_blocks: f64,
+    #[serde(default)]
+    pub reservations: Vec<ConstructionCargoReservation>,
+    #[serde(default)]
+    pub consumed: bool,
+}
+
+impl ConstructionCargoState {
+    #[must_use]
+    pub fn required_timber(&self) -> f64 {
+        self.required_lumber + self.required_planks
+    }
+
+    #[must_use]
+    pub fn delivered_timber(&self) -> f64 {
+        self.delivered_lumber + self.delivered_planks
+    }
+
+    #[must_use]
+    pub fn is_delivered(&self) -> bool {
+        self.delivered_lumber + f64::EPSILON >= self.required_lumber
+            && self.delivered_planks + f64::EPSILON >= self.required_planks
+            && self.delivered_blocks + f64::EPSILON >= self.required_blocks
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -811,6 +858,26 @@ struct FarmRouteDebug {
     worker_releases: u64,
     effective_growth_by_plot: BTreeMap<String, f64>,
     harvests_by_plot: BTreeMap<String, u64>,
+}
+
+#[cfg(test)]
+impl FarmRouteDebug {
+    fn record_movement_pass(&mut self, cat_id: &str, route_found: bool) {
+        self.movement_ticks += 1;
+        if !route_found {
+            self.route_misses += 1;
+        }
+        let consecutive = self
+            .consecutive_traveling
+            .entry(cat_id.to_owned())
+            .and_modify(|ticks| *ticks += 1)
+            .or_insert(1);
+        self.max_consecutive_traveling = self.max_consecutive_traveling.max(*consecutive);
+    }
+
+    fn finish_movement_leg(&mut self, cat_id: &str) {
+        self.consecutive_traveling.remove(cat_id);
+    }
 }
 
 // A cache never changes authoritative simulation meaning. Treating two cache
@@ -2134,6 +2201,7 @@ impl Default for BuildingRuntime {
             automated_by: None,
             production_queue: Vec::new(),
             production_paused: false,
+            construction_cargo: None,
         }
     }
 }
@@ -2731,6 +2799,7 @@ fn starter_buildings(
                 automated_by: None,
                 production_queue: default_production_queue(building_type),
                 production_paused: false,
+                construction_cargo: None,
             }
         })
         .collect()
@@ -2978,6 +3047,7 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
         phase_13_tick_local_target_caches(colony, gate);
         phase_14_promote_queued_jobs_and_break_ground(colony, gate, world_seed);
         phase_15_assign_promoted_job_destinations(colony, gate, world_seed);
+        phase_15b_physical_scaffold_inputs(colony, gate);
         phase_16_active_scaffold_progress(colony, gate);
         phase_17_legacy_emergency_hunt(colony, gate, policy);
         phase_17b_water_reserve_preemption(colony, gate);
@@ -3869,6 +3939,24 @@ const FIELD_LINKED_EXPANSION_MS: i64 = 60_000;
 /// Planks and blocks the tools bench must leave available for construction.
 const TOOL_BUILD_MATERIAL_RESERVE: f64 = 4.0;
 
+fn current_construction_speed(colony: &ColonyRuntime) -> f64 {
+    resolve_effects(colony.upgrade_tree.owned_node_ids.iter())
+        .construction_speed_mult
+        .max(f64::EPSILON)
+}
+
+fn effective_construction_duration_ms(base_duration_ms: i64, pinned_speed: f64) -> i64 {
+    // `speedMultiplier` predates pinned construction timing. Legacy/default jobs
+    // can therefore load `0` (and corrupt hand-authored rows can be non-finite).
+    // Those values mean "no recorded modifier", not an epsilon-speed century.
+    let speed = if pinned_speed.is_finite() && pinned_speed > f64::EPSILON {
+        pinned_speed
+    } else {
+        1.0
+    };
+    ((base_duration_ms as f64 / speed).round() as i64).max(1_000)
+}
+
 fn scaffold_cost(colony: &ColonyRuntime, building_type: BuildingType) -> (f64, f64) {
     let existing = colony
         .buildings
@@ -3889,6 +3977,163 @@ fn scaffold_cost(colony: &ColonyRuntime, building_type: BuildingType) -> (f64, f
     )
 }
 
+pub(crate) fn construction_reserved_from_pile(
+    colony: &ColonyRuntime,
+    pile_id: &str,
+    kind: ResourceKind,
+) -> f64 {
+    colony
+        .buildings
+        .iter()
+        .filter_map(|building| building.construction_cargo.as_ref())
+        .flat_map(|cargo| &cargo.reservations)
+        .filter(|reservation| {
+            reservation.source_stockpile_id == pile_id && reservation.kind == kind
+        })
+        .map(|reservation| reservation.amount)
+        .sum()
+}
+
+fn construction_committed_amount(colony: &ColonyRuntime, kind: ResourceKind) -> f64 {
+    let live_contracts = colony
+        .buildings
+        .iter()
+        .filter_map(|building| building.construction_cargo.as_ref())
+        .filter(|cargo| !cargo.consumed)
+        .map(|cargo| match kind {
+            ResourceKind::Lumber => cargo.required_lumber,
+            ResourceKind::Planks => cargo.required_planks,
+            ResourceKind::Blocks => cargo.required_blocks,
+            _ => 0.0,
+        })
+        .sum::<f64>();
+    // A scaffold can disappear late in a tick (or through an administrative
+    // removal) before phase 14 exposes its local ledgers as visible spills. Keep
+    // those still-hidden physical units committed during that window so scalar
+    // consumers such as village trade cannot spend them a second time.
+    let orphan_local = colony
+        .stockpiles
+        .iter()
+        .filter_map(|pile| {
+            let building_id = pile
+                .id
+                .strip_prefix(stockpiles::CONSTRUCTION_INPUT_PREFIX)
+                .or_else(|| {
+                    pile.id
+                        .strip_prefix(stockpiles::CONSTRUCTION_TRANSIT_PREFIX)
+                })?;
+            (!colony
+                .buildings
+                .iter()
+                .any(|building| building.id == building_id))
+            .then(|| stockpiles::resource_amount(&pile.contents, kind))
+        })
+        .sum::<f64>();
+    live_contracts + orphan_local
+}
+
+#[must_use]
+pub(crate) fn construction_spendable_resource(colony: &ColonyRuntime, kind: ResourceKind) -> f64 {
+    (stockpiles::resource_amount(&colony.resources, kind)
+        - construction_committed_amount(colony, kind))
+    .max(0.0)
+}
+
+fn reserve_kind_from_visible_piles(
+    colony: &ColonyRuntime,
+    kind: ResourceKind,
+    amount: f64,
+    destination: TilePos,
+) -> Option<Vec<ConstructionCargoReservation>> {
+    let mut candidates = colony
+        .stockpiles
+        .iter()
+        .filter(|pile| !pile.is_station_local())
+        .filter_map(|pile| {
+            let available = (stockpiles::resource_amount(&pile.contents, kind)
+                - construction_reserved_from_pile(colony, &pile.id, kind))
+            .max(0.0);
+            (available > f64::EPSILON).then(|| {
+                let (x, y) = pile.center();
+                let distance =
+                    (x - f64::from(destination.x)).powi(2) + (y - f64::from(destination.y)).powi(2);
+                (pile.id.clone(), available, distance)
+            })
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| {
+        left.2
+            .total_cmp(&right.2)
+            .then_with(|| left.0.cmp(&right.0))
+    });
+
+    let mut remaining = amount;
+    let mut reservations = Vec::new();
+    for (source_stockpile_id, available, _) in candidates {
+        if remaining <= f64::EPSILON {
+            break;
+        }
+        let reserved = available.min(remaining);
+        reservations.push(ConstructionCargoReservation {
+            source_stockpile_id,
+            kind,
+            amount: reserved,
+        });
+        remaining -= reserved;
+    }
+    (remaining <= f64::EPSILON).then_some(reservations)
+}
+
+fn plan_construction_cargo(
+    colony: &ColonyRuntime,
+    site: TilePos,
+    timber_cost: f64,
+    block_cost: f64,
+) -> Option<ConstructionCargoState> {
+    let visible_total = |kind| {
+        colony
+            .stockpiles
+            .iter()
+            .filter(|pile| !pile.is_station_local())
+            .map(|pile| {
+                (stockpiles::resource_amount(&pile.contents, kind)
+                    - construction_reserved_from_pile(colony, &pile.id, kind))
+                .max(0.0)
+            })
+            .sum::<f64>()
+    };
+    let timber = allocate_construction_timber(
+        timber_cost,
+        visible_total(ResourceKind::Lumber),
+        visible_total(ResourceKind::Planks),
+    );
+    if !timber.covered || visible_total(ResourceKind::Blocks) + f64::EPSILON < block_cost {
+        return None;
+    }
+    let mut reservations =
+        reserve_kind_from_visible_piles(colony, ResourceKind::Lumber, timber.lumber_used, site)
+            .unwrap_or_default();
+    reservations.extend(reserve_kind_from_visible_piles(
+        colony,
+        ResourceKind::Planks,
+        timber.legacy_planks_used,
+        site,
+    )?);
+    reservations.extend(reserve_kind_from_visible_piles(
+        colony,
+        ResourceKind::Blocks,
+        block_cost,
+        site,
+    )?);
+    Some(ConstructionCargoState {
+        required_lumber: timber.lumber_used,
+        required_planks: timber.legacy_planks_used,
+        required_blocks: block_cost,
+        reservations,
+        ..ConstructionCargoState::default()
+    })
+}
+
 /// Validate, pay for, and reserve an explicitly player-selected building footprint
 /// as one atomic mutation. The reservation is the incomplete scaffold itself, so a
 /// second action cannot race onto the same tiles while its builder is still queued.
@@ -3900,6 +4145,13 @@ pub(crate) fn commit_player_scaffold(
     world_seed: u32,
     now_ms: i64,
 ) -> Result<String, &'static str> {
+    if colony
+        .buildings
+        .iter()
+        .any(|building| !building.is_complete)
+    {
+        return Err("Finish the current scaffold before starting another project.");
+    }
     let (width, height) = footprint_for(building_type);
     let footprint = footprint_tiles(site, width, height);
     if let Some(error) = placement_error_for_tiles(colony, &footprint, world_seed, true) {
@@ -3932,20 +4184,13 @@ pub(crate) fn commit_player_scaffold(
     }
 
     let (timber_cost, block_cost) = scaffold_cost(colony, building_type);
-    let timber = allocate_construction_timber(
-        timber_cost,
-        colony.resources.lumber,
-        colony.resources.planks,
-    );
-    if !timber.covered || colony.resources.blocks < block_cost {
+    let Some(construction_cargo) = plan_construction_cargo(colony, site, timber_cost, block_cost)
+    else {
         return Err("Not enough lumber/planks and dressed-stone blocks to reserve that scaffold.");
-    }
+    };
 
     // Nothing below this point can fail. Keep payment, optional Steward paving,
     // and the footprint reservation in one commit boundary.
-    colony.resources.lumber = (colony.resources.lumber - timber.lumber_used).max(0.0);
-    colony.resources.planks = (colony.resources.planks - timber.legacy_planks_used).max(0.0);
-    colony.resources.blocks = (colony.resources.blocks - block_cost).max(0.0);
     let building_id = format!("building-{now_ms}-{}", colony.buildings.len() + 1);
     colony.buildings.push(BuildingRuntime {
         id: building_id.clone(),
@@ -3959,6 +4204,7 @@ pub(crate) fn commit_player_scaffold(
         automated_by: None,
         production_queue: default_production_queue(building_type),
         production_paused: false,
+        construction_cargo: Some(construction_cargo),
     });
     if has_officer(colony, OfficerRole::Steward) {
         pave_access_route(colony, &access_route);
@@ -3975,7 +4221,7 @@ pub(crate) fn commit_player_scaffold(
 /// the original four-unit safety floor). Repeated buildings therefore cannot be
 /// starved by the throughput upgrade meant to help construct them.
 fn construction_material_reserve(colony: &ColonyRuntime) -> f64 {
-    colony
+    let queued = colony
         .jobs
         .iter()
         .filter(|job| {
@@ -3994,7 +4240,11 @@ fn construction_material_reserve(colony: &ColonyRuntime) -> f64 {
             let (timber, blocks) = scaffold_cost(colony, building_type);
             timber.max(blocks)
         })
-        .fold(TOOL_BUILD_MATERIAL_RESERVE, f64::max)
+        .fold(TOOL_BUILD_MATERIAL_RESERVE, f64::max);
+    queued.max(
+        construction_committed_amount(colony, ResourceKind::Planks)
+            .max(construction_committed_amount(colony, ResourceKind::Blocks)),
+    )
 }
 
 fn phase_14_promote_queued_jobs_and_break_ground(
@@ -4002,6 +4252,7 @@ fn phase_14_promote_queued_jobs_and_break_ground(
     gate: TickGate,
     world_seed: u32,
 ) {
+    recover_removed_scaffold_cargo(colony);
     queue_orphaned_scaffold_recovery(colony, gate.processed_through);
     let queued_indices = colony
         .jobs
@@ -4094,7 +4345,6 @@ fn phase_14_promote_queued_jobs_and_break_ground(
         // second site or charge the refined-material break-ground cost twice.
         let existing_scaffold_progress = match &next_metadata {
             JobMetadata::Construction {
-                phase: ConstructionPhase::ConstructHouse,
                 building_id: Some(building_id),
                 site: Some(_),
                 ..
@@ -4102,11 +4352,19 @@ fn phase_14_promote_queued_jobs_and_break_ground(
                 .buildings
                 .iter()
                 .find(|building| building.id == *building_id && !building.is_complete)
-                .map(|building| building.construction_progress),
+                .map(|building| {
+                    (
+                        building.construction_progress,
+                        building
+                            .construction_cargo
+                            .as_ref()
+                            .is_some_and(|cargo| !cargo.consumed),
+                    )
+                }),
             _ => None,
         };
         if colony.jobs[job_index].kind == JobKind::BuildHouse
-            && let Some(scaffold_progress) = existing_scaffold_progress
+            && let Some((scaffold_progress, gathering_materials)) = existing_scaffold_progress
         {
             let assigned_is_alive =
                 colony.jobs[job_index]
@@ -4126,12 +4384,17 @@ fn phase_14_promote_queued_jobs_and_break_ground(
             let Some(cat_id) = replacement else {
                 continue;
             };
-            let construction_speed = resolve_effects(colony.upgrade_tree.owned_node_ids.iter())
-                .construction_speed_mult
-                .max(f64::EPSILON);
-            let full_duration_ms =
-                ((colony.jobs[job_index].duration_ms as f64 / construction_speed).round() as i64)
-                    .max(1_000);
+            let pinned_speed = if colony.jobs[job_index].speed.is_finite()
+                && colony.jobs[job_index].speed > f64::EPSILON
+            {
+                colony.jobs[job_index].speed
+            } else {
+                1.0
+            };
+            let full_duration_ms = effective_construction_duration_ms(
+                colony.jobs[job_index].duration_ms,
+                pinned_speed,
+            );
             let remaining_percent = i64::from(100_u8.saturating_sub(scaffold_progress.min(99)));
             let remaining_duration_ms = full_duration_ms
                 .saturating_mul(remaining_percent)
@@ -4139,15 +4402,27 @@ fn phase_14_promote_queued_jobs_and_break_ground(
                 / 100;
             let remaining_duration_ms = remaining_duration_ms.max(1_000);
             let job = &mut colony.jobs[job_index];
+            job.speed = pinned_speed;
             job.assigned_cat = Some(cat_id.clone());
             job.status = JobStatus::Active;
-            job.started_at = Some(gate.processed_through);
-            job.ends_at = Some(gate.processed_through.saturating_add(remaining_duration_ms));
+            job.started_at = (!gathering_materials).then_some(gate.processed_through);
+            job.ends_at = (!gathering_materials)
+                .then_some(gate.processed_through.saturating_add(remaining_duration_ms));
             job.completed_at = None;
+            if gathering_materials
+                && let JobMetadata::Construction { phase, .. } = &mut job.metadata
+            {
+                *phase = ConstructionPhase::GatherMaterials;
+            }
             if let Some(cat) = colony.cats.iter_mut().find(|cat| cat.id == cat_id) {
                 cat.current_task = task_for_job(JobKind::BuildHouse);
-                cat.activity = CatActivity::Traveling;
-                cat.destination = Some(position_from_world(village_anchor_world(colony.anchor)));
+                cat.activity = if gathering_materials {
+                    CatActivity::Idle
+                } else {
+                    CatActivity::Traveling
+                };
+                cat.destination = (!gathering_materials)
+                    .then(|| position_from_world(village_anchor_world(colony.anchor)));
             }
             continue;
         }
@@ -4169,6 +4444,13 @@ fn phase_14_promote_queued_jobs_and_break_ground(
                 }
             )
         {
+            if colony
+                .buildings
+                .iter()
+                .any(|building| !building.is_complete)
+            {
+                continue;
+            }
             // A site-less build whose worker was transferred to an expansion cannot gain
             // a legal site until that expansion completes. Avoid repeating the full
             // footprint/accessibility search every tick while the claim is unchanged.
@@ -4192,15 +4474,6 @@ fn phase_14_promote_queued_jobs_and_break_ground(
             // have not banked enough yet, the job stays Queued and retries on a later
             // tick — construction is gated on refined-material supply, not free. The cost
             // keys only off pile-invariant resource totals, so this stays deterministic.
-            let timber = allocate_construction_timber(
-                timber_cost,
-                colony.resources.lumber,
-                colony.resources.planks,
-            );
-            if !timber.covered || colony.resources.blocks < block_cost {
-                continue;
-            }
-
             let roll = roll_seeded(f64::from(movement_seed));
             movement_seed = roll.next_seed;
 
@@ -4244,6 +4517,11 @@ fn phase_14_promote_queued_jobs_and_break_ground(
             if !has_officer(colony, OfficerRole::Steward) && !access_route.is_empty() {
                 continue;
             }
+            let Some(construction_cargo) =
+                plan_construction_cargo(colony, site_local, timber_cost, block_cost)
+            else {
+                continue;
+            };
 
             // Expansion may outlive its original builder. Revalidate the reservation
             // immediately before committing any spatial/resource mutation and recruit a
@@ -4278,10 +4556,6 @@ fn phase_14_promote_queued_jobs_and_break_ground(
             // refined scaffold cost covers access works; a newly completed
             // building is therefore never left waiting on the later optional
             // road-repair phase or a raw-material surplus.
-            colony.resources.lumber = (colony.resources.lumber - timber.lumber_used).max(0.0);
-            colony.resources.planks =
-                (colony.resources.planks - timber.legacy_planks_used).max(0.0);
-            colony.resources.blocks = (colony.resources.blocks - block_cost).max(0.0);
             let building_id = format!(
                 "building-{}-{}",
                 gate.processed_through,
@@ -4300,6 +4574,7 @@ fn phase_14_promote_queued_jobs_and_break_ground(
                 automated_by: None,
                 production_queue: default_production_queue(scaffold_type),
                 production_paused: false,
+                construction_cargo: Some(construction_cargo),
             });
             if has_officer(colony, OfficerRole::Steward) {
                 pave_access_route(colony, &access_route);
@@ -4312,14 +4587,9 @@ fn phase_14_promote_queued_jobs_and_break_ground(
             debug_assert!(village_exterior_is_road_connected(colony, world_seed));
             broke_ground = true;
 
-            if let JobMetadata::Construction {
-                phase,
-                building_type: _,
-                ..
-            } = next_metadata
-            {
+            if let JobMetadata::Construction { .. } = next_metadata {
                 next_metadata = JobMetadata::Construction {
-                    phase,
+                    phase: ConstructionPhase::GatherMaterials,
                     building_type: scaffold_type,
                     building_id: Some(building_id),
                     site: Some(site_local),
@@ -4328,17 +4598,19 @@ fn phase_14_promote_queued_jobs_and_break_ground(
         }
 
         let assigned_cat = colony.jobs[job_index].assigned_cat.clone();
-        let effective_duration_ms = if colony.jobs[job_index].kind == JobKind::BuildHouse {
-            let speed = resolve_effects(colony.upgrade_tree.owned_node_ids.iter())
-                .construction_speed_mult
-                .max(f64::EPSILON);
-            ((colony.jobs[job_index].duration_ms as f64 / speed).round() as i64).max(1_000)
+        let construction_speed = (colony.jobs[job_index].kind == JobKind::BuildHouse)
+            .then(|| current_construction_speed(colony));
+        let effective_duration_ms = if let Some(speed) = construction_speed {
+            effective_construction_duration_ms(colony.jobs[job_index].duration_ms, speed)
         } else {
             colony.jobs[job_index].duration_ms.max(1_000)
         };
         {
             let job = &mut colony.jobs[job_index];
             job.status = JobStatus::Active;
+            if let Some(speed) = construction_speed {
+                job.speed = speed;
+            }
             if broke_ground {
                 job.started_at = Some(gate.processed_through);
                 job.ends_at = Some(gate.processed_through + effective_duration_ms);
@@ -4360,6 +4632,22 @@ fn phase_14_promote_queued_jobs_and_break_ground(
                 job.ends_at = None;
                 job.completed_at = None;
             }
+            if job.kind == JobKind::BuildHouse
+                && matches!(
+                    next_metadata,
+                    JobMetadata::Construction {
+                        phase: ConstructionPhase::GatherMaterials,
+                        ..
+                    }
+                )
+            {
+                // The physical source→scaffold loop owns this stage. Construction
+                // time cannot begin while any pinned unit remains in a source pile
+                // or in a carrier's paws.
+                job.started_at = None;
+                job.ends_at = None;
+                job.completed_at = None;
+            }
             job.metadata = next_metadata;
         }
         if broke_ground
@@ -4367,8 +4655,8 @@ fn phase_14_promote_queued_jobs_and_break_ground(
             && let Some(cat) = colony.cats.iter_mut().find(|cat| cat.id == cat_id)
         {
             cat.current_task = task_for_job(JobKind::BuildHouse);
-            cat.activity = CatActivity::Traveling;
-            cat.destination = Some(position_from_world(village_anchor_world(colony.anchor)));
+            cat.activity = CatActivity::Idle;
+            cat.destination = None;
         }
     }
 }
@@ -4412,13 +4700,23 @@ fn queue_orphaned_scaffold_recovery(colony: &mut ColonyRuntime, now_ms: i64) {
                 building.id.clone(),
                 building.building_type,
                 building.position,
+                building.construction_cargo.as_ref().map_or(
+                    ConstructionPhase::ConstructHouse,
+                    |cargo| {
+                        if cargo.consumed {
+                            ConstructionPhase::ConstructHouse
+                        } else {
+                            ConstructionPhase::GatherMaterials
+                        }
+                    },
+                ),
                 prior_job.map_or(JobRequester::System, |job| job.requested_by),
                 prior_job.and_then(|job| automated_job_role(colony, job)),
             )
         })
         .collect::<Vec<_>>();
 
-    for (building_id, building_type, site, requested_by, automated_role) in orphaned {
+    for (building_id, building_type, site, phase, requested_by, automated_role) in orphaned {
         if requested_by == JobRequester::Leader
             && automated_role.is_some_and(|role| !has_officer(colony, role))
         {
@@ -4434,7 +4732,7 @@ fn queue_orphaned_scaffold_recovery(colony: &mut ColonyRuntime, now_ms: i64) {
             requested_by,
             Some(cat_id),
             JobMetadata::Construction {
-                phase: ConstructionPhase::ConstructHouse,
+                phase,
                 building_type,
                 building_id: Some(building_id),
                 site: Some(site),
@@ -4737,6 +5035,544 @@ fn phase_15_assign_promoted_job_destinations(
     }
 }
 
+const CONSTRUCTION_CARGO_PREFIX: &str = "construction-in|";
+const CONSTRUCTION_SPILL_PREFIX: &str = "construction-spill:";
+
+fn construction_cargo_marker(building_id: &str, transit_id: &str) -> String {
+    format!("{CONSTRUCTION_CARGO_PREFIX}{building_id}|{transit_id}")
+}
+
+fn parse_construction_cargo(marker: Option<&str>) -> Option<(&str, &str)> {
+    marker?
+        .strip_prefix(CONSTRUCTION_CARGO_PREFIX)?
+        .split_once('|')
+}
+
+fn construction_spill_id(building_id: &str, ordinal: usize) -> String {
+    format!("{CONSTRUCTION_SPILL_PREFIX}{building_id}:{ordinal}")
+}
+
+fn spill_construction_cargo(colony: &mut ColonyRuntime, carrying: &Carrying, at: WorldPos) -> bool {
+    let Some((building_id, transit_id)) =
+        parse_construction_cargo(carrying.source_gather_spot.as_deref())
+    else {
+        return false;
+    };
+    let building_id = building_id.to_owned();
+    let transit_id = transit_id.to_owned();
+    let Some(kind) = carrying_resource_kind(carrying.kind) else {
+        return true;
+    };
+    let available = colony
+        .stockpiles
+        .iter()
+        .find(|pile| pile.id == transit_id)
+        .map_or(0.0, |pile| {
+            stockpiles::resource_amount(&pile.contents, kind)
+        });
+    let spilled = available.min(carrying.amount);
+    if spilled <= f64::EPSILON {
+        return true;
+    }
+    if let Some(transit) = colony
+        .stockpiles
+        .iter_mut()
+        .find(|pile| pile.id == transit_id)
+    {
+        stockpiles::add_resource(&mut transit.contents, kind, -spilled);
+    }
+    let tile = world_pos_to_tile(at);
+    let id = construction_spill_id(&building_id, colony.stockpiles.len());
+    let mut spill = Stockpile {
+        id,
+        rect: ZoneRect {
+            x1: tile.x,
+            y1: tile.y,
+            x2: tile.x,
+            y2: tile.y,
+        },
+        accepts: [kind].into_iter().collect(),
+        contents: Resources::default(),
+    };
+    stockpiles::add_resource(&mut spill.contents, kind, spilled);
+    colony.stockpiles.push(spill);
+    true
+}
+
+fn recover_removed_scaffold_cargo(colony: &mut ColonyRuntime) {
+    let live_ids = colony
+        .buildings
+        .iter()
+        .map(|building| building.id.clone())
+        .collect::<HashSet<_>>();
+    let orphaned_jobs = colony
+        .jobs
+        .iter()
+        .enumerate()
+        .filter_map(|(index, job)| {
+            let JobMetadata::Construction {
+                building_id: Some(building_id),
+                ..
+            } = &job.metadata
+            else {
+                return None;
+            };
+            (job.kind == JobKind::BuildHouse
+                && matches!(job.status, JobStatus::Active | JobStatus::Queued)
+                && !live_ids.contains(building_id))
+            .then_some((index, job.assigned_cat.clone()))
+        })
+        .collect::<Vec<_>>();
+    for (job_index, assigned_cat) in orphaned_jobs {
+        let job = &mut colony.jobs[job_index];
+        job.status = JobStatus::Cancelled;
+        job.assigned_cat = None;
+        job.started_at = None;
+        job.ends_at = None;
+        job.completed_at = Some(colony.last_tick);
+        if let Some(cat_id) = assigned_cat
+            && let Some(cat) = colony.cats.iter_mut().find(|cat| cat.id == cat_id)
+        {
+            cat.current_task = None;
+            cat.activity = CatActivity::Idle;
+            cat.destination = None;
+        }
+    }
+    let orphaned_carriers = colony
+        .cats
+        .iter()
+        .enumerate()
+        .filter_map(|(index, cat)| {
+            let carrying = cat.carrying.as_ref()?;
+            let (building_id, _) =
+                parse_construction_cargo(carrying.source_gather_spot.as_deref())?;
+            (!live_ids.contains(building_id)).then_some((
+                index,
+                carrying.clone(),
+                position_to_world(colony.anchor, cat.position),
+            ))
+        })
+        .collect::<Vec<_>>();
+    for (cat_index, carrying, at) in orphaned_carriers {
+        if spill_construction_cargo(colony, &carrying, at) {
+            colony.cats[cat_index].carrying = None;
+            colony.cats[cat_index].activity = CatActivity::Idle;
+            colony.cats[cat_index].destination = None;
+        }
+    }
+
+    let live_ids = colony
+        .buildings
+        .iter()
+        .map(|building| building.id.clone())
+        .collect::<HashSet<_>>();
+    let mut ordinal = colony.stockpiles.len();
+    for pile in &mut colony.stockpiles {
+        let building_id = pile
+            .id
+            .strip_prefix(stockpiles::CONSTRUCTION_INPUT_PREFIX)
+            .or_else(|| {
+                pile.id
+                    .strip_prefix(stockpiles::CONSTRUCTION_TRANSIT_PREFIX)
+            })
+            .map(str::to_owned);
+        let Some(building_id) = building_id else {
+            continue;
+        };
+        if live_ids.contains(&building_id) {
+            continue;
+        }
+        pile.id = construction_spill_id(&building_id, ordinal);
+        ordinal += 1;
+    }
+}
+
+fn construction_store_amount(
+    colony: &ColonyRuntime,
+    building_id: &str,
+    input: bool,
+    kind: ResourceKind,
+) -> f64 {
+    let id = if input {
+        stockpiles::construction_input_id(building_id)
+    } else {
+        stockpiles::construction_transit_id(building_id)
+    };
+    colony
+        .stockpiles
+        .iter()
+        .find(|pile| pile.id == id)
+        .map_or(0.0, |pile| {
+            stockpiles::resource_amount(&pile.contents, kind)
+        })
+}
+
+fn ensure_construction_stores(colony: &mut ColonyRuntime, building: &BuildingRuntime) {
+    let (width, height) = footprint_for(building.building_type);
+    let rect = ZoneRect {
+        x1: building.position.x,
+        y1: building.position.y,
+        x2: building.position.x + width - 1,
+        y2: building.position.y + height - 1,
+    };
+    let kinds = [
+        ResourceKind::Lumber,
+        ResourceKind::Planks,
+        ResourceKind::Blocks,
+    ];
+    for id in [
+        stockpiles::construction_input_id(&building.id),
+        stockpiles::construction_transit_id(&building.id),
+    ] {
+        if !colony.stockpiles.iter().any(|pile| pile.id == id) {
+            colony
+                .stockpiles
+                .push(stockpiles::make_station_store(id, rect, kinds));
+        }
+    }
+}
+
+fn refresh_construction_reservations(colony: &mut ColonyRuntime, building_index: usize) -> bool {
+    let building = colony.buildings[building_index].clone();
+    let Some(cargo) = building.construction_cargo.as_ref() else {
+        return true;
+    };
+    let source_reservations_valid = cargo.reservations.iter().all(|reservation| {
+        colony
+            .stockpiles
+            .iter()
+            .find(|pile| pile.id == reservation.source_stockpile_id)
+            .is_some_and(|pile| {
+                let other_reserved =
+                    construction_reserved_from_pile(colony, &pile.id, reservation.kind)
+                        - reservation.amount;
+                stockpiles::resource_amount(&pile.contents, reservation.kind) + f64::EPSILON
+                    >= reservation.amount + other_reserved.max(0.0)
+            })
+    });
+    let reservations_cover_remaining = [
+        (
+            ResourceKind::Lumber,
+            cargo.required_lumber,
+            cargo.delivered_lumber,
+        ),
+        (
+            ResourceKind::Planks,
+            cargo.required_planks,
+            cargo.delivered_planks,
+        ),
+        (
+            ResourceKind::Blocks,
+            cargo.required_blocks,
+            cargo.delivered_blocks,
+        ),
+    ]
+    .into_iter()
+    .all(|(kind, required, delivered)| {
+        let transit = construction_store_amount(colony, &building.id, false, kind);
+        let remaining = (required - delivered - transit).max(0.0);
+        let reserved = cargo
+            .reservations
+            .iter()
+            .filter(|reservation| reservation.kind == kind)
+            .map(|reservation| reservation.amount)
+            .sum::<f64>();
+        (reserved - remaining).abs() <= f64::EPSILON
+    });
+    let valid = source_reservations_valid && reservations_cover_remaining;
+    if valid {
+        return true;
+    }
+
+    colony.buildings[building_index]
+        .construction_cargo
+        .as_mut()
+        .expect("checked explicit cargo")
+        .reservations
+        .clear();
+    let cargo = colony.buildings[building_index]
+        .construction_cargo
+        .as_ref()
+        .expect("checked explicit cargo")
+        .clone();
+    let mut reservations = Vec::new();
+    for (kind, required, delivered) in [
+        (
+            ResourceKind::Lumber,
+            cargo.required_lumber,
+            cargo.delivered_lumber,
+        ),
+        (
+            ResourceKind::Planks,
+            cargo.required_planks,
+            cargo.delivered_planks,
+        ),
+        (
+            ResourceKind::Blocks,
+            cargo.required_blocks,
+            cargo.delivered_blocks,
+        ),
+    ] {
+        let transit = construction_store_amount(colony, &building.id, false, kind);
+        let remaining = (required - delivered - transit).max(0.0);
+        let Some(mut planned) =
+            reserve_kind_from_visible_piles(colony, kind, remaining, building.position)
+        else {
+            return false;
+        };
+        reservations.append(&mut planned);
+    }
+    colony.buildings[building_index]
+        .construction_cargo
+        .as_mut()
+        .expect("checked explicit cargo")
+        .reservations = reservations;
+    true
+}
+
+fn consume_delivered_construction_cargo(colony: &mut ColonyRuntime, building_index: usize) {
+    let building_id = colony.buildings[building_index].id.clone();
+    let Some(cargo) = colony.buildings[building_index].construction_cargo.as_mut() else {
+        return;
+    };
+    if cargo.consumed || !cargo.is_delivered() {
+        return;
+    }
+    let input_id = stockpiles::construction_input_id(&building_id);
+    if let Some(input) = colony
+        .stockpiles
+        .iter_mut()
+        .find(|pile| pile.id == input_id)
+    {
+        for (kind, amount) in [
+            (ResourceKind::Lumber, cargo.required_lumber),
+            (ResourceKind::Planks, cargo.required_planks),
+            (ResourceKind::Blocks, cargo.required_blocks),
+        ] {
+            stockpiles::add_resource(&mut input.contents, kind, -amount);
+            stockpiles::add_resource(&mut colony.resources, kind, -amount);
+        }
+    }
+    cargo.reservations.clear();
+    cargo.consumed = true;
+    colony.stockpiles.retain(|pile| {
+        pile.id != stockpiles::construction_input_id(&building_id)
+            && pile.id != stockpiles::construction_transit_id(&building_id)
+    });
+}
+
+/// Phase 15b: one living builder physically collects each reserved source stack
+/// and delivers it to the exact scaffold. The ordinary BuildHouse timer remains
+/// absent throughout this stage.
+fn phase_15b_physical_scaffold_inputs(colony: &mut ColonyRuntime, gate: TickGate) {
+    let job_indices = colony
+        .jobs
+        .iter()
+        .enumerate()
+        .filter_map(|(index, job)| {
+            (job.status == JobStatus::Active
+                && job.kind == JobKind::BuildHouse
+                && matches!(
+                    job.metadata,
+                    JobMetadata::Construction {
+                        phase: ConstructionPhase::GatherMaterials,
+                        building_id: Some(_),
+                        ..
+                    }
+                ))
+            .then_some(index)
+        })
+        .collect::<Vec<_>>();
+
+    for job_index in job_indices {
+        let (building_id, cat_id) = match &colony.jobs[job_index].metadata {
+            JobMetadata::Construction {
+                building_id: Some(building_id),
+                ..
+            } => (
+                building_id.clone(),
+                colony.jobs[job_index].assigned_cat.clone(),
+            ),
+            _ => continue,
+        };
+        let Some(cat_id) = cat_id else { continue };
+        let Some(cat_index) = colony
+            .cats
+            .iter()
+            .position(|cat| cat.id == cat_id && cat.death_time.is_none())
+        else {
+            continue;
+        };
+        let Some(building_index) = colony
+            .buildings
+            .iter()
+            .position(|building| building.id == building_id && !building.is_complete)
+        else {
+            continue;
+        };
+        let building = colony.buildings[building_index].clone();
+        if building.construction_cargo.is_none() {
+            // Legacy incomplete scaffolds were already paid under the old scalar
+            // contract. Do not invent a second material bill on load.
+            colony.jobs[job_index].metadata = JobMetadata::Construction {
+                phase: ConstructionPhase::ConstructHouse,
+                building_type: building.building_type,
+                building_id: Some(building.id.clone()),
+                site: Some(building.position),
+            };
+            continue;
+        }
+        ensure_construction_stores(colony, &building);
+
+        if let Some(carrying) = colony.cats[cat_index].carrying.clone()
+            && parse_construction_cargo(carrying.source_gather_spot.as_deref())
+                .is_some_and(|(target, _)| target == building.id)
+        {
+            let target = station_work_point(&building);
+            if !at_world_point(colony, cat_index, target) {
+                send_cat_to(colony, cat_index, target);
+                continue;
+            }
+            let Some(kind) = carrying_resource_kind(carrying.kind) else {
+                continue;
+            };
+            let transit_id = stockpiles::construction_transit_id(&building.id);
+            if let Some(transit) = colony
+                .stockpiles
+                .iter_mut()
+                .find(|pile| pile.id == transit_id)
+            {
+                stockpiles::add_resource(&mut transit.contents, kind, -carrying.amount);
+            }
+            let input_id = stockpiles::construction_input_id(&building.id);
+            if let Some(input) = colony
+                .stockpiles
+                .iter_mut()
+                .find(|pile| pile.id == input_id)
+            {
+                stockpiles::add_resource(&mut input.contents, kind, carrying.amount);
+            }
+            if let Some(cargo) = colony.buildings[building_index].construction_cargo.as_mut() {
+                match kind {
+                    ResourceKind::Lumber => cargo.delivered_lumber += carrying.amount,
+                    ResourceKind::Planks => cargo.delivered_planks += carrying.amount,
+                    ResourceKind::Blocks => cargo.delivered_blocks += carrying.amount,
+                    _ => {}
+                }
+            }
+            colony.cats[cat_index].carrying = None;
+            colony.cats[cat_index].gain_skill(Labor::Haul, HAUL_SKILL_GAIN);
+            colony.cats[cat_index].activity = CatActivity::Idle;
+            colony.cats[cat_index].destination = None;
+            continue;
+        }
+
+        if colony.buildings[building_index]
+            .construction_cargo
+            .as_ref()
+            .is_some_and(ConstructionCargoState::is_delivered)
+        {
+            let target = station_work_point(&building);
+            if !at_world_point(colony, cat_index, target) {
+                // Delivery readiness is not remote construction permission. A
+                // replacement must physically reach the scaffold before exact
+                // inputs are consumed and the timed build stage begins.
+                send_cat_to(colony, cat_index, target);
+                continue;
+            }
+            consume_delivered_construction_cargo(colony, building_index);
+            let speed = current_construction_speed(colony);
+            let duration =
+                effective_construction_duration_ms(colony.jobs[job_index].duration_ms, speed);
+            colony.jobs[job_index].metadata = JobMetadata::Construction {
+                phase: ConstructionPhase::ConstructHouse,
+                building_type: building.building_type,
+                building_id: Some(building.id.clone()),
+                site: Some(building.position),
+            };
+            colony.jobs[job_index].started_at = Some(gate.processed_through);
+            colony.jobs[job_index].ends_at = Some(gate.processed_through.saturating_add(duration));
+            colony.jobs[job_index].speed = speed;
+            colony.cats[cat_index].current_task = task_for_job(JobKind::BuildHouse);
+            send_cat_to(colony, cat_index, target);
+            continue;
+        }
+
+        if !refresh_construction_reservations(colony, building_index) {
+            colony.cats[cat_index].activity = CatActivity::Idle;
+            colony.cats[cat_index].destination = None;
+            continue;
+        }
+        let Some(reservation) = colony.buildings[building_index]
+            .construction_cargo
+            .as_ref()
+            .and_then(|cargo| cargo.reservations.first())
+            .cloned()
+        else {
+            continue;
+        };
+        let Some(source_index) = colony
+            .stockpiles
+            .iter()
+            .position(|pile| pile.id == reservation.source_stockpile_id)
+        else {
+            continue;
+        };
+        let (x, y) = colony.stockpiles[source_index].center();
+        let source = WorldPos { x, y };
+        if !at_world_point(colony, cat_index, source) {
+            send_cat_to(colony, cat_index, source);
+            continue;
+        }
+        let available = stockpiles::resource_amount(
+            &colony.stockpiles[source_index].contents,
+            reservation.kind,
+        );
+        // Construction uses the same haul-capacity upgrade as every physical
+        // gathering trip. The two-unit founding load keeps a baseline scaffold
+        // multi-trip once repeated-building premiums grow beyond one paw-load.
+        let carry_capacity = (SCAFFOLD_PLANK_COST
+            * resolve_effects(colony.upgrade_tree.owned_node_ids.iter()).haul_capacity_mult)
+            .max(f64::EPSILON);
+        let amount = available.min(reservation.amount).min(carry_capacity);
+        let Some(carrying_kind) = carrying_kind_for_resource(reservation.kind) else {
+            continue;
+        };
+        if amount <= f64::EPSILON {
+            continue;
+        }
+        stockpiles::add_resource(
+            &mut colony.stockpiles[source_index].contents,
+            reservation.kind,
+            -amount,
+        );
+        let transit_id = stockpiles::construction_transit_id(&building.id);
+        if let Some(transit) = colony
+            .stockpiles
+            .iter_mut()
+            .find(|pile| pile.id == transit_id)
+        {
+            stockpiles::add_resource(&mut transit.contents, reservation.kind, amount);
+        }
+        if let Some(cargo) = colony.buildings[building_index].construction_cargo.as_mut() {
+            if let Some(first) = cargo.reservations.first_mut() {
+                first.amount -= amount;
+            }
+            cargo
+                .reservations
+                .retain(|entry| entry.amount > f64::EPSILON);
+        }
+        colony.cats[cat_index].carrying = Some(Carrying {
+            kind: carrying_kind,
+            amount,
+            job_ended_at: gate.processed_through,
+            source_gather_spot: Some(construction_cargo_marker(&building.id, &transit_id)),
+        });
+        colony.cats[cat_index].current_task = task_for_job(JobKind::BuildHouse);
+        send_cat_to(colony, cat_index, station_work_point(&building));
+    }
+}
+
 /// Phase 16: update active scaffold progress from job timer progress.
 fn phase_16_active_scaffold_progress(colony: &mut ColonyRuntime, gate: TickGate) {
     for job in &colony.jobs {
@@ -4744,13 +5580,14 @@ fn phase_16_active_scaffold_progress(colony: &mut ColonyRuntime, gate: TickGate)
             continue;
         }
         let JobMetadata::Construction {
+            phase: ConstructionPhase::ConstructHouse,
             building_id: Some(building_id),
             ..
         } = &job.metadata
         else {
             continue;
         };
-        let full_duration = job.duration_ms.max(1);
+        let full_duration = effective_construction_duration_ms(job.duration_ms, job.speed);
         let ends_at = job.ends_at.unwrap_or(gate.processed_through);
         let remaining = ends_at
             .saturating_sub(gate.processed_through)
@@ -7633,7 +8470,10 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                     CraftOptions {
                         has_worker: craft_has_worker,
                         worker_is_architect: craft_is_architect,
-                        intermediate_available: colony.resources.blocks,
+                        intermediate_available: construction_spendable_resource(
+                            colony,
+                            ResourceKind::Blocks,
+                        ),
                     },
                     &STONE_TRADE_RECIPE,
                 );
@@ -7736,7 +8576,10 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                     CraftOptions {
                         has_worker: craft_has_worker,
                         worker_is_architect: craft_is_architect,
-                        intermediate_available: colony.resources.planks,
+                        intermediate_available: construction_spendable_resource(
+                            colony,
+                            ResourceKind::Planks,
+                        ),
                     },
                     &WOOD_TRADE_RECIPE,
                 );
@@ -9379,6 +10222,38 @@ fn phase_30_due_completion_build_ritual_training_return_mark_done(
     let mut completed_tool_uses = 0_u32;
 
     for job in &due_jobs {
+        if job.kind == JobKind::BuildHouse
+            && let JobMetadata::Construction {
+                building_id: Some(building_id),
+                building_type,
+                site,
+                ..
+            } = &job.metadata
+            && colony
+                .buildings
+                .iter()
+                .find(|building| building.id == *building_id)
+                .and_then(|building| building.construction_cargo.as_ref())
+                .is_some_and(|cargo| !cargo.consumed)
+        {
+            if let Some(stored) = colony
+                .jobs
+                .iter_mut()
+                .find(|candidate| candidate.id == job.id)
+            {
+                stored.metadata = JobMetadata::Construction {
+                    phase: ConstructionPhase::GatherMaterials,
+                    building_type: *building_type,
+                    building_id: Some(building_id.clone()),
+                    site: *site,
+                };
+                stored.started_at = None;
+                stored.ends_at = None;
+                stored.completed_at = None;
+            }
+            interrupted_jobs.insert(job.id.clone());
+            continue;
+        }
         if job.kind == JobKind::BuildHouse && assigned_alive_cat_index(colony, job).is_none() {
             if let Some(stored) = colony
                 .jobs
@@ -9893,6 +10768,13 @@ fn phase_33_movement_deposits_and_no_destination_wander(
         .collect::<Vec<_>>();
     for (cat_id, position, carrying) in cat_ids {
         if let Some(carrying) = carrying {
+            // Scaffold inputs already live in their persisted construction transit
+            // store. Only phase 15b may move them into the exact scaffold input
+            // ledger; the generic village deposit pass would otherwise credit the
+            // aggregate/storehouse a second time and strand the scaffold forever.
+            if parse_construction_cargo(carrying.source_gather_spot.as_deref()).is_some() {
+                continue;
+            }
             let world_pos = position_to_world(colony.anchor, position);
             // Deposit once the carrier reaches its haul destination: an accepting physical
             // pile, including the general storehouse at its real footprint. A P16 mover's
@@ -10629,12 +11511,31 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
                     .is_some_and(|job_id| offering_job_is_active(colony, job_id))
             },
         );
+        let construction_route_required = colony.jobs.iter().any(|job| {
+            job.kind == JobKind::BuildHouse
+                && job.status == JobStatus::Active
+                && job.assigned_cat.as_deref() == Some(cat_id.as_str())
+                && matches!(
+                    job.metadata,
+                    JobMetadata::Construction {
+                        phase: ConstructionPhase::GatherMaterials,
+                        building_id: Some(_),
+                        ..
+                    }
+                )
+        }) || colony.cats[cat_index]
+            .carrying
+            .as_ref()
+            .is_some_and(|carrying| {
+                parse_construction_cargo(carrying.source_gather_spot.as_deref()).is_some()
+            });
         let migration_route_required = matches!(
             spatial_migration_phase,
             Some(MigrantSpatialPhase::Arriving | MigrantSpatialPhase::Departing)
         );
         let route = if current_task == Some(TaskType::Farm)
             || offering_route_required
+            || construction_route_required
             || migration_route_required
         {
             find_farm_path(
@@ -10654,27 +11555,21 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
         };
         #[cfg(test)]
         if current_task == Some(TaskType::Farm) {
-            let debug = &mut colony.decoration_cache.farm_route_debug;
-            debug.movement_ticks += 1;
-            if route.is_none() {
-                debug.route_misses += 1;
-            }
-            let consecutive = debug
-                .consecutive_traveling
-                .entry(cat_id.clone())
-                .and_modify(|ticks| *ticks += 1)
-                .or_insert(1);
-            debug.max_consecutive_traveling = debug.max_consecutive_traveling.max(*consecutive);
+            colony
+                .decoration_cache
+                .farm_route_debug
+                .record_movement_pass(&cat_id, route.is_some());
         }
         if route.is_none()
             && (current_task == Some(TaskType::Farm)
                 || offering_route_required
+                || construction_route_required
                 || migration_route_required)
         {
-            // Physical farm and offering logistics never use the generic straight-line
-            // fallback: a flooded route, closed staged wall, or newly impassable tile
-            // suspends the trip until a real A* route exists instead of letting a carrier
-            // walk through barriers.
+            // Physical farm, offering, construction, and migration logistics never use
+            // the generic straight-line fallback: a flooded route, closed staged wall,
+            // or newly impassable tile suspends the trip until a real A* route exists
+            // instead of letting a carrier walk through barriers.
             continue;
         }
         let at_gate = (world_pos.x - f64::from(movement.gate.x)).abs() < 1.0
@@ -10726,6 +11621,16 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
             },
         );
         let arrived = walk.arrived;
+        #[cfg(test)]
+        if arrived && current_task == Some(TaskType::Farm) {
+            // One physical leg ended. A farm worker can be assigned the return
+            // leg later in this same tick, so retaining this counter would join
+            // distinct outbound/inbound routes and falsely report one long stall.
+            colony
+                .decoration_cache
+                .farm_route_debug
+                .finish_movement_leg(&cat_id);
+        }
 
         if arrived
             && activity == CatActivity::Traveling
@@ -11038,13 +11943,13 @@ fn carrying_kind_for_resource(kind: ResourceKind) -> Option<CarryingKind> {
         ResourceKind::Grain => Some(CarryingKind::Grain),
         ResourceKind::Flour => Some(CarryingKind::Flour),
         ResourceKind::Lumber => Some(CarryingKind::Lumber),
+        ResourceKind::Planks => Some(CarryingKind::Planks),
+        ResourceKind::Blocks => Some(CarryingKind::Blocks),
+        ResourceKind::Tools => Some(CarryingKind::Tools),
         ResourceKind::Ore => Some(CarryingKind::Ore),
         ResourceKind::Metal => Some(CarryingKind::Metal),
         ResourceKind::Weapons
         | ResourceKind::Armor
-        | ResourceKind::Planks
-        | ResourceKind::Blocks
-        | ResourceKind::Tools
         | ResourceKind::Fibre
         | ResourceKind::Hide
         | ResourceKind::Cloth
@@ -11119,7 +12024,10 @@ fn complete_arrived_gather_haul_movers(colony: &mut ColonyRuntime, now_ms: i64) 
         let Some(pile_index) = pile_index else {
             continue;
         };
-        let available = stockpiles::resource_amount(&colony.stockpiles[pile_index].contents, kind);
+        let available =
+            (stockpiles::resource_amount(&colony.stockpiles[pile_index].contents, kind)
+                - construction_reserved_from_pile(colony, &stockpile_id, kind))
+            .max(0.0);
         if available <= 0.0 {
             let cat = &mut colony.cats[cat_index];
             cat.destination = None;
@@ -11856,6 +12764,7 @@ fn candidate_building_road_route_with_context(
         automated_by: None,
         production_queue: default_production_queue(building_type),
         production_paused: false,
+        construction_cargo: None,
     };
     let (width, height) = footprint_for(building_type);
     let extra_blocked: HashSet<TilePos> = footprint_tiles(position, width, height)
@@ -13335,6 +14244,16 @@ fn recover_offering_cargo_from_cat(colony: &mut ColonyRuntime, cat_id: &str, now
 
 fn mark_cat_dead(colony: &mut ColonyRuntime, cat_id: &str, now_ms: i64) {
     recover_offering_cargo_from_cat(colony, cat_id, now_ms);
+    let spilled = colony
+        .cats
+        .iter()
+        .find(|cat| cat.id == cat_id)
+        .and_then(|cat| {
+            cat.carrying
+                .clone()
+                .map(|carrying| (carrying, position_to_world(colony.anchor, cat.position)))
+        })
+        .and_then(|(carrying, at)| salvage_carried_cargo(colony, &carrying, at));
     cancel_cat_jobs(colony, cat_id, now_ms);
     for building in &mut colony.buildings {
         if building.assigned_cat.as_deref() == Some(cat_id) {
@@ -13348,7 +14267,7 @@ fn mark_cat_dead(colony: &mut ColonyRuntime, cat_id: &str, now_ms: i64) {
     {
         cat.death_time = Some(now_ms);
         cat.current_task = None;
-        cat.carrying = None;
+        cat.carrying = spilled;
         cat.destination = None;
         cat.activity = CatActivity::Idle;
     }
@@ -15679,6 +16598,7 @@ fn next_claimed_building_site(
                         automated_by: None,
                         production_queue: default_production_queue(building_type),
                         production_paused: false,
+                        construction_cargo: None,
                     };
                     let blocked = tiles.iter().copied().collect::<HashSet<_>>();
                     road_reachability.candidate_has_route(&building, &blocked, &occupancy)
@@ -18241,7 +19161,9 @@ fn nearest_source_pile(
         .filter(|(_, pile)| {
             !pile.is_station_local()
                 && amount > f64::EPSILON
-                && stockpiles::resource_amount(&pile.contents, kind) > f64::EPSILON
+                && stockpiles::resource_amount(&pile.contents, kind)
+                    - construction_reserved_from_pile(colony, &pile.id, kind)
+                    > f64::EPSILON
         })
         .map(|(index, pile)| {
             let (x, y) = pile.center();
@@ -18392,7 +19314,9 @@ fn begin_station_input_haul(
         return false;
     };
     let source_amount =
-        stockpiles::resource_amount(&colony.stockpiles[source_index].contents, kind);
+        (stockpiles::resource_amount(&colony.stockpiles[source_index].contents, kind)
+            - construction_reserved_from_pile(colony, &colony.stockpiles[source_index].id, kind))
+        .max(0.0);
     let haul_amount = requested.min(source_amount);
     if haul_amount <= f64::EPSILON {
         return false;
@@ -19194,11 +20118,26 @@ fn recover_orphaned_station_stores(colony: &mut ColonyRuntime, gate: TickGate) {
 pub fn reconcile_colony_stockpiles(colony: &mut ColonyRuntime) {
     let storehouse_rect = general_storehouse_rect(colony);
     let storehouse_caps = storage_caps(colony);
-    stockpiles::reconcile(
+    let protected = colony
+        .buildings
+        .iter()
+        .filter_map(|building| building.construction_cargo.as_ref())
+        .filter(|cargo| !cargo.consumed)
+        .flat_map(|cargo| cargo.reservations.iter())
+        .map(|reservation| {
+            (
+                reservation.source_stockpile_id.clone(),
+                reservation.kind,
+                reservation.amount,
+            )
+        })
+        .collect::<Vec<_>>();
+    stockpiles::reconcile_with_protected(
         &mut colony.stockpiles,
         &mut colony.resources,
         storehouse_rect,
         storehouse_caps,
+        &protected,
     );
 }
 
@@ -19386,6 +20325,109 @@ fn haul_deposit_target(
     } else {
         haul_destination(colony, carrying.kind, from_pos)
     }
+}
+
+#[must_use]
+pub fn building_construction_required(building: &BuildingRuntime) -> Vec<(ResourceKind, f64)> {
+    if building.is_complete {
+        return Vec::new();
+    }
+    let Some(cargo) = building.construction_cargo.as_ref() else {
+        return Vec::new();
+    };
+    [
+        (ResourceKind::Lumber, cargo.required_lumber),
+        (ResourceKind::Planks, cargo.required_planks),
+        (ResourceKind::Blocks, cargo.required_blocks),
+    ]
+    .into_iter()
+    .filter(|(_, amount)| *amount > f64::EPSILON)
+    .collect()
+}
+
+#[must_use]
+pub fn building_construction_delivered(building: &BuildingRuntime) -> Vec<(ResourceKind, f64)> {
+    if building.is_complete {
+        return Vec::new();
+    }
+    let Some(cargo) = building.construction_cargo.as_ref() else {
+        return Vec::new();
+    };
+    [
+        (ResourceKind::Lumber, cargo.delivered_lumber),
+        (ResourceKind::Planks, cargo.delivered_planks),
+        (ResourceKind::Blocks, cargo.delivered_blocks),
+    ]
+    .into_iter()
+    .filter(|(_, amount)| *amount > f64::EPSILON)
+    .collect()
+}
+
+#[must_use]
+pub fn building_construction_in_transit(
+    colony: &ColonyRuntime,
+    building: &BuildingRuntime,
+) -> Vec<(ResourceKind, f64)> {
+    [
+        ResourceKind::Lumber,
+        ResourceKind::Planks,
+        ResourceKind::Blocks,
+    ]
+    .into_iter()
+    .filter_map(|kind| {
+        let amount = construction_store_amount(colony, &building.id, false, kind);
+        (amount > f64::EPSILON).then_some((kind, amount))
+    })
+    .collect()
+}
+
+#[must_use]
+pub fn building_construction_block_reason(
+    colony: &ColonyRuntime,
+    building: &BuildingRuntime,
+) -> Option<String> {
+    let cargo = building.construction_cargo.as_ref()?;
+    if building.is_complete {
+        return None;
+    }
+    if cargo.consumed {
+        return Some("building".to_owned());
+    }
+    if cargo.is_delivered() {
+        return Some("ready_to_build".to_owned());
+    }
+    if !building_construction_in_transit(colony, building).is_empty() {
+        return Some("materials_in_transit".to_owned());
+    }
+    let has_builder = colony.jobs.iter().any(|job| {
+        job.kind == JobKind::BuildHouse
+            && matches!(job.status, JobStatus::Active | JobStatus::Queued)
+            && job.assigned_cat.as_deref().is_some_and(|cat_id| {
+                colony
+                    .cats
+                    .iter()
+                    .any(|cat| cat.id == cat_id && cat.death_time.is_none())
+            })
+            && matches!(
+                &job.metadata,
+                JobMetadata::Construction {
+                    building_id: Some(building_id),
+                    ..
+                } if building_id == &building.id
+            )
+    });
+    Some(
+        if has_builder {
+            if cargo.reservations.is_empty() {
+                "missing_construction_materials"
+            } else {
+                "fetching_construction_materials"
+            }
+        } else {
+            "waiting_for_builder"
+        }
+        .to_owned(),
+    )
 }
 
 /// Resource units physically in flight toward `building` right now: the live sum of
@@ -19709,7 +20751,6 @@ fn cancel_cat_jobs(colony: &mut ColonyRuntime, cat_id: &str, now_ms: i64) {
         let paid_scaffold_survives = if colony.jobs[index].kind == JobKind::BuildHouse {
             match &colony.jobs[index].metadata {
                 JobMetadata::Construction {
-                    phase: ConstructionPhase::ConstructHouse,
                     building_id: Some(building_id),
                     ..
                 } => colony
@@ -19999,6 +21040,9 @@ fn salvage_carried_cargo(
     carrying: &Carrying,
     at: WorldPos,
 ) -> Option<Carrying> {
+    if spill_construction_cargo(colony, carrying, at) {
+        return None;
+    }
     if salvage_station_cargo(colony, carrying, at) {
         return None;
     }
@@ -21464,6 +22508,7 @@ mod tests {
                             BuildingType::Shrine,
                         ),
                         production_paused: false,
+                        construction_cargo: None,
                     },
                     BuildingRuntime {
                         id: "farmer-field".to_owned(),
@@ -21479,6 +22524,7 @@ mod tests {
                             BuildingType::Field,
                         ),
                         production_paused: false,
+                        construction_cargo: None,
                     },
                 ],
                 world_tiles: BTreeMap::from([(
@@ -23392,6 +24438,7 @@ mod tests {
             automated_by: None,
             production_queue: crate::world_tick::default_production_queue(BuildingType::Den),
             production_paused: false,
+            construction_cargo: None,
         });
         let reserved_site = pos(120, 120);
         for (id, building_id, site) in [
@@ -24577,6 +25624,87 @@ mod tests {
     }
 
     #[test]
+    fn gather_mover_cannot_take_or_mint_a_scaffolds_reserved_only_source() {
+        let gather_at = WorldPos { x: 30.0, y: 30.0 };
+        let mut colony = ColonyRuntime {
+            id: "colony-1".to_owned(),
+            cats: vec![{
+                let mut cat = adult_idle_cat("mover", "colony-1");
+                cat.activity = CatActivity::Working;
+                cat.position = position_from_world(gather_at);
+                cat
+            }],
+            ..ColonyRuntime::default()
+        };
+        reconcile_colony_stockpiles(&mut colony);
+        let mut source =
+            designated_pile("gather-blocks", tile_rect(30, 30), &[ResourceKind::Blocks]);
+        source.contents.blocks = 2.0;
+        colony.stockpiles.push(source);
+        colony.resources.blocks = 2.0;
+        colony.gather_spots.push(GatherSpot {
+            stockpile_id: "gather-blocks".to_owned(),
+            kind: ResourceKind::Blocks,
+            expires_at_ms: 1_000_000,
+            purpose: GatherSpotPurpose::General,
+        });
+        colony.buildings.push(BuildingRuntime {
+            id: "gather-reserved-scaffold".to_owned(),
+            building_type: BuildingType::Den,
+            is_complete: false,
+            construction_progress: 0,
+            construction_cargo: Some(ConstructionCargoState {
+                required_blocks: 2.0,
+                reservations: vec![ConstructionCargoReservation {
+                    source_stockpile_id: "gather-blocks".to_owned(),
+                    kind: ResourceKind::Blocks,
+                    amount: 2.0,
+                }],
+                ..ConstructionCargoState::default()
+            }),
+            ..BuildingRuntime::default()
+        });
+        colony.jobs.push(JobRuntime {
+            id: "reserved-mover".to_owned(),
+            kind: JobKind::HaulGatherSpot,
+            status: JobStatus::Active,
+            assigned_cat: Some("mover".to_owned()),
+            metadata: JobMetadata::GatherHaul {
+                stockpile_id: "gather-blocks".to_owned(),
+                site: Some(world_pos_to_tile(gather_at)),
+                accepted: true,
+            },
+            ..JobRuntime::default()
+        });
+
+        complete_arrived_gather_haul_movers(&mut colony, 5_000);
+        reconcile_colony_stockpiles(&mut colony);
+
+        assert!(colony.cats[0].carrying.is_none());
+        assert_eq!(colony.jobs.last().unwrap().status, JobStatus::Completed);
+        assert_eq!(
+            colony
+                .stockpiles
+                .iter()
+                .find(|pile| pile.id == "gather-blocks")
+                .unwrap()
+                .contents
+                .blocks,
+            2.0
+        );
+        assert_eq!(colony.resources.blocks, 2.0);
+        assert_eq!(
+            colony
+                .stockpiles
+                .iter()
+                .map(|pile| pile.contents.blocks)
+                .sum::<f64>(),
+            2.0,
+            "reconcile cannot turn a stale visible reservation into duplicate blocks"
+        );
+    }
+
+    #[test]
     fn farm_handoff_mover_takes_one_bounded_basket_and_leaves_the_backlog() {
         let gather_at = WorldPos { x: 30.0, y: 30.0 };
         let gather_id = farm_gather_spot_id("basket-cap");
@@ -25102,6 +26230,126 @@ mod tests {
             10.0
         );
         assert!(!colony.stockpiles.iter().any(|pile| pile.id == transit));
+    }
+
+    #[test]
+    fn steward_replans_and_pickup_preserves_new_construction_source_reservation() {
+        let mut colony = steward_station_colony(true);
+        sync_steward_managed_piles(&mut colony, 1_000, 7);
+        let managed = colony
+            .stock_ledger
+            .steward_managed_piles
+            .iter()
+            .map(|(id, provenance)| (id.clone(), provenance.clone()))
+            .collect::<Vec<_>>();
+        for (id, provenance) in managed {
+            let pile = colony
+                .stockpiles
+                .iter_mut()
+                .find(|pile| pile.id == id)
+                .unwrap();
+            let station = colony
+                .buildings
+                .iter()
+                .find(|building| building.id == provenance.station_id)
+                .unwrap();
+            let (inputs, _) = station_resource_sets(station.building_type).unwrap();
+            if inputs.contains(&provenance.resource) {
+                stockpiles::set_resource(
+                    &mut pile.contents,
+                    provenance.resource,
+                    STEWARD_INPUT_TARGET,
+                );
+            }
+        }
+        let source_id = steward_managed_pile_id("sawmill-a", ResourceKind::Lumber);
+        let source = colony
+            .stockpiles
+            .iter_mut()
+            .find(|pile| pile.id == source_id)
+            .unwrap();
+        source.contents.lumber = 30.0;
+        colony.resources.lumber = colony
+            .stockpiles
+            .iter()
+            .filter(|pile| !pile.is_station_output())
+            .map(|pile| pile.contents.lumber)
+            .sum();
+
+        let stale_plan = next_stockpile_balance_plan(&colony, 7).expect("output surplus plan");
+        assert_eq!(stale_plan.source_id, source_id);
+        assert_eq!(stale_plan.kind, ResourceKind::Lumber);
+        assert_eq!(stale_plan.amount, 10.0);
+        let transit_id = stockpiles::station_transit_id("steward:reservation-race");
+        colony.jobs.push(JobRuntime {
+            id: "reservation-race".to_owned(),
+            kind: JobKind::HaulGatherSpot,
+            status: JobStatus::Active,
+            assigned_cat: Some("mover-cat".to_owned()),
+            metadata: JobMetadata::StockpileHaul {
+                source_stockpile_id: stale_plan.source_id,
+                destination_stockpile_id: stale_plan.destination_id,
+                kind: stale_plan.kind,
+                site: None,
+                accepted: true,
+                transit_id: transit_id.clone(),
+                amount_in_transit: stale_plan.amount,
+            },
+            ..JobRuntime::default()
+        });
+        colony.buildings.push(BuildingRuntime {
+            id: "reserved-lumber-scaffold".to_owned(),
+            building_type: BuildingType::Den,
+            is_complete: false,
+            construction_progress: 0,
+            construction_cargo: Some(ConstructionCargoState {
+                required_lumber: 4.0,
+                reservations: vec![ConstructionCargoReservation {
+                    source_stockpile_id: source_id.clone(),
+                    kind: ResourceKind::Lumber,
+                    amount: 4.0,
+                }],
+                ..ConstructionCargoState::default()
+            }),
+            ..BuildingRuntime::default()
+        });
+
+        let refreshed = next_stockpile_balance_plan(&colony, 7).expect("reduced output surplus");
+        assert_eq!(refreshed.source_id, source_id);
+        assert_eq!(refreshed.amount, 6.0);
+        complete_arrived_stockpile_balance_haul(&mut colony, 2_000);
+
+        let carrying = colony
+            .cats
+            .iter()
+            .find(|cat| cat.id == "mover-cat")
+            .and_then(|cat| cat.carrying.as_ref())
+            .expect("Steward picked up only current surplus");
+        assert_eq!(carrying.amount, 6.0);
+        assert_eq!(
+            colony
+                .stockpiles
+                .iter()
+                .find(|pile| pile.id == source_id)
+                .unwrap()
+                .contents
+                .lumber,
+            STEWARD_OUTPUT_RESERVE + 4.0
+        );
+        assert_eq!(
+            construction_reserved_from_pile(&colony, &source_id, ResourceKind::Lumber),
+            4.0
+        );
+        assert_eq!(
+            colony
+                .stockpiles
+                .iter()
+                .find(|pile| pile.id == transit_id)
+                .unwrap()
+                .contents
+                .lumber,
+            6.0
+        );
     }
 
     #[test]
@@ -25864,6 +27112,7 @@ mod tests {
                     BuildingType::Workshop,
                 ),
                 production_paused: false,
+                construction_cargo: None,
             }],
             last_tick: 0,
             test_rng_seed: Some(1),
@@ -25893,6 +27142,166 @@ mod tests {
             minute_rolled: false,
             previous_water: 0,
         }
+    }
+
+    fn deliver_all_scaffold_inputs(colony: &mut ColonyRuntime, job_id: &str, now: i64) -> i64 {
+        deliver_all_scaffold_inputs_at_cadence(colony, job_id, now, 1, 1_000)
+    }
+
+    fn deliver_all_scaffold_inputs_at_cadence(
+        colony: &mut ColonyRuntime,
+        job_id: &str,
+        mut now: i64,
+        elapsed_sec: i64,
+        step_ms: i64,
+    ) -> i64 {
+        for _ in 0..32 {
+            phase_15b_physical_scaffold_inputs(colony, production_gate(elapsed_sec, now));
+            let job = colony.jobs.iter().find(|job| job.id == job_id).unwrap();
+            if matches!(
+                job.metadata,
+                JobMetadata::Construction {
+                    phase: ConstructionPhase::ConstructHouse,
+                    ..
+                }
+            ) {
+                return now;
+            }
+            let cat_id = job.assigned_cat.as_deref().expect("assigned builder");
+            let cat = colony.cats.iter_mut().find(|cat| cat.id == cat_id).unwrap();
+            if let Some(destination) = cat.destination {
+                cat.position = destination;
+            }
+            now += step_ms;
+        }
+        let job = colony.jobs.iter().find(|job| job.id == job_id);
+        let building = job.and_then(|job| match &job.metadata {
+            JobMetadata::Construction {
+                building_id: Some(building_id),
+                ..
+            } => colony
+                .buildings
+                .iter()
+                .find(|building| building.id == *building_id),
+            _ => None,
+        });
+        panic!(
+            "scaffold inputs did not complete: job={job:?} building={building:?} cats={:?}",
+            colony
+                .cats
+                .iter()
+                .filter(|cat| cat.current_task == Some(TaskType::Build))
+                .map(|cat| (&cat.id, cat.position, cat.destination, &cat.carrying))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    fn active_physical_scaffold(seed: u32) -> (ColonyRuntime, String, String) {
+        let now = 9_500_000;
+        let mut colony = found_colony(seed, format!("scaffold-{seed}"), now, seed + 1);
+        establish_core_offices(&mut colony);
+        colony.resources.lumber = 8.0;
+        colony.resources.planks = 8.0;
+        colony.resources.blocks = 8.0;
+        reconcile_colony_stockpiles(&mut colony);
+        let site = next_claimed_building_site(&colony, 0.31, seed, BuildingType::Workshop)
+            .expect("physical scaffold site");
+        let building_id =
+            commit_player_scaffold(&mut colony, site, BuildingType::Workshop, seed, now)
+                .expect("physical scaffold");
+        let builder = colony.cats[0].id.clone();
+        queue_job_requested_by(
+            &mut colony,
+            now,
+            JobKind::BuildHouse,
+            JobRequester::Player,
+            Some(builder),
+            JobMetadata::Construction {
+                phase: ConstructionPhase::GatherMaterials,
+                building_type: BuildingType::Workshop,
+                building_id: Some(building_id.clone()),
+                site: Some(site),
+            },
+        );
+        let job_id = colony.jobs.last().unwrap().id.clone();
+        phase_14_promote_queued_jobs_and_break_ground(
+            &mut colony,
+            production_gate(1, now + 1),
+            seed,
+        );
+        (colony, building_id, job_id)
+    }
+
+    fn deliver_scaffold_inputs_until_ready(
+        colony: &mut ColonyRuntime,
+        building_id: &str,
+        job_id: &str,
+        mut now: i64,
+    ) -> i64 {
+        for _ in 0..32 {
+            phase_15b_physical_scaffold_inputs(colony, production_gate(1, now));
+            let cargo = colony
+                .buildings
+                .iter()
+                .find(|building| building.id == building_id)
+                .and_then(|building| building.construction_cargo.as_ref())
+                .unwrap();
+            if cargo.is_delivered() && !cargo.consumed {
+                return now;
+            }
+            let cat_id = colony
+                .jobs
+                .iter()
+                .find(|job| job.id == job_id)
+                .and_then(|job| job.assigned_cat.as_deref())
+                .expect("assigned builder");
+            let cat = colony.cats.iter_mut().find(|cat| cat.id == cat_id).unwrap();
+            if let Some(destination) = cat.destination {
+                cat.position = destination;
+            }
+            now += 1_000;
+        }
+        panic!("scaffold never reached fully delivered, unconsumed readiness");
+    }
+
+    fn advance_scaffold_logistics_tick(
+        colony: &mut ColonyRuntime,
+        job_id: &str,
+        elapsed_sec: i64,
+        processed_through: i64,
+        world_seed: u32,
+        block_carrier_tile: bool,
+    ) {
+        let gate = production_gate(elapsed_sec, processed_through);
+        phase_15b_physical_scaffold_inputs(colony, gate);
+        phase_16_active_scaffold_progress(colony, gate);
+        phase_30_due_completion_build_ritual_training_return_mark_done(colony, gate);
+        let mut policy = reliable_policy();
+        policy.config.action_reliability = 0.0;
+        let mut movement =
+            phase_32_movement_setup_and_village_expansion_queue(colony, gate, policy, world_seed);
+        if block_carrier_tile {
+            let cat_id = colony
+                .jobs
+                .iter()
+                .find(|job| job.id == job_id)
+                .and_then(|job| job.assigned_cat.as_deref())
+                .expect("construction carrier remains assigned");
+            let cat = colony.cats.iter().find(|cat| cat.id == cat_id).unwrap();
+            let tile = world_pos_to_tile(position_to_world(colony.anchor, cat.position));
+            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                movement
+                    .staged_wall_edges
+                    .insert(pathfinding::FenceEdge::new(
+                        tile.x,
+                        tile.y,
+                        tile.x + dx,
+                        tile.y + dy,
+                    ));
+            }
+        }
+        phase_33_movement_deposits_and_no_destination_wander(colony, gate, &mut movement);
+        phase_34_movement_travel_job_acceptance_reveal_path_wear(colony, gate, &movement);
     }
 
     #[test]
@@ -25952,6 +27361,7 @@ mod tests {
                 automated_by: None,
                 production_queue: default_production_queue(building_type),
                 production_paused: false,
+                construction_cargo: None,
             }],
             last_tick: 0,
             test_rng_seed: Some(1),
@@ -26634,6 +28044,7 @@ mod tests {
                         automated_by: None,
                         production_queue: default_production_queue(building_type),
                         production_paused: false,
+                        construction_cargo: None,
                     })
                     .collect(),
                 last_tick: 0,
@@ -26718,6 +28129,7 @@ mod tests {
             automated_by: None,
             production_queue: crate::world_tick::default_production_queue(BuildingType::Field),
             production_paused: false,
+            construction_cargo: None,
         });
         colony.cats[0].position = position_from_world(WorldPos {
             x: f64::from(site.x),
@@ -27155,6 +28567,7 @@ mod tests {
                 automated_by: None,
                 production_queue: Vec::new(),
                 production_paused: false,
+                construction_cargo: None,
             }],
             farms: vec![FarmPlot {
                 id: "farm-cap".to_owned(),
@@ -27278,6 +28691,7 @@ mod tests {
                 automated_by: None,
                 production_queue: Vec::new(),
                 production_paused: false,
+                construction_cargo: None,
             }],
             farms: vec![FarmPlot {
                 id: "farm-determinism".to_owned(),
@@ -28469,6 +29883,7 @@ mod tests {
             automated_by: None,
             production_queue: crate::world_tick::default_production_queue(BuildingType::Sawmill),
             production_paused: false,
+            construction_cargo: None,
         });
         colony
             .officers
@@ -29760,6 +31175,7 @@ mod tests {
             automated_by: None,
             production_queue: crate::world_tick::default_production_queue(BuildingType::StonePrep),
             production_paused: false,
+            construction_cargo: None,
         });
         let before_materials = colony.resources.materials;
         let before_outputs = colony.resources.planks + colony.resources.blocks;
@@ -29806,6 +31222,7 @@ mod tests {
             automated_by: None,
             production_queue: crate::world_tick::default_production_queue(BuildingType::StonePrep),
             production_paused: false,
+            construction_cargo: None,
         });
 
         // Both benches have enough time for five cycles. Deficient-side repair must
@@ -29846,6 +31263,7 @@ mod tests {
             automated_by: None,
             production_queue: crate::world_tick::default_production_queue(BuildingType::Smithy),
             production_paused: false,
+            construction_cargo: None,
         });
 
         place_chain_worker_at_seeded_store(&mut colony);
@@ -31019,12 +32437,11 @@ mod tests {
     }
 
     #[test]
-    fn breaking_ground_on_a_scaffold_consumes_planks_and_blocks() {
-        // P19 slice 1b build cost: committing a scaffold site draws SCAFFOLD_PLANK_COST
-        // planks + SCAFFOLD_BLOCK_COST blocks from the stores and places one new scaffold.
+    fn breaking_ground_on_a_scaffold_reserves_planks_and_blocks() {
         let mut colony = found_colony(4242, "colony-1", 10_000, 4242);
         colony.resources.planks = 10.0;
         colony.resources.blocks = 10.0;
+        reconcile_colony_stockpiles(&mut colony);
         let (timber_cost, block_cost) = scaffold_cost(&colony, BuildingType::Den);
         let cat_id = colony.cats[0].id.clone();
         let site = claim_and_connect_future_building_site(&mut colony, 4242, BuildingType::Den);
@@ -31051,8 +32468,8 @@ mod tests {
             4242,
         );
 
-        assert_eq!(colony.resources.planks, 10.0 - timber_cost);
-        assert_eq!(colony.resources.blocks, 10.0 - block_cost);
+        assert_eq!(colony.resources.planks, 10.0);
+        assert_eq!(colony.resources.blocks, 10.0);
         let scaffolds_after = colony
             .buildings
             .iter()
@@ -31068,6 +32485,9 @@ mod tests {
             .iter()
             .find(|building| !building.is_complete)
             .expect("new scaffold exists");
+        let cargo = scaffold.construction_cargo.as_ref().expect("physical bill");
+        assert_eq!(cargo.required_planks, timber_cost);
+        assert_eq!(cargo.required_blocks, block_cost);
         assert!(
             building_is_road_connected_to_shrine(&colony, scaffold, 4242),
             "break-ground commits the complete shrine access route atomically"
@@ -31086,6 +32506,7 @@ mod tests {
         colony.resources.lumber = timber_cost;
         colony.resources.planks = 9.0;
         colony.resources.blocks = 10.0;
+        reconcile_colony_stockpiles(&mut colony);
         let cat_id = colony.cats[0].id.clone();
         let site = claim_and_connect_future_building_site(&mut colony, 4242, BuildingType::Den);
         queue_job(
@@ -31107,9 +32528,20 @@ mod tests {
             4242,
         );
 
-        assert_eq!(colony.resources.lumber, 0.0);
+        assert_eq!(colony.resources.lumber, timber_cost);
         assert_eq!(colony.resources.planks, 9.0);
-        assert_eq!(colony.resources.blocks, 10.0 - block_cost);
+        assert_eq!(colony.resources.blocks, 10.0);
+        let cargo = colony
+            .buildings
+            .iter()
+            .find(|building| !building.is_complete)
+            .unwrap()
+            .construction_cargo
+            .as_ref()
+            .unwrap();
+        assert_eq!(cargo.required_lumber, timber_cost);
+        assert_eq!(cargo.required_planks, 0.0);
+        assert_eq!(cargo.required_blocks, block_cost);
         assert!(
             colony
                 .buildings
@@ -31134,6 +32566,7 @@ mod tests {
             automated_by: None,
             production_queue: crate::world_tick::default_production_queue(BuildingType::Workshop),
             production_paused: false,
+            construction_cargo: None,
         });
         assert_eq!(scaffold_cost(&colony, BuildingType::Workshop), (2.5, 2.5));
         assert_eq!(
@@ -31170,6 +32603,7 @@ mod tests {
                     BuildingType::Workshop,
                 ),
                 production_paused: false,
+                construction_cargo: None,
             });
         }
         assert_eq!(scaffold_cost(&colony, BuildingType::Workshop), (5.0, 5.0));
@@ -31185,6 +32619,7 @@ mod tests {
         let mut colony = found_colony(4242, "colony-1", 10_000, 4242);
         colony.resources.planks = 10.0;
         colony.resources.blocks = 10.0;
+        reconcile_colony_stockpiles(&mut colony);
         let first_builder = colony.cats[0].id.clone();
         let site =
             claim_and_connect_future_building_site(&mut colony, 4242, BuildingType::ResearchHut);
@@ -31214,7 +32649,7 @@ mod tests {
             .clone();
         assert_eq!(
             (colony.resources.planks, colony.resources.blocks),
-            (8.0, 8.0)
+            (10.0, 10.0)
         );
 
         mark_cat_dead(&mut colony, &first_builder, 80_000);
@@ -31228,20 +32663,24 @@ mod tests {
         assert_eq!(colony.buildings.len(), buildings_before);
         assert_eq!(
             (colony.resources.planks, colony.resources.blocks),
-            (8.0, 8.0),
+            (10.0, 10.0),
             "resuming an existing scaffold must not charge the 2/2 site cost again"
         );
-        assert!(colony.jobs.iter().any(|job| {
-            job.status == JobStatus::Active
-                && job.assigned_cat.as_deref() != Some(first_builder.as_str())
-                && matches!(
-                    &job.metadata,
-                    JobMetadata::Construction {
-                        building_id: Some(building_id),
-                        ..
-                    } if building_id == &scaffold_id
-                )
-        }));
+        assert!(
+            colony.jobs.iter().any(|job| {
+                job.status == JobStatus::Active
+                    && job.assigned_cat.as_deref() != Some(first_builder.as_str())
+                    && matches!(
+                        &job.metadata,
+                        JobMetadata::Construction {
+                            building_id: Some(building_id),
+                            ..
+                        } if building_id == &scaffold_id
+                    )
+            }),
+            "jobs={:?}",
+            colony.jobs
+        );
     }
 
     #[test]
@@ -31292,6 +32731,7 @@ mod tests {
         colony.resources.planks = SCAFFOLD_PLANK_COST;
         colony.resources.blocks = SCAFFOLD_BLOCK_COST;
         colony.resources.materials = 40.0;
+        reconcile_colony_stockpiles(&mut colony);
 
         let den_site = claim_and_connect_future_building_site(&mut colony, seed, BuildingType::Den);
         let den_builder = colony.cats[0].id.clone();
@@ -31332,8 +32772,8 @@ mod tests {
             seed,
         );
 
-        assert_eq!(colony.resources.planks, 0.0);
-        assert_eq!(colony.resources.blocks, 0.0);
+        assert_eq!(colony.resources.planks, SCAFFOLD_PLANK_COST);
+        assert_eq!(colony.resources.blocks, SCAFFOLD_BLOCK_COST);
         assert_eq!(
             colony
                 .buildings
@@ -31372,7 +32812,7 @@ mod tests {
         phase_23_production(&mut colony, production_gate(2_430, 2_500_000), seed);
         assert_eq!(colony.resources.planks, TOOL_BUILD_MATERIAL_RESERVE);
         assert_eq!(colony.resources.blocks, TOOL_BUILD_MATERIAL_RESERVE);
-        assert_eq!(colony.resources.materials, 0.0);
+        assert_eq!(colony.resources.materials, 20.0);
         phase_14_promote_queued_jobs_and_break_ground(
             &mut colony,
             production_gate(60, 2_560_000),
@@ -31381,7 +32821,7 @@ mod tests {
 
         assert_eq!(
             colony.resources.planks,
-            SCAFFOLD_PLANK_COST,
+            TOOL_BUILD_MATERIAL_RESERVE,
             "jobs={:?}, scaffolds={:?}",
             colony
                 .jobs
@@ -31395,27 +32835,31 @@ mod tests {
                 .map(|building| (building.building_type, building.position))
                 .collect::<Vec<_>>(),
         );
-        assert_eq!(colony.resources.blocks, SCAFFOLD_BLOCK_COST);
-        for building_type in [BuildingType::Den, BuildingType::ResearchHut] {
-            assert_eq!(
-                colony
-                    .buildings
-                    .iter()
-                    .filter(|building| {
-                        !building.is_complete && building.building_type == building_type
-                    })
-                    .count(),
-                1,
-                "each different project kind eventually owns exactly one paid scaffold"
-            );
-        }
+        assert_eq!(colony.resources.blocks, TOOL_BUILD_MATERIAL_RESERVE);
+        assert_eq!(
+            colony
+                .buildings
+                .iter()
+                .filter(|building| !building.is_complete)
+                .count(),
+            1,
+            "physical construction remains one-project serialized"
+        );
         assert_eq!(
             colony
                 .jobs
                 .iter()
                 .filter(|job| job.kind == JobKind::BuildHouse && job.status == JobStatus::Active)
                 .count(),
-            2
+            1
+        );
+        assert_eq!(
+            colony
+                .jobs
+                .iter()
+                .filter(|job| job.kind == JobKind::BuildHouse && job.status == JobStatus::Queued)
+                .count(),
+            1
         );
     }
 
@@ -31526,6 +32970,7 @@ mod tests {
                         BuildingType::AccountingTent,
                     ),
                     production_paused: false,
+                    construction_cargo: None,
                 }],
                 vec![adult_idle_cat("book", "colony-1")],
             )
@@ -32825,6 +34270,7 @@ mod tests {
             automated_by: None,
             production_queue: crate::world_tick::default_production_queue(BuildingType::Smelter),
             production_paused: false,
+            construction_cargo: None,
         });
         world.colonies.push(colony);
         world
@@ -33508,6 +34954,7 @@ mod tests {
                 BuildingType::ResearchHut,
             ),
             production_paused: false,
+            construction_cargo: None,
         });
         colony.jobs.push(JobRuntime {
             id: "interrupted-build".to_owned(),
@@ -33570,6 +35017,10 @@ mod tests {
             .find(|job| job.id == "interrupted-build")
             .expect("the interrupted construction restarts");
         assert_eq!(restarted.status, JobStatus::Active);
+        assert_eq!(
+            restarted.speed, 1.0,
+            "a default legacy speed sentinel is persisted as neutral on recovery"
+        );
         assert!(restarted.assigned_cat.as_deref().is_some_and(|cat_id| {
             cat_id != dead_builder
                 && colony
@@ -33582,6 +35033,11 @@ mod tests {
             restarted.ends_at,
             Some(resume_gate.processed_through + 16_200),
             "73% complete means exactly 27% of the original timer remains"
+        );
+        assert_eq!(
+            effective_construction_duration_ms(60_000, f64::NAN),
+            60_000,
+            "non-finite legacy speed also normalizes to neutral"
         );
         assert_eq!(colony.buildings.len(), building_count);
         assert_eq!(colony.resources.planks.to_bits(), planks.to_bits());
@@ -33650,6 +35106,7 @@ mod tests {
             automated_by: None,
             production_queue: crate::world_tick::default_production_queue(BuildingType::Workshop),
             production_paused: false,
+            construction_cargo: None,
         });
         colony.jobs.push(JobRuntime {
             id: "raid-interrupted-build".to_owned(),
@@ -34939,6 +36396,7 @@ mod tests {
                         BuildingType::Shrine,
                     ),
                     production_paused: false,
+                    construction_cargo: None,
                 },
                 BuildingRuntime {
                     id: "den-1".to_owned(),
@@ -34954,6 +36412,7 @@ mod tests {
                         BuildingType::Den,
                     ),
                     production_paused: false,
+                    construction_cargo: None,
                 },
             ],
             test_rng_seed: Some(777),
@@ -35047,6 +36506,7 @@ mod tests {
             automated_by: None,
             production_queue: crate::world_tick::default_production_queue(BuildingType::Den),
             production_paused: false,
+            construction_cargo: None,
         }];
 
         phase_6_life_simulation(&mut colony, production_gate(3_600, 3_600_000));
@@ -35576,6 +37036,7 @@ mod tests {
             automated_by: None,
             production_queue: crate::world_tick::default_production_queue(BuildingType::Den),
             production_paused: false,
+            construction_cargo: None,
         });
     }
 
@@ -36869,8 +38330,8 @@ mod tests {
                 .count(),
             completed_expansions
         );
-        assert_eq!(colony.resources.planks, planks_before - SCAFFOLD_PLANK_COST);
-        assert_eq!(colony.resources.blocks, blocks_before - SCAFFOLD_BLOCK_COST);
+        assert_eq!(colony.resources.planks, planks_before);
+        assert_eq!(colony.resources.blocks, blocks_before);
 
         let scaffold = colony
             .buildings
@@ -36900,8 +38361,19 @@ mod tests {
             .iter()
             .find(|job| job.id == build_id)
             .expect("construction job remains recorded");
-        let started_at = build.started_at.expect("fresh break-ground start");
-        let ends_at = build.ends_at.expect("fresh break-ground end");
+        assert_eq!(build.started_at, None, "haul stage has no build timer");
+        assert_eq!(build.ends_at, None, "haul stage has no build deadline");
+        let started_at = deliver_all_scaffold_inputs(colony, &build_id, now + 1);
+        let build = colony
+            .jobs
+            .iter()
+            .find(|job| job.id == build_id)
+            .expect("construction job remains recorded");
+        let started_at = build
+            .started_at
+            .expect("delivery starts construction")
+            .max(started_at);
+        let ends_at = build.ends_at.expect("delivery starts deadline");
         assert!(started_at > provisional_end);
         assert_eq!(ends_at - started_at, build.duration_ms.max(1_000));
         phase_30_due_completion_build_ritual_training_return_mark_done(
@@ -36949,6 +38421,7 @@ mod tests {
         colony.resources.lumber = 40.0;
         colony.resources.planks = 40.0;
         colony.resources.blocks = 40.0;
+        reconcile_colony_stockpiles(&mut colony);
         let site = next_claimed_building_site(&colony, 0.0, seed, BuildingType::Workshop)
             .expect("mature fixture has an exact workshop anchor");
         let resources_before = colony.resources.clone();
@@ -36977,11 +38450,7 @@ mod tests {
         assert_eq!(scaffold.position, site);
         assert!(!scaffold.is_complete);
         assert_eq!(scaffold.construction_progress, 0);
-        assert!(colony.resources.blocks < resources_before.blocks);
-        assert!(
-            colony.resources.lumber < resources_before.lumber
-                || colony.resources.planks < resources_before.planks
-        );
+        assert_eq!(colony.resources, resources_before);
         assert!(building_is_road_connected_to_shrine(
             &colony, scaffold, seed
         ));
@@ -37019,7 +38488,7 @@ mod tests {
             JobKind::BuildHouse,
             Some(builder),
             JobMetadata::Construction {
-                phase: ConstructionPhase::ConstructHouse,
+                phase: ConstructionPhase::GatherMaterials,
                 building_type: BuildingType::Workshop,
                 building_id: Some(building_id.clone()),
                 site: Some(site),
@@ -37027,11 +38496,20 @@ mod tests {
         );
         let job = colony.jobs.last_mut().expect("construction job");
         job.status = JobStatus::Active;
-        job.started_at = Some(now);
-        job.ends_at = Some(now + 1);
+        job.started_at = None;
+        job.ends_at = None;
+        let job_id = job.id.clone();
+        let construction_started = deliver_all_scaffold_inputs(&mut colony, &job_id, now + 1);
+        let ends_at = colony
+            .jobs
+            .iter()
+            .find(|job| job.id == job_id)
+            .and_then(|job| job.ends_at)
+            .expect("construction timer starts after delivery");
+        phase_16_active_scaffold_progress(&mut colony, production_gate(1, construction_started));
         phase_30_due_completion_build_ritual_training_return_mark_done(
             &mut colony,
-            production_gate(1, now + 1),
+            production_gate(1, ends_at),
         );
         let complete = colony
             .buildings
@@ -37042,6 +38520,1066 @@ mod tests {
         assert!(complete.is_complete);
         assert_eq!(complete.construction_progress, 100);
         assert_eq!(buildings_before + 1, colony.buildings.len());
+    }
+
+    #[test]
+    fn player_scaffold_pins_visible_inputs_without_spending_them_and_cannot_progress_early() {
+        let seed = 71_901;
+        let now = 9_000_000;
+        let mut colony = found_colony(seed, "physical-player-scaffold", now, 41);
+        establish_core_offices(&mut colony);
+        let (expected_timber, expected_blocks) = scaffold_cost(&colony, BuildingType::Workshop);
+        colony.resources.lumber = 8.0;
+        colony.resources.planks = 8.0;
+        colony.resources.blocks = 8.0;
+        reconcile_colony_stockpiles(&mut colony);
+        let site = next_claimed_building_site(&colony, 0.37, seed, BuildingType::Workshop)
+            .expect("legal workshop site");
+        let lumber_before = colony.resources.lumber;
+        let planks_before = colony.resources.planks;
+        let blocks_before = colony.resources.blocks;
+
+        let building_id =
+            commit_player_scaffold(&mut colony, site, BuildingType::Workshop, seed, now)
+                .expect("physical scaffold reservation");
+        let scaffold = colony
+            .buildings
+            .iter()
+            .find(|building| building.id == building_id)
+            .expect("scaffold");
+        let cargo = scaffold
+            .construction_cargo
+            .as_ref()
+            .expect("fresh scaffolds pin an explicit physical contract");
+
+        assert_eq!(colony.resources.lumber, lumber_before);
+        assert_eq!(colony.resources.planks, planks_before);
+        assert_eq!(colony.resources.blocks, blocks_before);
+        assert_eq!(cargo.required_timber(), expected_timber);
+        assert_eq!(cargo.required_blocks, expected_blocks);
+        assert_eq!(cargo.delivered_timber(), 0.0);
+        assert_eq!(cargo.delivered_blocks, 0.0);
+
+        let builder = colony.cats[0].id.clone();
+        queue_job_requested_by(
+            &mut colony,
+            now,
+            JobKind::BuildHouse,
+            JobRequester::Player,
+            Some(builder),
+            JobMetadata::Construction {
+                phase: ConstructionPhase::GatherMaterials,
+                building_type: BuildingType::Workshop,
+                building_id: Some(building_id.clone()),
+                site: Some(site),
+            },
+        );
+        phase_14_promote_queued_jobs_and_break_ground(
+            &mut colony,
+            production_gate(1, now + 1),
+            seed,
+        );
+        phase_16_active_scaffold_progress(&mut colony, production_gate(1, now + 60_001));
+
+        assert_eq!(
+            colony
+                .buildings
+                .iter()
+                .find(|building| building.id == building_id)
+                .unwrap()
+                .construction_progress,
+            0,
+            "a timer must not advance before every pinned unit reaches the scaffold"
+        );
+    }
+
+    #[test]
+    fn two_scaffolds_cannot_reserve_the_same_finite_source_units() {
+        let seed = 71_902;
+        let now = 10_000_000;
+        let mut colony = found_colony(seed, "finite-reservation", now, 42);
+        establish_core_offices(&mut colony);
+        let (first_timber, first_blocks) = scaffold_cost(&colony, BuildingType::Workshop);
+        colony.resources.lumber = 0.0;
+        colony.resources.planks = first_timber;
+        colony.resources.blocks = first_blocks;
+        reconcile_colony_stockpiles(&mut colony);
+        let first = next_claimed_building_site(&colony, 0.21, seed, BuildingType::Workshop)
+            .expect("first site");
+        commit_player_scaffold(&mut colony, first, BuildingType::Workshop, seed, now)
+            .expect("first reservation");
+        let second = next_claimed_building_site(&colony, 0.79, seed, BuildingType::WaterBowl)
+            .expect("second site");
+        let denied =
+            commit_player_scaffold(&mut colony, second, BuildingType::WaterBowl, seed, now + 1);
+        assert!(
+            denied.is_err(),
+            "reserved pile units are not free a second time"
+        );
+    }
+
+    #[test]
+    fn scaffold_contract_splits_exact_lumber_plank_fallback_and_blocks_across_visible_piles() {
+        let seed = 71_905;
+        let now = 10_500_000;
+        let mut colony = found_colony(seed, "split-scaffold-sources", now, 45);
+        establish_core_offices(&mut colony);
+        let (timber_cost, block_cost) = scaffold_cost(&colony, BuildingType::Workshop);
+        assert!(timber_cost > 0.75);
+        assert!(block_cost > 0.75);
+        colony.resources.lumber = 0.75;
+        colony.resources.planks = timber_cost - 0.75;
+        colony.resources.blocks = block_cost;
+        for pile in &mut colony.stockpiles {
+            pile.contents.lumber = 0.0;
+            pile.contents.planks = 0.0;
+            pile.contents.blocks = 0.0;
+        }
+        for (id, x, resources) in [
+            (
+                "split-lumber",
+                colony.anchor.x + 1,
+                Resources {
+                    lumber: 0.75,
+                    ..Resources::default()
+                },
+            ),
+            (
+                "split-planks-a",
+                colony.anchor.x + 2,
+                Resources {
+                    planks: (timber_cost - 0.75) / 2.0,
+                    ..Resources::default()
+                },
+            ),
+            (
+                "split-planks-b",
+                colony.anchor.x + 3,
+                Resources {
+                    planks: (timber_cost - 0.75) / 2.0,
+                    ..Resources::default()
+                },
+            ),
+            (
+                "split-blocks-a",
+                colony.anchor.x + 4,
+                Resources {
+                    blocks: block_cost / 2.0,
+                    ..Resources::default()
+                },
+            ),
+            (
+                "split-blocks-b",
+                colony.anchor.x + 5,
+                Resources {
+                    blocks: block_cost / 2.0,
+                    ..Resources::default()
+                },
+            ),
+        ] {
+            colony.stockpiles.push(Stockpile {
+                id: id.to_owned(),
+                rect: ZoneRect {
+                    x1: x,
+                    y1: colony.anchor.y + 1,
+                    x2: x,
+                    y2: colony.anchor.y + 1,
+                },
+                accepts: [
+                    ResourceKind::Lumber,
+                    ResourceKind::Planks,
+                    ResourceKind::Blocks,
+                ]
+                .into_iter()
+                .collect(),
+                contents: resources,
+            });
+        }
+        let site = next_claimed_building_site(&colony, 0.43, seed, BuildingType::Workshop)
+            .expect("split-source site");
+        let building_id =
+            commit_player_scaffold(&mut colony, site, BuildingType::Workshop, seed, now)
+                .expect("split physical reservation");
+        let cargo = colony
+            .buildings
+            .iter()
+            .find(|building| building.id == building_id)
+            .and_then(|building| building.construction_cargo.as_ref())
+            .expect("physical contract");
+        assert_eq!(cargo.required_lumber, 0.75);
+        assert_eq!(cargo.required_planks, timber_cost - 0.75);
+        assert_eq!(cargo.required_blocks, block_cost);
+        assert_eq!(cargo.reservations.len(), 5);
+        assert_eq!(
+            cargo
+                .reservations
+                .iter()
+                .map(|reservation| reservation.amount)
+                .sum::<f64>(),
+            timber_cost + block_cost
+        );
+
+        let builder = colony.cats[0].id.clone();
+        queue_job_requested_by(
+            &mut colony,
+            now,
+            JobKind::BuildHouse,
+            JobRequester::Player,
+            Some(builder),
+            JobMetadata::Construction {
+                phase: ConstructionPhase::GatherMaterials,
+                building_type: BuildingType::Workshop,
+                building_id: Some(building_id.clone()),
+                site: Some(site),
+            },
+        );
+        let job_id = colony.jobs.last().unwrap().id.clone();
+        phase_14_promote_queued_jobs_and_break_ground(
+            &mut colony,
+            production_gate(1, now + 1),
+            seed,
+        );
+        deliver_all_scaffold_inputs(&mut colony, &job_id, now + 2);
+
+        assert_eq!(colony.resources.lumber, 0.0);
+        assert_eq!(colony.resources.planks, 0.0);
+        assert_eq!(colony.resources.blocks, 0.0);
+        assert!(
+            colony
+                .stockpiles
+                .iter()
+                .filter(|pile| pile.id.starts_with("split-"))
+                .all(|pile| pile.contents.lumber.abs() <= f64::EPSILON
+                    && pile.contents.planks.abs() <= f64::EPSILON
+                    && pile.contents.blocks.abs() <= f64::EPSILON)
+        );
+    }
+
+    #[test]
+    fn lost_reserved_source_replans_to_the_recovered_visible_goods_without_duplication() {
+        let seed = 71_906;
+        let (mut colony, building_id, job_id) = active_physical_scaffold(seed);
+        let cargo = colony
+            .buildings
+            .iter()
+            .find(|building| building.id == building_id)
+            .and_then(|building| building.construction_cargo.as_ref())
+            .unwrap();
+        let lost = cargo.reservations.first().unwrap().clone();
+        let source = colony
+            .stockpiles
+            .iter_mut()
+            .find(|pile| pile.id == lost.source_stockpile_id)
+            .unwrap();
+        let lost_source_amount = stockpiles::resource_amount(&source.contents, lost.kind);
+        stockpiles::add_resource(&mut source.contents, lost.kind, -lost_source_amount);
+        let replacement_id = "recovered-construction-source";
+        colony.stockpiles.push(Stockpile {
+            id: replacement_id.to_owned(),
+            rect: ZoneRect {
+                x1: colony.anchor.x + 1,
+                y1: colony.anchor.y + 1,
+                x2: colony.anchor.x + 1,
+                y2: colony.anchor.y + 1,
+            },
+            accepts: [lost.kind].into_iter().collect(),
+            contents: {
+                let mut resources = Resources::default();
+                stockpiles::add_resource(&mut resources, lost.kind, lost.amount);
+                resources
+            },
+        });
+        let aggregate_before = stockpiles::resource_amount(&colony.resources, lost.kind);
+
+        phase_15b_physical_scaffold_inputs(&mut colony, production_gate(1, 9_700_000));
+
+        let cargo = colony
+            .buildings
+            .iter()
+            .find(|building| building.id == building_id)
+            .and_then(|building| building.construction_cargo.as_ref())
+            .unwrap();
+        assert!(cargo.reservations.iter().any(|reservation| {
+            reservation.source_stockpile_id == replacement_id && reservation.kind == lost.kind
+        }));
+        assert_eq!(
+            stockpiles::resource_amount(&colony.resources, lost.kind),
+            aggregate_before
+        );
+        deliver_all_scaffold_inputs(&mut colony, &job_id, 9_701_000);
+        assert!(
+            colony
+                .buildings
+                .iter()
+                .find(|building| building.id == building_id)
+                .and_then(|building| building.construction_cargo.as_ref())
+                .is_some_and(|cargo| cargo.consumed)
+        );
+    }
+
+    #[test]
+    fn leader_scaffold_uses_the_same_physical_delivery_contract_as_player_construction() {
+        let seed = 71_907;
+        let now = 10_700_000;
+        let mut colony = found_colony(seed, "leader-physical-scaffold", now, 47);
+        establish_core_offices(&mut colony);
+        colony.resources.lumber = 8.0;
+        colony.resources.planks = 8.0;
+        colony.resources.blocks = 8.0;
+        reconcile_colony_stockpiles(&mut colony);
+        let site = next_claimed_building_site(&colony, 0.53, seed, BuildingType::Workshop)
+            .expect("leader site");
+        let builder = colony.cats[0].id.clone();
+        queue_job_requested_by(
+            &mut colony,
+            now,
+            JobKind::BuildHouse,
+            JobRequester::Leader,
+            Some(builder),
+            JobMetadata::Construction {
+                phase: ConstructionPhase::ConstructHouse,
+                building_type: BuildingType::Workshop,
+                building_id: None,
+                site: Some(site),
+            },
+        );
+        let job_id = colony.jobs.last().unwrap().id.clone();
+        phase_14_promote_queued_jobs_and_break_ground(
+            &mut colony,
+            production_gate(1, now + 1),
+            seed,
+        );
+        let building_id = match &colony.jobs.last().unwrap().metadata {
+            JobMetadata::Construction {
+                phase: ConstructionPhase::GatherMaterials,
+                building_id: Some(building_id),
+                ..
+            } => building_id.clone(),
+            metadata => panic!("leader did not enter physical delivery: {metadata:?}"),
+        };
+        assert_eq!(
+            colony
+                .buildings
+                .iter()
+                .find(|building| building.id == building_id)
+                .unwrap()
+                .construction_progress,
+            0
+        );
+        let started = deliver_all_scaffold_inputs(&mut colony, &job_id, now + 2);
+        let ends_at = colony
+            .jobs
+            .iter()
+            .find(|job| job.id == job_id)
+            .and_then(|job| job.ends_at)
+            .expect("leader timer starts only after delivery");
+        phase_30_due_completion_build_ritual_training_return_mark_done(
+            &mut colony,
+            production_gate(1, ends_at.max(started)),
+        );
+        assert!(
+            colony
+                .buildings
+                .iter()
+                .find(|building| building.id == building_id)
+                .is_some_and(|building| building.is_complete)
+        );
+    }
+
+    #[test]
+    fn physical_scaffold_delivery_is_deterministic_and_cadence_invariant() {
+        let seed = 71_908;
+        let (initial, building_id, job_id) = active_physical_scaffold(seed);
+        let mut one_second = initial.clone();
+        let mut deterministic_twin = initial.clone();
+        let mut five_second = initial;
+
+        deliver_all_scaffold_inputs_at_cadence(&mut one_second, &job_id, 10_800_000, 1, 1_000);
+        deliver_all_scaffold_inputs_at_cadence(
+            &mut deterministic_twin,
+            &job_id,
+            10_800_000,
+            1,
+            1_000,
+        );
+        deliver_all_scaffold_inputs_at_cadence(&mut five_second, &job_id, 10_800_000, 5, 5_000);
+
+        assert_eq!(one_second, deterministic_twin);
+        assert_eq!(one_second.resources, five_second.resources);
+        for colony in [&one_second, &five_second] {
+            let cargo = colony
+                .buildings
+                .iter()
+                .find(|building| building.id == building_id)
+                .and_then(|building| building.construction_cargo.as_ref())
+                .expect("physical contract remains inspectable during construction");
+            assert!(cargo.consumed);
+            assert!(cargo.is_delivered());
+            assert!(cargo.reservations.is_empty());
+            assert!(
+                !colony
+                    .stockpiles
+                    .iter()
+                    .any(Stockpile::is_construction_local)
+            );
+            assert!(matches!(
+                colony
+                    .jobs
+                    .iter()
+                    .find(|job| job.id == job_id)
+                    .unwrap()
+                    .metadata,
+                JobMetadata::Construction {
+                    phase: ConstructionPhase::ConstructHouse,
+                    ..
+                }
+            ));
+        }
+    }
+
+    #[test]
+    fn blocked_scaffold_carrier_waits_without_teleport_then_resumes_exactly_once() {
+        let seed = 71_909;
+        let pickup_at = 10_900_000;
+        let (mut initial, building_id, job_id) = active_physical_scaffold(seed);
+        initial
+            .jobs
+            .iter_mut()
+            .find(|job| job.id == job_id)
+            .unwrap()
+            .duration_ms = 10_000;
+
+        phase_15b_physical_scaffold_inputs(&mut initial, production_gate(1, pickup_at));
+        let builder_id = initial
+            .jobs
+            .iter()
+            .find(|job| job.id == job_id)
+            .and_then(|job| job.assigned_cat.clone())
+            .unwrap();
+        let source = initial
+            .cats
+            .iter()
+            .find(|cat| cat.id == builder_id)
+            .and_then(|cat| cat.destination)
+            .expect("builder heads to reserved source");
+        initial
+            .cats
+            .iter_mut()
+            .find(|cat| cat.id == builder_id)
+            .unwrap()
+            .position = source;
+        phase_15b_physical_scaffold_inputs(&mut initial, production_gate(1, pickup_at + 1_000));
+        let carried_before = initial
+            .cats
+            .iter()
+            .find(|cat| cat.id == builder_id)
+            .and_then(|cat| cat.carrying.clone())
+            .expect("reserved load is physically in the builder's paws");
+        let position_before = initial
+            .cats
+            .iter()
+            .find(|cat| cat.id == builder_id)
+            .unwrap()
+            .position;
+        let resources_before = initial.resources.clone();
+        let cargo_before = initial
+            .buildings
+            .iter()
+            .find(|building| building.id == building_id)
+            .and_then(|building| building.construction_cargo.clone())
+            .unwrap();
+        let carried_kind = carrying_resource_kind(carried_before.kind).unwrap();
+        let transit_before = construction_store_amount(&initial, &building_id, false, carried_kind);
+        assert_eq!(transit_before, carried_before.amount);
+
+        let mut one_second = initial.clone();
+        let mut five_second = initial;
+        for second in 1..=120 {
+            advance_scaffold_logistics_tick(
+                &mut one_second,
+                &job_id,
+                1,
+                pickup_at + 1_000 + second * 1_000,
+                seed,
+                true,
+            );
+        }
+        for step in 1..=24 {
+            advance_scaffold_logistics_tick(
+                &mut five_second,
+                &job_id,
+                5,
+                pickup_at + 1_000 + step * 5_000,
+                seed,
+                true,
+            );
+        }
+        for blocked in [&one_second, &five_second] {
+            let builder = blocked
+                .cats
+                .iter()
+                .find(|cat| cat.id == builder_id)
+                .unwrap();
+            assert_eq!(builder.position, position_before);
+            assert_eq!(builder.carrying.as_ref(), Some(&carried_before));
+            let building = blocked
+                .buildings
+                .iter()
+                .find(|building| building.id == building_id)
+                .unwrap();
+            assert_eq!(building.construction_progress, 0);
+            let cargo = building.construction_cargo.as_ref().unwrap();
+            assert!(!cargo.consumed);
+            assert_eq!(cargo.delivered_timber(), cargo_before.delivered_timber());
+            assert_eq!(cargo.delivered_blocks, cargo_before.delivered_blocks);
+            assert_eq!(blocked.resources, resources_before);
+            assert_eq!(
+                construction_store_amount(blocked, &building_id, false, carried_kind),
+                transit_before
+            );
+            let job = blocked.jobs.iter().find(|job| job.id == job_id).unwrap();
+            assert_eq!(job.started_at, None);
+            assert_eq!(job.ends_at, None);
+        }
+
+        for (colony, elapsed_sec, step_ms) in
+            [(&mut one_second, 1, 1_000), (&mut five_second, 5, 5_000)]
+        {
+            let mut now = pickup_at + 122_000;
+            for _ in 0..600 {
+                advance_scaffold_logistics_tick(colony, &job_id, elapsed_sec, now, seed, false);
+                if colony
+                    .buildings
+                    .iter()
+                    .find(|building| building.id == building_id)
+                    .is_some_and(|building| building.is_complete)
+                {
+                    break;
+                }
+                now += step_ms;
+            }
+            let building = colony
+                .buildings
+                .iter()
+                .find(|building| building.id == building_id)
+                .expect("reopened scaffold survives");
+            assert!(building.is_complete);
+            assert_eq!(building.construction_progress, 100);
+            let cargo = building.construction_cargo.as_ref().unwrap();
+            assert!(cargo.consumed);
+            assert!(cargo.is_delivered());
+            assert_eq!(
+                colony.resources.lumber,
+                resources_before.lumber - cargo.required_lumber
+            );
+            assert_eq!(
+                colony.resources.planks,
+                resources_before.planks - cargo.required_planks
+            );
+            assert_eq!(
+                colony.resources.blocks,
+                resources_before.blocks - cargo.required_blocks
+            );
+            assert!(
+                !colony
+                    .stockpiles
+                    .iter()
+                    .any(Stockpile::is_construction_local)
+            );
+            assert_eq!(
+                colony
+                    .jobs
+                    .iter()
+                    .filter(|job| job.id == job_id && job.status == JobStatus::Completed)
+                    .count(),
+                1
+            );
+        }
+        assert_eq!(one_second.resources, five_second.resources);
+    }
+
+    #[test]
+    fn blocked_scaffold_source_leg_waits_empty_pawed_then_resumes_at_both_cadences() {
+        let seed = 71_910;
+        let start = 11_100_000;
+        let (mut initial, building_id, job_id) = active_physical_scaffold(seed);
+        phase_15b_physical_scaffold_inputs(&mut initial, production_gate(1, start));
+        let builder_id = initial
+            .jobs
+            .iter()
+            .find(|job| job.id == job_id)
+            .and_then(|job| job.assigned_cat.clone())
+            .unwrap();
+        let position_before = initial
+            .cats
+            .iter()
+            .find(|cat| cat.id == builder_id)
+            .unwrap()
+            .position;
+        let cargo_before = initial
+            .buildings
+            .iter()
+            .find(|building| building.id == building_id)
+            .and_then(|building| building.construction_cargo.clone())
+            .unwrap();
+        let piles_before = initial.stockpiles.clone();
+        let resources_before = initial.resources.clone();
+
+        let mut one_second = initial.clone();
+        let mut five_second = initial;
+        for second in 1..=120 {
+            advance_scaffold_logistics_tick(
+                &mut one_second,
+                &job_id,
+                1,
+                start + i64::from(second) * 1_000,
+                seed,
+                true,
+            );
+        }
+        for step in 1..=24 {
+            advance_scaffold_logistics_tick(
+                &mut five_second,
+                &job_id,
+                5,
+                start + i64::from(step) * 5_000,
+                seed,
+                true,
+            );
+        }
+        for blocked in [&one_second, &five_second] {
+            let builder = blocked
+                .cats
+                .iter()
+                .find(|cat| cat.id == builder_id)
+                .unwrap();
+            assert_eq!(builder.position, position_before);
+            assert!(builder.carrying.is_none());
+            assert_eq!(blocked.resources, resources_before);
+            assert_eq!(blocked.stockpiles, piles_before);
+            assert_eq!(
+                blocked
+                    .buildings
+                    .iter()
+                    .find(|building| building.id == building_id)
+                    .and_then(|building| building.construction_cargo.as_ref()),
+                Some(&cargo_before)
+            );
+            let job = blocked.jobs.iter().find(|job| job.id == job_id).unwrap();
+            assert_eq!(job.started_at, None);
+            assert_eq!(job.ends_at, None);
+        }
+
+        deliver_all_scaffold_inputs_at_cadence(&mut one_second, &job_id, start + 121_000, 1, 1_000);
+        deliver_all_scaffold_inputs_at_cadence(
+            &mut five_second,
+            &job_id,
+            start + 125_000,
+            5,
+            5_000,
+        );
+        for reopened in [&one_second, &five_second] {
+            assert!(
+                reopened
+                    .buildings
+                    .iter()
+                    .find(|building| building.id == building_id)
+                    .and_then(|building| building.construction_cargo.as_ref())
+                    .is_some_and(|cargo| cargo.consumed)
+            );
+        }
+    }
+
+    #[test]
+    fn delivered_scaffold_input_survives_reconcile_until_exact_consumption() {
+        let seed = 71_911;
+        let (mut colony, building_id, job_id) = active_physical_scaffold(seed);
+        let ready_at =
+            deliver_scaffold_inputs_until_ready(&mut colony, &building_id, &job_id, 11_300_000);
+        let cargo_before = colony
+            .buildings
+            .iter()
+            .find(|building| building.id == building_id)
+            .and_then(|building| building.construction_cargo.clone())
+            .unwrap();
+        assert_eq!(
+            construction_store_amount(&colony, &building_id, true, ResourceKind::Blocks),
+            cargo_before.required_blocks
+        );
+
+        // Emulate a corrupt legacy scalar debit. Normal repair/trade/crafting paths
+        // preflight construction_spendable_resource; reconciliation is the final
+        // physical-ledger safety net, not a free-spend mechanism.
+        colony.resources.blocks -= 1.0;
+        reconcile_colony_stockpiles(&mut colony);
+
+        let cargo_after = colony
+            .buildings
+            .iter()
+            .find(|building| building.id == building_id)
+            .and_then(|building| building.construction_cargo.as_ref())
+            .unwrap();
+        assert_eq!(cargo_after, &cargo_before);
+        assert_eq!(
+            construction_store_amount(&colony, &building_id, true, ResourceKind::Blocks),
+            cargo_before.required_blocks,
+            "reconcile cannot make delivered counters lie"
+        );
+        let blocks_before_consumption = colony.resources.blocks;
+        phase_15b_physical_scaffold_inputs(&mut colony, production_gate(1, ready_at + 1_000));
+        assert_eq!(
+            colony.resources.blocks,
+            blocks_before_consumption - cargo_before.required_blocks
+        );
+        assert!(
+            colony
+                .buildings
+                .iter()
+                .find(|building| building.id == building_id)
+                .and_then(|building| building.construction_cargo.as_ref())
+                .is_some_and(|cargo| cargo.consumed)
+        );
+    }
+
+    #[test]
+    fn accelerated_scaffold_progress_uses_one_duration_basis_across_reassignment() {
+        let seed = 71_912;
+        let (mut colony, building_id, job_id) = active_physical_scaffold(seed);
+        colony.upgrade_tree.owned_node_ids.extend(
+            [
+                "construction_basics",
+                "construction_coordination",
+                "construction_standards",
+                "construction_instruments",
+                "construction_training",
+                "construction_networks",
+                "construction_specialization",
+                "construction_optimization",
+            ]
+            .into_iter()
+            .map(str::to_owned),
+        );
+        let ready_at =
+            deliver_scaffold_inputs_until_ready(&mut colony, &building_id, &job_id, 11_500_000);
+        phase_15b_physical_scaffold_inputs(&mut colony, production_gate(1, ready_at + 1_000));
+        let (builder_id, base_duration, started_at, ends_at) = {
+            let job = colony.jobs.iter().find(|job| job.id == job_id).unwrap();
+            (
+                job.assigned_cat.clone().unwrap(),
+                job.duration_ms,
+                job.started_at.unwrap(),
+                job.ends_at.unwrap(),
+            )
+        };
+        let pinned_speed = colony
+            .jobs
+            .iter()
+            .find(|job| job.id == job_id)
+            .unwrap()
+            .speed;
+        let effective_duration = effective_construction_duration_ms(base_duration, pinned_speed);
+        assert_eq!(ends_at - started_at, effective_duration);
+        assert!(effective_duration < base_duration);
+        colony.upgrade_tree.owned_node_ids.extend(
+            [
+                "construction_resilience",
+                "construction_excellence",
+                "construction_mastery",
+            ]
+            .into_iter()
+            .map(str::to_owned),
+        );
+        assert!(current_construction_speed(&colony) > pinned_speed);
+        phase_16_active_scaffold_progress(&mut colony, production_gate(1, started_at));
+        assert_eq!(
+            colony
+                .buildings
+                .iter()
+                .find(|building| building.id == building_id)
+                .unwrap()
+                .construction_progress,
+            0,
+            "speed adjustment must not create instant progress"
+        );
+
+        let interrupted_at = started_at + effective_duration / 4;
+        phase_16_active_scaffold_progress(&mut colony, production_gate(1, interrupted_at));
+        let stored_progress = colony
+            .buildings
+            .iter()
+            .find(|building| building.id == building_id)
+            .unwrap()
+            .construction_progress;
+        assert!((24..=26).contains(&stored_progress));
+        mark_cat_dead(&mut colony, &builder_id, interrupted_at);
+        let resumed_at = interrupted_at + 1_000;
+        phase_14_promote_queued_jobs_and_break_ground(
+            &mut colony,
+            production_gate(1, resumed_at),
+            seed,
+        );
+        phase_16_active_scaffold_progress(&mut colony, production_gate(1, resumed_at));
+        assert_eq!(
+            colony
+                .buildings
+                .iter()
+                .find(|building| building.id == building_id)
+                .unwrap()
+                .construction_progress,
+            stored_progress,
+            "resume preserves the accelerated timeline's stored baseline"
+        );
+        let resumed_job = colony.jobs.iter().find(|job| job.id == job_id).unwrap();
+        let expected_remaining = effective_duration
+            .saturating_mul(i64::from(100 - stored_progress))
+            .saturating_add(99)
+            / 100;
+        assert_eq!(
+            resumed_job.ends_at.unwrap() - resumed_at,
+            expected_remaining.max(1_000)
+        );
+    }
+
+    #[test]
+    fn ready_scaffold_waits_for_replacement_to_reach_site_before_timer_starts() {
+        let seed = 71_913;
+        let (mut colony, building_id, job_id) = active_physical_scaffold(seed);
+        let ready_at =
+            deliver_scaffold_inputs_until_ready(&mut colony, &building_id, &job_id, 11_700_000);
+        let first_builder = colony
+            .jobs
+            .iter()
+            .find(|job| job.id == job_id)
+            .and_then(|job| job.assigned_cat.clone())
+            .unwrap();
+        let input_before = colony
+            .stockpiles
+            .iter()
+            .find(|pile| pile.id == stockpiles::construction_input_id(&building_id))
+            .unwrap()
+            .contents
+            .clone();
+        mark_cat_dead(&mut colony, &first_builder, ready_at + 1);
+        phase_14_promote_queued_jobs_and_break_ground(
+            &mut colony,
+            production_gate(1, ready_at + 1_000),
+            seed,
+        );
+        let replacement = colony
+            .jobs
+            .iter()
+            .find(|job| job.id == job_id)
+            .and_then(|job| job.assigned_cat.clone())
+            .expect("living replacement");
+        assert_ne!(replacement, first_builder);
+
+        for second in 2..=121 {
+            advance_scaffold_logistics_tick(
+                &mut colony,
+                &job_id,
+                1,
+                ready_at + i64::from(second) * 1_000,
+                seed,
+                true,
+            );
+        }
+        let job = colony.jobs.iter().find(|job| job.id == job_id).unwrap();
+        assert_eq!(job.started_at, None);
+        assert_eq!(job.ends_at, None);
+        let building = colony
+            .buildings
+            .iter()
+            .find(|building| building.id == building_id)
+            .unwrap();
+        assert_eq!(building.construction_progress, 0);
+        assert!(!building.construction_cargo.as_ref().unwrap().consumed);
+        assert_eq!(
+            colony
+                .stockpiles
+                .iter()
+                .find(|pile| pile.id == stockpiles::construction_input_id(&building_id))
+                .unwrap()
+                .contents,
+            input_before
+        );
+
+        deliver_all_scaffold_inputs_at_cadence(&mut colony, &job_id, ready_at + 122_000, 1, 1_000);
+        let job = colony.jobs.iter().find(|job| job.id == job_id).unwrap();
+        assert!(job.started_at.is_some());
+        assert!(
+            colony
+                .buildings
+                .iter()
+                .find(|building| building.id == building_id)
+                .and_then(|building| building.construction_cargo.as_ref())
+                .is_some_and(|cargo| cargo.consumed)
+        );
+    }
+
+    #[test]
+    fn construction_carrier_death_spills_at_the_real_tile_and_replacement_resumes() {
+        let seed = 71_903;
+        let (mut colony, building_id, job_id) = active_physical_scaffold(seed);
+        let now = 9_501_000;
+        phase_15b_physical_scaffold_inputs(&mut colony, production_gate(1, now));
+        let builder_id = colony
+            .jobs
+            .iter()
+            .find(|job| job.id == job_id)
+            .and_then(|job| job.assigned_cat.clone())
+            .unwrap();
+        let destination = colony
+            .cats
+            .iter()
+            .find(|cat| cat.id == builder_id)
+            .and_then(|cat| cat.destination)
+            .unwrap();
+        colony
+            .cats
+            .iter_mut()
+            .find(|cat| cat.id == builder_id)
+            .unwrap()
+            .position = destination;
+        phase_15b_physical_scaffold_inputs(&mut colony, production_gate(1, now + 1_000));
+        let death_position = Position {
+            map: MapType::World,
+            x: 31.0,
+            y: 27.0,
+        };
+        let carried = colony
+            .cats
+            .iter_mut()
+            .find(|cat| cat.id == builder_id)
+            .map(|cat| {
+                cat.position = death_position;
+                cat.carrying.clone().expect("picked construction load")
+            })
+            .unwrap();
+        let total_before = stockpiles::resource_amount(
+            &colony.resources,
+            carrying_resource_kind(carried.kind).unwrap(),
+        );
+
+        mark_cat_dead(&mut colony, &builder_id, now + 2_000);
+
+        let kind = carrying_resource_kind(carried.kind).unwrap();
+        let spill = colony
+            .stockpiles
+            .iter()
+            .find(|pile| pile.id.starts_with(CONSTRUCTION_SPILL_PREFIX))
+            .expect("visible death spill");
+        assert_eq!((spill.rect.x1, spill.rect.y1), (31, 27));
+        assert_eq!(
+            stockpiles::resource_amount(&spill.contents, kind),
+            carried.amount
+        );
+        assert_eq!(
+            stockpiles::resource_amount(&colony.resources, kind),
+            total_before
+        );
+        assert_eq!(
+            construction_store_amount(&colony, &building_id, false, kind),
+            0.0
+        );
+        phase_14_promote_queued_jobs_and_break_ground(
+            &mut colony,
+            production_gate(1, now + 3_000),
+            seed,
+        );
+        assert!(colony.jobs.iter().any(|job| {
+            job.id == job_id
+                && job.status == JobStatus::Active
+                && job.assigned_cat.as_deref() != Some(builder_id.as_str())
+                && matches!(
+                    job.metadata,
+                    JobMetadata::Construction {
+                        phase: ConstructionPhase::GatherMaterials,
+                        ..
+                    }
+                )
+        }));
+    }
+
+    #[test]
+    fn removing_a_scaffold_recovers_carried_and_local_goods_without_refund_or_duplication() {
+        let seed = 71_904;
+        let (mut colony, building_id, job_id) = active_physical_scaffold(seed);
+        let now = 9_601_000;
+        phase_15b_physical_scaffold_inputs(&mut colony, production_gate(1, now));
+        let builder_id = colony
+            .jobs
+            .iter()
+            .find(|job| job.id == job_id)
+            .and_then(|job| job.assigned_cat.clone())
+            .unwrap();
+        let destination = colony
+            .cats
+            .iter()
+            .find(|cat| cat.id == builder_id)
+            .and_then(|cat| cat.destination)
+            .unwrap();
+        let cat = colony
+            .cats
+            .iter_mut()
+            .find(|cat| cat.id == builder_id)
+            .unwrap();
+        cat.position = destination;
+        phase_15b_physical_scaffold_inputs(&mut colony, production_gate(1, now + 1_000));
+        let carried = colony
+            .cats
+            .iter()
+            .find(|cat| cat.id == builder_id)
+            .and_then(|cat| cat.carrying.clone())
+            .expect("picked construction cargo");
+        let kind = carrying_resource_kind(carried.kind).unwrap();
+        let total_before = stockpiles::resource_amount(&colony.resources, kind);
+        colony
+            .buildings
+            .retain(|building| building.id != building_id);
+        let hidden_before_recovery = colony
+            .stockpiles
+            .iter()
+            .filter(|pile| pile.is_construction_local())
+            .map(|pile| stockpiles::resource_amount(&pile.contents, kind))
+            .sum::<f64>();
+        assert_eq!(hidden_before_recovery, carried.amount);
+        assert_eq!(
+            construction_spendable_resource(&colony, kind),
+            (total_before - hidden_before_recovery).max(0.0),
+            "a trade/repair in the late-removal window cannot spend hidden orphan cargo"
+        );
+
+        recover_removed_scaffold_cargo(&mut colony);
+
+        let builder = colony
+            .cats
+            .iter()
+            .find(|cat| cat.id == builder_id)
+            .expect("removed scaffold builder remains");
+        assert!(builder.carrying.is_none());
+        assert_eq!(builder.current_task, None);
+        assert_eq!(builder.activity, CatActivity::Idle);
+        assert_eq!(builder.destination, None);
+        assert!(colony.jobs.iter().any(|job| {
+            job.id == job_id && job.status == JobStatus::Cancelled && job.assigned_cat.is_none()
+        }));
+        let spilled: f64 = colony
+            .stockpiles
+            .iter()
+            .filter(|pile| pile.id.starts_with(CONSTRUCTION_SPILL_PREFIX))
+            .map(|pile| stockpiles::resource_amount(&pile.contents, kind))
+            .sum();
+        assert_eq!(spilled, carried.amount);
+        assert_eq!(
+            stockpiles::resource_amount(&colony.resources, kind),
+            total_before
+        );
+        assert!(
+            !colony
+                .stockpiles
+                .iter()
+                .any(Stockpile::is_construction_local)
+        );
     }
 
     #[test]
@@ -38283,6 +40821,7 @@ mod tests {
                 automated_by: None,
                 production_queue: crate::world_tick::default_production_queue(BuildingType::Field),
                 production_paused: false,
+                construction_cargo: None,
             }],
             farms: vec![FarmPlot {
                 id: "fertility-plot".to_owned(),
@@ -39316,6 +41855,7 @@ mod tests {
             automated_by: None,
             production_queue: crate::world_tick::default_production_queue(BuildingType::Den),
             production_paused: false,
+            construction_cargo: None,
         });
 
         phase_25c_prosperity_migration(&mut colony, production_gate(60, 31 * 60 * 60_000), 4242);
@@ -39504,6 +42044,7 @@ mod tests {
             automated_by: None,
             production_queue: crate::world_tick::default_production_queue(BuildingType::Den),
             production_paused: false,
+            construction_cargo: None,
         });
 
         phase_6_life_simulation(&mut full, production_gate(3_600, 3_600_000));
@@ -39535,6 +42076,7 @@ mod tests {
             automated_by: None,
             production_queue: crate::world_tick::default_production_queue(BuildingType::Den),
             production_paused: false,
+            construction_cargo: None,
         });
 
         phase_6_life_simulation(&mut colony, production_gate(3_600, 35 * 3_600_000));
@@ -39573,6 +42115,7 @@ mod tests {
             automated_by: None,
             production_queue: crate::world_tick::default_production_queue(BuildingType::Den),
             production_paused: false,
+            construction_cargo: None,
         });
         let mut probationer = colony.cats[0].clone();
         probationer.id = "probation-breeding".to_owned();
@@ -39734,6 +42277,7 @@ mod tests {
                 automated_by: None,
                 production_queue: crate::world_tick::default_production_queue(BuildingType::Den),
                 production_paused: false,
+                construction_cargo: None,
             });
             let mut first_birth_hour = None;
             let mut min_alive = STARTER_CAT_COUNT;
@@ -39903,6 +42447,7 @@ mod tests {
                     BuildingType::Workshop,
                 ),
                 production_paused: false,
+                construction_cargo: None,
             });
             filler_index += 1;
         }
@@ -39924,6 +42469,7 @@ mod tests {
             automated_by: None,
             production_queue: crate::world_tick::default_production_queue(BuildingType::Workshop),
             production_paused: false,
+            construction_cargo: None,
         });
         for (index, position) in den_positions.into_iter().enumerate() {
             colony.buildings.push(BuildingRuntime {
@@ -39938,6 +42484,7 @@ mod tests {
                 automated_by: None,
                 production_queue: crate::world_tick::default_production_queue(BuildingType::Beds),
                 production_paused: false,
+                construction_cargo: None,
             });
         }
         let old_claim = colony.claimed_tiles.iter().copied().collect::<HashSet<_>>();
@@ -40172,6 +42719,7 @@ mod tests {
                 automated_by: None,
                 production_queue: crate::world_tick::default_production_queue(BuildingType::Den),
                 production_paused: false,
+                construction_cargo: None,
             });
             for tile in inspected {
                 let runtime = recovered
@@ -43014,6 +45562,7 @@ mod tests {
             automated_by: None,
             production_queue: crate::world_tick::default_production_queue(BuildingType::Shrine),
             production_paused: false,
+            construction_cargo: None,
         });
         colony.buildings.push(BuildingRuntime {
             id: "building-test-den".to_owned(),
@@ -43027,6 +45576,7 @@ mod tests {
             automated_by: None,
             production_queue: crate::world_tick::default_production_queue(BuildingType::Den),
             production_paused: false,
+            construction_cargo: None,
         });
         colony.buildings.push(BuildingRuntime {
             id: "steward-workshop".to_owned(),
@@ -43040,6 +45590,7 @@ mod tests {
             automated_by: None,
             production_queue: crate::world_tick::default_production_queue(BuildingType::Workshop),
             production_paused: false,
+            construction_cargo: None,
         });
         colony
     }
@@ -43218,6 +45769,7 @@ mod tests {
             automated_by: None,
             production_queue: crate::world_tick::default_production_queue(BuildingType::Shrine),
             production_paused: false,
+            construction_cargo: None,
         });
         colony.buildings.push(BuildingRuntime {
             id: "building-adjacent-den".to_owned(),
@@ -43231,6 +45783,7 @@ mod tests {
             automated_by: None,
             production_queue: crate::world_tick::default_production_queue(BuildingType::Den),
             production_paused: false,
+            construction_cargo: None,
         });
 
         let den = colony.buildings[1].clone();
@@ -43597,6 +46150,7 @@ mod tests {
                 automated_by: None,
                 production_queue: crate::world_tick::default_production_queue(BuildingType::Field),
                 production_paused: false,
+                construction_cargo: None,
             });
         }
         colony.resources.food = 1.0;
@@ -43675,6 +46229,7 @@ mod tests {
                 automated_by: None,
                 production_queue: crate::world_tick::default_production_queue(BuildingType::Field),
                 production_paused: false,
+                construction_cargo: None,
             });
         }
         colony.resources.food = 1_000.0;
@@ -43759,6 +46314,7 @@ mod tests {
                 automated_by: None,
                 production_queue: crate::world_tick::default_production_queue(BuildingType::Den),
                 production_paused: false,
+                construction_cargo: None,
             });
         }
         establish_core_offices(&mut established);
@@ -43774,6 +46330,23 @@ mod tests {
         );
         world.colonies.push(established);
         world
+    }
+
+    #[test]
+    fn farm_route_guardrail_counts_each_physical_leg_instead_of_chaining_turnarounds() {
+        let mut debug = FarmRouteDebug::default();
+        for _ in 0..5 {
+            debug.record_movement_pass("farmer", true);
+        }
+        debug.finish_movement_leg("farmer");
+        for _ in 0..4 {
+            debug.record_movement_pass("farmer", true);
+        }
+
+        assert_eq!(debug.movement_ticks, 9);
+        assert_eq!(debug.route_misses, 0);
+        assert_eq!(debug.max_consecutive_traveling, 5);
+        assert_eq!(debug.consecutive_traveling.get("farmer"), Some(&4));
     }
 
     #[test]
@@ -45730,14 +48303,16 @@ fn source_surplus_for_managed_pile(
                 .find(|building| building.id == provenance.station_id)
         })
         .and_then(|building| station_resource_sets(building.building_type))
-        .map_or(0.0, |(inputs, _)| {
+        .map_or(0.0, |(inputs, outputs)| {
             if inputs.contains(&kind) {
                 STEWARD_INPUT_TARGET
+            } else if outputs.contains(&kind) {
+                STEWARD_OUTPUT_RESERVE
             } else {
                 0.0
             }
         });
-    (amount - reserve).max(0.0)
+    (amount - reserve - construction_reserved_from_pile(colony, &pile.id, kind)).max(0.0)
 }
 
 fn balance_sources<'a>(
@@ -45821,7 +48396,8 @@ fn next_stockpile_balance_plan(
                 }
             }
         }
-        if outputs.contains(&provenance.resource) && held > STEWARD_OUTPUT_RESERVE {
+        let output_surplus = source_surplus_for_managed_pile(colony, pile, provenance.resource);
+        if outputs.contains(&provenance.resource) && output_surplus > f64::EPSILON {
             let Some(general) = colony
                 .stockpiles
                 .iter()
@@ -45829,7 +48405,7 @@ fn next_stockpile_balance_plan(
             else {
                 continue;
             };
-            let amount = (held - STEWARD_OUTPUT_RESERVE)
+            let amount = output_surplus
                 .min(stockpiles::headroom_for(
                     general,
                     provenance.resource,
@@ -45974,8 +48550,9 @@ fn complete_arrived_stockpile_balance_haul(colony: &mut ColonyRuntime, now_ms: i
         return;
     };
     let amount = planned
-        .min(stockpiles::resource_amount(
-            &colony.stockpiles[source_index].contents,
+        .min(source_surplus_for_managed_pile(
+            colony,
+            &colony.stockpiles[source_index],
             kind,
         ))
         .min(stockpile_headroom(colony, destination_index, kind))

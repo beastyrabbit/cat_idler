@@ -37,6 +37,8 @@ pub const GENERAL_STOREHOUSE_CAPACITY: f64 = 360.0;
 pub const STATION_INPUT_PREFIX: &str = "station-input:";
 pub const STATION_OUTPUT_PREFIX: &str = "station-output:";
 pub const STATION_TRANSIT_PREFIX: &str = "station-transit:";
+pub const CONSTRUCTION_INPUT_PREFIX: &str = "construction-input:";
+pub const CONSTRUCTION_TRANSIT_PREFIX: &str = "construction-transit:";
 pub const STATION_LOCAL_CAPACITY: f64 = 10.0;
 
 /// Per-tile capacity of a *designated* (player) stockpile, per resource.
@@ -278,8 +280,26 @@ impl Stockpile {
     }
 
     #[must_use]
+    pub fn is_construction_input(&self) -> bool {
+        self.id.starts_with(CONSTRUCTION_INPUT_PREFIX)
+    }
+
+    #[must_use]
+    pub fn is_construction_transit(&self) -> bool {
+        self.id.starts_with(CONSTRUCTION_TRANSIT_PREFIX)
+    }
+
+    #[must_use]
+    pub fn is_construction_local(&self) -> bool {
+        self.is_construction_input() || self.is_construction_transit()
+    }
+
+    #[must_use]
     pub fn is_station_local(&self) -> bool {
-        self.is_station_input() || self.is_station_output() || self.is_station_transit()
+        self.is_station_input()
+            || self.is_station_output()
+            || self.is_station_transit()
+            || self.is_construction_local()
     }
 
     /// Tile count of the (inclusive-edge) footprint.
@@ -300,6 +320,8 @@ impl Stockpile {
             None
         } else if self.is_general_storehouse() {
             Some(GENERAL_STOREHOUSE_CAPACITY)
+        } else if self.is_construction_local() {
+            None
         } else if self.is_station_local() {
             Some(STATION_LOCAL_CAPACITY)
         } else {
@@ -419,6 +441,16 @@ pub fn station_output_id(building_id: &str) -> String {
 #[must_use]
 pub fn station_transit_id(building_id: &str) -> String {
     format!("{STATION_TRANSIT_PREFIX}{building_id}")
+}
+
+#[must_use]
+pub fn construction_input_id(building_id: &str) -> String {
+    format!("{CONSTRUCTION_INPUT_PREFIX}{building_id}")
+}
+
+#[must_use]
+pub fn construction_transit_id(building_id: &str) -> String {
+    format!("{CONSTRUCTION_TRANSIT_PREFIX}{building_id}")
 }
 
 #[must_use]
@@ -633,15 +665,62 @@ pub fn reconcile(
     shrine_rect: ZoneRect,
     storehouse_caps: StorageCapacities,
 ) {
+    reconcile_with_protected(stockpiles, resources, shrine_rect, storehouse_caps, &[]);
+}
+
+/// Reconcile while preserving exact source-pile reservations supplied by the
+/// simulation. Construction-local ledgers are always protected automatically.
+pub fn reconcile_with_protected(
+    stockpiles: &mut Vec<Stockpile>,
+    resources: &mut Resources,
+    shrine_rect: ZoneRect,
+    storehouse_caps: StorageCapacities,
+    protected: &[(String, ResourceKind, f64)],
+) {
     let shrine_idx = shrine_index(stockpiles, shrine_rect);
 
     let mut player: Vec<usize> = (0..stockpiles.len())
         .filter(|&idx| idx != shrine_idx && !stockpiles[idx].is_station_output())
         .collect();
-    player.sort_by(|&a, &b| stockpiles[a].id.cmp(&stockpiles[b].id));
+    // Construction input/transit is an exact physical contract, not an ordinary
+    // player pile. Scalar consumers reduce the aggregate before reconciliation;
+    // drain ordinary holdings first so that shortfall can never invalidate an
+    // already-delivered scaffold while its persisted delivered counters stay true.
+    player.sort_by(|&a, &b| {
+        stockpiles[a]
+            .is_construction_local()
+            .cmp(&stockpiles[b].is_construction_local())
+            .then_with(|| stockpiles[a].id.cmp(&stockpiles[b].id))
+    });
 
     for &kind in ResourceKind::ALL {
-        let total = resource_amount(resources, kind);
+        let protected_amount = |pile: &Stockpile| {
+            let reserved = protected
+                .iter()
+                .filter(|(pile_id, protected_kind, _)| {
+                    pile_id == &pile.id && *protected_kind == kind
+                })
+                .map(|(_, _, amount)| *amount)
+                .sum::<f64>();
+            if pile.is_construction_local() {
+                reserved.max(resource_amount(&pile.contents, kind))
+            } else {
+                // A visible source reservation protects goods that physically exist;
+                // it cannot recreate goods already removed by a buggy mover/legacy
+                // save. Only exact construction-local ledgers may repair aggregate
+                // corruption from their own physical contents.
+                reserved.min(resource_amount(&pile.contents, kind))
+            }
+        };
+        let protected_total: f64 = player
+            .iter()
+            .map(|&idx| protected_amount(&stockpiles[idx]))
+            .sum();
+        // The local ledger is the source of truth for pinned construction goods.
+        // If an older scalar call site attempted to spend below that floor, restore
+        // the aggregate rather than deleting physical cargo from beneath a scaffold.
+        let total = resource_amount(resources, kind).max(protected_total);
+        set_resource(resources, kind, total);
         let player_sum: f64 = player
             .iter()
             .map(|&idx| resource_amount(&stockpiles[idx].contents, kind))
@@ -656,7 +735,9 @@ pub fn reconcile(
                     break;
                 }
                 let have = resource_amount(&stockpiles[idx].contents, kind);
-                let take = have.min(overflow);
+                let take = (have - protected_amount(&stockpiles[idx]))
+                    .max(0.0)
+                    .min(overflow);
                 set_resource(&mut stockpiles[idx].contents, kind, have - take);
                 overflow -= take;
             }
@@ -877,6 +958,93 @@ mod tests {
         assert_eq!(piles[1].contents.food, 10.0);
         assert_eq!(piles[2].contents.food, 40.0);
         assert_eq!(piles[0].contents.food, 0.0, "shrine zeroed");
+    }
+
+    #[test]
+    fn reconcile_drains_ordinary_surplus_before_exact_construction_inputs() {
+        let rect = small_rect(6, 6);
+        let mut construction = make_station_store(
+            construction_input_id("scaffold-a"),
+            small_rect(12, 12),
+            [ResourceKind::Blocks],
+        );
+        construction.contents.blocks = 2.0;
+        let mut ordinary = player_pile(
+            "stockpile-blocks",
+            small_rect(8, 8),
+            &[ResourceKind::Blocks],
+        );
+        ordinary.contents.blocks = 8.0;
+        let mut piles = vec![make_shrine(rect), construction, ordinary];
+        let mut resources = Resources {
+            // A scalar consumer spent three of the ordinary eight blocks.
+            blocks: 7.0,
+            ..Resources::default()
+        };
+
+        reconcile(
+            &mut piles,
+            &mut resources,
+            rect,
+            crate::storage::BASE_CAPACITY,
+        );
+
+        assert_eq!(resources.blocks, 7.0);
+        assert_eq!(
+            piles
+                .iter()
+                .find(|pile| pile.is_construction_input())
+                .unwrap()
+                .contents
+                .blocks,
+            2.0,
+            "delivered scaffold goods remain exact"
+        );
+        assert_eq!(
+            piles
+                .iter()
+                .find(|pile| pile.id == "stockpile-blocks")
+                .unwrap()
+                .contents
+                .blocks,
+            5.0,
+            "the scalar spend comes from ordinary surplus"
+        );
+    }
+
+    #[test]
+    fn reconcile_preserves_reserved_visible_source_and_drains_other_surplus() {
+        let rect = small_rect(6, 6);
+        let mut reserved = player_pile(
+            "stockpile-a-reserved",
+            small_rect(8, 8),
+            &[ResourceKind::Planks],
+        );
+        reserved.contents.planks = 4.0;
+        let mut surplus = player_pile(
+            "stockpile-b-surplus",
+            small_rect(9, 9),
+            &[ResourceKind::Planks],
+        );
+        surplus.contents.planks = 6.0;
+        let mut piles = vec![make_shrine(rect), reserved, surplus];
+        let mut resources = Resources {
+            planks: 7.0,
+            ..Resources::default()
+        };
+        let protected = vec![("stockpile-a-reserved".to_owned(), ResourceKind::Planks, 4.0)];
+
+        reconcile_with_protected(
+            &mut piles,
+            &mut resources,
+            rect,
+            crate::storage::BASE_CAPACITY,
+            &protected,
+        );
+
+        assert_eq!(piles[1].contents.planks, 4.0);
+        assert_eq!(piles[2].contents.planks, 3.0);
+        assert_eq!(resources.planks, 7.0);
     }
 
     #[test]

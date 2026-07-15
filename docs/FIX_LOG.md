@@ -12,10 +12,12 @@ and any changed Bevy visuals have been verified.
 | Canonical raw-resource taxonomy is not yet physical | P19 now distinguishes raw Logs and Stone, fine Planks, structural Lumber, dressed Blocks, and the stable generic Supplies/Crafted Supplies pair. Runtime still has no raw `stone` field: quarry work and the founding Stone Prep path use generic `materials`, while Ore and other quarry results can be credited without carried cargo. Add a defaulted Stone save/wire field and migrate only genuinely raw stone; do not reinterpret existing `materials` saves or rename their stable ID. Make every source result finite carried cargo. | queued |
 | Six maintained benches still bypass the physical station contract | Wood Cutter, Stone Prep, Woodworking, Clothier, Tannery, and Smithy still consume colony-global aggregates and/or advance parallel hidden cycles. Give each station-local input/output/transit state, an ordered repeatable pausable recipe queue, and one-worker/one-selected-recipe advancement. The three P16 founding benches are now placement-available without `basic_tools`; future studies must gate recipes rather than later station copies. Preserve every existing `BuildingType` and its open-top visual identity. | queued |
 | Functional equipment has two incomplete authorities | Stable `tools`, `weapons`, and `armor` scalar fields coexist with finite weighted item units, while finished functional equipment recipes are incomplete. Keep the scalar IDs readable for old saves during migration, make finite item instances the eventual identity/condition authority, and prevent crafting, wearing, repair, trade, or stockpile projection from double-counting one object. | queued |
-| Construction materials teleport at break-ground | P19 requires finite Lumber or Planks plus Blocks to be carried to a scaffold before on-site construction progresses. `world_tick::commit_player_scaffold` and the autonomous construction break-ground phase currently subtract colony aggregates before the builder travels. Add durable source reservation, carried cargo, scaffold-local input, and delivery-before-progress. Death, cancellation, removal, full or missing storage, blocked routes, and SQLite restart must conserve every unit and keep the paid scaffold recoverable. | queued |
 | Most building-capacity studies still have no physical storage domain | Food Storage, Water Bowl, and Smithy capacity studies are live and target-correct. The other 22 generated `*_stores` studies remain deterministic no-ops because those buildings do not own a modeled storage domain. Mill, Sawmill, Workshop, and Smelter station-local input/output stores also remain fixed at 10 rather than consuming capacity research. Model a real physical domain before activating each remaining study. | queued |
 | Research recipe/resource breadth remains incomplete | Four data-owned preparation payloads bind the station-local Mill, Sawmill, Workshop, and Smelter queues. Four legacy studies now also own the maintained aggregate recipes: Textiles→Clothier fibre→cloth and Tannery hide→leather, Weaponsmithing→Smithy weapons, and Armorsmithing→Smithy armor. Fresh rules-v1 villages require each exact study before time, progress, or input consumption; old/missing rules-v0 saves are grandfathered. The other 96 generated recipe IDs and all 64 generated resource IDs still have no authoritative consumer. Add only sourced resource/recipe breadth. | in progress |
 | Worker-slot studies have no staffing consumer | Twenty-five `worker_slots +1` effects resolve, but buildings, persistence, automation, protocol, and UI still support exactly one assigned cat. Implement real multi-worker ownership and physical work before presenting these studies as effective. | queued |
+| Owner snapshots bypass the Accountant's stale books | `build_colony_snapshot` places authoritative `colony.resources` in `ColonySnapshot.resources`, and every `StockpileSnapshot` carries exact `contents` plus an `accurate` comparison alongside its last-counted report. The maintained client displays the report, but an authenticated owner can read the exact WebSocket payload without any Accountant contact. Make the player-facing snapshot expose only reported totals/contents and non-oracular freshness; keep authoritative values server-side. Prove stale, blocked, vacant, restart, and signed-owner boundaries at the serialized wire. | queued |
+| Forester replanting is absent | `GAME_VISION.md` assigns felling, replanting, and lumber to the Forester. Completed logging permanently writes `overlay_feature = "stump"`, and the logging scan excludes stump tiles; no maintained phase turns one back into a tree. Add a finite, persisted Forester replant route with growth timing and terrain/occupancy safeguards, then prove depletion, regrowth, restart, vacancy/manual ownership, and long-run sustainability. | queued |
+| Eleven HUD resources lack semantic icons | P18 and `docs/assets/items_ui.md` promise Board Game/Fish glyphs copied into the tracked icon directory. `resource_icon_path` instead maps 11 of the 23 maintained resources to terrain, farm, prop, or furniture art (including water edge, wood floor, bed, scroll, stool, and basin). Copy/select one truthful semantic HUD icon per resource, retain distinct names/tints/values, and verify all 23 in the client's own framebuffer at supported bounds. | queued |
 | Shared terrain is duplicated per colony | Terrain, ecology, roads, wear, depletion, and fish are colony-owned, so two villages at the same coordinates do not inhabit one authoritative mutable world. Move canonical spatial state to world scope while keeping fog and learned contact private. | queued |
 | Inter-village trade is nonphysical | Contact summaries and atomic scalar barter exist, but cats do not meet, carry items, form caravans, or travel trade routes. Preserve knowledge-blind scouting and shrine-return discovery while adding physical exchange. | queued |
 | Visiting traders stop at the gate and have no finite stock | P19 specifies a visible trader who physically reaches the shrine or market, remains available for a bounded visit, then physically leaves. `world_tick::phase_36b_trader_lifecycle` instead moves the trader by obstacle-free straight-line walks between an off-map point and the south gate, while `actions::buy_resource` draws from a supported-resource catalog without per-visit stock. Add an obstacle-aware arrival/departure route to the maintained trade destination, finite persisted visit inventory, deterministic restocking, truthful controls, and conservation across purchase, departure, and restart. | queued |
@@ -23,6 +25,36 @@ and any changed Bevy visuals have been verified.
 | Authored road building is instant | `actions::build_road` validates a shrine-connected mapped path, paints every new tile immediately, and subtracts one aggregate Material per tile without a cat, cargo, or construction phase. Preserve the verified placement, surface, connectivity, and speed rules while adding a physical build route if roadwork is promoted to the full DF-style logistics contract. This is a P2 physical-consistency enhancement, not a blocker under the current P16 wording. | queued (P2) |
 
 ## Verified fixes
+
+## 2026-07-15 — Scaffold construction uses conserved physical inputs
+
+**Problem:** Exact and autonomous construction subtracted Planks/Blocks from aggregate resources
+when a scaffold appeared. No cat fetched the pinned bill, construction could progress without a
+delivery, and restart/removal/death had no durable source→transit→scaffold accounting.
+
+**Fix:** Placement now atomically reserves the exact type-local escalating bill from finite visible
+piles, preferring Lumber and filling any shortfall with Planks. One living builder carries bounded
+loads from each deterministic source into persisted transit and scaffold-input stores. The build
+timer remains absent and progress stays zero until every pinned unit is physically delivered, at
+which point the exact input is consumed once. Reservations protect the bill from crafting, repair,
+trade, gather-spot movers, Steward balancing, station hauling, and the late-removal recovery
+window. Reconciliation drains ordinary surplus before reserved sources or exact scaffold inputs;
+aggregate restoration is limited to construction-local physical goods as legacy corruption safety.
+Death spills at the cat's real tile; source loss replans to recovered visible goods; cancellation,
+reassignment, scaffold removal, and restart conserve every unit. Legacy incomplete scaffolds with
+no contract remain grandfathered as already funded.
+
+**Evidence:** Player and Leader placement, split multi-pile Lumber/Planks fallback, partial loads,
+no-early-progress, source loss, death/reassignment, removal and same-window spend protection,
+blocked empty-paw source and loaded return routes, ready-input replacement arrival, pinned speed
+across mid-build research/reassignment, deterministic one-/five-second cadence, SQLite
+mid-haul/legacy restart, signed HMAC completion, and client inspector tests pass. The selected-
+scaffold inspector always exposes required, delivered, in-transit, and blocked/building stage.
+The final gates passed 1,139 simulation, 42 protocol, 75 server, and 130 client tests plus strict
+Clippy for all four crates. The accepted live 2048×1152 own-framebuffer
+`/tmp/scaffold-physical-inputs.png` shows the intact Grand Commons world and selected open
+Woodworking scaffold at 0% with Lumber/Blocks required, partial Lumber delivered, no cargo in
+transit, and its truthful blocked state.
 
 ## 2026-07-15 — Founding benches no longer require Basic Tools for placement
 

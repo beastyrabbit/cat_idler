@@ -35,14 +35,14 @@ codex, plus a Claude review for high-value slices) signs off.
 | P9 | Client render + UI (top-down world, HUD, action buttons) | done — P9.1–P9.4 shipped and framebuffer-verified; P9.5 (`bevy_brp_extras` MCP screenshot tooling)/P9.gate were superseded rather than formally closed (manual framebuffer capture per `docs/HANDOFF.md` is the verification method actually used; P13/P18/P19 added far more client UI on top) |
 | P10 | WASM/web + native packaging | done — release bundle builds via `scripts/build-web.sh`; a same-origin combined server/WASM image, compression, health/readiness probes, exact Origin checks, and deployment instructions are verified. Native ships as `cargo build --release -p cat-desktop` + `BEVY_ASSET_ROOT`/`CAT_SERVER_URL`. Transfer-weight optimization remains optional. See `docs/migration/WASM.md` |
 | P11 | Cutover (retire the TS reference tree, big-bang) | done — 2026-07-11: fast-forwarded `main` → the Rust workspace and removed the TypeScript tree (`app/ components/ db/ hooks/ lib/ server/ tests/ types/ worker/` + JS build configs). Preserved on `archive/web-game` (tag `web-final`, `8d3bc5a`). `main` is now the Rust/Bevy game. |
-| P12 | Sim expansion: skills, officers, spatial stockpiles, workshop chains | in progress — seven specialist manual/officer domains, a narrow founding Leader Hunt/FetchWater/Scout safety floor, all 19 maintained skill gain/effect/UI paths, role gates, active physical shrine offerings, useful tools/costs, finite storage, physical Accountant rounds, physical Mill/Sawmill/Workshop/Smelter routes, Steward-managed local reserves, catalog-backed fresh-village entitlements for four maintained station recipes plus four existing aggregate conversions, and complete physical farming/logging/fishing are verified; the P19-canonical raw Stone/source-cargo migration, six aggregate benches, finite equipment authority, and 96 generated recipe IDs remain in progress |
+| P12 | Sim expansion: skills, officers, spatial stockpiles, workshop chains | in progress — seven specialist manual/officer domains, a narrow founding Leader Hunt/FetchWater/Scout safety floor, all 19 maintained skill gain/effect/UI paths, role gates, active physical shrine offerings, useful tools/costs, finite storage, physical Accountant rounds, physical Mill/Sawmill/Workshop/Smelter routes, Steward-managed local reserves, catalog-backed fresh-village entitlements for four maintained station recipes plus four existing aggregate conversions, and physical farming, tree felling/hauling, and fishing are verified; player snapshots still leak exact inventory around stale Accountant reports, Forester replanting is absent, and the P19 raw Stone/source-cargo migration, six aggregate benches, finite equipment authority, and 96 generated recipe IDs remain in progress |
 | P13 | Client UI for P12: stockpile designation, officer assignment | in progress — designation/assignment, signed manual orders, exact building/farm/gather/road/governance controls, authoritative election timing, durable per-cat typed labor preferences, all four physical processors' editable add/remove/reorder/repeat/pause queues and truthful inspectors (including the exact missing study for a locked recipe), Steward pile provenance/route visibility, the purchasable 500-study ledger, crop/timber HUD state, visible farm stages, and distinct open station compositions shipped; extend the generic queue UI as broader physical recipes land |
 | P14 | Spatial placement: footprints, tile occupancy, soft obstacles, road accessibility | done — atomic action validation, reservations, connectivity, scaffold recovery, exact occupancy/roads, persisted exterior agricultural claims, and durable outer-before-inner wall construction with atomic one-gate cutover are verified in code and accepted before/during/after native framebuffers. Physical authored-road labor remains a P2 consistency enhancement, not a P14 blocker |
 | P15 | Playtest-feedback backlog: controls/feel, fog-of-war, booster, movement smoothing | in progress — movement/booster, visible roads, exact controls, authoritative election schedule visibility, knowledge-blind shrine-return search, restart-safe notebooks, and 32-seed fast wood are verified; baseline Leader hunt/water/scout passes exact 48-hour personal/communal campaigns with optimized-browser and signed-native shrine-return confirmation; four physical processors are complete while broader stations remain |
 | P16 | Founding village blueprint, gather spots, tile recalibration | in progress — the 15-adult/three-five-bed-Den lifecycle, physical gate-routed migration/pregnancy/aging/reset, physical emergency water, authoritative interior clearing, exterior water, exact roads, selectable/removable gather controls, persisted outside-wall agricultural territory, physical farm labor, and physical shoreline fishing are verified; broader physical production work remains in progress |
 | P17 | Climate-driven biome generator (~26 biomes), mining, crop fertility, transport upgrades | in progress — climate generation, crop fertility, ore/metal extraction, exterior plots, finite persisted fish habitats, and cached fine-biome path/movement costs are live; Rail/Shipping studies grant neutral blueprints rather than magical walking effects, while built routes/vehicles remain open |
-| P18 | Visual polish: DF-Steam parchment UI, craft-station sprites | done — persistent map plaques are gone; all 25 protocol variants have tested residential/open-station compositions, including a legal integrated Accounting Tent. The Adventure skin, research ledger, staged wall cutover, and exterior agriculture are native-framebuffer verified; optimized-WASM interaction is verified at all supported bounds |
-| P19 | Item/material economy: crafting chains, traders, coin | in progress — the canonical source/station/taxonomy contract now reconciles P12 and P16 while preserving stable IDs and open-top buildings; current chains, finite fresh Fish, useful tools, trade goods, a gate-visiting trader, coin, and stable weighted item units with wear/break/repair are live. Raw Stone, physical byproducts, scaffold-material delivery, six remaining physical station queues, finite functional-equipment authority, recipe/material breadth, broader local inventories, and a shrine/market trader route with finite restocking inventory remain |
+| P18 | Visual polish: DF-Steam parchment UI, craft-station sprites | in progress — persistent map plaques, building compositions, the Adventure skin, research ledger, staged wall cutover, exterior agriculture, and optimized-WASM interaction are verified; 11 of 23 HUD resources still reuse terrain/furniture art instead of the maintained semantic glyph contract |
+| P19 | Item/material economy: crafting chains, traders, coin | in progress — the canonical source/station/taxonomy contract now reconciles P12 and P16 while preserving stable IDs and open-top buildings; current chains, finite fresh Fish, physical scaffold inputs, useful tools, trade goods, a gate-visiting trader, coin, and stable weighted item units with wear/break/repair are live. Raw Stone, physical byproducts, six remaining physical station queues, finite functional-equipment authority, recipe/material breadth, broader local inventories, and a shrine/market trader route with finite restocking inventory remain |
 
 **Notes on P12–P19**: these phases were decomposed and executed after this board's card
 format fell out of active use for day-to-day tracking — the per-slice specs live in
@@ -590,6 +590,9 @@ for exact commit hashes/messages, and the corresponding spec doc for the origina
   construction/crafting/quarrying/hauling bonus and repeated building costs escalate per type.
   Mill, Sawmill, Workshop, and Smelter workers now path stockpile→station→stockpile with persisted
   local input/output, real editable queues, and no aggregate output credit before delivery.
+  The display consumes stale reports, but owner WebSocket snapshots still include authoritative
+  colony totals, exact pile contents, and an accuracy oracle; remove those player-facing leaks
+  before calling the Accountant's confidentiality boundary complete.
   Exterior farms likewise require physical plot work, bounded
   harvest baskets, local handoff, and final finite-storage delivery. Other workshops still use
   colony-global resources.
@@ -624,7 +627,8 @@ for exact commit hashes/messages, and the corresponding spec doc for the origina
   drives placement denial text. Four station-local queue recipes plus four aggregate processor
   recipes have fresh-village entitlements; 96 generated recipes and 64 resources remain open.
   Sawmill→Gather Logs is the sole validated job entitlement and drives signed plus Forester work;
-  false founding/non-runtime job claims are removed. Research labor/building automation and
+  false founding/non-runtime job claims are removed. Logging currently leaves permanent stumps;
+  the vision's Forester replanting responsibility remains open. Research labor/building automation and
   rituals remain Loremaster-owned; the daily strategic choice is Leader-owned.
 
 ### P14 — Spatial placement (spec: `docs/migration/specs/p14-spatial-placement.md`)
@@ -632,10 +636,9 @@ for exact commit hashes/messages, and the corresponding spec doc for the origina
   collision-free building/stockpile/gather/road reservations, exact shrine/gate/exterior
   connectivity, linked expansion persistence, paid-scaffold recovery, rendered 2×3 tree and
   1×1 rock occupancy, soft-obstacle path costs, and disjoint authored-stone/traffic-dirt roads.
-- **Open physical-depth boundary:** scaffold costs are pinned at plan time, but player commit and
-  autonomous break-ground still subtract aggregate construction goods before the builder travels.
-  P19 requires finite Lumber or Planks plus Blocks to be delivered to the scaffold before progress.
-  Authored stone-road actions likewise paint and charge the complete path instantly; physical road
+- **Physical-depth boundary:** scaffold costs are pinned at plan time and finite Lumber or Planks
+  plus Blocks are carried from reserved visible sources into persisted scaffold-local input before
+  progress. Authored stone-road actions still paint and charge the complete path instantly; physical road
   labor is retained as a P2 consistency enhancement rather than a blocker for P14's verified
   placement/connectivity contract.
 - **Staged expansion:** persisted exterior agricultural claims are excluded from wall derivation;
@@ -731,6 +734,10 @@ for exact commit hashes/messages, and the corresponding spec doc for the origina
   crop stages are framebuffer-verified; a legal integrated Accounting Tent retains all three
   founding Dens and renders as a separate open ledger/desk station. The staged wall/agricultural
   sequence is accepted at native resolution.
+- The semantic resource-icon card remains open. Although all 23 HUD rows have distinct labels,
+  paths, tints, and values, 11 mappings reuse terrain, farm, prop, or furniture sprites instead of
+  resource glyphs copied into `public/images/game/icons/`; replace them and recheck every supported
+  framebuffer bound before returning P18 to done.
 
 ### P19 — Item/material economy (spec: `docs/migration/specs/p19-items-materials-trade.md`)
 - The spec's canonical production table is the resource/taxonomy authority. Logs are raw timber,
@@ -776,7 +783,7 @@ These cards record runtime work; reconciling the specs did not complete them.
 | P19.C1 — physical source taxonomy | todo | Add defaulted raw Stone without reinterpreting stable Materials saves. Quarry and hunt outputs, including Ore/Hide/Bone, must exist as finite carried cargo before aggregate credit. Prove migration, conservation, persistence, trade, HUD, and deterministic guided/unattended runs. |
 | P19.C2 — remaining physical stations | in progress | The legacy `basic_tools` placement check is removed from P16's three placement-available founding benches, with unique catalog markers plus personal/communal signed and restart guardrails; future studies gate their recipes, not later copies. Still convert Wood Cutter, Stone Prep, Woodworking, Clothier, Tannery, and Smithy to local input/output/transit state and ordered repeatable pausable queues. One cat advances one selected recipe; death, removal, full storage, restart, signed controls, and inspectors conserve and expose every unit. |
 | P19.C3 — finite functional equipment | todo | Complete material-backed tools/weapons/armor while retaining their stable scalar fields for old-save compatibility. Finite item units become the identity/condition authority with no duplicate counts across crafting, use, repair, storage, trade, protocol, persistence, or UI. |
-| P19.C4 — physical scaffold inputs | todo | Preserve pinned plan-time cost, escalation, atomic footprint validation, and paid-scaffold recovery, but reserve finite Lumber or Planks plus Blocks at real sources and carry them into scaffold-local input before progress. Prove delivery-before-work and conservation through cancellation, death, removal, blocked/no route, full storage, restart, signed actions, and inspector/framebuffer evidence. |
+| P19.C4 — physical scaffold inputs | done | Exact player and autonomous placement preserve pinned type-local cost, escalation, atomic footprint validation, and paid-scaffold recovery while reserving finite Lumber/Planks plus Blocks from visible sources. A living assigned builder carries bounded loads through persisted transit/input ledgers and progress waits for full delivery. Conservation, empty-paw/loaded blocked-route reopen, recovery, pinned speed, reservation safety, cadence, restart, signed HMAC, protocol/client, full touched-crate gates, strict Clippy, and the accepted 2048×1152 selected-scaffold own-framebuffer are verified. |
 | P19.C5 — physical finite-stock trader | todo | Replace the obstacle-blind gate walk and unbounded resource catalog with an arrival/departure route to the maintained shrine/market destination plus finite persisted visit inventory and deterministic restocking. Prove purchase depletion, load limits, departure/restart conservation, signed controls, and a guided visual campaign. |
 
 #### Physical-consistency enhancement outside P19 completion
