@@ -50,8 +50,11 @@ that's normal (map = pixel, HUD = crisp icons + wood-frame panels).
 
 ## Slice → sprite mapping to the sim
 
-The sim (`cat-sim`) emits `BiomeRole {Lowland, Grassland, Forest, Rocky, Highland}` per
-tile, plus `river`, and `DecorationRole::{Tree, Rock}`. Terrain sprites are named by role.
+The sim (`cat-sim`) emits both the coarse
+`BiomeRole {Lowland, Grassland, Forest, Rocky, Highland}` and one of 26 `climate_biome` values per
+tile, plus river state and deterministic climate-derived tree/rock decoration. The client chooses
+ground art and tint, water, tree type, and natural decoration from the fine biome while retaining
+the coarse role for compatibility and simulation surfaces.
 
 **Terrain — `public/images/game/terrain/` (DONE, sliced + eyeball-verified):**
 
@@ -85,8 +88,10 @@ visible stockpiles.
 **Farm plots — `public/images/game/farm/`:** **Farm Expansion** tilled-soil + crop growth
 stages (sprout → tall → mature → flowering) + scarecrow.
 
-**Enemies — `public/images/game/enemies/`:** Roguelike Dungeon/Characters monster sprites
-for fox/badger/bear/rival-beast; rival-cat raiders keep the wired `raider-sheet.png`.
+**Enemies — `public/images/game/enemies/`:** fox/badger/bear/rival-beast sprites are tracked
+catalog candidates only. Every live raider currently uses the wired `raider-sheet.png`; the
+protocol does not yet carry a distinct enemy kind, so the catalog files are not separate runtime
+renderers.
 
 **Icons / UI — `public/images/game/icons/`:** per `items_ui.md`. The resource icons are
 tracked PNGs used by the Bevy HUD. Semantic Adventure panel, button, progress, minimap, and

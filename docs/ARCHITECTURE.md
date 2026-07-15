@@ -115,7 +115,9 @@ that's the fastest way to find the ported behavior's original spec and tests.
 The core migration is complete, including ore/metal extraction and staffed Research Hut and
 School buildings. Verified post-cutover slices include atomic placement/reservations, exterior
 farm/logging production with physical processors, label-free open stations, selected-village routing,
-the complete purchasable and persistent 500-study runtime/client ledger, and a responsive blocking-pool server tick. The remaining work is
+the complete purchasable and persistent 500-study catalog/client ledger, and a responsive
+blocking-pool server tick. The catalog claim does not imply complete gameplay payload coverage;
+the remaining work is
 maintained product behavior rather than migration:
 
 - **Officer/manual split.** The seven maintained offices now own distinct automation categories;
@@ -160,7 +162,9 @@ maintained product behavior rather than migration:
   living Leader may complete at most one affordable full-catalog node per rolling real-life day.
   Research labor/building automation and rituals remain Loremaster-owned.
   Typed modeled effects (including the durability consumer) and future-content unlock registries
-  persist. Resource/general scouts now
+  persist, but 93 generated recipe IDs, all 64 generated resource IDs, 25 worker-slot effects, and
+  22 building-capacity effects still lack their intended authoritative gameplay consumers.
+  Resource/general scouts now
   preserve the shrine-return knowledge contract while following deterministic knowledge-blind
   wander legs that only recognize targets after physical observation. Baseline deficit-driven
   scouting belongs to the Leader before a Loremaster exists.
@@ -262,8 +266,9 @@ Core env vars: `BIND_ADDR` (default `127.0.0.1`), `PORT` (default `8787`),
 deserializes `WorldSnapshot` on receipt, and stores it as a Bevy resource that render/UI
 systems read each frame.
 
-The renderer is **top-down**, not isometric — a deliberate pivot mid-migration (see
-`docs/GAME_VISION.md`'s "design pivot" note and `docs/migration/BOARD.md` P9). It draws: biome
+The renderer is **top-down**, not isometric — the maintained first game-vision pillar (see
+`docs/GAME_VISION.md`'s "Top-down, single level" pillar and `docs/migration/BOARD.md` P9). It
+draws: biome
 terrain generated client-side from the shared `world_seed` (via `cat_sim::generate_terrain_chunk`
 — the client doesn't need the server to stream tile data, just the seed), fog of war, paved
 roads, cats (colored by specialization, carrying marker, walk animation that interpolates toward

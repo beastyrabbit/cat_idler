@@ -81,7 +81,7 @@ open until the real player path and, where applicable, Bevy framebuffers prove t
 
 | Document | Implementation status | Follow-up |
 | --- | --- | --- |
-| `docs/GAME_VISION.md` | current intent, partially implemented | Seven-role ownership, exact controls, Sawmill queue, physical farm labor, complete research, and the distinct larger communal blueprint are verified; finish broader physical workshop logistics and authoritative shared-space/physical-trade depth |
+| `docs/GAME_VISION.md` | current intent, partially implemented | Seven-role ownership, exact controls, Sawmill queue, physical farm labor, the complete 500-node research catalog/purchase/persistence/client ledger, and the distinct larger communal blueprint are verified; finish the unconsumed research payloads, broader physical workshop logistics, and authoritative shared-space/physical-trade depth |
 | `docs/ARCHITECTURE.md` | reconciled | Keep phase/action/test inventories and physical four-processor/Steward/Accountant behavior synchronized with code |
 | `docs/HANDOFF.md` | reconciled | Keep NEXT STEPS and verified evidence synchronized here |
 | `docs/migration/BOARD.md` | core migration complete, expansion rollup reconciled | Close partial P12–P19 slices only after their feature campaigns |
@@ -119,7 +119,7 @@ checked by requirement group so “historical” does not conceal a dropped curr
 | Multiple colonies and inter-colony trade | Carried forward and extended: a larger durable communal hub, exact personal foundings, secure ownership, shrine-knowledge contact, and direct consensual resource barter are live alongside visiting traders. Shared mutable terrain and physical meeting/item/caravan trade remain open. |
 | External sprite-render service, DOM/Pixi rendering, isometric/elevation experiments, and newspaper UI | Superseded or explicitly dropped by the Rust/Bevy top-down direction |
 | Seasonal events, achievements, accessories, sound/music, and a mobile app | Listed only as non-MVP future ideas in the original document; not current commitments unless promoted into `GAME_VISION.md` |
-| Historical roadmap stretch items such as traveler interception and elevation-aware zones | Not current commitments. Real rail/ship transport and finite-source physical fishing were later promoted by P16/P17/P19 and remain open above. |
+| Historical roadmap stretch items such as traveler interception and elevation-aware zones | Not current commitments. Finite-source physical fishing was later promoted by P16/P19 and is verified above; real rail/ship transport was promoted by P17/P19 and remains open. |
 
 The old result templates and browser test campaigns document measurements of the retired web
 client. They are evidence archives, not Bevy acceptance criteria; the current matrix below

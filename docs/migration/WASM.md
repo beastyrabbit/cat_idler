@@ -104,7 +104,7 @@ WebSocket backend, so the SSE-less WS transport works unchanged in the browser.
 ## Production hosting
 
 The repository now includes a non-root multi-stage `Dockerfile` that builds the optimized
-Trunk bundle and native server, serves the SPA and `/images` from `cat-server`, persists
+Trunk bundle and native server, serves the SPA and `/public/images` from `cat-server`, persists
 SQLite on `/data`, and exposes `/health` plus the stateful `/ready` probe. Static responses
 use Brotli/gzip, correct MIME types, cache policy, and `nosniff`; WebSocket origins can be
 restricted exactly. See `docs/DEPLOYMENT.md` for the build/run/reverse-proxy recipe.

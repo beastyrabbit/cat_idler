@@ -26,9 +26,11 @@ The client loads four `32x32` role hats and follows the interpolated body with t
 | Ritualist | `public/images/cats/hat-ritualist.png` |
 | Warrior | `public/images/cats/hat-warrior.png` |
 
-Carried resources currently use a small resource-colored square rather than a separate carry
-animation. Player-priority cats receive a gold marker, and the selected cat receives a selection
-marker. Those overlays are runtime geometry, not additional sheet frames.
+Materials and Blessings use dedicated carry icons; most other carried resources still use a small
+resource-colored square rather than a semantic cargo glyph or separate carry animation. Exhaustive
+semantic cargo identity is queued in `docs/FIX_LOG.md`. Player-priority cats receive a gold marker,
+and the selected cat receives a selection marker. Those markers are runtime geometry, not
+additional sheet frames.
 
 ## Static portraits and retired placeholders
 
