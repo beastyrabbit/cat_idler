@@ -21,6 +21,11 @@ rules, and P19's canonical production table. Runtime identity comes only from
 | finite Planks + Blocks | `planks_and_blocks_to_tools` | Woodworking / Craft | exact wooden Tool | founding baseline; `toolmaking_preparation` owns later breadth |
 | farm basket → Grain | `grain_to_flour` | Mill / Mill | Flour | `grain_milling_preparation` |
 | stored Flour | `flour_to_food` | Mill / Mill | Food | `grain_milling_staples` |
+| farm basket → Grain | `fine_grain_flour`, `stoneground_flour`, `masterwork_flour` | Mill / Mill | Flour | Grain Milling quality/specialty/masterwork |
+| stored Flour | `bake_flatbread`, `bake_loaf`, `bake_biscuits`, `bake_festival_cake`, `bake_masterwork_pastry` | Mill / Mill | Food | Baking preparation/staples/quality/specialty/masterwork |
+| farm basket → Herbs | `herbal_poultice`, `herbal_tonic`, `herbal_salve`, `herbal_remedy`, `herbal_masterwork_remedy` | Workshop / Process | Medicine | Herbalism preparation/staples/quality/specialty/masterwork |
+| stored Food | `dry_food`, `smoke_food`, `pickle_food`, `preserve_rations`, `preserve_masterwork_feast` | Mill / Mill | Preserves | Food Preservation preparation/staples/quality/specialty/masterwork |
+| Grain/Catnip/Herbs | `brew_grain_small`, `brew_catnip_ale`, `brew_herbal_tonic`, `brew_spiced_ale`, `brew_masterwork` | Mill / Mill | Brew | Brewing preparation/staples/quality/specialty/masterwork |
 | finite Supplies | `materials_to_refined` | Workshop / Process | Crafted Supplies | `trade_goods_preparation` |
 | mountain quarry → Ore | `ore_to_metal` | Smelter / Metalwork | Metal | `metallurgy_preparation` |
 | forage → Fibre | `fibre_to_cloth` | Clothier / Textile | Cloth | `textiles` |
@@ -39,7 +44,7 @@ rules, and P19's canonical production table. Runtime identity comes only from
 | beach/desert deposit → Sand | `sand_glass_bowl` | Workshop / Process | exact glassy sand Bowl | `trade_goods_specialty` |
 | beach/desert deposit → Sand | `sand_glass_trinket` | Workshop / Process | exact quality-2 glassy sand Trinket | `trade_goods_masterwork` |
 
-All 23 operations use pile → carried input → station-local input → work → station-local output →
+All 46 operations use pile → carried input → station-local input → work → station-local output →
 carried delivery. The ten variant routes create a stable finite item identity in local output and
 move that same identity, material, quality, maximum/current durability, and condition to storage;
 there is no shadow scalar good. The two Mill operations are deliberately separate: Flour must be
@@ -49,16 +54,16 @@ order, repeat intent, pause, progress, and intentionally empty queues.
 
 ## Catalog promises that remain future content
 
-There are exactly **81 generated recipe payload IDs** without a runtime descriptor and **64
-generated resource payload IDs** without an authoritative `ResourceKind` source/consumer. They
+There are exactly **58 generated recipe payload IDs** without a runtime descriptor and **47
+generated resource payload IDs** without an authoritative source/consumer. They
 remain visible as `FUTURE` in the research ledger, cannot spend points, and cannot be selected by
 the Leader.
 
 | Generated breadth | Missing authoritative layer |
 | --- | --- |
 | Remaining gem, clay, sand, and bone families | The selected starter variants above are live; the other generated combinations have no selected runtime descriptor |
-| Baking beyond the live Mill baseline, herbalism, medicine, furniture, clothing, and other generated family recipes | No P19-selected station recipe descriptor and complete physical route |
-| Generic `*_sources` resource IDs | They are catalog registry labels, not stable save/wire resource kinds or physical source entitlements |
+| Furniture, remaining clothing, weapon/armor variants, field craft, expedition supplies, and other generated family recipes | No P19-selected station recipe descriptor and complete physical route |
+| Remaining generic `*_sources` resource IDs | They are catalog registry labels without an exact physical source or consumer |
 | Remaining material/category combinations | Item definitions alone do not provide a selected recipe, station-local input, exact output identity, or delivery loop |
 
 This boundary prevents research points from buying no-ops. A future entry moves into the live table

@@ -9,7 +9,7 @@ and any changed Bevy visuals have been verified.
 
 | Finding | Required correction | State |
 | --- | --- | --- |
-| Research recipe/resource breadth remains incomplete | Twenty-three runtime recipe IDs now have data-owned station descriptors and exact catalog ownership metadata: twenty are research-gated and three are founding baselines. The remaining 81 generated recipe IDs and all 64 generated resource IDs have no authoritative consumer, are visibly marked `FUTURE`, and cannot spend points. Continue only from the evidence boundary in `RECIPE_RESOURCE_MATRIX.md`. | in progress |
+| Research recipe/resource breadth remains incomplete | Forty-six runtime recipe IDs now have data-owned station descriptors and exact catalog ownership metadata. The remaining 58 generated recipe IDs and 47 generated resource IDs have no authoritative consumer, are visibly marked `FUTURE`, and cannot spend points. Continue only from the evidence boundary in `RECIPE_RESOURCE_MATRIX.md`. | in progress |
 
 ## Verified fixes
 
@@ -31,6 +31,33 @@ Failure leaves the offer open and both physical cargoes at home. Planning cannot
 live wall/gate topology, deterministic 4,800-tile bounds, unchanged shared/fog ledgers, exact JSON
 route restart, reverse-route durability, cancellation, full-storage waiting, exact equipment
 identity, and one-second/coarse tick partition equivalence. Full simulation and strict gates pass.
+
+## 2026-07-16 — Food and plant research breadth has physical consumers
+
+**Problem:** Baking, Herbalism, Food Preservation, Brewing, and the later Grain Milling stages
+were visible but non-purchasable `FUTURE` promises. They had neither selected finite recipes nor
+observable consumers for their generated resource stages.
+
+**Fix:** Twenty-three selected recipes now run through finite Mill or Workshop input, work,
+local-output, carrier, and storage state. They cover quality Grain→Flour, Flour→Food baking,
+Herbs→Medicine, Food→Preserves, and Grain/Catnip/Herbs→Brew. Preserves feed cats before
+perishable Food, Medicine treats injured cats at a bounded cat-hour rate, and Brew replaces at
+most one quarter of thirst so clean Water remains necessary. Seventeen exact resource stages now
+raise the matching crop or batch yield, reduce Food spoilage, shorten only their family's batch,
+or expand the exact Grain/Flour/Food/Preserves/Medicine/Brew capacity in a real pile. No generic
+generated ID is accepted without one of those consumers.
+
+**Evidence:** Exhaustive catalog and route tests cover all 42 nodes in the five families and all
+23 new descriptor→physical-recipe mappings. Storage/effect tests pin each exact resource-stage
+consumer. A no-input-after-setup passive twin produces finite local output deterministically; a
+signed player purchase and queue edit reaches the same recipe. New goods cross serde/protocol,
+stockpiles, cargo, Accountant projection, trader/village trade, SQLite audit restart, and the
+31-entry unique client HUD/carrying maps. The future boundary is now 58 recipes and 47 resources.
+The inspected client-owned 1090×2105 RGB framebuffer
+`/tmp/food-plant-research-breadth.png` (SHA-256
+`a4bd0fd829edb2021a8588c8e50bf21b85962f2030c69b387fbf021e114e0622`) shows all 31
+resource rows, including distinct Preserves, Medicine, and Brew art and values, without clipping.
+The temporary capture system and isolated client/server processes were removed.
 
 ## 2026-07-16 — Whole-game signed action campaign covers post-P19 controls
 

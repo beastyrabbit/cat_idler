@@ -1263,7 +1263,7 @@ const WIDE_BOTTOM_BAR_FOOTPRINT: f32 = 3.0 * UI_BTN_H + 4.0 * UI_GAP + 2.0 * UI_
 const NARROW_BOTTOM_BAR_FOOTPRINT: f32 = 4.0 * UI_BTN_H + 5.0 * UI_GAP + 2.0 * UI_BORDER_W + 10.0;
 const NARROW_LAYOUT_MAX_WIDTH: f32 = 1100.0;
 const BOTTOM_OVERLAY_CLEARANCE: f32 = WIDE_BOTTOM_BAR_FOOTPRINT + UI_GAP;
-/// Fourteen two-column resource rows remain readable at this compact height and
+/// Sixteen two-column resource rows remain readable at this compact height and
 /// leave room for Dispatches above the narrow wrapped toolbar.
 const HUD_RESOURCE_PILL_HEIGHT: f32 = 19.0;
 #[cfg(test)]
@@ -3649,6 +3649,9 @@ enum HudRes {
     Catnip,
     Grain,
     Flour,
+    Preserves,
+    Medicine,
+    Brew,
     Materials,
     Stone,
     Refined,
@@ -3674,13 +3677,16 @@ enum HudRes {
 }
 
 /// The HUD resources, in display order (refinement tier grouped after refined).
-const HUD_RESOURCES: [HudRes; 28] = [
+const HUD_RESOURCES: [HudRes; 31] = [
     HudRes::Food,
     HudRes::Fish,
     HudRes::Water,
     HudRes::Catnip,
     HudRes::Grain,
     HudRes::Flour,
+    HudRes::Preserves,
+    HudRes::Medicine,
+    HudRes::Brew,
     HudRes::Materials,
     HudRes::Stone,
     HudRes::Refined,
@@ -3743,7 +3749,7 @@ impl IconArt {
 }
 
 /// A distinct semantic glyph for every maintained resource. Runtime HUD art stays
-/// under the tracked icon set; terrain, farm, furniture, and world-prop sprites must
+/// under the tracked icon/semantic-task set; terrain, farm, furniture, and world-prop sprites must
 /// never stand in for resource identity here.
 fn resource_icon_path(kind: HudRes) -> &'static str {
     match kind {
@@ -3753,6 +3759,9 @@ fn resource_icon_path(kind: HudRes) -> &'static str {
         HudRes::Catnip => "public/images/game/icons/catnip.png",
         HudRes::Grain => "public/images/game/icons/grain.png",
         HudRes::Flour => "public/images/game/icons/flour.png",
+        HudRes::Preserves => "public/images/game/props/crate.png",
+        HudRes::Medicine => "public/images/ui/tasks/heal.png",
+        HudRes::Brew => "public/images/game/props/barrel.png",
         HudRes::Materials => "public/images/game/icons/materials.png",
         HudRes::Stone => "public/images/game/icons/stone.png",
         HudRes::Refined => "public/images/game/icons/refined.png",
@@ -3813,6 +3822,9 @@ fn hud_res_of(kind: ResourceKind) -> HudRes {
         ResourceKind::Catnip => HudRes::Catnip,
         ResourceKind::Grain => HudRes::Grain,
         ResourceKind::Flour => HudRes::Flour,
+        ResourceKind::Preserves => HudRes::Preserves,
+        ResourceKind::Medicine => HudRes::Medicine,
+        ResourceKind::Brew => HudRes::Brew,
         ResourceKind::Materials => HudRes::Materials,
         ResourceKind::Stone => HudRes::Stone,
         ResourceKind::Refined => HudRes::Refined,
@@ -3845,6 +3857,9 @@ fn hud_resource_label(kind: HudRes) -> &'static str {
         HudRes::Catnip => "Catnip",
         HudRes::Grain => "Grain",
         HudRes::Flour => "Flour",
+        HudRes::Preserves => "Preserves",
+        HudRes::Medicine => "Medicine",
+        HudRes::Brew => "Brew",
         HudRes::Materials => "Materials",
         HudRes::Stone => "Stone",
         HudRes::Refined => "Refined",
@@ -3879,6 +3894,9 @@ fn resource_icon_tint(kind: HudRes) -> Color {
         HudRes::Catnip => Color::srgb(0.66, 0.48, 0.82),
         HudRes::Grain => Color::srgb(0.88, 0.68, 0.26),
         HudRes::Flour => Color::srgb(0.92, 0.88, 0.72),
+        HudRes::Preserves => Color::srgb(0.76, 0.42, 0.28),
+        HudRes::Medicine => Color::srgb(0.42, 0.82, 0.54),
+        HudRes::Brew => Color::srgb(0.78, 0.56, 0.25),
         HudRes::Materials => Color::srgb(0.62, 0.46, 0.29),
         HudRes::Stone => Color::srgb(0.62, 0.64, 0.66),
         HudRes::Refined => Color::srgb(0.86, 0.71, 0.40),
@@ -3914,6 +3932,9 @@ fn hud_resource_value(kind: HudRes, r: &ResourceAmounts, cap: &ResourceCapacitie
         HudRes::Catnip => format!("{:.0} / {:.0}", r.catnip, cap.catnip),
         HudRes::Grain => format!("{:.0} / {:.0}", r.grain, cap.grain),
         HudRes::Flour => format!("{:.0} / {:.0}", r.flour, cap.flour),
+        HudRes::Preserves => format!("{:.0} / {:.0}", r.preserves, cap.preserves),
+        HudRes::Medicine => format!("{:.0} / {:.0}", r.medicine, cap.medicine),
+        HudRes::Brew => format!("{:.0} / {:.0}", r.brew, cap.brew),
         HudRes::Materials => format!("{:.0} / {:.0}", r.materials, cap.materials),
         HudRes::Stone => format!("{:.0} / {:.0}", r.stone, cap.stone),
         HudRes::Refined => format!("{:.0} / {:.0}", r.refined, cap.refined),
@@ -9510,7 +9531,7 @@ fn is_discovered_trade_target(
             .any(|village| village.id == target_id)
 }
 
-const VILLAGE_TRADE_KINDS: [ResourceKind; 27] = [
+const VILLAGE_TRADE_KINDS: [ResourceKind; 30] = [
     ResourceKind::Food,
     ResourceKind::Fish,
     ResourceKind::Water,
@@ -9518,6 +9539,9 @@ const VILLAGE_TRADE_KINDS: [ResourceKind; 27] = [
     ResourceKind::Catnip,
     ResourceKind::Grain,
     ResourceKind::Flour,
+    ResourceKind::Preserves,
+    ResourceKind::Medicine,
+    ResourceKind::Brew,
     ResourceKind::Materials,
     ResourceKind::Stone,
     ResourceKind::Refined,
@@ -9554,6 +9578,9 @@ fn trade_resource_short_label(kind: ResourceKind) -> &'static str {
         ResourceKind::Catnip => "nip",
         ResourceKind::Grain => "grain",
         ResourceKind::Flour => "flour",
+        ResourceKind::Preserves => "preserves",
+        ResourceKind::Medicine => "medicine",
+        ResourceKind::Brew => "brew",
         ResourceKind::Materials => "mats",
         ResourceKind::Stone => "stone",
         ResourceKind::Refined => "refined",
@@ -11369,7 +11396,7 @@ fn officer_holder_name(colony: &ColonySnapshot, role: OfficerRole) -> Option<&st
         .map(|c| c.name.as_str())
 }
 
-const MAINTAINED_RESOURCE_KINDS: [ResourceKind; 28] = [
+const MAINTAINED_RESOURCE_KINDS: [ResourceKind; 31] = [
     ResourceKind::Food,
     ResourceKind::Fish,
     ResourceKind::Water,
@@ -11377,6 +11404,9 @@ const MAINTAINED_RESOURCE_KINDS: [ResourceKind; 28] = [
     ResourceKind::Catnip,
     ResourceKind::Grain,
     ResourceKind::Flour,
+    ResourceKind::Preserves,
+    ResourceKind::Medicine,
+    ResourceKind::Brew,
     ResourceKind::Materials,
     ResourceKind::Stone,
     ResourceKind::Refined,
@@ -11409,6 +11439,9 @@ fn resource_amount(kind: ResourceKind, resources: &ResourceAmounts) -> f64 {
         ResourceKind::Catnip => resources.catnip,
         ResourceKind::Grain => resources.grain,
         ResourceKind::Flour => resources.flour,
+        ResourceKind::Preserves => resources.preserves,
+        ResourceKind::Medicine => resources.medicine,
+        ResourceKind::Brew => resources.brew,
         ResourceKind::Materials => resources.materials,
         ResourceKind::Stone => resources.stone,
         ResourceKind::Refined => resources.refined,
@@ -11476,6 +11509,9 @@ fn pile_prop(kind: ResourceKind) -> PropTexture {
         ResourceKind::Water => PropTexture::Barrel,
         ResourceKind::Herbs => PropTexture::Haystack,
         ResourceKind::Catnip | ResourceKind::Grain | ResourceKind::Flour => PropTexture::Sack,
+        ResourceKind::Preserves => PropTexture::Crate,
+        ResourceKind::Medicine => PropTexture::Haystack,
+        ResourceKind::Brew => PropTexture::Barrel,
         ResourceKind::Materials => PropTexture::StonePile,
         ResourceKind::Stone => PropTexture::StonePile,
         ResourceKind::Refined => PropTexture::GoldPile,
@@ -11508,6 +11544,9 @@ fn resource_kind_name(kind: ResourceKind) -> &'static str {
         ResourceKind::Catnip => "catnip",
         ResourceKind::Grain => "grain",
         ResourceKind::Flour => "flour",
+        ResourceKind::Preserves => "preserves",
+        ResourceKind::Medicine => "medicine",
+        ResourceKind::Brew => "brew",
         ResourceKind::Materials => "materials",
         ResourceKind::Stone => "stone",
         ResourceKind::Refined => "refined",
@@ -12056,7 +12095,7 @@ fn carrying_color(kind: CarryingKind) -> Color {
     resource_icon_tint(carrying_hud_res(kind))
 }
 
-const CARRYING_KINDS: [CarryingKind; 28] = [
+const CARRYING_KINDS: [CarryingKind; 31] = [
     CarryingKind::Food,
     CarryingKind::Fish,
     CarryingKind::Blessings,
@@ -12072,6 +12111,9 @@ const CARRYING_KINDS: [CarryingKind; 28] = [
     CarryingKind::Catnip,
     CarryingKind::Grain,
     CarryingKind::Flour,
+    CarryingKind::Preserves,
+    CarryingKind::Medicine,
+    CarryingKind::Brew,
     CarryingKind::Herbs,
     CarryingKind::Hide,
     CarryingKind::Leather,
@@ -12107,6 +12149,9 @@ fn carrying_hud_res(kind: CarryingKind) -> HudRes {
         CarryingKind::Catnip => HudRes::Catnip,
         CarryingKind::Grain => HudRes::Grain,
         CarryingKind::Flour => HudRes::Flour,
+        CarryingKind::Preserves => HudRes::Preserves,
+        CarryingKind::Medicine => HudRes::Medicine,
+        CarryingKind::Brew => HudRes::Brew,
         CarryingKind::Herbs => HudRes::Herbs,
         CarryingKind::Hide => HudRes::Hide,
         CarryingKind::Leather => HudRes::Leather,
@@ -12779,8 +12824,8 @@ mod tests {
         assert_eq!(dispatches_display(1024.0, false), Display::None);
         assert_eq!(dispatches_display(1280.0, false), Display::Flex);
         assert_eq!(dispatches_display(1280.0, true), Display::None);
-        assert_eq!(hud_resource_grid_rows(), 14);
-        assert_eq!(hud_resource_grid_height(), 305.0);
+        assert_eq!(hud_resource_grid_rows(), 16);
+        assert_eq!(hud_resource_grid_height(), 349.0);
         let grid_width = HUD_RESOURCE_COLUMNS as f32 * HUD_RESOURCE_CELL_WIDTH
             + (HUD_RESOURCE_COLUMNS - 1) as f32 * UI_GAP
             + 2.0 * UI_PAD
@@ -13874,7 +13919,7 @@ mod tests {
     #[test]
     fn every_cargo_kind_uses_a_unique_tracked_semantic_png() {
         let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        assert_eq!(CARRYING_KINDS.len(), 28, "wire cargo cardinality changed");
+        assert_eq!(CARRYING_KINDS.len(), 31, "wire cargo cardinality changed");
         let paths = CARRYING_KINDS
             .into_iter()
             .map(carrying_icon_path)
@@ -13886,7 +13931,8 @@ mod tests {
             let path = carrying_icon_path(kind);
             assert!(
                 (path.starts_with("public/images/game/icons/")
-                    || path.starts_with("public/images/game/props/"))
+                    || path.starts_with("public/images/game/props/")
+                    || path.starts_with("public/images/ui/tasks/"))
                     && path.ends_with(".png"),
                 "{kind:?} escaped the tracked semantic icon set: {path}"
             );
@@ -13963,6 +14009,9 @@ mod tests {
             catnip: 0.0,
             grain: 0.0,
             flour: 0.0,
+            preserves: 0.0,
+            medicine: 0.0,
+            brew: 0.0,
             materials,
             stone: 0.0,
             refined,
@@ -14073,7 +14122,7 @@ mod tests {
     #[test]
     fn accept_choice_cycles_general_through_kinds() {
         let storable = storable_kinds();
-        assert_eq!(storable.len(), 27);
+        assert_eq!(storable.len(), 30);
         for &kind in ResourceKind::ALL {
             assert_eq!(
                 storable.contains(&kind),
@@ -15408,7 +15457,7 @@ mod tests {
             .iter()
             .map(|kind| hud_resource_label(*kind))
             .collect::<HashSet<_>>();
-        assert_eq!(HUD_RESOURCES.len(), 28);
+        assert_eq!(HUD_RESOURCES.len(), 31);
         assert_eq!(HUD_RESOURCES.len(), MAINTAINED_RESOURCE_KINDS.len());
         assert_eq!(paths.len(), HUD_RESOURCES.len(), "no icon-path aliases");
         assert_eq!(labels.len(), HUD_RESOURCES.len(), "no label aliases");
@@ -15432,7 +15481,8 @@ mod tests {
             let path = resource_icon_path(kind);
             assert!(
                 (path.starts_with("public/images/game/icons/")
-                    || path.starts_with("public/images/game/props/"))
+                    || path.starts_with("public/images/game/props/")
+                    || path.starts_with("public/images/ui/tasks/"))
                     && path.ends_with(".png"),
                 "{kind:?} escaped the tracked semantic icon set: {path}"
             );
@@ -15455,6 +15505,9 @@ mod tests {
             catnip: 3.0,
             grain: 14.0,
             flour: 6.0,
+            preserves: 7.0,
+            medicine: 2.0,
+            brew: 5.0,
             materials: 24.0,
             stone: 9.0,
             refined: 0.0,
@@ -15485,6 +15538,9 @@ mod tests {
             catnip: 50.0,
             grain: 100.0,
             flour: 100.0,
+            preserves: 100.0,
+            medicine: 100.0,
+            brew: 100.0,
             materials: 100.0,
             stone: 100.0,
             refined: 100.0,
@@ -15510,6 +15566,9 @@ mod tests {
         assert_eq!(hud_resource_value(HudRes::Fish, &r, &cap), "8 / 200");
         assert_eq!(hud_resource_value(HudRes::Grain, &r, &cap), "14 / 100");
         assert_eq!(hud_resource_value(HudRes::Flour, &r, &cap), "6 / 100");
+        assert_eq!(hud_resource_value(HudRes::Preserves, &r, &cap), "7 / 100");
+        assert_eq!(hud_resource_value(HudRes::Medicine, &r, &cap), "2 / 100");
+        assert_eq!(hud_resource_value(HudRes::Brew, &r, &cap), "5 / 100");
         assert_eq!(hud_resource_value(HudRes::Logs, &r, &cap), "9 / 100");
         assert_eq!(hud_resource_value(HudRes::Lumber, &r, &cap), "4 / 100");
         // The refinement tier shows amount / cap like the other storables.
@@ -15551,6 +15610,9 @@ mod tests {
                 catnip: 0.0,
                 grain: 0.0,
                 flour: 0.0,
+                preserves: 0.0,
+                medicine: 0.0,
+                brew: 0.0,
                 materials: 0.0,
                 stone: 0.0,
                 refined: 0.0,
@@ -15827,6 +15889,9 @@ mod tests {
             catnip: 0.0,
             grain: 0.0,
             flour: 0.0,
+            preserves: 0.0,
+            medicine: 0.0,
+            brew: 0.0,
             materials: 24.0,
             stone: 7.0,
             refined: 0.0,

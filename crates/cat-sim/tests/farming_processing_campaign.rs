@@ -943,6 +943,7 @@ fn run_signed_player_farm_smoke_from_preearned_research(seed: u32) -> WorldState
             "foraging_lore",
             "sawmill",
             "masonry",
+            "grain_milling_sources",
             "grain_milling_preparation",
             "grain_milling_staples",
         ] {

@@ -189,10 +189,9 @@ impl ResearchNode {
             ResearchPayload::UnlockRecipe { recipe_id } => {
                 !crate::station_recipes::is_runtime_recipe_id(recipe_id)
             }
-            // No generated resource registry id is an authoritative ResourceKind.
-            // Existing physical sources are unlocked by their maintained job/building
-            // contracts instead of these generic family-stage placeholders.
-            ResearchPayload::UnlockResource { .. } => true,
+            ResearchPayload::UnlockResource { resource_id } => {
+                !is_runtime_resource_unlock_id(resource_id)
+            }
             ResearchPayload::ModifyBuilding {
                 building_id,
                 attribute: BuildingAttribute::WorkerSlots,
@@ -201,6 +200,34 @@ impl ResearchNode {
             _ => false,
         })
     }
+}
+
+/// Generated family-stage resource promises with exact, observable runtime
+/// consumers. Keeping this allow-list explicit prevents later catalog prose from
+/// silently becoming purchasable no-ops.
+pub const RUNTIME_RESOURCE_UNLOCK_IDS: &[&str] = &[
+    "grain_milling_sources",
+    "grain_milling_preservation",
+    "grain_milling_bulk",
+    "grain_milling_reserves",
+    "baking_sources",
+    "baking_preservation",
+    "baking_bulk",
+    "baking_reserves",
+    "herbalism_sources",
+    "herbalism_preservation",
+    "herbalism_bulk",
+    "food_preservation_sources",
+    "food_preservation_preservation",
+    "food_preservation_bulk",
+    "brewing_sources",
+    "brewing_preservation",
+    "brewing_bulk",
+];
+
+#[must_use]
+pub fn is_runtime_resource_unlock_id(resource_id: &str) -> bool {
+    RUNTIME_RESOURCE_UNLOCK_IDS.contains(&resource_id)
 }
 
 /// Fixed FNV-1a hashing keeps the O(1) index deterministic and avoids
@@ -1453,14 +1480,15 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_generated_recipe_and_resource_promises_are_future_content() {
+    fn activated_food_plant_breadth_is_runtime_while_other_promises_remain_future() {
         let catalog = research_catalog();
         assert!(
-            catalog
+            !catalog
                 .get("baking_preparation")
                 .unwrap()
                 .is_future_content()
         );
+        assert!(!catalog.get("brewing_bulk").unwrap().is_future_content());
         assert!(catalog.get("hunting_sources").unwrap().is_future_content());
         assert!(
             !catalog
@@ -1501,11 +1529,37 @@ mod tests {
             .nodes()
             .iter()
             .flat_map(|node| &node.payloads)
-            .filter(|payload| matches!(payload, ResearchPayload::UnlockResource { .. }))
+            .filter(|payload| {
+                matches!(payload, ResearchPayload::UnlockResource { resource_id }
+                    if !is_runtime_resource_unlock_id(resource_id))
+            })
             .count();
 
-        assert_eq!(unsupported_recipes, 81);
-        assert_eq!(unsupported_resources, 64);
+        assert_eq!(unsupported_recipes, 58);
+        assert_eq!(unsupported_resources, 47);
+    }
+
+    #[test]
+    fn every_food_plant_family_stage_has_an_observable_runtime_consumer() {
+        let catalog = research_catalog();
+        let mut activated = 0;
+        for family in [
+            "grain_milling_",
+            "baking_",
+            "herbalism_",
+            "food_preservation_",
+            "brewing_",
+        ] {
+            for node in catalog
+                .nodes()
+                .iter()
+                .filter(|node| node.id.starts_with(family))
+            {
+                assert!(!node.is_future_content(), "{} remained FUTURE", node.id);
+                activated += 1;
+            }
+        }
+        assert_eq!(activated, 42);
     }
 
     #[test]

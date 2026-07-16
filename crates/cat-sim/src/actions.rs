@@ -3817,6 +3817,9 @@ fn trade_would_overflow(
         stockpiles::ResourceKind::Catnip => Some(capacities.catnip),
         stockpiles::ResourceKind::Grain => Some(capacities.grain),
         stockpiles::ResourceKind::Flour => Some(capacities.flour),
+        stockpiles::ResourceKind::Preserves => Some(capacities.preserves),
+        stockpiles::ResourceKind::Medicine => Some(capacities.medicine),
+        stockpiles::ResourceKind::Brew => Some(capacities.brew),
         stockpiles::ResourceKind::Materials => Some(capacities.materials),
         stockpiles::ResourceKind::Stone => Some(capacities.stone),
         stockpiles::ResourceKind::Refined => Some(capacities.refined),
@@ -4342,6 +4345,9 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
                 catnip: caps.catnip,
                 grain: caps.grain,
                 flour: caps.flour,
+                preserves: caps.preserves,
+                medicine: caps.medicine,
+                brew: caps.brew,
                 materials: caps.materials,
                 stone: caps.stone,
                 refined: caps.refined,
@@ -5890,6 +5896,9 @@ fn resources_snapshot(resources: &entities::Resources) -> proto::ResourceAmounts
         catnip: resources.catnip,
         grain: resources.grain,
         flour: resources.flour,
+        preserves: resources.preserves,
+        medicine: resources.medicine,
+        brew: resources.brew,
         materials: resources.materials,
         stone: resources.stone,
         refined: resources.refined,
@@ -6174,6 +6183,9 @@ fn proto_to_sim_resource_kind(kind: proto::ResourceKind) -> stockpiles::Resource
         proto::ResourceKind::Catnip => ResourceKind::Catnip,
         proto::ResourceKind::Grain => ResourceKind::Grain,
         proto::ResourceKind::Flour => ResourceKind::Flour,
+        proto::ResourceKind::Preserves => ResourceKind::Preserves,
+        proto::ResourceKind::Medicine => ResourceKind::Medicine,
+        proto::ResourceKind::Brew => ResourceKind::Brew,
         proto::ResourceKind::Materials => ResourceKind::Materials,
         proto::ResourceKind::Stone => ResourceKind::Stone,
         proto::ResourceKind::Refined => ResourceKind::Refined,
@@ -6208,6 +6220,9 @@ fn sim_to_proto_resource_kind(kind: stockpiles::ResourceKind) -> proto::Resource
         ResourceKind::Catnip => proto::ResourceKind::Catnip,
         ResourceKind::Grain => proto::ResourceKind::Grain,
         ResourceKind::Flour => proto::ResourceKind::Flour,
+        ResourceKind::Preserves => proto::ResourceKind::Preserves,
+        ResourceKind::Medicine => proto::ResourceKind::Medicine,
+        ResourceKind::Brew => proto::ResourceKind::Brew,
         ResourceKind::Materials => proto::ResourceKind::Materials,
         ResourceKind::Stone => proto::ResourceKind::Stone,
         ResourceKind::Refined => proto::ResourceKind::Refined,
@@ -6502,6 +6517,9 @@ fn sim_to_proto_carrying_kind(kind: entities::CarryingKind) -> proto::CarryingKi
         entities::CarryingKind::Catnip => proto::CarryingKind::Catnip,
         entities::CarryingKind::Grain => proto::CarryingKind::Grain,
         entities::CarryingKind::Flour => proto::CarryingKind::Flour,
+        entities::CarryingKind::Preserves => proto::CarryingKind::Preserves,
+        entities::CarryingKind::Medicine => proto::CarryingKind::Medicine,
+        entities::CarryingKind::Brew => proto::CarryingKind::Brew,
         entities::CarryingKind::Herbs => proto::CarryingKind::Herbs,
         entities::CarryingKind::Hide => proto::CarryingKind::Hide,
         entities::CarryingKind::Leather => proto::CarryingKind::Leather,
@@ -9861,7 +9879,7 @@ mod tests {
     fn designate_stockpile_accepts_all_physical_kinds_and_rejects_only_blessings() {
         const NONPHYSICAL_MESSAGE: &str = "Stockpiles accept only physical goods; Blessings are divine favor and are never hauled or stored in piles.";
 
-        assert_eq!(proto::ResourceKind::ALL.len(), 28);
+        assert_eq!(proto::ResourceKind::ALL.len(), 31);
         for &kind in proto::ResourceKind::ALL {
             let mut world = world_with_one_colony();
             let before = world.colonies[0].stockpiles.len();
@@ -11946,10 +11964,12 @@ mod tests {
                 .find(|building| building.id == "mill-player")
                 .unwrap()
                 .available_recipes,
-            vec![
-                crate::world_tick::GRAIN_TO_FLOUR_RECIPE_ID.to_owned(),
-                crate::world_tick::FLOUR_TO_FOOD_RECIPE_ID.to_owned(),
-            ]
+            crate::station_recipes::station_recipe_set(BuildingType::Mill)
+                .unwrap()
+                .recipes
+                .iter()
+                .map(|recipe| recipe.id.to_owned())
+                .collect::<Vec<_>>()
         );
         assert_eq!(
             buildings
@@ -12624,6 +12644,57 @@ mod tests {
         assert_eq!(
             visible.fish_population.unwrap().stock,
             stockpiles::FISH_POPULATION_CAPACITY
+        );
+    }
+
+    #[test]
+    fn signed_player_can_purchase_and_queue_a_food_plant_recipe() {
+        let mut world = world_with_one_colony();
+        let colony = &mut world.colonies[0];
+        colony.recipe_entitlement_rules_version =
+            crate::world_tick::CURRENT_RECIPE_ENTITLEMENT_RULES_VERSION;
+        colony.upgrade_tree.owned_node_ids = vec![
+            "research_hut".to_owned(),
+            "water_carriers".to_owned(),
+            "irrigation".to_owned(),
+            "baking_sources".to_owned(),
+        ];
+        colony.upgrade_tree.research_points = 100.0;
+        colony.buildings.push(BuildingRuntime {
+            id: "player-bakery".to_owned(),
+            building_type: BuildingType::Mill,
+            is_complete: true,
+            construction_progress: 100,
+            ..BuildingRuntime::default()
+        });
+
+        let purchase = proto::ClientAction::ResearchNode {
+            session_id: "sess_1".to_owned(),
+            nickname: "Player".to_owned(),
+            sig: "signed".to_owned(),
+            node_id: "baking_preparation".to_owned(),
+        };
+        assert!(apply_action(&mut world, &purchase, &ctx()).ok);
+        assert!(
+            apply_action(
+                &mut world,
+                &proto::ClientAction::EditProductionQueue {
+                    session_id: "sess_1".to_owned(),
+                    nickname: "Player".to_owned(),
+                    sig: "signed".to_owned(),
+                    building_id: "player-bakery".to_owned(),
+                    edit: proto::ProductionQueueEdit::Add {
+                        recipe_id: crate::station_recipes::BAKE_FLATBREAD_RECIPE_ID.to_owned(),
+                        repeat: true,
+                    },
+                },
+                &ctx(),
+            )
+            .ok
+        );
+        assert_eq!(
+            world.colonies[0].buildings.last().unwrap().production_queue[0].recipe_id,
+            crate::station_recipes::BAKE_FLATBREAD_RECIPE_ID
         );
     }
 

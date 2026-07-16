@@ -13,6 +13,29 @@ use crate::{
 pub const SAWMILL_RECIPE_ID: &str = "logs_to_lumber";
 pub const GRAIN_TO_FLOUR_RECIPE_ID: &str = "grain_to_flour";
 pub const FLOUR_TO_FOOD_RECIPE_ID: &str = "flour_to_food";
+pub const FINE_GRAIN_FLOUR_RECIPE_ID: &str = "fine_grain_flour";
+pub const STONEGROUND_FLOUR_RECIPE_ID: &str = "stoneground_flour";
+pub const MASTERWORK_FLOUR_RECIPE_ID: &str = "masterwork_flour";
+pub const BAKE_FLATBREAD_RECIPE_ID: &str = "bake_flatbread";
+pub const BAKE_LOAF_RECIPE_ID: &str = "bake_loaf";
+pub const BAKE_BISCUITS_RECIPE_ID: &str = "bake_biscuits";
+pub const BAKE_FESTIVAL_CAKE_RECIPE_ID: &str = "bake_festival_cake";
+pub const BAKE_MASTERWORK_PASTRY_RECIPE_ID: &str = "bake_masterwork_pastry";
+pub const HERBAL_POULTICE_RECIPE_ID: &str = "herbal_poultice";
+pub const HERBAL_TONIC_RECIPE_ID: &str = "herbal_tonic";
+pub const HERBAL_SALVE_RECIPE_ID: &str = "herbal_salve";
+pub const HERBAL_REMEDY_RECIPE_ID: &str = "herbal_remedy";
+pub const HERBAL_MASTERWORK_REMEDY_RECIPE_ID: &str = "herbal_masterwork_remedy";
+pub const DRY_FOOD_RECIPE_ID: &str = "dry_food";
+pub const SMOKE_FOOD_RECIPE_ID: &str = "smoke_food";
+pub const PICKLE_FOOD_RECIPE_ID: &str = "pickle_food";
+pub const PRESERVE_RATIONS_RECIPE_ID: &str = "preserve_rations";
+pub const PRESERVE_MASTERWORK_FEAST_RECIPE_ID: &str = "preserve_masterwork_feast";
+pub const BREW_GRAIN_SMALL_RECIPE_ID: &str = "brew_grain_small";
+pub const BREW_CATNIP_ALE_RECIPE_ID: &str = "brew_catnip_ale";
+pub const BREW_HERBAL_TONIC_RECIPE_ID: &str = "brew_herbal_tonic";
+pub const BREW_SPICED_ALE_RECIPE_ID: &str = "brew_spiced_ale";
+pub const BREW_MASTERWORK_RECIPE_ID: &str = "brew_masterwork";
 /// Pre-split Mill queue ID written by rules through P19. Kept only so persisted
 /// villages can be migrated to the two physically distinct operations.
 pub const LEGACY_COMBINED_MILL_RECIPE_ID: &str = "grain_to_flour_and_food";
@@ -71,16 +94,41 @@ pub struct StationRecipeSet {
     pub output_resources: &'static [ResourceKind],
 }
 
-const MILL_INPUTS: &[ResourceKind] = &[ResourceKind::Grain, ResourceKind::Flour];
-const MILL_OUTPUTS: &[ResourceKind] = &[ResourceKind::Food, ResourceKind::Flour];
+macro_rules! scalar_recipe {
+    ($id:ident, $building:ident, $input:ident, $output:ident) => {
+        StationRecipeDescriptor {
+            id: $id,
+            building_type: BuildingType::$building,
+            input_resources: &[ResourceKind::$input],
+            output_resources: &[ResourceKind::$output],
+            output_item: None,
+            founding_available: false,
+        }
+    };
+}
+
+const MILL_INPUTS: &[ResourceKind] = &[
+    ResourceKind::Grain,
+    ResourceKind::Flour,
+    ResourceKind::Food,
+    ResourceKind::Catnip,
+    ResourceKind::Herbs,
+];
+const MILL_OUTPUTS: &[ResourceKind] = &[
+    ResourceKind::Food,
+    ResourceKind::Flour,
+    ResourceKind::Preserves,
+    ResourceKind::Brew,
+];
 const SAWMILL_INPUTS: &[ResourceKind] = &[ResourceKind::Logs];
 const SAWMILL_OUTPUTS: &[ResourceKind] = &[ResourceKind::Lumber];
 const WORKSHOP_INPUTS: &[ResourceKind] = &[
     ResourceKind::Materials,
     ResourceKind::Gem,
     ResourceKind::Sand,
+    ResourceKind::Herbs,
 ];
-const WORKSHOP_OUTPUTS: &[ResourceKind] = &[ResourceKind::Refined];
+const WORKSHOP_OUTPUTS: &[ResourceKind] = &[ResourceKind::Refined, ResourceKind::Medicine];
 const SMELTER_INPUTS: &[ResourceKind] = &[ResourceKind::Ore];
 const SMELTER_OUTPUTS: &[ResourceKind] = &[ResourceKind::Metal];
 const WOOD_CUTTER_INPUTS: &[ResourceKind] = &[ResourceKind::Logs];
@@ -122,6 +170,24 @@ const MILL_RECIPES: &[StationRecipeDescriptor] = &[
         output_item: None,
         founding_available: false,
     },
+    scalar_recipe!(FINE_GRAIN_FLOUR_RECIPE_ID, Mill, Grain, Flour),
+    scalar_recipe!(STONEGROUND_FLOUR_RECIPE_ID, Mill, Grain, Flour),
+    scalar_recipe!(MASTERWORK_FLOUR_RECIPE_ID, Mill, Grain, Flour),
+    scalar_recipe!(BAKE_FLATBREAD_RECIPE_ID, Mill, Flour, Food),
+    scalar_recipe!(BAKE_LOAF_RECIPE_ID, Mill, Flour, Food),
+    scalar_recipe!(BAKE_BISCUITS_RECIPE_ID, Mill, Flour, Food),
+    scalar_recipe!(BAKE_FESTIVAL_CAKE_RECIPE_ID, Mill, Flour, Food),
+    scalar_recipe!(BAKE_MASTERWORK_PASTRY_RECIPE_ID, Mill, Flour, Food),
+    scalar_recipe!(DRY_FOOD_RECIPE_ID, Mill, Food, Preserves),
+    scalar_recipe!(SMOKE_FOOD_RECIPE_ID, Mill, Food, Preserves),
+    scalar_recipe!(PICKLE_FOOD_RECIPE_ID, Mill, Food, Preserves),
+    scalar_recipe!(PRESERVE_RATIONS_RECIPE_ID, Mill, Food, Preserves),
+    scalar_recipe!(PRESERVE_MASTERWORK_FEAST_RECIPE_ID, Mill, Food, Preserves),
+    scalar_recipe!(BREW_GRAIN_SMALL_RECIPE_ID, Mill, Grain, Brew),
+    scalar_recipe!(BREW_CATNIP_ALE_RECIPE_ID, Mill, Catnip, Brew),
+    scalar_recipe!(BREW_HERBAL_TONIC_RECIPE_ID, Mill, Herbs, Brew),
+    scalar_recipe!(BREW_SPICED_ALE_RECIPE_ID, Mill, Catnip, Brew),
+    scalar_recipe!(BREW_MASTERWORK_RECIPE_ID, Mill, Herbs, Brew),
 ];
 const SAWMILL_RECIPES: &[StationRecipeDescriptor] = &[StationRecipeDescriptor {
     id: SAWMILL_RECIPE_ID,
@@ -140,6 +206,16 @@ const WORKSHOP_RECIPES: &[StationRecipeDescriptor] = &[
         output_item: None,
         founding_available: false,
     },
+    scalar_recipe!(HERBAL_POULTICE_RECIPE_ID, Workshop, Herbs, Medicine),
+    scalar_recipe!(HERBAL_TONIC_RECIPE_ID, Workshop, Herbs, Medicine),
+    scalar_recipe!(HERBAL_SALVE_RECIPE_ID, Workshop, Herbs, Medicine),
+    scalar_recipe!(HERBAL_REMEDY_RECIPE_ID, Workshop, Herbs, Medicine),
+    scalar_recipe!(
+        HERBAL_MASTERWORK_REMEDY_RECIPE_ID,
+        Workshop,
+        Herbs,
+        Medicine
+    ),
     StationRecipeDescriptor {
         id: GEM_TRINKET_RECIPE_ID,
         building_type: BuildingType::Workshop,
@@ -349,6 +425,17 @@ pub fn is_runtime_recipe_id(recipe_id: &str) -> bool {
     })
 }
 
+/// Resolve any maintained physical recipe by its stable queue id.
+#[must_use]
+pub fn station_recipe(recipe_id: &str) -> Option<&'static StationRecipeDescriptor> {
+    BuildingType::ALL
+        .iter()
+        .copied()
+        .filter_map(station_recipe_set)
+        .flat_map(|station| station.recipes)
+        .find(|recipe| recipe.id == recipe_id)
+}
+
 /// Resolve an exact finite material-variant output from the same descriptor
 /// registry used by queue entitlement and station controls.
 #[must_use]
@@ -494,24 +581,25 @@ mod tests {
                 assert!(ids.insert(recipe.id), "duplicate recipe id {}", recipe.id);
             }
         }
-        assert_eq!(ids.len(), 23);
+        assert_eq!(ids.len(), 46);
         assert!(station_recipe_set(BuildingType::Den).is_none());
     }
 
     #[test]
     fn sourced_breadth_uses_explicit_mill_steps_and_metal_tools() {
         let mill = station_recipe_set(BuildingType::Mill).unwrap();
-        assert_eq!(
-            mill.recipes
-                .iter()
-                .map(|recipe| recipe.id)
-                .collect::<Vec<_>>(),
-            [GRAIN_TO_FLOUR_RECIPE_ID, FLOUR_TO_FOOD_RECIPE_ID]
-        );
+        assert_eq!(mill.recipes.len(), 20);
+        assert_eq!(mill.recipes[0].id, GRAIN_TO_FLOUR_RECIPE_ID);
+        assert_eq!(mill.recipes[1].id, FLOUR_TO_FOOD_RECIPE_ID);
+        assert_eq!(mill.recipes.last().unwrap().id, BREW_MASTERWORK_RECIPE_ID);
         assert_eq!(mill.recipes[0].input_resources, &[ResourceKind::Grain]);
         assert_eq!(mill.recipes[0].output_resources, &[ResourceKind::Flour]);
         assert_eq!(mill.recipes[1].input_resources, &[ResourceKind::Flour]);
         assert_eq!(mill.recipes[1].output_resources, &[ResourceKind::Food]);
+        assert!(mill.recipes.iter().any(|recipe| {
+            recipe.input_resources == [ResourceKind::Herbs]
+                && recipe.output_resources == [ResourceKind::Brew]
+        }));
 
         let smithy = station_recipe_set(BuildingType::Smithy).unwrap();
         assert_eq!(

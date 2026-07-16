@@ -81,6 +81,12 @@ pub enum CarryingKind {
     /// Milled grain moving between a Mill and a physical stockpile.
     #[serde(rename = "flour")]
     Flour,
+    #[serde(rename = "preserves")]
+    Preserves,
+    #[serde(rename = "medicine")]
+    Medicine,
+    #[serde(rename = "brew")]
+    Brew,
     #[serde(rename = "herbs")]
     Herbs,
     /// Raw hide carried home alongside a hunt's food.
@@ -139,6 +145,15 @@ pub struct Resources {
     /// Milled flour awaiting conversion into food.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub flour: f64,
+    /// Shelf-stable prepared food, eaten before perishable generic food.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub preserves: f64,
+    /// Herbal remedies consumed only when an injured resident can recover.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub medicine: f64,
+    /// Fermented grain/herb/catnip drink, covering a bounded share of thirst.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub brew: f64,
     pub materials: f64,
     /// Raw quarried stone. This additive field deliberately does not alias the
     /// stable generic `materials` (Supplies) field on legacy saves.
@@ -407,6 +422,9 @@ mod tests {
                 catnip: 27.0,
                 grain: 28.0,
                 flour: 29.0,
+                preserves: 32.0,
+                medicine: 33.0,
+                brew: 34.0,
                 materials: 13.0,
                 stone: 23.5,
                 refined: 14.0,

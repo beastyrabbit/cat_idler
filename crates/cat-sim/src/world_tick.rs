@@ -855,7 +855,9 @@ pub fn default_production_queue(building_type: BuildingType) -> Vec<ProductionQu
             // Material variants are deliberate player/research additions, not
             // surprise defaults that could strand a founding survival queue on
             // its first still-locked study.
-            .filter(|recipe| recipe.output_item.is_none())
+            .filter(|recipe| {
+                recipe.output_item.is_none() && food_plant_physical_recipe(recipe.id).is_none()
+            })
             .map(|recipe| ProductionQueueEntry {
                 recipe_id: recipe.id.to_owned(),
                 repeat: true,
@@ -3679,6 +3681,9 @@ fn starting_resources(scale_kind: VillageScale) -> Resources {
         catnip: 0.0,
         grain: 0.0,
         flour: 0.0,
+        preserves: 0.0,
+        medicine: 0.0,
+        brew: 0.0,
         materials: 60.0 * scale,
         stone: 0.0,
         refined: 0.0,
@@ -5024,7 +5029,13 @@ fn phase_7_consumption_spoilage_resource_pre_patch_minute_cadence(
 ) {
     let elapsed_for_decay = gate.elapsed_sec as f64 * normalize_resource_decay_multiplier(colony);
     let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
-    let spoilage_elapsed = elapsed_for_decay * (1.0 - effects.spoilage_resistance);
+    let baking_preservation_mult = if effects.unlocked_resources.contains("baking_preservation") {
+        0.5
+    } else {
+        1.0
+    };
+    let spoilage_elapsed =
+        elapsed_for_decay * (1.0 - effects.spoilage_resistance) * baking_preservation_mult;
     let caps = storage_caps(colony);
 
     // Residents now remove finite servings from a real pile and consume only after
@@ -5048,6 +5059,9 @@ fn phase_7_consumption_spoilage_resource_pre_patch_minute_cadence(
     colony.resources.catnip = clamp_resource(colony.resources.catnip, caps.catnip);
     colony.resources.grain = clamp_resource(colony.resources.grain, caps.grain);
     colony.resources.flour = clamp_resource(colony.resources.flour, caps.flour);
+    colony.resources.preserves = clamp_resource(colony.resources.preserves, caps.preserves);
+    colony.resources.medicine = clamp_resource(colony.resources.medicine, caps.medicine);
+    colony.resources.brew = clamp_resource(colony.resources.brew, caps.brew);
     colony.resources.materials = clamp_resource(colony.resources.materials, caps.materials);
     colony.resources.stone = clamp_resource(colony.resources.stone, caps.stone);
     colony.resources.refined = clamp_resource(colony.resources.refined, caps.refined);
@@ -9446,13 +9460,20 @@ fn advance_designated_farms(
                 .entry(plot.id.clone())
                 .or_default() += skilled_elapsed / 3600.0 * fertility;
         }
-        let basket = plot.harvest_amount() * effects.farm_yield_mult.max(0.0);
+        let family_source_mult = match plot.crop {
+            CropKind::Grain if effects.unlocked_resources.contains("grain_milling_sources") => 1.25,
+            CropKind::Herb if effects.unlocked_resources.contains("herbalism_sources") => 1.25,
+            CropKind::Catnip if effects.unlocked_resources.contains("brewing_sources") => 1.25,
+            _ => 1.0,
+        };
+        let farm_yield_mult = effects.farm_yield_mult.max(0.0) * family_source_mult;
+        let basket = plot.harvest_amount() * farm_yield_mult;
         let step = farming::advance_farm(
             &plot,
             skilled_elapsed,
             fertility,
             true,
-            effects.farm_yield_mult,
+            farm_yield_mult,
             basket,
         );
         colony.farms[index].growth_hours = step.next_growth_hours;
@@ -10120,13 +10141,28 @@ fn advance_primary_production_slot(
             // one exterior designation and hauls that plot's selected crop.
         }
         BuildingType::Mill => {
-            advance_physical_mill_slot(
-                colony,
-                building_index,
-                gate,
-                building_elapsed,
-                allow_output_haul,
-            );
+            let generic_recipe = colony.buildings[building_index]
+                .production_queue
+                .first()
+                .and_then(|entry| food_plant_physical_recipe(&entry.recipe_id));
+            if generic_recipe.is_some() {
+                advance_physical_refiner_slot(
+                    colony,
+                    building_index,
+                    gate,
+                    building_crafting_elapsed,
+                    productive_tools >= 1.0,
+                    allow_output_haul,
+                );
+            } else {
+                advance_physical_mill_slot(
+                    colony,
+                    building_index,
+                    gate,
+                    building_elapsed,
+                    allow_output_haul,
+                );
+            }
         }
         BuildingType::Sawmill => {
             advance_physical_sawmill_slot(
@@ -10836,6 +10872,11 @@ struct PersonalNeedMarker {
     source_pile_id: Option<String>,
     #[serde(default)]
     resume: PersonalNeedResume,
+    /// A drink may begin with one quarter-serving of Brew, but the same need
+    /// must finish with clean Water. Persisting this flag prevents restarts or
+    /// repeated routing passes from turning Brew into a survival loophole.
+    #[serde(default)]
+    brew_used: bool,
 }
 
 fn is_personal_need_task(task: Option<TaskType>) -> bool {
@@ -10869,6 +10910,7 @@ fn parse_personal_need_marker(marker: Option<&str>) -> Option<PersonalNeedMarker
         stage: PersonalNeedStage::Carrying,
         source_pile_id: Some(source.to_owned()),
         resume: PersonalNeedResume::default(),
+        brew_used: false,
     })
 }
 
@@ -11012,6 +11054,7 @@ fn start_personal_need(cat: &mut Cat, task: TaskType, resume: PersonalNeedResume
         stage: PersonalNeedStage::Seeking,
         source_pile_id: None,
         resume,
+        brew_used: false,
     };
     cat.current_task = Some(task);
     cat.activity = CatActivity::Idle;
@@ -11063,7 +11106,16 @@ fn personal_need_is_available(colony: &ColonyRuntime, cat_id: &str, task: TaskTy
                 || village_anchor_world(colony.anchor),
                 |cat| position_to_world(colony.anchor, cat.position),
             );
-            !personal_need_source_candidates(colony, task, from).is_empty()
+            let allow_brew = colony
+                .cats
+                .iter()
+                .find(|cat| cat.id == cat_id)
+                .and_then(|cat| cat.carrying.as_ref())
+                .and_then(|carrying| {
+                    parse_personal_need_marker(carrying.source_gather_spot.as_deref())
+                })
+                .is_none_or(|marker| !marker.brew_used);
+            !personal_need_source_candidates(colony, task, from, allow_brew).is_empty()
         }
         TaskType::Sleep => colony
             .buildings
@@ -11148,6 +11200,17 @@ fn phase_25_survival_deaths_and_carried_yield_salvage(
         let result =
             apply_physical_survival_tick(&colony.cats[index].needs, elapsed_sec, policy.config);
         colony.cats[index].needs = result.next_needs.clone();
+        if colony.cats[index].needs.health > 0.0
+            && colony.cats[index].needs.health < 100.0
+            && colony.resources.medicine > f64::EPSILON
+        {
+            // One remedy unit represents one cat-hour of treatment. Large and
+            // cadence-partitioned ticks therefore consume and heal identically.
+            let dose = (elapsed_sec / 3_600.0).min(colony.resources.medicine);
+            colony.resources.medicine -= dose;
+            colony.cats[index].needs.health =
+                (colony.cats[index].needs.health + dose * 5.0).min(100.0);
+        }
         if colony.cats[index].needs.hunger > 0.0
             && colony.cats[index].needs.thirst > 0.0
             && effects.health_recovery_mult > 1.0
@@ -13247,11 +13310,23 @@ fn personal_need_source_candidates(
     colony: &ColonyRuntime,
     task: TaskType,
     from: WorldPos,
+    allow_brew: bool,
 ) -> Vec<(usize, ResourceKind, WorldPos)> {
-    let kinds: &[ResourceKind] = match task {
-        TaskType::Eat => &[ResourceKind::Fish, ResourceKind::Food],
-        TaskType::Drink => &[ResourceKind::Water],
-        _ => &[],
+    let has_clean_water = colony.stockpiles.iter().any(|pile| {
+        !pile.is_station_local()
+            && stockpiles::resource_amount(&pile.contents, ResourceKind::Water) > f64::EPSILON
+    });
+    let kinds: Vec<ResourceKind> = match task {
+        TaskType::Eat => vec![
+            ResourceKind::Fish,
+            ResourceKind::Preserves,
+            ResourceKind::Food,
+        ],
+        TaskType::Drink if allow_brew && has_clean_water => {
+            vec![ResourceKind::Brew, ResourceKind::Water]
+        }
+        TaskType::Drink => vec![ResourceKind::Water],
+        _ => Vec::new(),
     };
     let mut candidates = colony
         .stockpiles
@@ -13347,14 +13422,21 @@ fn plan_personal_need_routes(
                     // selecting village stock. No resource is reserved on this leg.
                     Some(village_anchor_world(colony.anchor))
                 } else {
-                    personal_need_source_candidates(colony, task, from)
+                    let allow_brew = colony.cats[index]
+                        .carrying
+                        .as_ref()
+                        .and_then(|carrying| {
+                            parse_personal_need_marker(carrying.source_gather_spot.as_deref())
+                        })
+                        .is_none_or(|marker| !marker.brew_used);
+                    personal_need_source_candidates(colony, task, from, allow_brew)
                         .into_iter()
                         .find(|(_, _, source)| {
                             route_exists(grid, gate, from, *source)
                                 || route_exists(grid, gate, *source, meal_target)
                         })
                         .or_else(|| {
-                            personal_need_source_candidates(colony, task, from)
+                            personal_need_source_candidates(colony, task, from, allow_brew)
                                 .into_iter()
                                 .next()
                         })
@@ -13430,12 +13512,35 @@ fn complete_personal_need_arrival(
                 format!("{cat_name} recovered from dehydration."),
             );
         }
-        finish_personal_need(&mut colony.cats[cat_index], &marker);
+        if task == TaskType::Drink && carrying.kind == CarryingKind::Brew {
+            let next_marker = PersonalNeedMarker {
+                task,
+                stage: PersonalNeedStage::Seeking,
+                source_pile_id: None,
+                resume: marker.resume,
+                brew_used: true,
+            };
+            colony.cats[cat_index].carrying = Some(Carrying {
+                kind: CarryingKind::Water,
+                amount: 0.0,
+                job_ended_at: now_ms,
+                source_gather_spot: Some(personal_need_marker(&next_marker)),
+            });
+            colony.cats[cat_index].destination = None;
+            colony.cats[cat_index].activity = CatActivity::Idle;
+        } else {
+            finish_personal_need(&mut colony.cats[cat_index], &marker);
+        }
         return true;
     }
 
     let at = position_to_world(colony.anchor, colony.cats[cat_index].position);
-    let candidates = personal_need_source_candidates(colony, task, at);
+    let prior_marker = colony.cats[cat_index]
+        .carrying
+        .as_ref()
+        .and_then(|carrying| parse_personal_need_marker(carrying.source_gather_spot.as_deref()));
+    let allow_brew = prior_marker.as_ref().is_none_or(|marker| !marker.brew_used);
+    let candidates = personal_need_source_candidates(colony, task, at, allow_brew);
     let Some((pile_index, kind, _)) = candidates
         .into_iter()
         .find(|(_, _, point)| (point.x - at.x).abs() < 0.5 && (point.y - at.y).abs() < 0.5)
@@ -13455,7 +13560,12 @@ fn complete_personal_need_arrival(
         (100.0 - colony.cats[cat_index].needs.thirst).clamp(0.0, PERSONAL_DRINK_RESTORE)
             / PERSONAL_DRINK_RESTORE
     };
-    let wanted = base_serving * restore_capacity;
+    let serving_share = if kind == ResourceKind::Brew {
+        0.25
+    } else {
+        1.0
+    };
+    let wanted = base_serving * restore_capacity * serving_share;
     let available = stockpiles::resource_amount(&colony.stockpiles[pile_index].contents, kind);
     let contenders = colony
         .cats
@@ -13481,20 +13591,22 @@ fn complete_personal_need_arrival(
     let source_id = colony.stockpiles[pile_index].id.clone();
     let carrying_kind = match kind {
         ResourceKind::Fish => CarryingKind::Fish,
+        ResourceKind::Preserves => CarryingKind::Preserves,
         ResourceKind::Food => CarryingKind::Food,
+        ResourceKind::Brew => CarryingKind::Brew,
         ResourceKind::Water => CarryingKind::Water,
-        _ => unreachable!("personal needs select only food/fish/water"),
+        _ => unreachable!("personal needs select only edible or drinkable goods"),
     };
-    let resume = colony.cats[cat_index]
-        .carrying
+    let resume = prior_marker
         .as_ref()
-        .and_then(|carrying| parse_personal_need_marker(carrying.source_gather_spot.as_deref()))
-        .map_or_else(PersonalNeedResume::default, |marker| marker.resume);
+        .map_or_else(PersonalNeedResume::default, |marker| marker.resume.clone());
     let marker = PersonalNeedMarker {
         task,
         stage: PersonalNeedStage::Carrying,
         source_pile_id: Some(source_id),
         resume,
+        brew_used: prior_marker.is_some_and(|marker| marker.brew_used)
+            || kind == ResourceKind::Brew,
     };
     colony.cats[cat_index].carrying = Some(Carrying {
         kind: carrying_kind,
@@ -14230,6 +14342,9 @@ fn carrying_kind_for_resource(kind: ResourceKind) -> Option<CarryingKind> {
         ResourceKind::Catnip => Some(CarryingKind::Catnip),
         ResourceKind::Grain => Some(CarryingKind::Grain),
         ResourceKind::Flour => Some(CarryingKind::Flour),
+        ResourceKind::Preserves => Some(CarryingKind::Preserves),
+        ResourceKind::Medicine => Some(CarryingKind::Medicine),
+        ResourceKind::Brew => Some(CarryingKind::Brew),
         ResourceKind::Lumber => Some(CarryingKind::Lumber),
         ResourceKind::Planks => Some(CarryingKind::Planks),
         ResourceKind::Blocks => Some(CarryingKind::Blocks),
@@ -23466,9 +23581,252 @@ fn smithy_physical_recipe(recipe_id: &str) -> Option<SingleInputPhysicalRecipe> 
     })
 }
 
+fn food_plant_physical_recipe(recipe_id: &str) -> Option<SingleInputPhysicalRecipe> {
+    use crate::station_recipes as recipes;
+    let (
+        input_kind,
+        input_per_cycle,
+        output_kind,
+        output_per_cycle,
+        labor,
+        source_name,
+        output_name,
+    ) = match recipe_id {
+        recipes::FINE_GRAIN_FLOUR_RECIPE_ID => (
+            ResourceKind::Grain,
+            3.0,
+            ResourceKind::Flour,
+            4.0,
+            Labor::Mill,
+            "grain",
+            "fine flour",
+        ),
+        recipes::STONEGROUND_FLOUR_RECIPE_ID => (
+            ResourceKind::Grain,
+            4.0,
+            ResourceKind::Flour,
+            6.0,
+            Labor::Mill,
+            "grain",
+            "stoneground flour",
+        ),
+        recipes::MASTERWORK_FLOUR_RECIPE_ID => (
+            ResourceKind::Grain,
+            5.0,
+            ResourceKind::Flour,
+            8.0,
+            Labor::Mill,
+            "grain",
+            "masterwork flour",
+        ),
+        recipes::BAKE_FLATBREAD_RECIPE_ID => (
+            ResourceKind::Flour,
+            2.0,
+            ResourceKind::Food,
+            3.0,
+            Labor::Mill,
+            "flour",
+            "flatbread",
+        ),
+        recipes::BAKE_LOAF_RECIPE_ID => (
+            ResourceKind::Flour,
+            3.0,
+            ResourceKind::Food,
+            5.0,
+            Labor::Mill,
+            "flour",
+            "bread",
+        ),
+        recipes::BAKE_BISCUITS_RECIPE_ID => (
+            ResourceKind::Flour,
+            4.0,
+            ResourceKind::Food,
+            7.0,
+            Labor::Mill,
+            "flour",
+            "biscuits",
+        ),
+        recipes::BAKE_FESTIVAL_CAKE_RECIPE_ID => (
+            ResourceKind::Flour,
+            5.0,
+            ResourceKind::Food,
+            9.0,
+            Labor::Mill,
+            "flour",
+            "festival cake",
+        ),
+        recipes::BAKE_MASTERWORK_PASTRY_RECIPE_ID => (
+            ResourceKind::Flour,
+            6.0,
+            ResourceKind::Food,
+            12.0,
+            Labor::Mill,
+            "flour",
+            "masterwork pastry",
+        ),
+        recipes::HERBAL_POULTICE_RECIPE_ID => (
+            ResourceKind::Herbs,
+            2.0,
+            ResourceKind::Medicine,
+            1.0,
+            Labor::Process,
+            "herbs",
+            "poultices",
+        ),
+        recipes::HERBAL_TONIC_RECIPE_ID => (
+            ResourceKind::Herbs,
+            3.0,
+            ResourceKind::Medicine,
+            2.0,
+            Labor::Process,
+            "herbs",
+            "herbal tonics",
+        ),
+        recipes::HERBAL_SALVE_RECIPE_ID => (
+            ResourceKind::Herbs,
+            4.0,
+            ResourceKind::Medicine,
+            3.0,
+            Labor::Process,
+            "herbs",
+            "healing salves",
+        ),
+        recipes::HERBAL_REMEDY_RECIPE_ID => (
+            ResourceKind::Herbs,
+            5.0,
+            ResourceKind::Medicine,
+            4.0,
+            Labor::Process,
+            "herbs",
+            "remedies",
+        ),
+        recipes::HERBAL_MASTERWORK_REMEDY_RECIPE_ID => (
+            ResourceKind::Herbs,
+            6.0,
+            ResourceKind::Medicine,
+            6.0,
+            Labor::Process,
+            "herbs",
+            "masterwork remedies",
+        ),
+        recipes::DRY_FOOD_RECIPE_ID => (
+            ResourceKind::Food,
+            3.0,
+            ResourceKind::Preserves,
+            2.0,
+            Labor::Mill,
+            "food",
+            "dried food",
+        ),
+        recipes::SMOKE_FOOD_RECIPE_ID => (
+            ResourceKind::Food,
+            4.0,
+            ResourceKind::Preserves,
+            3.0,
+            Labor::Mill,
+            "food",
+            "smoked food",
+        ),
+        recipes::PICKLE_FOOD_RECIPE_ID => (
+            ResourceKind::Food,
+            5.0,
+            ResourceKind::Preserves,
+            4.0,
+            Labor::Mill,
+            "food",
+            "pickled food",
+        ),
+        recipes::PRESERVE_RATIONS_RECIPE_ID => (
+            ResourceKind::Food,
+            6.0,
+            ResourceKind::Preserves,
+            5.0,
+            Labor::Mill,
+            "food",
+            "travel rations",
+        ),
+        recipes::PRESERVE_MASTERWORK_FEAST_RECIPE_ID => (
+            ResourceKind::Food,
+            6.0,
+            ResourceKind::Preserves,
+            6.0,
+            Labor::Mill,
+            "food",
+            "preserved feasts",
+        ),
+        recipes::BREW_GRAIN_SMALL_RECIPE_ID => (
+            ResourceKind::Grain,
+            2.0,
+            ResourceKind::Brew,
+            2.0,
+            Labor::Mill,
+            "grain",
+            "small brew",
+        ),
+        recipes::BREW_CATNIP_ALE_RECIPE_ID => (
+            ResourceKind::Catnip,
+            2.0,
+            ResourceKind::Brew,
+            3.0,
+            Labor::Mill,
+            "catnip",
+            "catnip ale",
+        ),
+        recipes::BREW_HERBAL_TONIC_RECIPE_ID => (
+            ResourceKind::Herbs,
+            2.0,
+            ResourceKind::Brew,
+            3.0,
+            Labor::Mill,
+            "herbs",
+            "herbal brew",
+        ),
+        recipes::BREW_SPICED_ALE_RECIPE_ID => (
+            ResourceKind::Catnip,
+            3.0,
+            ResourceKind::Brew,
+            5.0,
+            Labor::Mill,
+            "catnip",
+            "spiced ale",
+        ),
+        recipes::BREW_MASTERWORK_RECIPE_ID => (
+            ResourceKind::Herbs,
+            3.0,
+            ResourceKind::Brew,
+            6.0,
+            Labor::Mill,
+            "herbs",
+            "masterwork brew",
+        ),
+        _ => return None,
+    };
+    Some(SingleInputPhysicalRecipe {
+        recipe_id: crate::station_recipes::station_recipe(recipe_id)?.id,
+        input_kind,
+        input_per_cycle,
+        output_kind,
+        output_per_cycle,
+        cycle_sec: crate::production::WORKSHOP_CYCLE_SEC,
+        labor,
+        input_budget: StationInputBudget::Aggregate,
+        fetching_reason: "fetching_recipe_input",
+        missing_reason: "missing_recipe_input",
+        source_name,
+        output_name,
+    })
+}
+
 fn active_single_input_physical_recipe(
     building: &BuildingRuntime,
 ) -> Option<SingleInputPhysicalRecipe> {
+    if let Some(recipe) = building
+        .production_queue
+        .first()
+        .and_then(|entry| food_plant_physical_recipe(&entry.recipe_id))
+    {
+        return Some(recipe);
+    }
     if building.building_type == BuildingType::Smithy {
         return building
             .production_queue
@@ -23476,6 +23834,48 @@ fn active_single_input_physical_recipe(
             .and_then(|entry| smithy_physical_recipe(&entry.recipe_id));
     }
     single_input_physical_recipe(building.building_type)
+}
+
+fn apply_food_plant_recipe_research(
+    colony: &ColonyRuntime,
+    recipe: &mut SingleInputPhysicalRecipe,
+) {
+    let owned = &colony.upgrade_tree.owned_node_ids;
+    let family = match recipe.recipe_id {
+        crate::station_recipes::FINE_GRAIN_FLOUR_RECIPE_ID
+        | crate::station_recipes::STONEGROUND_FLOUR_RECIPE_ID
+        | crate::station_recipes::MASTERWORK_FLOUR_RECIPE_ID => "grain_milling",
+        crate::station_recipes::BAKE_FLATBREAD_RECIPE_ID
+        | crate::station_recipes::BAKE_LOAF_RECIPE_ID
+        | crate::station_recipes::BAKE_BISCUITS_RECIPE_ID
+        | crate::station_recipes::BAKE_FESTIVAL_CAKE_RECIPE_ID
+        | crate::station_recipes::BAKE_MASTERWORK_PASTRY_RECIPE_ID => "baking",
+        crate::station_recipes::HERBAL_POULTICE_RECIPE_ID
+        | crate::station_recipes::HERBAL_TONIC_RECIPE_ID
+        | crate::station_recipes::HERBAL_SALVE_RECIPE_ID
+        | crate::station_recipes::HERBAL_REMEDY_RECIPE_ID
+        | crate::station_recipes::HERBAL_MASTERWORK_REMEDY_RECIPE_ID => "herbalism",
+        crate::station_recipes::DRY_FOOD_RECIPE_ID
+        | crate::station_recipes::SMOKE_FOOD_RECIPE_ID
+        | crate::station_recipes::PICKLE_FOOD_RECIPE_ID
+        | crate::station_recipes::PRESERVE_RATIONS_RECIPE_ID
+        | crate::station_recipes::PRESERVE_MASTERWORK_FEAST_RECIPE_ID => "food_preservation",
+        crate::station_recipes::BREW_GRAIN_SMALL_RECIPE_ID
+        | crate::station_recipes::BREW_CATNIP_ALE_RECIPE_ID
+        | crate::station_recipes::BREW_HERBAL_TONIC_RECIPE_ID
+        | crate::station_recipes::BREW_SPICED_ALE_RECIPE_ID
+        | crate::station_recipes::BREW_MASTERWORK_RECIPE_ID => "brewing",
+        _ => return,
+    };
+    if owned.iter().any(|id| id == &format!("{family}_bulk")) {
+        recipe.cycle_sec *= 0.9;
+    }
+    if (family == "baking" && owned.iter().any(|id| id == "baking_sources"))
+        || (family == "food_preservation"
+            && owned.iter().any(|id| id == "food_preservation_sources"))
+    {
+        recipe.output_per_cycle *= 1.1;
+    }
 }
 
 fn single_input_fetch_budget(colony: &ColonyRuntime, recipe: SingleInputPhysicalRecipe) -> f64 {
@@ -24978,14 +25378,15 @@ fn advance_physical_refiner_slot(
             }
         }
     } else if allow_output_haul
-        && let Some(recipe) = single_input_physical_recipe(building_type)
+        && let Some(recipe) = active_single_input_physical_recipe(&building)
         && begin_station_output_haul(colony, &building, cat_index, recipe.output_kind, gate)
     {
         return;
     }
-    let Some(recipe) = active_single_input_physical_recipe(&building) else {
+    let Some(mut recipe) = active_single_input_physical_recipe(&building) else {
         return;
     };
+    apply_food_plant_recipe_research(colony, &mut recipe);
     if !production_recipe_availability(colony, building.building_type, recipe.recipe_id)
         .is_some_and(|recipe| recipe.available)
     {
@@ -25774,6 +26175,9 @@ fn carrying_resource_kind(kind: CarryingKind) -> Option<ResourceKind> {
         CarryingKind::Catnip => Some(ResourceKind::Catnip),
         CarryingKind::Grain => Some(ResourceKind::Grain),
         CarryingKind::Flour => Some(ResourceKind::Flour),
+        CarryingKind::Preserves => Some(ResourceKind::Preserves),
+        CarryingKind::Medicine => Some(ResourceKind::Medicine),
+        CarryingKind::Brew => Some(ResourceKind::Brew),
         CarryingKind::Herbs => Some(ResourceKind::Herbs),
         CarryingKind::Hide => Some(ResourceKind::Hide),
         CarryingKind::Leather => Some(ResourceKind::Leather),
@@ -26386,7 +26790,9 @@ pub(crate) fn building_production_block_reason_with_availability(
         return (!at_world_point(colony, cat_index, station_work_point(building)))
             .then(|| "worker_travel".to_owned());
     }
-    if building.building_type == BuildingType::Mill {
+    if building.building_type == BuildingType::Mill
+        && food_plant_physical_recipe(&recipe.recipe_id).is_none()
+    {
         let input = building_station_inventory(colony, building, false);
         let flour = input
             .iter()
@@ -26739,6 +27145,9 @@ fn credit_carrying(colony: &mut ColonyRuntime, carrying: &Carrying, deposit_at: 
         CarryingKind::Catnip => ResourceKind::Catnip,
         CarryingKind::Grain => ResourceKind::Grain,
         CarryingKind::Flour => ResourceKind::Flour,
+        CarryingKind::Preserves => ResourceKind::Preserves,
+        CarryingKind::Medicine => ResourceKind::Medicine,
+        CarryingKind::Brew => ResourceKind::Brew,
         CarryingKind::Herbs => ResourceKind::Herbs,
         CarryingKind::Hide => ResourceKind::Hide,
         CarryingKind::Leather => ResourceKind::Leather,
@@ -27159,6 +27568,9 @@ fn deposit_message(cat_id: &str, carrying: &Carrying) -> String {
         CarryingKind::Catnip => format!("{cat_id} hauled {} catnip.", carrying.amount),
         CarryingKind::Grain => format!("{cat_id} hauled {} grain.", carrying.amount),
         CarryingKind::Flour => format!("{cat_id} hauled {} flour.", carrying.amount),
+        CarryingKind::Preserves => format!("{cat_id} hauled {} preserves.", carrying.amount),
+        CarryingKind::Medicine => format!("{cat_id} hauled {} medicine.", carrying.amount),
+        CarryingKind::Brew => format!("{cat_id} hauled {} brew.", carrying.amount),
         CarryingKind::Herbs => format!("{cat_id} hauled {} herbs.", carrying.amount),
         CarryingKind::Hide => format!("{cat_id} hauled {} hide.", carrying.amount),
         CarryingKind::Leather => format!("{cat_id} hauled {} leather.", carrying.amount),
@@ -27834,6 +28246,9 @@ mod tests {
             catnip: 1_000.0,
             grain: 1_000.0,
             flour: 1_000.0,
+            preserves: 1_000.0,
+            medicine: 1_000.0,
+            brew: 1_000.0,
             materials: 1_000.0,
             stone: 1_000.0,
             bone: 1_000.0,
@@ -28789,6 +29204,9 @@ mod tests {
                     catnip: 0.0,
                     grain: 0.0,
                     flour: 0.0,
+                    preserves: 0.0,
+                    medicine: 0.0,
+                    brew: 0.0,
                     materials: 0.0,
                     stone: 0.0,
                     bone: 0.0,
@@ -28873,6 +29291,9 @@ mod tests {
                     catnip: 0.0,
                     grain: 0.0,
                     flour: 0.0,
+                    preserves: 0.0,
+                    medicine: 0.0,
+                    brew: 0.0,
                     materials: 24.0,
                     stone: 0.0,
                     bone: 0.0,
@@ -31231,6 +31652,9 @@ mod tests {
                     catnip: 0.0,
                     grain: 0.0,
                     flour: 0.0,
+                    preserves: 0.0,
+                    medicine: 0.0,
+                    brew: 0.0,
                     materials: 99.0,
                     stone: 0.0,
                     bone: 0.0,
@@ -50035,6 +50459,7 @@ mod tests {
                 stage: PersonalNeedStage::Carrying,
                 source_pile_id: Some("stockpile-storehouse".to_owned()),
                 resume: PersonalNeedResume::default(),
+                brew_used: false,
             })),
         });
         assert!(complete_personal_need_arrival(&mut colony, 0, 600_000));
@@ -51659,6 +52084,9 @@ mod tests {
             catnip: 100.0,
             grain: 100.0,
             flour: 100.0,
+            preserves: 0.0,
+            medicine: 0.0,
+            brew: 0.0,
             materials: 100.0,
             stone: 100.0,
             bone: 100.0,
@@ -56351,6 +56779,7 @@ mod tests {
             &colony,
             TaskType::Drink,
             position_to_world(colony.anchor, colony.cats[probationer_index].position),
+            true,
         )[0]
         .2;
         colony.cats[probationer_index].position = position_from_world(source);
@@ -56947,6 +57376,9 @@ mod tests {
             catnip: 0.0,
             grain: 0.0,
             flour: 0.0,
+            preserves: 0.0,
+            medicine: 0.0,
+            brew: 0.0,
             materials: 60.0,
             stone: 0.0,
             bone: 0.0,
@@ -56980,6 +57412,9 @@ mod tests {
             catnip: 0.0,
             grain: 0.0,
             flour: 0.0,
+            preserves: 0.0,
+            medicine: 0.0,
+            brew: 0.0,
             materials: 120.0,
             stone: 0.0,
             bone: 0.0,
@@ -62721,6 +63156,29 @@ const STEWARD_OUTPUT_RESERVE: f64 = 20.0;
 const STEWARD_BALANCE_LOAD: f64 = stockpiles::STATION_LOCAL_CAPACITY;
 const STEWARD_DISPATCH_INTERVAL_MS: i64 = 60_000;
 
+// The Steward's automatic floor-pile layout is deliberately the stable founding
+// logistics network. Research recipes haul their own exact input and output through
+// the station-local stores; unlocking one must not reorder or exhaust the bounded
+// automatic pile budget of an established village.
+const STEWARD_MILL_INPUTS: &[ResourceKind] = &[ResourceKind::Grain, ResourceKind::Flour];
+const STEWARD_MILL_OUTPUTS: &[ResourceKind] = &[ResourceKind::Food, ResourceKind::Flour];
+const STEWARD_WORKSHOP_INPUTS: &[ResourceKind] = &[
+    ResourceKind::Materials,
+    ResourceKind::Gem,
+    ResourceKind::Sand,
+];
+const STEWARD_WORKSHOP_OUTPUTS: &[ResourceKind] = &[ResourceKind::Refined];
+
+fn steward_station_resource_sets(
+    building_type: BuildingType,
+) -> Option<(&'static [ResourceKind], &'static [ResourceKind])> {
+    match building_type {
+        BuildingType::Mill => Some((STEWARD_MILL_INPUTS, STEWARD_MILL_OUTPUTS)),
+        BuildingType::Workshop => Some((STEWARD_WORKSHOP_INPUTS, STEWARD_WORKSHOP_OUTPUTS)),
+        _ => station_resource_sets(building_type),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct StockpileBalancePlan {
     priority: u8,
@@ -62774,7 +63232,7 @@ fn steward_managed_topology_needs_sync(colony: &ColonyRuntime) -> bool {
         .iter()
         .filter(|building| building.construction_progress >= 100)
         .filter_map(|building| {
-            station_resource_sets(building.building_type).map(|(inputs, outputs)| {
+            steward_station_resource_sets(building.building_type).map(|(inputs, outputs)| {
                 inputs.len() + outputs.iter().filter(|kind| !inputs.contains(kind)).count()
             })
         })
@@ -62794,7 +63252,7 @@ fn steward_managed_topology_needs_sync(colony: &ColonyRuntime) -> bool {
                 || !colony.buildings.iter().any(|building| {
                     building.id == provenance.station_id
                         && building.construction_progress >= 100
-                        && station_resource_sets(building.building_type).is_some_and(
+                        && steward_station_resource_sets(building.building_type).is_some_and(
                             |(inputs, outputs)| {
                                 inputs.contains(&provenance.resource)
                                     || outputs.contains(&provenance.resource)
@@ -62813,6 +63271,9 @@ fn steward_resource_key(kind: ResourceKind) -> &'static str {
         ResourceKind::Catnip => "catnip",
         ResourceKind::Grain => "grain",
         ResourceKind::Flour => "flour",
+        ResourceKind::Preserves => "preserves",
+        ResourceKind::Medicine => "medicine",
+        ResourceKind::Brew => "brew",
         ResourceKind::Materials => "materials",
         ResourceKind::Stone => "stone",
         ResourceKind::Refined => "refined",
@@ -62893,14 +63354,14 @@ fn sync_steward_managed_piles(colony: &mut ColonyRuntime, now_ms: i64, world_see
         .iter()
         .filter(|building| {
             building.construction_progress >= 100
-                && station_resource_sets(building.building_type).is_some()
+                && steward_station_resource_sets(building.building_type).is_some()
         })
         .cloned()
         .collect::<Vec<_>>();
     stations.sort_by(|left, right| left.id.cmp(&right.id));
     let mut desired = Vec::new();
     for station in &stations {
-        let (inputs, outputs) = station_resource_sets(station.building_type)
+        let (inputs, outputs) = steward_station_resource_sets(station.building_type)
             .expect("filtered physical production station");
         let kinds = inputs
             .iter()
@@ -63066,7 +63527,7 @@ fn source_surplus_for_managed_pile(
                 .iter()
                 .find(|building| building.id == provenance.station_id)
         })
-        .and_then(|building| station_resource_sets(building.building_type))
+        .and_then(|building| steward_station_resource_sets(building.building_type))
         .map_or(0.0, |(inputs, outputs)| {
             if inputs.contains(&kind) {
                 STEWARD_INPUT_TARGET
@@ -63132,7 +63593,7 @@ fn next_stockpile_balance_plan(
         else {
             continue;
         };
-        let Some((inputs, outputs)) = station_resource_sets(station.building_type) else {
+        let Some((inputs, outputs)) = steward_station_resource_sets(station.building_type) else {
             continue;
         };
         let held = stockpiles::resource_amount(&pile.contents, provenance.resource);
@@ -63717,6 +64178,116 @@ mod physical_transport_tests {
             colony.transport.projects["track-project"]
                 .delivered
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn every_food_plant_recipe_owns_a_finite_station_route() {
+        let ids = [
+            crate::station_recipes::FINE_GRAIN_FLOUR_RECIPE_ID,
+            crate::station_recipes::STONEGROUND_FLOUR_RECIPE_ID,
+            crate::station_recipes::MASTERWORK_FLOUR_RECIPE_ID,
+            crate::station_recipes::BAKE_FLATBREAD_RECIPE_ID,
+            crate::station_recipes::BAKE_LOAF_RECIPE_ID,
+            crate::station_recipes::BAKE_BISCUITS_RECIPE_ID,
+            crate::station_recipes::BAKE_FESTIVAL_CAKE_RECIPE_ID,
+            crate::station_recipes::BAKE_MASTERWORK_PASTRY_RECIPE_ID,
+            crate::station_recipes::HERBAL_POULTICE_RECIPE_ID,
+            crate::station_recipes::HERBAL_TONIC_RECIPE_ID,
+            crate::station_recipes::HERBAL_SALVE_RECIPE_ID,
+            crate::station_recipes::HERBAL_REMEDY_RECIPE_ID,
+            crate::station_recipes::HERBAL_MASTERWORK_REMEDY_RECIPE_ID,
+            crate::station_recipes::DRY_FOOD_RECIPE_ID,
+            crate::station_recipes::SMOKE_FOOD_RECIPE_ID,
+            crate::station_recipes::PICKLE_FOOD_RECIPE_ID,
+            crate::station_recipes::PRESERVE_RATIONS_RECIPE_ID,
+            crate::station_recipes::PRESERVE_MASTERWORK_FEAST_RECIPE_ID,
+            crate::station_recipes::BREW_GRAIN_SMALL_RECIPE_ID,
+            crate::station_recipes::BREW_CATNIP_ALE_RECIPE_ID,
+            crate::station_recipes::BREW_HERBAL_TONIC_RECIPE_ID,
+            crate::station_recipes::BREW_SPICED_ALE_RECIPE_ID,
+            crate::station_recipes::BREW_MASTERWORK_RECIPE_ID,
+        ];
+        for id in ids {
+            let descriptor = crate::station_recipes::station_recipe(id).unwrap();
+            let recipe = food_plant_physical_recipe(id).unwrap();
+            assert_eq!(descriptor.input_resources, &[recipe.input_kind], "{id}");
+            assert_eq!(descriptor.output_resources, &[recipe.output_kind], "{id}");
+            assert!(recipe.input_per_cycle > 0.0 && recipe.output_per_cycle > 0.0);
+            assert!(matches!(
+                descriptor.building_type,
+                BuildingType::Mill | BuildingType::Workshop
+            ));
+        }
+    }
+
+    #[test]
+    fn food_plant_bulk_and_source_studies_change_exact_batch_physics() {
+        let mut colony = ColonyRuntime::default();
+        colony.upgrade_tree.owned_node_ids =
+            vec!["baking_sources".to_owned(), "baking_bulk".to_owned()];
+        let mut recipe =
+            food_plant_physical_recipe(crate::station_recipes::BAKE_FLATBREAD_RECIPE_ID).unwrap();
+        let baseline_output = recipe.output_per_cycle;
+        let baseline_cycle = recipe.cycle_sec;
+        apply_food_plant_recipe_research(&colony, &mut recipe);
+        assert_eq!(recipe.output_per_cycle, baseline_output * 1.1);
+        assert_eq!(recipe.cycle_sec, baseline_cycle * 0.9);
+    }
+
+    #[test]
+    fn passive_food_plant_batch_is_deterministic_and_remains_in_finite_station_output() {
+        fn prepared() -> ColonyRuntime {
+            let mut colony = found_colony(7, "passive-bakery", 0, 11);
+            colony.buildings.clear();
+            colony.stockpiles.clear();
+            colony.cats.truncate(1);
+            colony.resources = Resources::default();
+            colony.recipe_entitlement_rules_version = CURRENT_RECIPE_ENTITLEMENT_RULES_VERSION;
+            colony.upgrade_tree.owned_node_ids = vec!["baking_preparation".to_owned()];
+            colony.resources.flour = 10.0;
+            let baker_id = colony.cats[0].id.clone();
+            let mut building = BuildingRuntime {
+                id: "bakery".to_owned(),
+                building_type: BuildingType::Mill,
+                position: TilePos { x: 2, y: 2 },
+                is_complete: true,
+                construction_progress: 100,
+                assigned_cat: Some(baker_id.clone()),
+                production_queue: vec![ProductionQueueEntry {
+                    recipe_id: crate::station_recipes::BAKE_FLATBREAD_RECIPE_ID.to_owned(),
+                    repeat: true,
+                }],
+                ..BuildingRuntime::default()
+            };
+            colony.cats[0].position = position_from_world(station_work_point(&building));
+            building.assigned_cat = Some(baker_id);
+            colony.buildings.push(building);
+            ensure_station_stores(&mut colony, 0);
+            let input_id = stockpiles::station_input_id("bakery");
+            let input = colony
+                .stockpiles
+                .iter_mut()
+                .find(|pile| pile.id == input_id)
+                .unwrap();
+            stockpiles::add_resource(&mut input.contents, ResourceKind::Flour, 2.0);
+            colony
+        }
+
+        let mut left = prepared();
+        let mut right = left.clone();
+        for colony in [&mut left, &mut right] {
+            advance_physical_refiner_slot(colony, 0, gate(600, 600_000), 600.0, false, false);
+        }
+        assert_eq!(left, right);
+        assert_eq!(left.resources.flour, 8.0);
+        assert_eq!(
+            station_inventory_amount(&left, "bakery", true, ResourceKind::Food),
+            3.0
+        );
+        assert_eq!(
+            left.resources.food, 0.0,
+            "output is not credited before haulage"
         );
     }
 }

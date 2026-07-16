@@ -3292,6 +3292,7 @@ mod tests {
             "school",
             "advanced_storage",
             "carpentry_preparation",
+            "grain_milling_sources",
             "grain_milling_preparation",
             "grain_milling_staples",
             "metallurgy_preparation",

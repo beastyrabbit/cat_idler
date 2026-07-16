@@ -641,6 +641,9 @@ define_resource_kinds! {
     Catnip => true,
     Grain => true,
     Flour => true,
+    Preserves => true,
+    Medicine => true,
+    Brew => true,
     Materials => true,
     Stone => true,
     Refined => true,
@@ -688,6 +691,12 @@ pub struct ResourceAmounts {
     pub grain: f64,
     #[serde(default)]
     pub flour: f64,
+    #[serde(default)]
+    pub preserves: f64,
+    #[serde(default)]
+    pub medicine: f64,
+    #[serde(default)]
+    pub brew: f64,
     pub materials: f64,
     #[serde(default)]
     pub stone: f64,
@@ -752,6 +761,12 @@ pub struct ResourceCapacities {
     pub grain: f64,
     #[serde(default)]
     pub flour: f64,
+    #[serde(default)]
+    pub preserves: f64,
+    #[serde(default)]
+    pub medicine: f64,
+    #[serde(default)]
+    pub brew: f64,
     pub materials: f64,
     #[serde(default)]
     pub stone: f64,
@@ -991,6 +1006,9 @@ pub enum CarryingKind {
     Catnip,
     Grain,
     Flour,
+    Preserves,
+    Medicine,
+    Brew,
     Herbs,
     Hide,
     Leather,
@@ -2148,6 +2166,9 @@ mod tests {
             ResourceKind::Catnip,
             ResourceKind::Grain,
             ResourceKind::Flour,
+            ResourceKind::Preserves,
+            ResourceKind::Medicine,
+            ResourceKind::Brew,
             ResourceKind::Materials,
             ResourceKind::Stone,
             ResourceKind::Refined,
@@ -2173,7 +2194,7 @@ mod tests {
         assert_eq!(ResourceKind::ALL, expected_all);
 
         let physical = ResourceKind::physical_stockpile_goods().collect::<Vec<_>>();
-        assert_eq!(physical.len(), 27);
+        assert_eq!(physical.len(), 30);
         for &kind in ResourceKind::ALL {
             assert_eq!(
                 physical.contains(&kind),
@@ -2830,6 +2851,9 @@ mod tests {
                     catnip: 0.0,
                     grain: 0.0,
                     flour: 0.0,
+                    preserves: 0.0,
+                    medicine: 0.0,
+                    brew: 0.0,
                     materials: 12.0,
                     stone: 0.0,
                     refined: 3.0,
@@ -2861,6 +2885,9 @@ mod tests {
                         catnip: 100.0,
                         grain: 100.0,
                         flour: 100.0,
+                        preserves: 100.0,
+                        medicine: 100.0,
+                        brew: 100.0,
                         materials: 100.0,
                         stone: 100.0,
                         refined: 100.0,

@@ -16,6 +16,12 @@ pub struct StorageResearchEffects {
     pub food_storage_capacity_mult: f64,
     pub water_bowl_capacity_mult: f64,
     pub smithy_capacity_mult: f64,
+    pub grain_capacity_add: f64,
+    pub flour_capacity_add: f64,
+    pub food_capacity_add: f64,
+    pub preserves_capacity_add: f64,
+    pub medicine_capacity_add: f64,
+    pub brew_capacity_add: f64,
 }
 
 impl Default for StorageResearchEffects {
@@ -26,6 +32,12 @@ impl Default for StorageResearchEffects {
             food_storage_capacity_mult: 1.0,
             water_bowl_capacity_mult: 1.0,
             smithy_capacity_mult: 1.0,
+            grain_capacity_add: 0.0,
+            flour_capacity_add: 0.0,
+            food_capacity_add: 0.0,
+            preserves_capacity_add: 0.0,
+            medicine_capacity_add: 0.0,
+            brew_capacity_add: 0.0,
         }
     }
 }
@@ -59,6 +71,15 @@ where
 {
     let mut effects = StorageResearchEffects::default();
     for id in owned_node_ids {
+        match id.as_ref() {
+            "grain_milling_preservation" => effects.flour_capacity_add += 50.0,
+            "grain_milling_reserves" => effects.grain_capacity_add += 100.0,
+            "baking_reserves" => effects.food_capacity_add += 100.0,
+            "herbalism_preservation" => effects.medicine_capacity_add += 50.0,
+            "food_preservation_preservation" => effects.preserves_capacity_add += 50.0,
+            "brewing_preservation" => effects.brew_capacity_add += 50.0,
+            _ => {}
+        }
         let Some(node) = research_catalog().get(id.as_ref()) else {
             continue;
         };
@@ -113,6 +134,12 @@ pub struct StorageCapacities {
     pub grain: f64,
     #[serde(default)]
     pub flour: f64,
+    #[serde(default)]
+    pub preserves: f64,
+    #[serde(default)]
+    pub medicine: f64,
+    #[serde(default)]
+    pub brew: f64,
     pub materials: f64,
     #[serde(default)]
     pub stone: f64,
@@ -163,6 +190,9 @@ impl StorageCapacities {
             catnip: self.catnip * multiplier,
             grain: self.grain * multiplier,
             flour: self.flour * multiplier,
+            preserves: self.preserves * multiplier,
+            medicine: self.medicine * multiplier,
+            brew: self.brew * multiplier,
             materials: self.materials * multiplier,
             stone: self.stone * multiplier,
             refined: self.refined * multiplier,
@@ -227,6 +257,9 @@ pub const BASE_CAPACITY: StorageCapacities = StorageCapacities {
     catnip: 100.0,
     grain: 100.0,
     flour: 100.0,
+    preserves: 100.0,
+    medicine: 100.0,
+    brew: 100.0,
     materials: 100.0,
     stone: 100.0,
     refined: 100.0,
@@ -325,19 +358,37 @@ pub fn research_aware_storage_capacities(
     buildings: &[StorageBuilding],
     effects: &ResolvedEffects,
 ) -> StorageCapacities {
-    storage_capacities_with_building_mult(
+    let mut caps = storage_capacities_with_building_mult(
         buildings,
         effects.storage_per_level_mult,
         |building_type| effects.building(building_type.as_str()).capacity_mult,
     )
-    .scaled(effects.storage_capacity_mult)
+    .scaled(effects.storage_capacity_mult);
+    apply_food_plant_storage_additions(
+        &mut caps,
+        effects
+            .unlocked_resources
+            .contains("grain_milling_reserves"),
+        effects
+            .unlocked_resources
+            .contains("grain_milling_preservation"),
+        effects.unlocked_resources.contains("baking_reserves"),
+        effects
+            .unlocked_resources
+            .contains("food_preservation_preservation"),
+        effects
+            .unlocked_resources
+            .contains("herbalism_preservation"),
+        effects.unlocked_resources.contains("brewing_preservation"),
+    );
+    caps
 }
 
 fn research_aware_storage_capacities_compact(
     buildings: &[StorageBuilding],
     effects: StorageResearchEffects,
 ) -> StorageCapacities {
-    storage_capacities_with_building_mult(
+    let mut caps = storage_capacities_with_building_mult(
         buildings,
         effects.storage_per_level_mult,
         |building_type| match building_type {
@@ -347,7 +398,31 @@ fn research_aware_storage_capacities_compact(
             _ => 1.0,
         },
     )
-    .scaled(effects.storage_capacity_mult)
+    .scaled(effects.storage_capacity_mult);
+    caps.grain += effects.grain_capacity_add;
+    caps.flour += effects.flour_capacity_add;
+    caps.food += effects.food_capacity_add;
+    caps.preserves += effects.preserves_capacity_add;
+    caps.medicine += effects.medicine_capacity_add;
+    caps.brew += effects.brew_capacity_add;
+    caps
+}
+
+fn apply_food_plant_storage_additions(
+    caps: &mut StorageCapacities,
+    grain_reserves: bool,
+    flour_preservation: bool,
+    baking_reserves: bool,
+    preserves_storage: bool,
+    medicine_storage: bool,
+    brew_storage: bool,
+) {
+    caps.grain += if grain_reserves { 100.0 } else { 0.0 };
+    caps.flour += if flour_preservation { 50.0 } else { 0.0 };
+    caps.food += if baking_reserves { 100.0 } else { 0.0 };
+    caps.preserves += if preserves_storage { 50.0 } else { 0.0 };
+    caps.medicine += if medicine_storage { 50.0 } else { 0.0 };
+    caps.brew += if brew_storage { 50.0 } else { 0.0 };
 }
 
 impl StorageCapacities {
@@ -360,6 +435,9 @@ impl StorageCapacities {
             catnip: self.catnip.min(other.catnip),
             grain: self.grain.min(other.grain),
             flour: self.flour.min(other.flour),
+            preserves: self.preserves.min(other.preserves),
+            medicine: self.medicine.min(other.medicine),
+            brew: self.brew.min(other.brew),
             materials: self.materials.min(other.materials),
             stone: self.stone.min(other.stone),
             refined: self.refined.min(other.refined),
@@ -403,6 +481,9 @@ fn physical_storage_capacities(
         catnip: capacity(ResourceKind::Catnip),
         grain: capacity(ResourceKind::Grain),
         flour: capacity(ResourceKind::Flour),
+        preserves: capacity(ResourceKind::Preserves),
+        medicine: capacity(ResourceKind::Medicine),
+        brew: capacity(ResourceKind::Brew),
         materials: capacity(ResourceKind::Materials),
         stone: capacity(ResourceKind::Stone),
         refined: capacity(ResourceKind::Refined),
@@ -762,6 +843,9 @@ mod tests {
                 catnip: 100.0,
                 grain: 100.0,
                 flour: 100.0,
+                preserves: 100.0,
+                medicine: 100.0,
+                brew: 100.0,
                 materials: 100.0,
                 stone: 100.0,
                 refined: 100.0,
@@ -845,6 +929,9 @@ mod tests {
                 catnip: 100.0,
                 grain: 100.0,
                 flour: 100.0,
+                preserves: 100.0,
+                medicine: 100.0,
+                brew: 100.0,
                 materials: 400.0,
                 stone: 100.0,
                 refined: 250.0,
@@ -899,6 +986,9 @@ mod tests {
                 catnip: 100.0,
                 grain: 100.0,
                 flour: 100.0,
+                preserves: 100.0,
+                medicine: 100.0,
+                brew: 100.0,
                 materials: 225.0,
                 stone: 100.0,
                 refined: 162.5,
@@ -949,6 +1039,9 @@ mod tests {
                 catnip: 100.0,
                 grain: 100.0,
                 flour: 100.0,
+                preserves: 100.0,
+                medicine: 100.0,
+                brew: 100.0,
                 materials: 200.0,
                 stone: 100.0,
                 refined: 150.0,
@@ -1012,5 +1105,28 @@ mod tests {
             storage_capacities_default(&[building(BuildingType::WaterBowl, 100.0, Some(f64::NAN))]);
         assert!(caps.water.is_nan());
         assert_f64_bits(caps.food, BASE_CAPACITY.food, "food unchanged");
+    }
+
+    #[test]
+    fn food_plant_storage_studies_expand_only_their_real_finite_goods() {
+        let caps = authoritative_storage_capacities_for_owned(
+            &[],
+            &[],
+            [
+                "grain_milling_preservation",
+                "grain_milling_reserves",
+                "baking_reserves",
+                "herbalism_preservation",
+                "food_preservation_preservation",
+                "brewing_preservation",
+            ],
+        );
+        assert_eq!(caps.grain, BASE_CAPACITY.grain + 100.0);
+        assert_eq!(caps.flour, BASE_CAPACITY.flour + 50.0);
+        assert_eq!(caps.food, BASE_CAPACITY.food + 100.0);
+        assert_eq!(caps.preserves, BASE_CAPACITY.preserves + 50.0);
+        assert_eq!(caps.medicine, BASE_CAPACITY.medicine + 50.0);
+        assert_eq!(caps.brew, BASE_CAPACITY.brew + 50.0);
+        assert_eq!(caps.water, BASE_CAPACITY.water);
     }
 }
