@@ -10,6 +10,7 @@ use std::collections::{BTreeSet, HashSet};
 use cat_protocol as proto;
 use cat_sim::{
     actions::{ActionCtx, advance_village_trade_caravans, apply_action, build_snapshot},
+    biomes::MaxResources,
     entities::{CatActivity, MapType, Position},
     items::{Item, ItemKind, ItemLocation, ItemStore, Material},
     officers::OfficerRole,
@@ -19,12 +20,15 @@ use cat_sim::{
     transport::{Dock, TransportMode, Vehicle},
     types::{BuildingType, JobKind, TileType},
     upgrade_tree::{self, UPGRADE_NODES},
+    village_area::{from_tiles, gate_placement_default, side_delta},
+    village_layout::GridPos,
+    world_gen::TileResources,
     world_tick::{
         BuildingRuntime, ElectionKind, EventKind, RaidPhase, RaiderRuntime, TilePos, TraderRuntime,
-        WorldState, building_is_road_connected_to_shrine, can_plan_building_at,
-        default_production_queue, found_colony, new_world, publish_colony_spatial,
-        reconcile_colony_stockpiles, road_path_attaches_to_shrine, road_placement_error,
-        stockpile_placement_error, tile_is_occupied, world_tick,
+        VillageScale, WorldState, WorldTileRuntime, building_is_road_connected_to_shrine,
+        can_plan_building_at, default_production_queue, found_colony, new_world,
+        publish_colony_spatial, reconcile_colony_stockpiles, road_path_attaches_to_shrine,
+        road_placement_error, stockpile_placement_error, tile_is_occupied, world_tick,
     },
     zones::ZoneRect,
 };
@@ -82,6 +86,93 @@ const EXPECTED_ACTIONS: [&str; 51] = [
     "cancel_village_trade",
     "unequip_item",
 ];
+
+fn campaign_gate_exterior(colony: &cat_sim::world_tick::ColonyRuntime) -> TilePos {
+    let area = from_tiles(
+        &colony
+            .claimed_tiles
+            .iter()
+            .map(|tile| GridPos {
+                x: tile.x,
+                y: tile.y,
+            })
+            .collect::<Vec<_>>(),
+    );
+    let gate = gate_placement_default(&area).expect("campaign village gate");
+    let delta = side_delta(gate.side);
+    TilePos {
+        x: gate.x + delta.x,
+        y: gate.y + delta.y,
+    }
+}
+
+fn campaign_land_tile(pos: TilePos) -> WorldTileRuntime {
+    WorldTileRuntime {
+        pos,
+        tile_type: TileType::Meadow,
+        resources: TileResources {
+            food: 0,
+            herbs: 0,
+            water: 0,
+            gem: 0,
+            clay: 0,
+            sand: 0,
+        },
+        max_resources: MaxResources { food: 0, herbs: 0 },
+        danger_level: 0.0,
+        path_wear: 0,
+        last_depleted: 0,
+        overlay_feature: Some("trade_route".to_owned()),
+    }
+}
+
+fn author_campaign_land_route(world: &mut WorldState, source_index: usize, target_index: usize) {
+    let target = campaign_gate_exterior(&world.colonies[target_index]);
+    let mut cursor = campaign_gate_exterior(&world.colonies[source_index]);
+    let horizontal_first = cursor.y >= target.y;
+    loop {
+        world
+            .shared_spatial
+            .tiles
+            .insert(cursor, campaign_land_tile(cursor));
+        if cursor == target {
+            break;
+        }
+        if horizontal_first && cursor.x != target.x {
+            cursor.x += (target.x - cursor.x).signum();
+        } else if cursor.y != target.y {
+            cursor.y += (target.y - cursor.y).signum();
+        } else {
+            cursor.x += (target.x - cursor.x).signum();
+        }
+    }
+}
+
+fn restore_campaign_trade_enclosures(world: &mut WorldState) {
+    // Earlier placement coverage deliberately authors irregular temporary claims. Those assertions
+    // are complete before barter; restore each founding enclosure so the trade slice exercises a
+    // real single-gate topology instead of that intentionally synthetic placement fixture.
+    for colony in &mut world.colonies {
+        let radius = match colony.scale {
+            VillageScale::Personal => 6,
+            VillageScale::Communal => 9,
+        };
+        let center = TilePos {
+            x: colony.anchor.x + 1,
+            y: colony.anchor.y + 1,
+        };
+        colony.claimed_tiles = (-radius..=radius)
+            .flat_map(|dy| {
+                (-radius..=radius).map(move |dx| TilePos {
+                    x: center.x + dx,
+                    y: center.y + dy,
+                })
+            })
+            .collect();
+        colony.agricultural_tiles.clear();
+        colony.jobs.retain(|job| job.kind != JobKind::ExpandVillage);
+    }
+}
 
 fn action_name(action: &proto::ClientAction) -> &'static str {
     match action {
@@ -641,12 +732,17 @@ fn exercise_transport_trade_and_equipment(
     // The two villages were founded by the same stable player during this
     // campaign. Make their returned-scout contact explicit, then offer, withdraw,
     // re-offer, accept, and observe exact cargo until the physical actor returns.
+    restore_campaign_trade_enclosures(world);
     let first_id = world.colonies[0].id.clone();
     let second_id = world.colonies[1].id.clone();
     world.colonies[0]
         .known_village_ids
         .insert(second_id.clone());
     world.colonies[1].known_village_ids.insert(first_id.clone());
+    // This coverage fixture authors a known dry trade trail between the two returned-scout
+    // contacts. The production planner still decides the exact gate-to-gate waypoints and must
+    // never infer passability from contact alone.
+    author_campaign_land_route(world, 0, 1);
     world.colonies[0].stockpiles.push(Stockpile {
         id: "campaign-trade-materials".to_owned(),
         rect: ZoneRect {

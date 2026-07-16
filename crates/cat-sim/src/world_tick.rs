@@ -256,8 +256,8 @@ pub struct VillageTradeCaravan {
     pub offered_items: Vec<ItemInstance>,
     #[serde(default)]
     pub requested_items: Vec<ItemInstance>,
-    /// Durable route geometry. The current planner emits a direct route; the
-    /// representation accepts shared-spatial A* waypoints without a save change.
+    /// Durable route geometry planned once from shared terrain and village gates.
+    /// In-flight terrain changes never silently rewrite these waypoints.
     #[serde(default)]
     pub outbound_route: Vec<VillageTradePosition>,
     #[serde(default)]

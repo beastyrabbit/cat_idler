@@ -230,10 +230,11 @@ so a correct scout route cannot conceal a missing founding dispatch.
    Deterministic
    knowledge-blind scout search is verified; preserve its physical-observation and shrine-return
    contracts as shared-world depth grows. The physical finite NPC trader is a local proof of the
-   route, inventory, and restart rules. Caravan routes are durable waypoint lists with an explicit
-   pre-departure assignment API, ready for the shared-spatial planner. The remaining player-village
-   depth is integrating obstacle-aware shared routes and encounters once world-scoped passability
-   replaces duplicated colony terrain.
+   route, inventory, and restart rules. Village barter now plans one bounded deterministic
+   shared-terrain land route before escrow: water, mountains, and closed wall edges block it; both
+   current gates are honored; exact outbound and reverse waypoints survive restart; and no-route
+   rejection leaves cargo and private fog untouched. Deeper meetings or encounters are optional
+   breadth rather than a missing trade path.
 3. **Close remaining world-system gaps.** Baseline Leader hunt/water/scout survival, optimized
    browser and signed-native shrine-return fog, staged closed-perimeter growth, integrated
    Accounting Tent, and persisted outside-wall agriculture are verified. Fine-biome factors now

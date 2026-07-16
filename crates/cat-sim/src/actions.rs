@@ -3493,7 +3493,8 @@ fn accept_village_trade(
     else {
         return fail("Trade offer is not available.");
     };
-    let (source, target) = two_colonies_mut(&mut world.colonies, source_index, target_index);
+    let source = &world.colonies[source_index];
+    let target = &world.colonies[target_index];
     if !can_control_village(target, &ctx.player_id) {
         return fail("Trade offer is not available.");
     }
@@ -3527,6 +3528,14 @@ fn accept_village_trade(
     {
         return fail("A receiving village lacks storage for this trade.");
     }
+    let Some(route_plan) = crate::village_trade_routes::plan_village_trade_route(
+        world,
+        &world.colonies[source_index],
+        &world.colonies[target_index],
+    ) else {
+        return fail("No passable land caravan route connects the village shrines.");
+    };
+    let (source, target) = two_colonies_mut(&mut world.colonies, source_index, target_index);
     let Some((offered_sources, mut offered_items)) =
         load_village_trade_cargo(source, offer.offered_kind, offer.offered_amount, &offer.id)
     else {
@@ -3566,11 +3575,14 @@ fn accept_village_trade(
         requested_sources,
         offered_items,
         requested_items,
-        outbound_route: vec![VillageTradePosition {
-            x: f64::from(target.anchor.x + 1),
-            y: f64::from(target.anchor.y + 1),
-        }],
-        return_route: vec![source_shrine],
+        outbound_route: route_plan.waypoints.clone(),
+        return_route: std::iter::once(source_shrine)
+            .chain(route_plan.waypoints.iter().copied())
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .skip(1)
+            .collect(),
         next_waypoint: 0,
         phase: VillageTradeCaravanPhase::Outbound,
         position: source_shrine,
@@ -3887,8 +3899,9 @@ pub fn advance_village_trade_caravans(world: &mut WorldState, now_ms: i64) {
     }
 }
 
-/// Replace a freshly loaded caravan's direct route with authoritative shared-world
-/// waypoints (for example the shared-spatial passability planner's A* result).
+/// Replace a freshly loaded caravan's authoritative shared-world route.
+/// This remains available for save migration and tooling; ordinary acceptance has
+/// already installed the deterministic shared-spatial route before escrow is loaded.
 /// The final point must be the target shrine; the return leg is the exact reverse,
 /// so restart and changed terrain cannot silently teleport or reroute active cargo.
 pub fn assign_village_trade_route(
@@ -6520,7 +6533,7 @@ mod tests {
     use crate::village_layout::VILLAGE_ANCHOR;
     use crate::world_tick::{
         BuildingRuntime, ConstructionCargoReservation, ConstructionCargoState, TraderRuntime,
-        found_colony, found_global_colony, new_world, stockpile_placement_error,
+        found_colony, found_global_colony, fresh_ground_tile, new_world, stockpile_placement_error,
     };
     use crate::zones::ZoneRect;
 
@@ -6538,6 +6551,44 @@ mod tests {
             shared_spatial: Default::default(),
             world_seed: 20_240_703,
             colonies: vec![found_colony(20_240_703, "c1", 1_000_000, 1234)],
+        }
+    }
+
+    fn test_gate_exterior(colony: &ColonyRuntime) -> TilePos {
+        let area = crate::village_area::from_tiles(
+            &colony
+                .claimed_tiles
+                .iter()
+                .map(|tile| crate::village_layout::GridPos {
+                    x: tile.x,
+                    y: tile.y,
+                })
+                .collect::<Vec<_>>(),
+        );
+        let gate = crate::village_area::gate_placement_default(&area).expect("test gate");
+        let delta = crate::village_area::side_delta(gate.side);
+        TilePos {
+            x: gate.x + delta.x,
+            y: gate.y + delta.y,
+        }
+    }
+
+    fn ensure_test_land_route(world: &mut WorldState, source_index: usize, target_index: usize) {
+        let target = test_gate_exterior(&world.colonies[target_index]);
+        let mut cursor = test_gate_exterior(&world.colonies[source_index]);
+        loop {
+            world
+                .shared_spatial
+                .tiles
+                .insert(cursor, fresh_ground_tile(cursor));
+            if cursor == target {
+                break;
+            }
+            if cursor.x != target.x {
+                cursor.x += (target.x - cursor.x).signum();
+            } else {
+                cursor.y += (target.y - cursor.y).signum();
+            }
         }
     }
 
@@ -7915,6 +7966,7 @@ mod tests {
             .insert("personal".to_owned());
         personal.known_village_ids.insert("c1".to_owned());
         world.colonies.push(personal);
+        ensure_test_land_route(&mut world, 0, 1);
         world.colonies[0].resources.food = 100.0;
         world.colonies[1].resources.materials = 100.0;
         let before = (
@@ -7972,6 +8024,15 @@ mod tests {
             .expect("accepted trade becomes physical actor");
         assert_eq!(caravan.phase, VillageTradeCaravanPhase::Outbound);
         assert_eq!(caravan.position.x, 7.0);
+        assert!(
+            caravan.outbound_route.len() >= 3,
+            "automatic route must leave and re-enter through the two real gates"
+        );
+        let saved = serde_json::to_string(caravan).expect("persistable caravan");
+        let restarted: VillageTradeCaravan =
+            serde_json::from_str(&saved).expect("restart preserves exact route");
+        assert_eq!(restarted.outbound_route, caravan.outbound_route);
+        assert_eq!(restarted.return_route, caravan.return_route);
         let mut routed = world.clone();
         assert!(assign_village_trade_route(
             &mut routed,
@@ -8041,11 +8102,11 @@ mod tests {
             "reopening storage resumes without backdated travel"
         );
         let mut one_second = world.clone();
-        for now in (1_001_000..=1_250_000).step_by(1_000) {
+        for now in (1_001_000..=1_450_000).step_by(1_000) {
             advance_village_trade_caravans(&mut one_second, now);
         }
 
-        advance_village_trade_caravans(&mut world, 1_125_000);
+        advance_village_trade_caravans(&mut world, 1_200_000);
         assert_eq!(
             world.colonies[0]
                 .village_trade_caravans
@@ -8055,7 +8116,7 @@ mod tests {
                 .phase,
             VillageTradeCaravanPhase::Returning
         );
-        advance_village_trade_caravans(&mut world, 1_250_000);
+        advance_village_trade_caravans(&mut world, 1_450_000);
 
         assert_eq!(
             world
@@ -8105,6 +8166,88 @@ mod tests {
     }
 
     #[test]
+    fn accepted_trade_keeps_both_cargoes_home_when_the_land_gate_is_blocked() {
+        let mut world = world_with_one_colony();
+        let mut personal = found_colony_at(
+            world.world_seed,
+            "personal",
+            1_000_000,
+            55,
+            TilePos { x: 106, y: 6 },
+        );
+        personal.kind = VillageKind::Personal;
+        personal.owner_player_id = Some("owner".to_owned());
+        personal.known_village_ids.insert("c1".to_owned());
+        world.colonies[0]
+            .known_village_ids
+            .insert("personal".to_owned());
+        world.colonies.push(personal);
+        ensure_test_land_route(&mut world, 0, 1);
+        let outside = test_gate_exterior(&world.colonies[0]);
+        let blocked = world
+            .shared_spatial
+            .tiles
+            .get_mut(&outside)
+            .expect("test route materialised the gate exterior");
+        blocked.tile_type = crate::types::TileType::River;
+        blocked.resources.water = 999;
+        let before = world.clone();
+
+        assert!(
+            apply_action(
+                &mut world,
+                &proto::ClientAction::OfferVillageTrade {
+                    session_id: "sess_1".to_owned(),
+                    nickname: "Global Cat".to_owned(),
+                    sig: "signed".to_owned(),
+                    target_colony_id: "personal".to_owned(),
+                    offered_kind: proto::ResourceKind::Food,
+                    offered_amount: 1.0,
+                    requested_kind: proto::ResourceKind::Materials,
+                    requested_amount: 1.0,
+                },
+                &ctx(),
+            )
+            .ok
+        );
+        let offer_id = world.colonies[0]
+            .village_trade_offers
+            .keys()
+            .next()
+            .expect("offer remains open")
+            .clone();
+        let mut owner = ctx();
+        owner.player_id = "owner".to_owned();
+        owner.colony_id = "personal".to_owned();
+        let result = apply_action(
+            &mut world,
+            &proto::ClientAction::AcceptVillageTrade {
+                session_id: owner.session_id.clone(),
+                nickname: "Owner".to_owned(),
+                sig: "signed".to_owned(),
+                offer_id: offer_id.clone(),
+            },
+            &owner,
+        );
+
+        assert!(!result.ok);
+        assert_eq!(
+            result.message.as_deref(),
+            Some("No passable land caravan route connects the village shrines.")
+        );
+        assert!(
+            world.colonies[0]
+                .village_trade_offers
+                .contains_key(&offer_id)
+        );
+        assert!(world.colonies[0].village_trade_caravans.is_empty());
+        assert_eq!(world.colonies[0].resources, before.colonies[0].resources);
+        assert_eq!(world.colonies[1].resources, before.colonies[1].resources);
+        assert_eq!(world.colonies[0].stockpiles, before.colonies[0].stockpiles);
+        assert_eq!(world.colonies[1].stockpiles, before.colonies[1].stockpiles);
+    }
+
+    #[test]
     fn cancelling_an_active_caravan_restores_both_finite_escrows() {
         let mut world = world_with_one_colony();
         let mut personal = found_colony_at(
@@ -8121,6 +8264,7 @@ mod tests {
             .known_village_ids
             .insert("personal".to_owned());
         world.colonies.push(personal);
+        ensure_test_land_route(&mut world, 0, 1);
         let before = world
             .colonies
             .iter()
@@ -8194,6 +8338,7 @@ mod tests {
             .known_village_ids
             .insert("personal".to_owned());
         world.colonies.push(personal);
+        ensure_test_land_route(&mut world, 0, 1);
         for colony in &mut world.colonies {
             colony.items = ItemStore::default();
         }
@@ -8288,7 +8433,7 @@ mod tests {
         assert_eq!(world.colonies[0].resources.tools, 0.0);
         assert_eq!(world.colonies[1].resources.weapons, 0.0);
 
-        advance_village_trade_caravans(&mut world, 1_250_000);
+        advance_village_trade_caravans(&mut world, 1_400_000);
         assert!(world.colonies[0].village_trade_caravans.is_empty());
         assert_eq!(
             world.colonies[0]
@@ -8527,7 +8672,13 @@ mod tests {
     #[test]
     fn signed_capacity_research_updates_snapshot_and_trade_from_one_authority() {
         let mut world = world_with_one_colony();
-        let mut personal = found_colony(world.world_seed, "personal", 1_000_000, 55);
+        let mut personal = found_colony_at(
+            world.world_seed,
+            "personal",
+            1_000_000,
+            55,
+            TilePos { x: 106, y: 6 },
+        );
         personal.kind = VillageKind::Personal;
         personal.owner_player_id = Some("owner".to_owned());
         personal
@@ -8546,6 +8697,7 @@ mod tests {
             .known_village_ids
             .insert("personal".to_owned());
         world.colonies.push(personal);
+        ensure_test_land_route(&mut world, 0, 1);
 
         let before = build_snapshot(&world, 1_000_000, 1).colonies[1]
             .storage
@@ -8653,7 +8805,7 @@ mod tests {
             accepted.ok,
             "researched local granary capacity must be honored"
         );
-        advance_village_trade_caravans(&mut world, owner.now_ms + 1);
+        advance_village_trade_caravans(&mut world, owner.now_ms + 400_000);
         assert_eq!(world.colonies[1].resources.food, before.food + 19.0);
         assert_eq!(
             world.colonies[1]

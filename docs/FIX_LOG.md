@@ -13,6 +13,25 @@ and any changed Bevy visuals have been verified.
 
 ## Verified fixes
 
+## 2026-07-16 — Village barter follows one durable shared-world land route
+
+**Problem:** Accepted village barter persisted arbitrary waypoint lists but production acceptance
+still installed a direct shrine-to-shrine segment. The actor could cut through water, mountains,
+or a closed section of either palisade, and shared terrain did not decide whether it could depart.
+
+**Fix:** Acceptance now plans one deterministic orthogonal route before touching either cargo.
+Bounded A* reads canonical mutable tiles first and deterministically generates only needed unknown
+chunks; water, mountains, and every effective closed wall edge are hard blocks. Both shrine
+interiors connect through their current real gate. Goal-distance tie-breaking keeps long journeys
+close to linear work, while a fixed corridor and expansion ceiling bound hostile/no-route inputs.
+The compressed outbound list and exact reverse persist once and never silently replan in flight.
+Failure leaves the offer open and both physical cargoes at home. Planning cannot reveal fog.
+
+**Evidence:** Tests cover a shared-water detour, flooded-gate signed rejection, both villages'
+live wall/gate topology, deterministic 4,800-tile bounds, unchanged shared/fog ledgers, exact JSON
+route restart, reverse-route durability, cancellation, full-storage waiting, exact equipment
+identity, and one-second/coarse tick partition equivalence. Full simulation and strict gates pass.
+
 ## 2026-07-16 — Whole-game signed action campaign covers post-P19 controls
 
 **Problem:** The deterministic `player_action_campaign` claimed to exercise every public

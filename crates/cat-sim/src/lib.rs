@@ -64,6 +64,7 @@ pub mod trips;
 pub mod village_area;
 pub mod village_layout;
 pub mod village_sites;
+pub mod village_trade_routes;
 
 // P6 military/governance/upgrade-tree modules.
 pub mod combat;
