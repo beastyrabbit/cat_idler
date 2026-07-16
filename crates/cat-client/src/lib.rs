@@ -9462,13 +9462,18 @@ fn village_camera_center(anchor: TilePoint, radius: u32, zoom: f32) -> Vec2 {
 
 fn update_hud(
     latest: Res<LatestSnapshot>,
+    windows: Query<Ref<Window>, With<PrimaryWindow>>,
     mut header: Query<&mut Text, (With<HudHeaderText>, Without<HudFooterText>)>,
     mut footer: Query<&mut Text, (With<HudFooterText>, Without<HudHeaderText>)>,
     mut values: HudResourceQuery,
 ) {
-    if !latest.is_changed() {
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    if !latest.is_changed() && !window.is_changed() {
         return;
     }
+    let compact = dashboard_layout_is_compact(window.width());
     let (Ok(mut header), Ok(mut footer)) = (header.single_mut(), footer.single_mut()) else {
         return;
     };
@@ -9492,8 +9497,8 @@ fn update_hud(
         }
         return;
     };
-    header.0 = dashboard_header_text(colony, world.online_count);
-    footer.0 = dashboard_footer_text(colony);
+    header.0 = dashboard_header_text(colony, world.online_count, compact);
+    footer.0 = dashboard_footer_text(colony, compact);
     let mut reported = colony
         .stock_ledger
         .as_ref()
@@ -10089,11 +10094,44 @@ fn village_trade_reply_action(offer_id: &str, accept: bool, session: &Session) -
 
 /// The HUD colony header (name / leader / pop / threat) shown above the resource
 /// icon rows.
-fn dashboard_header_text(colony: &ColonySnapshot, online: u32) -> String {
+fn dashboard_layout_is_compact(window_width: f32) -> bool {
+    window_width <= NARROW_LAYOUT_MAX_WIDTH
+}
+
+fn compact_hud_label(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_owned();
+    }
+    let kept = max_chars.saturating_sub(2);
+    format!("{}..", value.chars().take(kept).collect::<String>())
+}
+
+fn dashboard_header_text(colony: &ColonySnapshot, online: u32, compact: bool) -> String {
     let leader = colony
         .leader
         .as_ref()
         .map_or_else(|| "none".to_string(), |l| l.name.clone());
+    if compact {
+        let name = compact_hud_label(&colony.name, 20);
+        let leader = compact_hud_label(&leader, 16);
+        return format!(
+            "Colony: {name} [{status:?}]\n\
+             Leader: {leader} · online {online} · Lv {lvl}\n\
+             Pop {pop}/{cap_house} · housed {housed} · wait {probationary} · out {unhoused}\n\
+             Threat {threat:?} {pressure:.0} · warriors {warriors} · left {departures}",
+            status = colony.status,
+            pop = colony.housing.population,
+            housed = colony.housing.housed,
+            cap_house = colony.housing.capacity,
+            lvl = colony.housing.village_level,
+            probationary = colony.housing.probationary,
+            unhoused = colony.housing.unhoused,
+            departures = colony.housing.departures,
+            threat = colony.threat.band,
+            pressure = colony.threat.pressure,
+            warriors = colony.threat.warriors,
+        );
+    }
     format!(
         "online {online}\n\
          Colony: {name}  [{status:?}]\n\
@@ -10117,12 +10155,32 @@ fn dashboard_header_text(colony: &ColonySnapshot, online: u32) -> String {
 }
 
 /// The HUD footer (job counts + stock ledger) shown below the resource rows.
-fn dashboard_footer_text(colony: &ColonySnapshot) -> String {
+fn dashboard_footer_text(colony: &ColonySnapshot, compact: bool) -> String {
     let active_jobs = colony
         .jobs
         .iter()
         .filter(|j| matches!(j.status, cat_protocol::JobStatus::Active))
         .count();
+    if compact {
+        let physical = physical_goods_total(&colony.items);
+        let trade_ready = trade_ready_stored_pristine_value(&colony.items)
+            .map_or_else(|| "?".to_owned(), |value| format!("{value}g"));
+        let ledger = colony.stock_ledger.as_ref().map_or_else(
+            || "Ledger unavailable".to_owned(),
+            |ledger| {
+                let r = &ledger.reported;
+                let accuracy = if ledger.accurate { "exact" } else { "stale ~" };
+                format!(
+                    "Ledger {accuracy} F{:.0} W{:.0} M{:.0} R{:.0}",
+                    r.food, r.water, r.materials, r.refined
+                )
+            },
+        );
+        return format!(
+            "Jobs {active_jobs}/{} · goods {physical}g · trade-ready {trade_ready}\n{ledger}",
+            colony.jobs.len()
+        );
+    }
     format!(
         "Active jobs: {active_jobs}   Total jobs: {jobs}\n{treasury}{ledger}",
         jobs = colony.jobs.len(),
@@ -12821,6 +12879,8 @@ mod tests {
         assert_eq!(BOTTOM_OVERLAY_CLEARANCE, 135.0);
         assert_eq!(bottom_overlay_clearance(1024.0), 171.0);
         assert_eq!(bottom_overlay_clearance(1280.0), 135.0);
+        assert!(dashboard_layout_is_compact(1024.0));
+        assert!(!dashboard_layout_is_compact(1280.0));
         assert_eq!(dispatches_display(1024.0, false), Display::None);
         assert_eq!(dispatches_display(1280.0, false), Display::Flex);
         assert_eq!(dispatches_display(1280.0, true), Display::None);
@@ -15876,7 +15936,19 @@ mod tests {
         assert_eq!(snap.colonies.len(), 1);
         assert_eq!(snap.colonies[0].cats.len(), 2);
         assert_eq!(snap.online_count, 2);
-        assert!(dashboard_header_text(&snap.colonies[0], 2).contains("Colony: A"));
+        assert!(dashboard_header_text(&snap.colonies[0], 2, false).contains("Colony: A"));
+        let compact = dashboard_header_text(&snap.colonies[0], 2, true);
+        assert_eq!(compact.lines().count(), 4);
+        assert!(compact.contains("Pop 2/4"));
+        assert!(compact.contains("online 2"));
+        assert!(compact.lines().all(|line| line.chars().count() <= 48));
+        let footer = dashboard_footer_text(&snap.colonies[0], true);
+        assert_eq!(footer.lines().count(), 2);
+        assert!(!footer.contains("\n\n"));
+        assert!(footer.contains("Jobs"));
+        assert!(footer.contains("goods"));
+        assert!(footer.contains("Ledger"));
+        assert_eq!(compact_hud_label("123456789", 6), "1234..");
     }
 
     #[test]

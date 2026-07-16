@@ -56,9 +56,9 @@ Key shipped contracts:
   shrine offerings, farming, fishing, forestry, extraction, processing, and all 19 maintained labor
   skills follow the same physical-state discipline.
 - Passive deterministic campaigns, observed-state guided campaigns, all 51 public action variants,
-  persistence/restart campaigns, and native/WASM framebuffers are recorded in the audit. A final
-  exact 1024×768 framebuffer proving the complete 31-resource HUD and zero-`FUTURE` research view
-  is still pending final QA; do not claim it before inspecting the captured PNG.
+  persistence/restart campaigns, and native/WASM framebuffers are recorded in the audit. The final
+  exact 1024×768 native pair proves the complete 31-resource HUD, non-overlapping command toolbar,
+  and 487/487 zero-`FUTURE` research ledger; both client-owned PNGs were decoded and inspected.
 
 Dev tooling includes `CAT_BRP=1` for Bevy Remote Protocol inspection and a headless playtest
 harness:

@@ -42,7 +42,7 @@ codex, plus a Claude review for high-value slices) signs off.
 | P15 | Playtest-feedback backlog: controls/feel, fog-of-war, booster, movement smoothing | done — movement/booster, roads, exact controls, election timing, knowledge-blind shrine-return search, restart-safe notebooks, fast first wood, spatial personal needs, useful-labor pressure, exact 48-hour passive campaigns, all 51 public actions, guided play, and physical production are verified |
 | P16 | Founding village blueprint, gather spots, tile recalibration | done — the 15-adult/three-five-bed-Den lifecycle, gate-routed migration/pregnancy/aging/reset, physical emergency water, interior clearing, exterior water, roads, gather controls, outside-wall agriculture, physical farming/fishing, founding benches, and production routes are verified |
 | P17 | Climate-driven biome generator (~26 biomes), mining, crop fertility, transport upgrades | done — climate generation, crop fertility, finite Gem/Clay/Sand deposits and physical extraction, ore/metal, exterior plots, finite fish habitats, cached fine-biome movement, and exact constructed/staffed Rail plus Shipping routes are live |
-| P18 | Visual polish: DF-Steam parchment UI, craft-station sprites | done — label-free building compositions, Adventure skin, research ledger, top-down palisades, staged walls, exterior agriculture, optimized-WASM interaction, and unique tracked glyphs for all 31 HUD resources are implemented and visually verified across feature captures. The final combined exact-1024×768 31-resource/zero-`FUTURE` capture remains a QA evidence task |
+| P18 | Visual polish: DF-Steam parchment UI, craft-station sprites | done — label-free building compositions, Adventure skin, research ledger, top-down palisades, staged walls, exterior agriculture, optimized-WASM interaction, and unique tracked glyphs for all 31 HUD resources are implemented and visually verified. The final exact-1024×768 native pair shows the full 31-resource HUD above a clear toolbar and the 487/487 zero-`FUTURE` ledger |
 | P19 | Item/material economy: crafting chains, traders, coin | done — the canonical source/station/taxonomy contract preserves stable IDs and open-top buildings; raw Stone/Bone/Gem/Clay/Sand sources, scaffold inputs, all 104 recipes across ten processor types, every generated recipe/resource family, exact finite goods, equipment, visiting/village traders, coin, weight, wear, breakage, and repair are verified |
 
 **Notes on P12–P19**: these phases were decomposed and executed after this board's card
@@ -758,8 +758,9 @@ for exact commit hashes/messages, and the corresponding spec doc for the origina
 - The semantic resource-icon card is verified. All 31 HUD rows have unique labels, paths, tints,
   values, and resource-specific Board Game/Fish glyphs copied into
   `public/images/game/icons/`; Stone uses the block/ingot glyph and Bone the fish-skeleton glyph.
-  Exhaustive mapping/path tests cover the complete set. A final combined exact 1024×768 capture of
-  all 31 rows and the zero-`FUTURE` ledger remains pending inspection.
+  Exhaustive mapping/path tests cover the complete set. The final decoded exact 1024×768 native
+  pair shows all 31 rows, every toolbar command without overlap, and the 487/487 zero-`FUTURE`
+  ledger.
 - Visible hauling now uses the same semantic authority: every one of the 31 `CarryingKind` values
   loads its exact tracked resource art, with no colored-square fallback. Fibre uses the tracked
   public-pack haystack silhouette so it stays distinct from Flour and Cloth. Exhaustive

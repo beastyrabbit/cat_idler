@@ -13,6 +13,30 @@ and any changed Bevy visuals have been verified.
 
 ## Verified fixes
 
+## 2026-07-16 — Narrow HUD clears every command at the supported viewport floor
+
+**Problem:** The first exact 1024×768 final-coverage capture exposed a real responsive-layout
+defect: the truthful six-line colony header and wrapping goods/Accountant footer extended the
+left HUD to y669 while the four-row command toolbar began around y604. The HUD hid the left side
+of the first two command rows even though all 31 resource pills themselves were visible.
+
+**Fix:** At the maintained narrow-layout breakpoint, only the redundant status prose switches to
+a bounded four-line header and two-line treasury/ledger summary. Colony and leader labels are
+bounded, all housing/threat/job/goods/ledger facts remain present, and the complete 31-resource
+grid is unchanged. Wider windows retain the detailed copy. Window changes now refresh the layout
+without waiting for a new snapshot.
+
+**Evidence:** Responsive helper tests pin compact versus detailed selection, four/two-line bounds,
+and the existing four-row toolbar geometry. The live native client captured its own RGB framebuffer
+against a booted authoritative server at exactly 1024×768. The decoded HUD PNG
+`/tmp/idle-cat-hud-1024.png` (SHA-256
+`e26e3818c57e55901a647749ad7544f334f3926df8b7b44fca2d56a3fdb54cad`) shows all 31 rows,
+the HUD ending at y580, and every toolbar control beginning at y604 with no overlap. The decoded
+research PNG `/tmp/idle-cat-research-1024.png` (SHA-256
+`329ea3a09db3837addaf73dfe3bc474eacbb37b2b6c11f17f5417da1c719e72a`) shows 487/487 nodes,
+all filters and navigation, a readable inspector, and no `FUTURE` state. The temporary capture
+system was removed before the final gates.
+
 ## 2026-07-16 — Subsistence and frontier research breadth has finite routes
 
 **Problem:** Forty-eight nodes across Hunting, Foraging, Waterworks, Animal Husbandry, Field
