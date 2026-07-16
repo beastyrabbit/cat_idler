@@ -35,9 +35,9 @@ use cat_protocol::{
     ItemStackSnapshot, JobKind, Labor, OfferingResource, OfficerRole, ProductionQueueEdit,
     QueueMoveDirection, RaiderStatus, ResourceAmounts, ResourceCapacities, ResourceKind,
     ResourceStackSnapshot, RoleXp, ScoutMission, ScoutResource, Specialization, StationCompartment,
-    StockLedgerSnapshot, StockpileSnapshot, TilePoint, TraderBuyOffer, TraderSellOffer,
-    TraderSnapshot, TraderVisitState, TransportMode, VillageKind, VillageScale,
-    VillageTradeCaravanPhase, WorldSnapshot, ZoneKind,
+    StockpileSnapshot, TilePoint, TraderBuyOffer, TraderSellOffer, TraderSnapshot,
+    TraderVisitState, TransportMode, VillageKind, VillageScale, VillageTradeCaravanPhase,
+    WorldSnapshot, ZoneKind,
 };
 use cat_sim::climate::{Biome, ResourceHint};
 use cat_sim::terrain_gen::{
