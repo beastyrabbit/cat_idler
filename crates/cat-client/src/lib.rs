@@ -3983,7 +3983,7 @@ fn resource_icon_path(kind: HudRes) -> &'static str {
         // The tracked haystack is the public pack's distinct raw-plant-fibre
         // silhouette. Do not alias the flour sack: carriers must read uniquely.
         HudRes::Fibre => "public/images/game/props/haystack.png",
-        HudRes::Thread => "public/images/game/icons/fibre.png",
+        HudRes::Thread => "public/images/game/icons/thread.png",
         HudRes::Hide => "public/images/game/icons/hide.png",
         HudRes::Bone => "public/images/game/icons/bone.png",
         HudRes::Cloth => "public/images/game/icons/cloth.png",
@@ -14743,7 +14743,7 @@ mod tests {
             );
             let unique_bytes = image_contents.insert(bytes);
             assert!(
-                unique_bytes || kind == CarryingKind::Thread,
+                unique_bytes,
                 "{kind:?} cargo icon {path} aliases another cargo image"
             );
         }

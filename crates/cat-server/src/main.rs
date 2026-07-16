@@ -3150,26 +3150,24 @@ mod tests {
             let tree = (-12..=12)
                 .flat_map(|chunk_y| (-12..=12).map(move |chunk_x| (chunk_x, chunk_y)))
                 .find_map(|(chunk_x, chunk_y)| {
-                    cat_sim::terrain_gen::generate_terrain_chunk(
-                        chunk_x,
-                        chunk_y,
+                    cat_sim::terrain_gen::resolved_biome_decorations_for_chunks(
                         i64::from(seed),
-                        cat_sim::terrain_gen::WORLD_TERRAIN_OPTIONS,
+                        &std::collections::BTreeSet::from([(chunk_x, chunk_y)]),
                     )
                     .into_iter()
-                    .find(|tile| {
+                    .find_map(|((x, y), decoration)| {
                         matches!(
-                            tile.decoration,
-                            Some(cat_sim::terrain_gen::DecorationRole::Tree { .. })
-                        ) && tile.climate_biome.properties().resource
-                            == cat_sim::climate::ResourceHint::Wood
-                    })
-                    .map(|tile| cat_sim::world_tick::TilePos {
-                        x: tile.x,
-                        y: tile.y,
+                            decoration,
+                            cat_sim::terrain_gen::DecorationRole::Tree { .. }
+                        )
+                        .then(|| cat_sim::terrain_gen::tile_climate_biome(seed, x, y))
+                        .filter(|biome| {
+                            biome.properties().resource == cat_sim::climate::ResourceHint::Wood
+                        })
+                        .map(|_| cat_sim::world_tick::TilePos { x, y })
                     })
                 })
-                .expect("bounded climate scan contains a logging tree");
+                .expect("bounded climate scan contains a resolved logging tree");
             let colony = &mut world.colonies[0];
             colony
                 .upgrade_tree
@@ -3185,6 +3183,7 @@ mod tests {
             logging_tile.path_wear = 63;
             logging_tile.overlay_feature = None;
             colony.world_tiles.insert(tree, logging_tile);
+            colony.revealed_tiles.insert(tree);
         }
 
         let accepted = send_action(&state, &mut connection, &request).await;
