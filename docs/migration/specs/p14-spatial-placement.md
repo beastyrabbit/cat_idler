@@ -1,9 +1,12 @@
 # P14 — Spatial placement, walls & road accessibility
 
-> **Verified living spec.** Atomic building placement/reservations, rendered 2×3 tree and 1×1
-> rock occupancy, soft-obstacle routing, exact visible dirt/stone roads, exterior agricultural
-> territory, and staged outer-before-inner one-gate wall replacement are verified in code and
-> accepted native framebuffers. Evidence lives in
+> **Implemented living spec; generalized visual gate verified.** Atomic building
+> placement/reservations, rendered 2×3 tree and 1×1 rock occupancy, soft-obstacle routing, exact
+> visible dirt/stone roads, exterior agricultural territory, and staged outer-before-inner
+> one-gate wall replacement are implemented. One deterministic decoration authority rejects
+> tree/tree, tree/rock, tree/water, wall, and structure overlap across chunk boundaries before
+> simulation occupancy or rendering. Focused code gates and combined narrow/wide native
+> framebuffer inspection pass. Evidence lives in
 > [`docs/IMPLEMENTATION_AUDIT.md`](../../IMPLEMENTATION_AUDIT.md).
 
 User direction (2026-07-10): the world must obey proper tile-based spatial rules. Today

@@ -1,10 +1,14 @@
 # P18 — Visual polish: DF-Steam UI overhaul + workshop craft-station sprites
 
-> **Living target spec.** Label-free roofed homes, distinct open stations, and the maintained
-> Adventure 9-patch/button/progress/minimap/cursor skin are native-framebuffer verified at
-> 1024×768, 1280×800, and 1920×1080. Optimized WASM visual interaction is also verified at those
-> supported bounds. A verified integrated Accounting Tent plus staged wall/agricultural native
-> sequence closed the world-composition gate in
+> **Living target spec; compact-presentation gate verified.** Label-free roofed homes,
+> distinct open stations, and the Adventure 9-patch/button/progress/minimap/cursor foundation have
+> accepted native and optimized-WASM evidence at 1024×768, 1280×800, and 1920×1080. The maintained
+> presentation now uses a four-store survival HUD, a complete 32-resource Stores menu, and one
+> expanded category in the compact command dock rather than an exhaustive resource/button wall.
+> That redesign passes focused layout tests, generalized narrow/wide native frame inspection, and
+> the shared WASM compile gate. The accepted
+> Accounting Tent and staged wall/agricultural sequence remain valid prior world-composition
+> evidence in
 > [`docs/IMPLEMENTATION_AUDIT.md`](../../IMPLEMENTATION_AUDIT.md).
 
 User (2026-07-10): (1) workshops should look like DF-Steam craft-stations — find a good asset or
@@ -26,21 +30,25 @@ table + blocks, weaver = loom, mill = millstone/sails, still = barrels. Ours are
 - Verify by montage; each must read as its craft. If a composite looks bad, note it.
 
 ## UI overhaul — DF-Steam look
-Current UI = plain dark-green text boxes. DF-Steam UI = polished, themed: wood/parchment **framed
+The pre-P18 UI used plain dark-green text boxes. DF-Steam UI = polished, themed: wood/parchment **framed
 panels**, ornate borders, **icon-driven** readouts, clear tabbed menus, banners/headers, resource
-**pills with icons**, styled buttons. Restyle the client HUD/panels to that.
+**pills with icons**, styled buttons. The Adventure skin remains the visual foundation.
 - **Asset foundation exists** (catalogued in `docs/assets/items_ui.md`): **UI Pack – Adventure** —
   wood-frame + cream-parchment **9-patch panels** (border-image), wood/red/grey **buttons**,
   colored **progress pills** (food/water/threat), hanging **banner** headers, round medallions for
   resource icons, minimap ring; plus **Board Game Icons** (recolorable white glyphs) for
   resources, and cursors. Copy the chosen ones into `public/images/game/ui/` + `.../icons/`.
-- Apply across: the top-left **HUD** (resource pills+icons, status, threat band), the **toolbar**
-  (styled buttons), the **officers/ledger** panels, the **inspectors** (hover tooltip + big menu,
-  P15), the **event log**, and the upgrade/menus. Bevy UI: 9-patch via `ImageNode` slicing;
-  keep it theme-cohesive with the pixel world (crisp, not blurry).
-- Big card — do as a focused client pass (likely several commits: panel/9-patch framework →
-  HUD → toolbar/menus → inspectors), after the P14.5 render + movement land. Keep it readable +
-  performant.
+- **Maintained compact presentation (supersedes the exhaustive P18 HUD/toolbar layout):** the
+  top-left world card pins only Food, Fish, Water, and Materials plus colony status. Stores [G]
+  derives all 32 resources from the protocol. The bottom dock shows primary categories and expands
+  only Gather, Build, Territory, Scout, Village, or contextual controls for the active tool. The
+  officers/ledger panels, inspectors (hover tooltip + big menu, P15), event log, and research screen
+  retain the same Adventure treatment. Bevy UI uses 9-patch `ImageNode` slicing and crisp pixel
+  filtering. Generalized captures wait several stable render frames after opening a menu or changing
+  tools so transient state-transition frames are not mistaken for persistent rendering defects.
+- The implementation sequence remains useful history (panel/9-patch framework → HUD →
+  toolbar/menus → inspectors). The integrated generalized frames and interaction campaign close
+  the maintained presentation; focused component captures alone did not close it.
 
 ## Also here (from P15)
 - The square top-down sharpened-timber palisade and current top-down cat sheet are accepted runtime

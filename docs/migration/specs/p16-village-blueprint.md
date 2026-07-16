@@ -5,7 +5,8 @@
 > five-bed Dens**. Founding/housing, authoritative interior clearing, exterior water, and the
 > exact dirt/stone road model are verified. Selectable/removable gather controls, finite shoreline
 > fishing, persisted exterior agricultural territory, physical farm labor, all ten processor
-> types, and all 104 physical recipe routes are verified. See
+> types, and all 108 physical recipe routes are implemented; the integrated generalized gate
+> passes. See
 > [`docs/IMPLEMENTATION_AUDIT.md`](../../IMPLEMENTATION_AUDIT.md).
 
 Detailed founding/economy/spatial design from playtest. Numbers are the spec.
@@ -38,7 +39,7 @@ A fixed starting blueprint:
   rod, …) and later wood goods. Weapons belong to the Smithy chain.
 - **Finite general storehouse** pre-filled at a personal founding with **50 food, 100 water,
   16 herbs, 60 general materials, 10 planks, and 10 blocks**. The larger communal blueprint
-  receives twice that runway. Logs, lumber, grain, flour, fibre, hide, cloth, leather, ore,
+  receives twice that runway. Logs, lumber, grain, flour, fibre, thread, hide, cloth, leather, ore,
   metal, fish, tools, weapons, armor, catnip, refined goods, and blessings begin at zero and
   must enter through their real chains.
 - **New house cost**: X processed timber (Lumber preferred, Planks accepted) + X Blocks. Raw Stone
@@ -112,7 +113,7 @@ New resource types + chains:
    both touch world_tick founding/director.)
 3. **Resource chains — complete** (P12.4b/P19): Logs→Planks, Stone→Blocks, and Planks+Blocks→wooden Tools;
    houses consume processed timber+Blocks. Metal weapons/armor belong to the Smelter→Smithy chain.
-   The canonical P19 production cards verify this and the later 104-recipe graph.
+   The canonical P19 production cards verify this and the later 108-recipe graph.
 4. **Roads + movement speed**: built stone roads (175%) + auto dirt roads (105%) + surface speeds
    (stone 100% / grass 75%); render dark-grey stone vs worn dirt. (Extends roads.rs + pathfinding
    cost model + snapshot road tiles + client render.)

@@ -2,11 +2,11 @@
 
 > **Living feedback spec.** Movement smoothing, the booster, infinite-map streaming, and
 > shrine-return scouting, visible authored/traffic roads, exact footprints/depth, and secure
-> global/personal village foundations are verified. Coordinate placement, selectable/removable
+> global/personal village foundations are implemented. Coordinate placement, selectable/removable
 > designations, election controls plus authoritative between-term timing, and all ten physical
 > processor inspectors and queues are verified; the baseline Leader's browser and native
-> shrine-return campaigns are both verified. All 104 recipes, all 487 studies, shared terrain,
-> and physical village trade are verified in
+> shrine-return campaigns are both verified. All 108 recipes, all 487 studies, shared terrain,
+> and physical village trade are implemented; the integrated correction gate passes as recorded in
 > [`docs/IMPLEMENTATION_AUDIT.md`](../../IMPLEMENTATION_AUDIT.md).
 
 Captured from live `cargo dev` playtesting. Triaged; "already there" notes from a code survey.
@@ -32,6 +32,9 @@ Captured from live `cargo dev` playtesting. Triaged; "already there" notes from 
   client footprint rendering prevent the old point-sprite overlap.
 - **"2.5D but not really" — resolved.** Base-y depth sorting and exact footprints make cats pass
   behind buildings and trees while preserving the flat top-down view.
+- **Duplicate cat bodies — verified in generalized frames.** The 1024×64 sheet is
+  sliced into individual 32×32 cells, and render reconciliation owns exactly one body entity per
+  live authoritative cat ID. Focused entity/atlas tests and whole-scene narrow/wide frames pass.
 
 ## Controls (client)
 - **Middle-drag = pan map** (keep as-is). **Right-click = select building.**
@@ -54,10 +57,11 @@ Two-tier inspector, driven by the cursor:
   sim/protocol addition alongside the workshop/production work (P12.4b).
 
 ## Features (sequence)
-- **Roads visible — resolved.** Authored stone and traffic-formed dirt are disjoint snapshot
-  surfaces with distinct rendering and 175%/105% movement effects; forbidden terrain cannot form
-  dirt paths.
-- **Workshops + production chains + routes — verified.** All 104 recipes across ten processor
+- **Roads visible — verified in generalized frames.** Authored stone and traffic-formed
+  dirt are disjoint snapshot surfaces with distinct rendering and 175%/105% movement effects;
+  forbidden terrain cannot form dirt paths. A complete 16-mask grammar selects lone, straight,
+  corner, T, and cross cells; focused mask tests and whole-scene junction frames pass.
+- **Workshops + production chains + routes — verified in the generalized campaign.** All 108 recipes across ten processor
   types have physical finite-store→station→store routes, local ledgers, conserved cargo, editable
   queues, and authoritative research ownership/effects.
 - **Fog of war + scout-driven discovery (detailed 2026-07-10).** The keystone exploration loop:
@@ -109,5 +113,5 @@ Two-tier inspector, driven by the cursor:
 - Cat movement, chunked-infinite terrain, authoritative multi-colony state, and term elections
   exist in the sim. Shrine-return fog/scouting plus usable global/personal founding, ownership,
   discovery, physical barter, visible roads, election controls, exact designation tools, and all
-  ten processor types' queues and inspectors are verified. The 104-recipe/487-study runtime closes
-  the maintained breadth contract.
+  ten processor types' queues and inspectors are verified. The 108-recipe/487-study runtime closes
+  the maintained breadth contract; its combined guided/passive gate passes.

@@ -17,6 +17,10 @@ The maintained P12–P19 design is implemented and evidence-backed. Do not infer
 from historical phase prose or dated intermediate counts; use `docs/IMPLEMENTATION_AUDIT.md`
 and `docs/FIX_LOG.md`.
 
+The 2026-07-16 integrated correction set is closed. Its combined exact-cadence passive,
+observed-state signed player, persistence, and 1024×768/1920×1080 client-framebuffer gate passes;
+the reproducible evidence is maintained in `docs/FIX_LOG.md`.
+
 Key shipped contracts:
 
 - The deterministic `cat-sim` and authoritative SQLite/WebSocket `cat-server` tick every colony
@@ -44,10 +48,11 @@ Key shipped contracts:
   and 155 Upgrade. All 487 are dependency-order purchasable and persistent; there are no disabled
   `FUTURE` studies. The Leader may complete at most one affordable study per rolling real-life day,
   while the player may buy any affordable studies directly.
-- The physical production graph contains **104 recipes**. Finite input is reserved and carried to
+- The physical production graph contains **108 recipes**. Finite input is reserved and carried to
   station-local storage, staffed work creates a finite output, and a living carrier delivers it
   before aggregate credit. All generated recipe and resource payloads have authoritative runtime
-  consumers. The 31-resource wire/storage/HUD/carrying vocabulary is exhaustive.
+  consumers. The 32-resource wire/storage/carrying vocabulary is exhaustive; the complete inventory
+  is in Stores while the world HUD intentionally pins only four critical kinds.
 - `Crews` research is truthful: 12 studies expand real concurrent worker slots at physical
   multi-worker stations; 13 studies enable bounded services scoped to their completed building.
   Those service studies do not invent worker slots.
@@ -55,10 +60,11 @@ Key shipped contracts:
   repair, equipment state, trade escrow, and persistence. Roads, rail, shipping, visiting traders,
   shrine offerings, farming, fishing, forestry, extraction, processing, and all 19 maintained labor
   skills follow the same physical-state discipline.
-- Passive deterministic campaigns, observed-state guided campaigns, all 51 public action variants,
-  persistence/restart campaigns, and native/WASM framebuffers are recorded in the audit. The final
-  exact 1024×768 native pair proves the complete 31-resource HUD, non-overlapping command toolbar,
-  and 487/487 zero-`FUTURE` research ledger; both client-owned PNGs were decoded and inspected.
+- Passive deterministic campaigns, observed-state guided campaigns, all public action variants,
+  persistence/restart campaigns, and native/WASM framebuffers are recorded in the audit. The
+  compact world HUD keeps only critical survival stores visible, the complete inventory is in
+  Stores [G], and one command category expands at a time. The research ledger remains 487/487 with
+  no `FUTURE` entries.
 
 Dev tooling includes `CAT_BRP=1` for Bevy Remote Protocol inspection and a headless playtest
 harness:

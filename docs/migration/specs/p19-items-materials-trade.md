@@ -1,14 +1,15 @@
 # P19 — DF-scale item economy (cat-themed): materials, material-variant crafting, traders
 
-> **Living target spec.** The item/material model, all 104 physical recipes, and finite
-> shrine-visiting traders with buy/sell actions are verified. Stable item-unit identity, exact functional
+> **Living target spec.** The item/material model, all 108 physical recipes, and finite
+> shrine-visiting traders with buy/sell actions are implemented. Stable item-unit identity, exact functional
 > equipment location/loadout, weight, finite durability, work/combat wear, material-backed repair,
 > exact caravan cargo transfer, finite trader
 > stock/purse/capacity, persistence, and Goods/trade-panel truth are implemented. Constructed Rail and
 > Shipping routes plus physical exact-equipment village caravans are live. Finite fresh-Fish habitats and the
 > physical shore→store route are verified. Configurable, consensual inter-village
 > resource barter is verified with a 32-open-offer cap, exact escrow, visible obstacle-aware
-> gate-to-gate travel, and cancellation/restart conservation. Evidence lives in
+> gate-to-gate travel, and cancellation/restart conservation. Focused implementation gates pass;
+> the integrated generalized passive/player-guided gate passes. Evidence lives in
 > [`docs/IMPLEMENTATION_AUDIT.md`](../../IMPLEMENTATION_AUDIT.md).
 
 User (2026-07-10): give the game a DF-like breadth of resources/items, but **cat-themed**
@@ -35,7 +36,7 @@ every workshop remains an open-top, function-readable map station.
 | Farms and forage | plots/sites → Grain, Herbs, Catnip, Fibre | crop/source-specific studies | Farm/Forage / Farmer | Harvest basket → gather spot → finite pile |
 | Mill | Grain → Flour; Flour → Food | building `milling`; `grain_milling_preparation` and `grain_milling_staples` | Mill / Farmer | Two explicit selected queue recipes through the physical Mill route |
 | Hunt | prey → Food plus Hide/Bone | hunting/source studies | Hunt / Farmer, with the Leader safety floor | Every byproduct returns as physical cargo |
-| Clothier | Fibre → Cloth; Cloth → clothing | building `textiles`; Textile Work recipes | Textile / Cloth Leader | Same station-local carry/work/delivery contract |
+| Clothier | Fibre → Thread → Cloth; Cloth → clothing | building `textiles`; Textile Work recipes | Textile / Cloth Leader | Two selected station-local carry/work/delivery cycles; Thread is credited and physically returned before weaving |
 | Tannery | Hide → Leather; Leather → clothing/light armor | building `textiles`; Leatherworking recipes | Textile / Cloth Leader | Same station-local carry/work/delivery contract |
 | Smelter | Ore → Metal bars | building `smelting`; study `metallurgy_preparation` | Metalwork / Captain | Same station-local carry/work/delivery contract |
 | Smithy | Metal → metal Tools, Weapons, or Armor | building `smithy`; separate Toolmaking, Weaponsmithing, and Armorsmithing recipes | Metalwork / Captain | One selected queue recipe per worker through local stores |
@@ -58,15 +59,16 @@ every workshop remains an open-top, function-readable map station.
   Woodworking, Smithy, Clothier, and Tannery, use the same ordered/repeatable/pausable queue
   contract; any new benches must preserve it.
 
-The completed scaffold and sourced-breadth work gives all 104 maintained station recipes stable data-owned descriptors,
+The completed scaffold and sourced-breadth work gives all 108 maintained station recipes stable data-owned descriptors,
 canonical input/output resource sets, deterministic default queues, and exact catalog-derived
 availability. C2.1 completes Wood Cutter's five-Logs-to-one-Plank physical route. C2.2 completes
 Stone Prep's five-Stone-to-one-Block physical route. C2.3 completes Woodworking's sequential
 two-Planks plus two-Blocks route into one exact finite Tool after one 600-game-second Craft batch.
 P19.C2.4 completes Tannery's five-Hide-to-one-Leather physical route after one 600-game-second
-Textile batch, with no aggregate credit before outbound delivery. P19.C2.5 completes Clothier:
-five separately foraged and delivered Fibre travel through local input, one 600-game-second
-Textile batch produces one Cloth, and aggregate credit waits for its outbound delivery. P19.C2.6
+Textile batch, with no aggregate credit before outbound delivery. P19.C2.5 completes Clothier as
+two selected physical cycles: five separately foraged and delivered Fibre produce five Thread,
+which a living carrier delivers to finite storage; a later batch carries five Thread back to local
+input, weaves one Cloth, and credits it only after outbound delivery. P19.C2.6
 completes Smithy: two Metal travel through local input, one selected 900-game-second Metalwork
 batch produces one whole Tool, Weapon, or Armor, and aggregate credit waits for outbound delivery. All six make their
 ordered/repeatable/pausable selected queues authoritative. Their
@@ -112,6 +114,12 @@ wood mug in value, etc.). The live model adds a stable unit ID and current/maxim
 the kind/material/quality identity; a workshop
 recipe = (ItemKind, allowed materials) consuming N of that material. This keeps the item list
 compact (kinds × materials) while giving DF-like variety. Value = f(kind, material, quality).
+
+The four canonical Mug materials are live selected recipes: Wood at Woodworking, Stone and Bone at
+Stone Prep, and Metal at Smithy. Clay and Sand retain their additional pottery/glassy Mug variants;
+they do not replace the canonical four-material requirement. Every output keeps one finite identity
+through station output, paws, storage, trade, and restart. The generalized integrated campaign for
+the new canonical routes passes.
 
 ## Traders / caravans
 Periodic **visiting traders** (like DF caravans): a trader arrives at the village (walks to the

@@ -120,10 +120,12 @@ ledger is `docs/IMPLEMENTATION_AUDIT.md`; the migration board retains dated impl
   safety floor. Seven specialist offices own distinct automation categories, and vacancies leave
   those categories manual. Signed actions cover placement, designation, governance, labor,
   production queues, research, combat, shrine work, transport, equipment, and trade.
-- **Physical economy.** Ten maintained processor types and all 104 runtime recipes reserve finite
+- **Physical economy.** Ten maintained processor types and all 108 runtime recipes, including the
+  physical Fibre→Thread→Cloth chain and canonical Wood/Stone/Metal/Bone Mug routes, reserve finite
   input, carry it to station-local storage, perform staffed work, create finite local output, and
   deliver it before aggregate credit. All generated recipe/resource research payloads have an
-  authoritative consumer. The 31-resource storage/wire/HUD/carrying vocabulary is exhaustive.
+  authoritative consumer. The 32-resource storage/wire/carrying vocabulary is exhaustive; its
+  complete presentation lives in Stores rather than the compact world HUD.
 - **Research.** The persistent ledger contains exactly 487 implemented studies: 165 Building,
   167 Recipe/Resource, and 155 Upgrade. Every node is dependency-order purchasable; no card is a
   disabled `FUTURE` promise. Twelve `Crews` studies expand real concurrent physical stations;
@@ -138,11 +140,14 @@ ledger is `docs/IMPLEMENTATION_AUDIT.md`; the migration board retains dated impl
   obstacle-aware routes through both villages' gates.
 - **Spatial and visual truth.** Founding clearing, exterior farms, finite fishing and extraction,
   dirt/stone roads, staged walls, rail/shipping, open label-free stations, physical cargo, the
-  Adventure UI, and native/WASM clients are verified. A final exact 1024×768 capture for the full
-  31-resource HUD and zero-`FUTURE` ledger remains a QA evidence task, not an implementation gap.
+  Adventure UI, and native/WASM clients are implemented. The world view pins only critical survival
+  stores; the complete resource inventory lives in the Stores menu, and one compact command
+  category is expanded at a time. The full-page research ledger remains 487/487 with no
+  `FUTURE` state. The integrated road, single-cat-body, resolved-decoration, and compact-UI
+  corrections pass their generalized native visual and guided-play gate.
 - **Deployment.** The same-origin, non-root production image serves the client, assets, probes, and
   WebSocket with compression and Origin checks. Optional WASM transfer tuning and the first pushed
-  Forgejo workflow run are the only maintained follow-ups.
+  Forgejo workflow run remain external follow-ups.
 
 ### Maintained founding and life pacing
 
@@ -237,14 +242,15 @@ terrain generated client-side from the shared `world_seed` (via `cat_sim::genera
 — the client doesn't need the server to stream tile data, just the seed), fog of war, paved
 roads, cats (colored by specialization, carrying marker, walk animation that interpolates toward
 the latest snapshot tile rather than teleporting), label-free roofed homes and typed open
-stations, stockpiles/gather spots, raiders, crop stages, and zone overlays. The HUD shows
-resources with caps, colony census, event log, trade, officers, village selection, authoritative
-election countdown/open-election controls, and
+stations, stockpiles/gather spots, raiders, crop stages, and zone overlays. The compact world HUD
+shows critical survival stores and colony status; the Stores menu owns the full inventory, while
+category menus expose map tools and signed commands without a permanent button wall. Census,
+event log, trade, officers, village selection, authoritative election countdown/open-election controls, and
 cat/building inspectors. Its full-page research screen renders and purchases the complete
 487-study ("about 500") catalog with filter/search/pan/zoom.
 The maintained P18 Adventure 9-patch/button/progress/minimap/cursor foundation is implemented and
-native-framebuffer verified at 1024×768, 1280×800, and 1920×1080. New menus still require the same
-responsive native and WASM interaction checks before they are called complete.
+native-framebuffer verified at 1024×768, 1280×800, and 1920×1080. The compact menus also pass
+current narrow/wide native inspection and the shared WASM compile gate.
 
 Art: curated pixel sprites under `public/images/game/{terrain,nature,buildings,interior,infra,
 props,farm,enemies}/`, with accepted cat/raider sheets under `public/images/cats/` — see
@@ -297,7 +303,10 @@ hooks that used to gate the TypeScript game are no longer relevant to this works
 
 ## Maintained follow-ups
 
-The P11 cutover and the maintained gameplay contract are complete. The TypeScript implementation
-lives only on `archive/web-game` (`web-final`), and the browser bundle plus combined production
-host run end-to-end. The first pushed Forgejo workflow run and optional WASM transfer tuning remain;
-new defects must be reproduced and recorded in `docs/FIX_LOG.md` rather than inferred from old phases.
+The P11 cutover and maintained gameplay implementation are complete. The integrated corrections
+listed in `docs/FIX_LOG.md` pass one generalized passive, signed player-guided, persistence, and
+multi-frame visual verification campaign with combined evidence recorded there. The TypeScript
+implementation lives only on `archive/web-game` (`web-final`), and the
+browser bundle plus combined production host run end-to-end. The first pushed Forgejo workflow run
+and optional WASM transfer tuning remain external follow-ups; new defects must be reproduced and
+recorded in `docs/FIX_LOG.md` rather than inferred from old phases.

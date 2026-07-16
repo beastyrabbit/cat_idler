@@ -7,11 +7,61 @@ and any changed Bevy visuals have been verified.
 
 ## Open fix queue
 
-| Finding | Required correction | State |
-| --- | --- | --- |
-| _None_ | The maintained correction queue is empty. Add a reproduced defect here before implementation. | — |
+No reproduced gameplay or maintained-design defect is open after the 2026-07-16 generalized
+correction gate. New findings belong here before implementation begins.
+
+## Playtest cadence
+
+**Current state:** the combined generalized gate is verified.
+
+Focused tests run while a change is being built only as fast safety checks. They do not close a
+finding and they are not counted as a playtest. Several related fixes are integrated first; then
+one generalized campaign checks the whole game rather than replaying only the feature just changed.
+That campaign must combine no-input controls with signed player guidance and cover survival,
+housing/migration, connected roads and movement, production chains, research, shrine-return fog,
+trade, expansion, persistence, and cross-feature conservation. For client changes it waits several
+stable render frames after each state transition, then captures multiple frames from the booted
+Bevy client's own framebuffer and inspects the complete scene,
+including one body per authoritative cat and every visible road junction—not only the panel or
+sprite that motivated the change.
 
 ## Verified fixes
+
+## 2026-07-16 — Generalized correction gate closes the eight-player-feedback set
+
+**Problem:** Focused regressions proved the individual corrections but did not establish that the
+combined game still worked as an idle colony or under broad player guidance. Early exact-cadence
+evidence also found that the Leader projected only six caller ticks of survival, so one-second
+servers could starve while coarse tests passed. Initial Bevy screenshots after panel transitions
+occasionally contained only part of a fully rendered swapchain frame, which could be mistaken for
+a persistent layout defect.
+
+**Fix:** Leader survival planning now projects a fixed four game-hour runway independent of caller
+cadence. The physical Fibre→Thread→Cloth and four-material Mug routes, selectable shrine offerings,
+complete 16-mask roads, single-body cats, resolved 2×3 decoration footprints, compact four-resource
+HUD, complete Stores ledger, and categorized command dock are integrated. The screenshot gate takes
+redundant settled frames and accepts a target state only after inspecting a complete client-owned
+frame; no production workaround was added for the intermittent capture-readback artifact.
+
+**Evidence:** Exact one-second, 48-game-hour passive campaigns on seeds 555, 20240712, and 7 all
+finished with 15 cats, zero deaths, zero extinction resets, positive food/water, autonomous hunting,
+water work, elections, scouting, and permanent shrine-return fog growth. Seed 555 improved from two
+starvation deaths and 23 near-empty samples to zero deaths, a sampled food floor of 16, and final
+Food 40/Water 105. An observed-state signed campaign exercised all 52 `ClientAction` variants,
+including officer assignment/removal, construction and roads, research, offerings, every processor,
+Fibre→Thread→Cloth, Mugs, rail/shipping, both trade systems, equipment, and SQLite restart.
+
+The booted native client captured and this review inspected complete default, expanded Gather, and
+Stores scenes at 1024×768 and 1920×1080. The accepted SHA-256 values are respectively
+`6f8524c139a11098f664923d352b2ce8ec387e8a4d7ec8a683b27ec3719d613f`,
+`128507859137483ece8a8c7894680930d01f8fe0814e45bac6e4160ddda22aa0`,
+`e092606dfdf19c911a3532323c17419e3d36bcebe6592cd4698f4b3c2180ec3a`,
+`476fb33b85c974fbd6ebe52912f1446797ceeb32ef26eba22f5697be59ef8890`,
+`5d0f2d281981b613efad6e2df18edf27a9ff14f3090bd2a3e543047bcbcb6e89`, and
+`152bded6f35b3d2d390bdeffa92641a6ab6d753a318857bcd423bcd0dfabbd45`.
+They show connected junctions, exactly one body per visible cat, collision-free canopies, no natural
+resources inside the village, a fully visible world beneath dynamic menus, every command reachable,
+and all 32 resources available through Stores. Temporary capture code was removed before final gates.
 
 ## 2026-07-16 — Narrow HUD clears every command at the supported viewport floor
 
@@ -797,8 +847,8 @@ aggregate timers. Additive trade-craft timers remain outside this bounded descri
 **Evidence:** Descriptor uniqueness/resource-domain tests, exact catalog reverse-index tests,
 locked/owned/grandfathered block-reason tests, multi-recipe Smithy selection, signed snapshot and
 protocol round trips, all 1,175 executed simulation tests (one intentional skip), all 44 protocol
-tests, strict sim/protocol Clippy, formatting, and diff checks pass. This verifies C2.0 scaffolding
-only; station-local cargo/work/output conversion remains open above.
+tests, strict sim/protocol Clippy, formatting, and diff checks pass. This verified C2.0 scaffolding
+only; later cards closed the then-open station-local cargo/work/output conversion.
 
 ## 2026-07-15 — Raw Stone and source byproducts are finite physical cargo
 
@@ -827,8 +877,8 @@ quarries it, and grows Blocks without debiting Supplies. The inspected client-ow
 `/tmp/raw-stone-bone-final.png` is exactly 1024×768, renders the top-down village normally, and
 shows truthful counted Stone `~12/100` and Bone `~3/100` rows with distinct icons and no clipping.
 The final gates pass 1,169 simulation, 43 protocol, 82 server, and 134 client tests plus strict
-Clippy for all four crates. Bone item variants and downstream recipes remain open breadth, but the
-raw hunt source and scalar are no longer future work.
+Clippy for all four crates. Bone item variants and downstream recipes were open at this dated slice
+boundary and were closed by later breadth cards; the raw hunt source and scalar were already live.
 
 ## 2026-07-15 — Guided founding economy reaches farms, offerings, and bounded route planning
 
@@ -1067,8 +1117,8 @@ barrier; a real phase-34 cat advances exactly the same distance on a 50-tile rou
 Rail; both comparisons have deterministic twins. A signed player campaign purchases the complete
 prerequisite chain through Rail and Shipping, preserves the stable capability IDs, and rechecks
 both physical denials. Existing fine-biome, stone-road, live-cadence founding, communal unattended,
-and guided/unattended fishing campaigns remain green. Real rail and ship construction remains in
-the open queue above. The accepted live own-framebuffers `/tmp/transport-rail-blueprint.png` and
+and guided/unattended fishing campaigns remain green. Real rail and ship construction was open at
+this slice boundary and is now verified. The accepted live own-framebuffers `/tmp/transport-rail-blueprint.png` and
 `/tmp/transport-shipping-blueprint.png` visibly prove the two blueprint-only study descriptions
 and payload labels; the temporary capture hook and isolated processes were removed.
 

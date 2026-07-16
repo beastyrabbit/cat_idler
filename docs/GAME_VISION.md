@@ -16,7 +16,7 @@
    - **Farmer** — fields, foraging, food.
    - **Captain** — warriors, defense, raids.
    - **Loremaster/Ritualist** — research labor/building automation + shrine/rituals.
-   - **Cloth Leader** — fibre, hide, cloth, leather, and clothing stations.
+   - **Cloth Leader** — fibre, thread, hide, cloth, leather, and clothing stations.
    The always-present founding Leader retains a narrow, deficit-scaled safety floor: at the
    15-cat founding population, at most six primitive hunters, two emergency water fetchers, and
    one scout; those ceilings scale proportionally as the population changes. Specialist
@@ -88,7 +88,7 @@ specialized per role); unfilled roles stay manual.
 - **Farms are in the overworld outside the walled settlement interior**: designate farm
   plots and **see the tiles being farmed** (DF farm plots). Grow **catnip**, **grain**,
   herbs, etc. Trees, stone/deposits, and fields do not occupy the village interior.
-- **Processing chains**: grain → **Mill** → flour → food; fibre → **Clothier** → cloth/clothing;
+- **Processing chains**: grain → **Mill** → flour → food; fibre → **Clothier** → thread → cloth/clothing;
   hide → **Tannery** → leather; ore → **Smelter** → metal → **Smithy** → weapons/armor;
   planks + blocks → **Woodworking** → tools;
   logs → **Wood Cutter** → fine planks or **Sawmill** → structural lumber. Stone is dressed into
@@ -136,13 +136,16 @@ unvisited or unreachable piles remain visibly stale.
 
 The Rust/Bevy cutover and maintained P12–P19 design are complete. Skills, seven specialist roles,
 spatial stockpiles and physical Accountant rounds, visible exterior farms, all ten processor types,
-104 physical recipes, shrine-return scouting, authored/traffic roads, global and personal villages,
+108 physical recipes, shrine-return scouting, authored/traffic roads, global and personal villages,
 physical trade, the 487-study research graph, housing/migration pressure, and native/WASM player
-paths are verified in `docs/IMPLEMENTATION_AUDIT.md`.
+paths are implemented. The focused and generalized acceptance evidence lives in
+`docs/IMPLEMENTATION_AUDIT.md` and `docs/FIX_LOG.md`; the integrated correction gate is verified.
 
-P9–P19 remain useful historical delivery groupings, not an active backlog. The only maintained
-follow-ups are the first pushed Forgejo quality run and optional WASM transfer tuning. New design
-work should be promoted here deliberately rather than inferred from old phase prose.
+P9–P19 remain useful historical delivery groupings, not an active backlog. The integrated
+correction set in `docs/FIX_LOG.md` passed its generalized passive, player-guided, persistence,
+and multi-frame visual gate. The first pushed
+Forgejo quality run and optional WASM transfer tuning remain external follow-ups. New design work
+should be promoted here deliberately rather than inferred from old phase prose.
 
 ## Fidelity note
 The Rust sim is a "same idea" port of the TS game; this vision *extends* it, so new systems

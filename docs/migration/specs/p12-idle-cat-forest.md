@@ -2,8 +2,9 @@
 
 > **Living target spec.** Specialist manual-to-officer ownership (with a bounded founding Leader
 > hunt/water/scout safety floor), 19-labor skills, seeded spatial storehouses, physical Accountant
-> rounds, physical farm labor, all ten processor types, all 104 physical recipes, and the complete
-> 487-study catalog are verified. Current evidence lives in
+> rounds, physical farm labor, all ten processor types, all 108 physical recipes, and the complete
+> 487-study catalog are implemented. The integrated generalized gate passes; current
+> evidence lives in
 > [`docs/IMPLEMENTATION_AUDIT.md`](../../IMPLEMENTATION_AUDIT.md).
 
 The DF-texture depth from `docs/GAME_VISION.md`, decomposed into concrete, TDD-able Rust
@@ -100,10 +101,10 @@ workshop↔stockpile↔workshop (extends trips/shrine, which today only credit a
 ## P12.4 — More workshops + production chains + role-buildings
 **Goal:** the craft/haul graph. Each is a workshop cats walk to; role-buildings gate officers.
 - **Buildings (extend `buildings.type`):** `mill` (grain→flour→food), `clothier`
-  (fibre→cloth→clothing), `tannery` (hide→leather), `sawmill` (logs→lumber), `smelter`
+  (fibre→thread→cloth→clothing), `tannery` (hide→leather), `sawmill` (logs→lumber), `smelter`
   (ore→metal), `smithy` (metal equipment), `accounting_tent` (Accountant), plus role-buildings for
   each officer.
-- **Chains:** grain → Mill → flour → food; fibre → Clothier → cloth → clothing; hide → Tannery →
+- **Chains:** grain → Mill → flour → food; fibre → Clothier → thread → cloth → clothing; hide → Tannery →
   leather; logs → Sawmill → structural lumber; ore → Smelter → metal → Smithy → tools/weapons/armor.
   Grain, Catnip, and Herbs also feed distinct physical Brewing recipes at the Mill. P19's canonical contract owns
   the exact raw/intermediate names and reconciles the founding Wood Cutter/Stone Prep/Woodworking
@@ -123,8 +124,9 @@ block reason. Woodworking's founding recipe is the two-input case: two Planks an
 sequentially and are consumed atomically into one exact finite Tool. Tannery likewise carries five
 Hide into local input, performs one selected 600-second Textile batch, and carries one Leather out
 before credit. Clothier sources Fibre through explicit physical forage, carries five Fibre into
-local input, performs one selected 600-second Textile batch, and carries one Cloth out before
-credit. Smithy carries two Metal into one selected 900-second Weapon or Armor batch and carries
+local input, performs one selected 600-second Textile spinning batch, and carries five Thread out
+before a second selected batch carries five Thread back in, weaves one Cloth, and delivers it for
+aggregate credit. Smithy carries two Metal into one selected 900-second Weapon or Armor batch and carries
 one whole output to storage before aggregate credit. P19.C3 subsequently made the Tool, Weapon,
 or Armor output one stable finite identity across station, carrier, storage, equipment, wear,
 repair, sale, and restart; the scalar fields are derived compatibility projections. Do not reopen
@@ -170,10 +172,13 @@ Today (P12.3) the **shrine is the default balancing reservoir**. Change it:
   **after** haul-fill lands (not in parallel). Keep the reservoir invariant; regression-guard so an
   un-modified colony (no offerings queued) is byte-identical.
 
-**Implemented material-offering contract:** the current action reserves visible surplus Materials
-from a real stockpile, a living cat carries them to shrine escrow, and only then may the separate
-ritual consume them and credit the canonical blessing balance. Cancellation, death, and restart
-preserve the physical goods without early or double credit.
+**Implemented selectable-offering contract:** the player chooses Food, Herbs, or Materials. The
+current action reserves a safe visible surplus of that exact resource from a real stockpile, a
+living cat carries it to shrine escrow, and only then may the separate ritual consume it and credit
+the canonical blessing balance. The legacy `OfferMaterials` action remains accepted and maps to
+the Materials choice. Cancellation, death, and restart preserve the physical goods without early
+or double credit. Focused compatibility and conservation tests and the generalized signed
+playtest pass.
 
 ## Cross-cutting
 - **Protocol:** every new action + snapshot field goes in `cat-protocol` (camelCase) and
