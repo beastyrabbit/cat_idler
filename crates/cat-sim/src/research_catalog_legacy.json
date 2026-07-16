@@ -83,6 +83,7 @@
       "payloads": [
         { "kind": "unlock_building", "building_id": "clothier" },
         { "kind": "unlock_building", "building_id": "tannery" },
+        { "kind": "unlock_recipe", "recipe_id": "fibre_to_thread" },
         { "kind": "unlock_recipe", "recipe_id": "fibre_to_cloth" },
         { "kind": "unlock_recipe", "recipe_id": "hide_to_leather" }
       ]

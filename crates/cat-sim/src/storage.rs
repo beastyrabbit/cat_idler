@@ -25,6 +25,7 @@ pub struct StorageResearchEffects {
     pub hide_capacity_add: f64,
     pub bone_capacity_add: f64,
     pub fibre_capacity_add: f64,
+    pub thread_capacity_add: f64,
     pub herbs_capacity_add: f64,
     pub catnip_capacity_add: f64,
     pub cloth_capacity_add: f64,
@@ -56,6 +57,7 @@ impl Default for StorageResearchEffects {
             hide_capacity_add: 0.0,
             bone_capacity_add: 0.0,
             fibre_capacity_add: 0.0,
+            thread_capacity_add: 0.0,
             herbs_capacity_add: 0.0,
             catnip_capacity_add: 0.0,
             cloth_capacity_add: 0.0,
@@ -118,7 +120,10 @@ where
                 effects.herbs_capacity_add += 50.0;
                 effects.catnip_capacity_add += 50.0;
             }
-            "textile_work_preservation" => effects.cloth_capacity_add += 50.0,
+            "textile_work_preservation" => {
+                effects.thread_capacity_add += 50.0;
+                effects.cloth_capacity_add += 50.0;
+            }
             "leatherworking_preservation" => effects.leather_capacity_add += 50.0,
             "carpentry_preservation" => {
                 effects.lumber_capacity_add += 50.0;
@@ -212,6 +217,8 @@ pub struct StorageCapacities {
     /// clothier/tannery refines, cloth/leather. Flat base capacity, no granary/smithy
     /// bonus — mirrors `planks`/`blocks`/`tools` above exactly.
     pub fibre: f64,
+    #[serde(default)]
+    pub thread: f64,
     pub hide: f64,
     #[serde(default)]
     pub bone: f64,
@@ -256,6 +263,7 @@ impl StorageCapacities {
             blocks: self.blocks * multiplier,
             tools: self.tools * multiplier,
             fibre: self.fibre * multiplier,
+            thread: self.thread * multiplier,
             hide: self.hide * multiplier,
             bone: self.bone * multiplier,
             cloth: self.cloth * multiplier,
@@ -323,6 +331,7 @@ pub const BASE_CAPACITY: StorageCapacities = StorageCapacities {
     blocks: 100.0,
     tools: 100.0,
     fibre: 100.0,
+    thread: 100.0,
     hide: 100.0,
     bone: 100.0,
     cloth: 100.0,
@@ -495,6 +504,7 @@ fn research_aware_storage_capacities_compact(
     caps.hide += effects.hide_capacity_add;
     caps.bone += effects.bone_capacity_add;
     caps.fibre += effects.fibre_capacity_add;
+    caps.thread += effects.thread_capacity_add;
     caps.herbs += effects.herbs_capacity_add;
     caps.catnip += effects.catnip_capacity_add;
     caps.cloth += effects.cloth_capacity_add;
@@ -557,6 +567,7 @@ fn apply_industrial_storage_additions(
     armor: bool,
     refined: bool,
 ) {
+    caps.thread += if cloth { 50.0 } else { 0.0 };
     caps.cloth += if cloth { 50.0 } else { 0.0 };
     caps.leather += if leather { 50.0 } else { 0.0 };
     caps.lumber += if carpentry { 50.0 } else { 0.0 };
@@ -593,6 +604,7 @@ impl StorageCapacities {
             blocks: self.blocks.min(other.blocks),
             tools: self.tools.min(other.tools),
             fibre: self.fibre.min(other.fibre),
+            thread: self.thread.min(other.thread),
             hide: self.hide.min(other.hide),
             bone: self.bone.min(other.bone),
             cloth: self.cloth.min(other.cloth),
@@ -639,6 +651,7 @@ fn physical_storage_capacities(
         blocks: capacity(ResourceKind::Blocks),
         tools: capacity(ResourceKind::Tools),
         fibre: capacity(ResourceKind::Fibre),
+        thread: capacity(ResourceKind::Thread),
         hide: capacity(ResourceKind::Hide),
         bone: capacity(ResourceKind::Bone),
         cloth: capacity(ResourceKind::Cloth),
@@ -1027,6 +1040,7 @@ mod tests {
                 blocks: 100.0,
                 tools: 100.0,
                 fibre: 100.0,
+                thread: 100.0,
                 hide: 100.0,
                 bone: 100.0,
                 cloth: 100.0,
@@ -1113,6 +1127,7 @@ mod tests {
                 blocks: 100.0,
                 tools: 100.0,
                 fibre: 100.0,
+                thread: 100.0,
                 hide: 100.0,
                 bone: 100.0,
                 cloth: 100.0,
@@ -1170,6 +1185,7 @@ mod tests {
                 blocks: 100.0,
                 tools: 100.0,
                 fibre: 100.0,
+                thread: 100.0,
                 hide: 100.0,
                 bone: 100.0,
                 cloth: 100.0,
@@ -1223,6 +1239,7 @@ mod tests {
                 blocks: 100.0,
                 tools: 100.0,
                 fibre: 100.0,
+                thread: 100.0,
                 hide: 100.0,
                 bone: 100.0,
                 cloth: 100.0,

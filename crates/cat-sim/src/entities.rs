@@ -98,6 +98,9 @@ pub enum CarryingKind {
     /// Raw plant fibre carried home from a bounded forage shift.
     #[serde(rename = "fibre")]
     Fibre,
+    /// Spun thread moving between a Clothier and a physical stockpile.
+    #[serde(rename = "thread")]
+    Thread,
     /// Finished cloth moving from a Clothier to physical storage.
     #[serde(rename = "cloth")]
     Cloth,
@@ -187,6 +190,10 @@ pub struct Resources {
     /// planks/blocks.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub fibre: f64,
+    /// Spun thread from the clothier (Fibre → Thread → Cloth). This additive
+    /// default preserves the meaning of every older save blob.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub thread: f64,
     /// Raw hide, a byproduct credited alongside food on hunt completion (P16/P19
     /// clothing chain slice). Feeds the tannery's hide → leather refine.
     #[serde(default, skip_serializing_if = "is_zero")]
@@ -436,6 +443,7 @@ mod tests {
                 blocks: 19.0,
                 tools: 20.0,
                 fibre: 21.0,
+                thread: 21.5,
                 hide: 22.0,
                 bone: 22.5,
                 cloth: 23.0,

@@ -655,6 +655,7 @@ define_resource_kinds! {
     Blocks => true,
     Tools => true,
     Fibre => true,
+    Thread => true,
     Hide => true,
     Bone => true,
     Cloth => true,
@@ -717,6 +718,8 @@ pub struct ResourceAmounts {
     pub tools: f64,
     #[serde(default)]
     pub fibre: f64,
+    #[serde(default)]
+    pub thread: f64,
     #[serde(default)]
     pub hide: f64,
     #[serde(default)]
@@ -788,6 +791,8 @@ pub struct ResourceCapacities {
     pub tools: f64,
     #[serde(default)]
     pub fibre: f64,
+    #[serde(default)]
+    pub thread: f64,
     #[serde(default)]
     pub hide: f64,
     #[serde(default)]
@@ -1013,6 +1018,7 @@ pub enum CarryingKind {
     Hide,
     Leather,
     Fibre,
+    Thread,
     Cloth,
     Bone,
     Ore,
@@ -2161,6 +2167,7 @@ mod tests {
         assert_eq!(restored.materials, 19.0);
         assert_eq!(restored.stone, 0.0);
         assert_eq!(restored.bone, 0.0);
+        assert_eq!(restored.thread, 0.0);
         assert!(ResourceKind::Stone.is_physical_stockpile_good());
         assert!(ResourceKind::Bone.is_physical_stockpile_good());
 
@@ -2173,6 +2180,7 @@ mod tests {
         assert_eq!(capacities.gem, 0.0);
         assert_eq!(capacities.clay, 0.0);
         assert_eq!(capacities.sand, 0.0);
+        assert_eq!(capacities.thread, 0.0);
     }
     use serde_json::json;
 
@@ -2200,6 +2208,7 @@ mod tests {
             ResourceKind::Blocks,
             ResourceKind::Tools,
             ResourceKind::Fibre,
+            ResourceKind::Thread,
             ResourceKind::Hide,
             ResourceKind::Bone,
             ResourceKind::Cloth,
@@ -2214,7 +2223,7 @@ mod tests {
         assert_eq!(ResourceKind::ALL, expected_all);
 
         let physical = ResourceKind::physical_stockpile_goods().collect::<Vec<_>>();
-        assert_eq!(physical.len(), 30);
+        assert_eq!(physical.len(), 31);
         for &kind in ResourceKind::ALL {
             assert_eq!(
                 physical.contains(&kind),
@@ -2885,6 +2894,7 @@ mod tests {
                     blocks: 0.0,
                     tools: 0.0,
                     fibre: 0.0,
+                    thread: 0.0,
                     hide: 0.0,
                     bone: 0.0,
                     cloth: 0.0,
@@ -2919,6 +2929,7 @@ mod tests {
                         blocks: 0.0,
                         tools: 0.0,
                         fibre: 100.0,
+                        thread: 100.0,
                         hide: 100.0,
                         bone: 100.0,
                         cloth: 100.0,
@@ -3789,6 +3800,7 @@ mod tests {
             (CarryingKind::Hide, "hide"),
             (CarryingKind::Leather, "leather"),
             (CarryingKind::Fibre, "fibre"),
+            (CarryingKind::Thread, "thread"),
             (CarryingKind::Cloth, "cloth"),
             (CarryingKind::Ore, "ore"),
             (CarryingKind::Metal, "metal"),

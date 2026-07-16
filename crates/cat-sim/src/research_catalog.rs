@@ -496,6 +496,10 @@ struct RecipeFamily {
     /// authoritative recipe id. Unlisted stages keep their catalog registry id.
     #[serde(default)]
     payload_overrides: std::collections::BTreeMap<String, String>,
+    /// Additional exact runtime recipes unlocked by the same study. This keeps
+    /// material variants additive without inventing nodes or parallel gates.
+    #[serde(default)]
+    payload_additions: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -882,6 +886,21 @@ fn expand_recipe_family(
         };
         let description = subsistence_frontier_payload_description(family, stage, &payload)
             .unwrap_or_else(|| format!("{} {}", family.display_name, stage.description));
+        let mut payloads = vec![payload];
+        if let Some(additions) = family.payload_additions.get(&stage.id) {
+            if !matches!(stage.payload, RecipePayloadKind::Recipe) {
+                return Err(format!(
+                    "{} {} cannot add recipes to a resource stage",
+                    family.id, stage.id
+                ));
+            }
+            payloads.extend(
+                additions
+                    .iter()
+                    .cloned()
+                    .map(|recipe_id| ResearchPayload::UnlockRecipe { recipe_id }),
+            );
+        }
         nodes.push(ResearchNode {
             id,
             name: format!("{} {}", family.display_name, stage.name),
@@ -902,7 +921,7 @@ fn expand_recipe_family(
                     family.leader_priority_base
                         + u16::try_from(index).map_err(|_| "recipe priority overflow")?,
                 ),
-            payloads: vec![payload],
+            payloads,
         });
     }
     Ok(nodes)
@@ -1626,6 +1645,7 @@ mod tests {
             |payload| matches!(payload, ResearchPayload::Modify { effect_id, .. } if effect_id == "housingPerDen")
         ));
         for (node_id, recipe_id) in [
+            ("textiles", "fibre_to_thread"),
             ("textiles", "fibre_to_cloth"),
             ("textiles", "hide_to_leather"),
             ("weaponsmithing", "smithy_weapon"),
@@ -1804,6 +1824,7 @@ mod tests {
             ("toolmaking_staples", "smithy_tool"),
             ("metallurgy_preparation", "ore_to_metal"),
             ("trade_goods_preparation", "materials_to_refined"),
+            ("hunting_preparation", "bone_mug"),
             ("hunting_preparation", "bone_trinket"),
             ("hunting_staples", "bone_toy"),
             ("toolmaking_quality", "bone_tool"),
@@ -1814,6 +1835,9 @@ mod tests {
             ("trade_goods_quality", "sand_glass_mug"),
             ("trade_goods_specialty", "sand_glass_bowl"),
             ("trade_goods_masterwork", "sand_glass_trinket"),
+            ("stonecraft_preparation", "stone_mug"),
+            ("trade_goods_preparation", "metal_mug"),
+            ("textiles", "fibre_to_thread"),
             ("textiles", "fibre_to_cloth"),
             ("textiles", "hide_to_leather"),
             ("weaponsmithing", "smithy_weapon"),

@@ -181,6 +181,7 @@ pub const fn resource_unit_price(kind: ResourceKind) -> Option<u32> {
         | ResourceKind::Weapons
         | ResourceKind::Armor
         | ResourceKind::Fibre
+        | ResourceKind::Thread
         | ResourceKind::Hide
         | ResourceKind::Bone
         | ResourceKind::Cloth

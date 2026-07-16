@@ -46,6 +46,7 @@ pub const SMELTER_RECIPE_ID: &str = "ore_to_metal";
 pub const LOGS_TO_PLANKS_RECIPE_ID: &str = "logs_to_planks";
 pub const STONE_TO_BLOCKS_RECIPE_ID: &str = "stone_to_blocks";
 pub const PLANKS_AND_BLOCKS_TO_TOOLS_RECIPE_ID: &str = "planks_and_blocks_to_tools";
+pub const FIBRE_TO_THREAD_RECIPE_ID: &str = "fibre_to_thread";
 pub const FIBRE_TO_CLOTH_RECIPE_ID: &str = "fibre_to_cloth";
 pub const HIDE_TO_LEATHER_RECIPE_ID: &str = "hide_to_leather";
 pub const SMITHY_WEAPON_RECIPE_ID: &str = "smithy_weapon";
@@ -54,6 +55,9 @@ pub const SMITHY_TOOL_RECIPE_ID: &str = "smithy_tool";
 pub const BONE_TOOL_RECIPE_ID: &str = "bone_tool";
 pub const BONE_TRINKET_RECIPE_ID: &str = "bone_trinket";
 pub const BONE_TOY_RECIPE_ID: &str = "bone_toy";
+pub const BONE_MUG_RECIPE_ID: &str = "bone_mug";
+pub const STONE_MUG_RECIPE_ID: &str = "stone_mug";
+pub const METAL_MUG_RECIPE_ID: &str = "metal_mug";
 pub const GEM_TRINKET_RECIPE_ID: &str = "gem_jewelry";
 pub const CLAY_MUG_RECIPE_ID: &str = "clay_mug";
 pub const CLAY_BOWL_RECIPE_ID: &str = "clay_bowl";
@@ -305,9 +309,13 @@ const WOODWORKING_INPUTS: &[ResourceKind] = &[
     ResourceKind::Bone,
 ];
 const WOODWORKING_OUTPUTS: &[ResourceKind] = &[ResourceKind::Tools];
-const CLOTHIER_INPUTS: &[ResourceKind] = &[ResourceKind::Fibre];
-const CLOTHIER_OUTPUTS: &[ResourceKind] = &[ResourceKind::Cloth];
-const TANNERY_INPUTS: &[ResourceKind] = &[ResourceKind::Hide];
+const CLOTHIER_INPUTS: &[ResourceKind] = &[
+    ResourceKind::Fibre,
+    ResourceKind::Thread,
+    ResourceKind::Cloth,
+];
+const CLOTHIER_OUTPUTS: &[ResourceKind] = &[ResourceKind::Thread, ResourceKind::Cloth];
+const TANNERY_INPUTS: &[ResourceKind] = &[ResourceKind::Hide, ResourceKind::Leather];
 const TANNERY_OUTPUTS: &[ResourceKind] = &[ResourceKind::Leather];
 const SMITHY_INPUTS: &[ResourceKind] = &[ResourceKind::Metal];
 const SMITHY_OUTPUTS: &[ResourceKind] = &[
@@ -570,6 +578,8 @@ const STONE_PREP_RECIPES: &[StationRecipeDescriptor] = &[
         }),
         founding_available: false,
     },
+    item_recipe!(BONE_MUG_RECIPE_ID, StonePrep, Bone, Mug, Bone, 1),
+    item_recipe!(STONE_MUG_RECIPE_ID, StonePrep, Stone, Mug, Stone, 1),
     StationRecipeDescriptor {
         id: CLAY_MUG_RECIPE_ID,
         building_type: BuildingType::StonePrep,
@@ -696,10 +706,18 @@ const WOODWORKING_RECIPES: &[StationRecipeDescriptor] = &[
 ];
 const CLOTHIER_RECIPES: &[StationRecipeDescriptor] = &[
     StationRecipeDescriptor {
+        id: FIBRE_TO_THREAD_RECIPE_ID,
+        building_type: BuildingType::Clothier,
+        input_resources: &[ResourceKind::Fibre],
+        output_resources: &[ResourceKind::Thread],
+        output_item: None,
+        founding_available: false,
+    },
+    StationRecipeDescriptor {
         id: FIBRE_TO_CLOTH_RECIPE_ID,
         building_type: BuildingType::Clothier,
-        input_resources: CLOTHIER_INPUTS,
-        output_resources: CLOTHIER_OUTPUTS,
+        input_resources: &[ResourceKind::Thread],
+        output_resources: &[ResourceKind::Cloth],
         output_item: None,
         founding_available: false,
     },
@@ -714,7 +732,7 @@ const CLOTHIER_RECIPES: &[StationRecipeDescriptor] = &[
     item_recipe!(
         FORAGING_STAPLES_RECIPE_ID,
         Clothier,
-        Fibre,
+        Cloth,
         Clothing,
         Fibre,
         1
@@ -729,11 +747,11 @@ const CLOTHIER_RECIPES: &[StationRecipeDescriptor] = &[
         Fibre,
         2
     ),
-    scalar_recipe!(TEXTILE_WORK_PREPARATION_RECIPE_ID, Clothier, Fibre, Cloth),
-    scalar_recipe!(TEXTILE_WORK_STAPLES_RECIPE_ID, Clothier, Fibre, Cloth),
-    scalar_recipe!(TEXTILE_WORK_QUALITY_RECIPE_ID, Clothier, Fibre, Cloth),
-    scalar_recipe!(TEXTILE_WORK_SPECIALTY_RECIPE_ID, Clothier, Fibre, Cloth),
-    scalar_recipe!(TEXTILE_WORK_MASTERWORK_RECIPE_ID, Clothier, Fibre, Cloth),
+    scalar_recipe!(TEXTILE_WORK_PREPARATION_RECIPE_ID, Clothier, Thread, Cloth),
+    scalar_recipe!(TEXTILE_WORK_STAPLES_RECIPE_ID, Clothier, Thread, Cloth),
+    scalar_recipe!(TEXTILE_WORK_QUALITY_RECIPE_ID, Clothier, Thread, Cloth),
+    scalar_recipe!(TEXTILE_WORK_SPECIALTY_RECIPE_ID, Clothier, Thread, Cloth),
+    scalar_recipe!(TEXTILE_WORK_MASTERWORK_RECIPE_ID, Clothier, Thread, Cloth),
 ];
 const TANNERY_RECIPES: &[StationRecipeDescriptor] = &[
     StationRecipeDescriptor {
@@ -747,7 +765,7 @@ const TANNERY_RECIPES: &[StationRecipeDescriptor] = &[
     item_recipe!(
         ANIMAL_HUSBANDRY_PREPARATION_RECIPE_ID,
         Tannery,
-        Hide,
+        Leather,
         Clothing,
         Leather,
         1
@@ -763,7 +781,7 @@ const TANNERY_RECIPES: &[StationRecipeDescriptor] = &[
     item_recipe!(
         ANIMAL_HUSBANDRY_QUALITY_RECIPE_ID,
         Tannery,
-        Hide,
+        Leather,
         Armor,
         Leather,
         1
@@ -815,6 +833,7 @@ const SMITHY_RECIPES: &[StationRecipeDescriptor] = &[
         output_item: None,
         founding_available: false,
     },
+    item_recipe!(METAL_MUG_RECIPE_ID, Smithy, Metal, Mug, Metal, 1),
     equipment_recipe!(TOOLMAKING_SPECIALTY_RECIPE_ID, Tool, 3),
     equipment_recipe!(TOOLMAKING_MASTERWORK_RECIPE_ID, Tool, 4),
     equipment_recipe!(WEAPONCRAFT_PREPARATION_RECIPE_ID, Weapon, 0),
@@ -904,6 +923,8 @@ mod tests {
                     STONE_TO_BLOCKS_RECIPE_ID,
                     BONE_TRINKET_RECIPE_ID,
                     BONE_TOY_RECIPE_ID,
+                    BONE_MUG_RECIPE_ID,
+                    STONE_MUG_RECIPE_ID,
                     CLAY_MUG_RECIPE_ID,
                     CLAY_BOWL_RECIPE_ID,
                     CLAY_BRICK_RECIPE_ID,
@@ -936,6 +957,7 @@ mod tests {
             (
                 BuildingType::Clothier,
                 &[
+                    FIBRE_TO_THREAD_RECIPE_ID,
                     FIBRE_TO_CLOTH_RECIPE_ID,
                     FORAGING_PREPARATION_RECIPE_ID,
                     FORAGING_STAPLES_RECIPE_ID,
@@ -948,8 +970,12 @@ mod tests {
                     TEXTILE_WORK_SPECIALTY_RECIPE_ID,
                     TEXTILE_WORK_MASTERWORK_RECIPE_ID,
                 ][..],
-                &[ResourceKind::Fibre][..],
-                &[ResourceKind::Cloth][..],
+                &[
+                    ResourceKind::Fibre,
+                    ResourceKind::Thread,
+                    ResourceKind::Cloth,
+                ][..],
+                &[ResourceKind::Thread, ResourceKind::Cloth][..],
             ),
             (
                 BuildingType::Tannery,
@@ -966,7 +992,7 @@ mod tests {
                     LEATHERWORKING_SPECIALTY_RECIPE_ID,
                     LEATHERWORKING_MASTERWORK_RECIPE_ID,
                 ][..],
-                &[ResourceKind::Hide][..],
+                &[ResourceKind::Hide, ResourceKind::Leather][..],
                 &[ResourceKind::Leather][..],
             ),
             (
@@ -975,6 +1001,7 @@ mod tests {
                     SMITHY_WEAPON_RECIPE_ID,
                     SMITHY_TOOL_RECIPE_ID,
                     SMITHY_ARMOR_RECIPE_ID,
+                    METAL_MUG_RECIPE_ID,
                     TOOLMAKING_SPECIALTY_RECIPE_ID,
                     TOOLMAKING_MASTERWORK_RECIPE_ID,
                     WEAPONCRAFT_PREPARATION_RECIPE_ID,
@@ -1042,7 +1069,7 @@ mod tests {
                 assert!(ids.insert(recipe.id), "duplicate recipe id {}", recipe.id);
             }
         }
-        assert_eq!(ids.len(), 104);
+        assert_eq!(ids.len(), 108);
         assert!(station_recipe_set(BuildingType::Den).is_none());
     }
 
@@ -1153,11 +1180,11 @@ mod tests {
         }));
 
         let smithy = station_recipe_set(BuildingType::Smithy).unwrap();
-        assert_eq!(smithy.recipes.len(), 15);
+        assert_eq!(smithy.recipes.len(), 16);
         assert_eq!(smithy.recipes[0].id, SMITHY_WEAPON_RECIPE_ID);
         assert_eq!(smithy.recipes[1].id, SMITHY_TOOL_RECIPE_ID);
         assert_eq!(smithy.recipes[2].id, SMITHY_ARMOR_RECIPE_ID);
-        assert_eq!(smithy.recipes[14].id, ARMORCRAFT_MASTERWORK_RECIPE_ID);
+        assert_eq!(smithy.recipes[15].id, ARMORCRAFT_MASTERWORK_RECIPE_ID);
         assert_eq!(smithy.recipes[1].output_resources, &[ResourceKind::Tools]);
         assert!(mill.recipes.iter().all(|recipe| !recipe.founding_available));
         assert!(!smithy.recipes[1].founding_available);
@@ -1248,6 +1275,69 @@ mod tests {
             let output = recipe.output_item.expect("exact output");
             assert_eq!((output.kind, output.material), (kind, material), "{id}");
             assert!(!recipe.founding_available, "{id}");
+        }
+    }
+
+    #[test]
+    fn canonical_textile_intermediates_and_four_mug_materials_are_physical() {
+        let spin = station_recipe(FIBRE_TO_THREAD_RECIPE_ID).expect("fibre spinning route");
+        assert_eq!(spin.building_type, BuildingType::Clothier);
+        assert_eq!(spin.input_resources, &[ResourceKind::Fibre]);
+        assert_eq!(spin.output_resources, &[ResourceKind::Thread]);
+        assert!(spin.output_item.is_none());
+
+        let weave = station_recipe(FIBRE_TO_CLOTH_RECIPE_ID).expect("thread weaving route");
+        assert_eq!(weave.input_resources, &[ResourceKind::Thread]);
+        assert_eq!(weave.output_resources, &[ResourceKind::Cloth]);
+
+        for (id, station, input, material) in [
+            (
+                WATERWORKS_STAPLES_RECIPE_ID,
+                BuildingType::Woodworking,
+                ResourceKind::Planks,
+                Material::Wood,
+            ),
+            (
+                STONE_MUG_RECIPE_ID,
+                BuildingType::StonePrep,
+                ResourceKind::Stone,
+                Material::Stone,
+            ),
+            (
+                METAL_MUG_RECIPE_ID,
+                BuildingType::Smithy,
+                ResourceKind::Metal,
+                Material::Metal,
+            ),
+            (
+                BONE_MUG_RECIPE_ID,
+                BuildingType::StonePrep,
+                ResourceKind::Bone,
+                Material::Bone,
+            ),
+        ] {
+            let recipe = station_item_recipe(id).unwrap_or_else(|| panic!("missing {id}"));
+            assert_eq!(recipe.building_type, station, "{id}");
+            assert_eq!(recipe.input_resources, &[input], "{id}");
+            let output = recipe.output_item.expect("exact mug");
+            assert_eq!((output.kind, output.material), (ItemKind::Mug, material));
+        }
+
+        for (id, input) in [
+            (FORAGING_STAPLES_RECIPE_ID, ResourceKind::Cloth),
+            (
+                ANIMAL_HUSBANDRY_PREPARATION_RECIPE_ID,
+                ResourceKind::Leather,
+            ),
+            (ANIMAL_HUSBANDRY_QUALITY_RECIPE_ID, ResourceKind::Leather),
+        ] {
+            assert_eq!(
+                station_item_recipe(id)
+                    .expect("finished textile consumer")
+                    .input_resources,
+                &[input],
+                "{id} must consume the maintained intermediate"
+            );
         }
     }
 

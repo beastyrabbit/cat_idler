@@ -296,6 +296,10 @@ struct ClothRouteObservations {
     delivered_fibre: bool,
     station_fibre_in_paws: bool,
     local_fibre: bool,
+    local_thread: bool,
+    station_thread_out_paws: bool,
+    delivered_thread: bool,
+    station_thread_in_paws: bool,
     local_cloth: bool,
     station_cloth_in_paws: bool,
     delivered_cloth: bool,
@@ -309,6 +313,8 @@ fn run_signed_forage_to_cloth(seed: u32) -> (WorldState, ClothRouteObservations)
     let colony = &mut world.colonies[0];
     colony.resources.food = 100.0;
     colony.resources.water = 100.0;
+    colony.recipe_entitlement_rules_version =
+        cat_sim::world_tick::CURRENT_RECIPE_ENTITLEMENT_RULES_VERSION;
     colony
         .upgrade_tree
         .owned_node_ids
@@ -339,6 +345,11 @@ fn run_signed_forage_to_cloth(seed: u32) -> (WorldState, ClothRouteObservations)
     let worker_id = world.colonies[0].cats.last().unwrap().id.clone();
     for edit in [
         proto::ProductionQueueEdit::Remove { index: 0 },
+        proto::ProductionQueueEdit::Remove { index: 0 },
+        proto::ProductionQueueEdit::Add {
+            recipe_id: cat_sim::station_recipes::FIBRE_TO_THREAD_RECIPE_ID.to_owned(),
+            repeat: false,
+        },
         proto::ProductionQueueEdit::Add {
             recipe_id: cat_sim::station_recipes::FIBRE_TO_CLOTH_RECIPE_ID.to_owned(),
             repeat: false,
@@ -443,6 +454,26 @@ fn run_signed_forage_to_cloth(seed: u32) -> (WorldState, ClothRouteObservations)
             .iter()
             .find(|pile| pile.id == input_id)
             .is_some_and(|pile| pile.contents.fibre > 0.0);
+        seen.local_thread |= colony.stockpiles.iter().any(|pile| {
+            (pile.id == input_id || pile.id == output_id) && pile.contents.thread > 0.0
+        });
+        seen.station_thread_out_paws |= colony.cats.iter().any(|cat| {
+            cat.carrying.as_ref().is_some_and(|cargo| {
+                cargo.kind == CarryingKind::Thread
+                    && cargo.source_gather_spot.as_deref().is_some_and(|marker| {
+                        marker.starts_with(&format!("station-out|{clothier_id}|"))
+                    })
+            })
+        });
+        seen.delivered_thread |= colony.resources.thread > 0.0;
+        seen.station_thread_in_paws |= colony.cats.iter().any(|cat| {
+            cat.carrying.as_ref().is_some_and(|cargo| {
+                cargo.kind == CarryingKind::Thread
+                    && cargo.source_gather_spot.as_deref().is_some_and(|marker| {
+                        marker.starts_with(&format!("station-in|{clothier_id}|"))
+                    })
+            })
+        });
         seen.local_cloth |= colony
             .stockpiles
             .iter()
@@ -463,6 +494,10 @@ fn run_signed_forage_to_cloth(seed: u32) -> (WorldState, ClothRouteObservations)
                 delivered_fibre: true,
                 station_fibre_in_paws: true,
                 local_fibre: true,
+                local_thread: true,
+                station_thread_out_paws: true,
+                delivered_thread: true,
+                station_thread_in_paws: true,
                 local_cloth: true,
                 station_cloth_in_paws: true,
                 delivered_cloth: true,
@@ -487,6 +522,10 @@ fn signed_player_guides_real_fibre_forage_through_clothier_to_cloth() {
             delivered_fibre: true,
             station_fibre_in_paws: true,
             local_fibre: true,
+            local_thread: true,
+            station_thread_out_paws: true,
+            delivered_thread: true,
+            station_thread_in_paws: true,
             local_cloth: true,
             station_cloth_in_paws: true,
             delivered_cloth: true,
@@ -1015,7 +1054,41 @@ fn established_farmer_and_cloth_leader_produce_leather_and_cloth_without_further
     );
     assert!(
         colony.resources.cloth > 0.0,
-        "unattended Farmer/ClothLeader never completed Fibre -> Cloth"
+        "unattended Farmer/ClothLeader never completed Fibre -> Cloth: fibre={}, thread={}, cloth={}, officer={:?}, assigned={:?}, automated={:?}, progress={}, queue={:?}, local_in={:?}, local_out={:?}",
+        colony.resources.fibre,
+        colony.resources.thread,
+        colony.resources.cloth,
+        colony.officers.get(&OfficerRole::ClothLeader),
+        colony
+            .buildings
+            .iter()
+            .find(|building| building.id == "passive-clothier-office")
+            .and_then(|building| building.assigned_cat.as_deref()),
+        colony
+            .buildings
+            .iter()
+            .find(|building| building.id == "passive-clothier-office")
+            .and_then(|building| building.automated_by),
+        colony
+            .buildings
+            .iter()
+            .find(|building| building.id == "passive-clothier-office")
+            .map_or(0.0, |building| building.production_progress),
+        colony
+            .buildings
+            .iter()
+            .find(|building| building.id == "passive-clothier-office")
+            .map(|building| &building.production_queue),
+        colony
+            .stockpiles
+            .iter()
+            .find(|pile| pile.id == station_input_id("passive-clothier-office"))
+            .map(|pile| &pile.contents),
+        colony
+            .stockpiles
+            .iter()
+            .find(|pile| pile.id == station_output_id("passive-clothier-office"))
+            .map(|pile| &pile.contents),
     );
     let minute_cadence = run_passive_established_textiles(7, 1, 18);
     assert!(

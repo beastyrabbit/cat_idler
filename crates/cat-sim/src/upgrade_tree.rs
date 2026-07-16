@@ -1827,10 +1827,11 @@ mod tests {
             ("toolmaking_staples", "smithy_tool"),
         ] {
             let effects = resolve_effects([study]);
-            assert_eq!(
-                effects.unlocked_recipes,
-                std::collections::BTreeSet::from([recipe.to_owned()])
-            );
+            let mut expected = std::collections::BTreeSet::from([recipe.to_owned()]);
+            if study == "trade_goods_preparation" {
+                expected.insert(crate::station_recipes::METAL_MUG_RECIPE_ID.to_owned());
+            }
+            assert_eq!(effects.unlocked_recipes, expected);
         }
     }
 

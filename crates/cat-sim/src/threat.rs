@@ -382,6 +382,7 @@ mod tests {
                 blocks: 0.0,
                 tools: 0.0,
                 fibre: 0.0,
+                thread: 0.0,
                 hide: 0.0,
                 bone: 0.0,
                 cloth: 0.0,

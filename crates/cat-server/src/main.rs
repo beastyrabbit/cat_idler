@@ -3949,6 +3949,11 @@ mod tests {
         };
         for edit in [
             cat_protocol::ProductionQueueEdit::Remove { index: 0 },
+            cat_protocol::ProductionQueueEdit::Remove { index: 0 },
+            cat_protocol::ProductionQueueEdit::Add {
+                recipe_id: cat_sim::station_recipes::FIBRE_TO_THREAD_RECIPE_ID.to_owned(),
+                repeat: false,
+            },
             cat_protocol::ProductionQueueEdit::Add {
                 recipe_id: cat_sim::station_recipes::FIBRE_TO_CLOTH_RECIPE_ID.to_owned(),
                 repeat: false,
@@ -4037,8 +4042,16 @@ mod tests {
                 .find(|building| building.id == clothier_id)
                 .expect("restored authored Clothier");
             assert!(clothier.production_paused);
-            assert_eq!(clothier.production_queue.len(), 1);
-            assert!(!clothier.production_queue[0].repeat);
+            assert_eq!(clothier.production_queue.len(), 2);
+            assert_eq!(
+                clothier.production_queue[0].recipe_id,
+                cat_sim::station_recipes::FIBRE_TO_THREAD_RECIPE_ID
+            );
+            assert_eq!(
+                clothier.production_queue[1].recipe_id,
+                cat_sim::station_recipes::FIBRE_TO_CLOTH_RECIPE_ID
+            );
+            assert!(clothier.production_queue.iter().all(|entry| !entry.repeat));
             assert_eq!(colony.resources.cloth, 0.0);
             assert!(colony.resources.fibre >= 5.0);
         }
@@ -4071,7 +4084,7 @@ mod tests {
             .result
             .ok
         );
-        let mut stages = [false; 5];
+        let mut stages = [false; 9];
         for second in 1..=1_800_i64 {
             let mut world = restarted.world.lock().await;
             let reports = world_tick(&mut world, now + second * 1_000);
@@ -4095,19 +4108,31 @@ mod tests {
                 *kind == cat_sim::stockpiles::ResourceKind::Fibre && *amount >= 5.0
             });
             stages[2] |= local_output.iter().any(|(kind, amount)| {
-                *kind == cat_sim::stockpiles::ResourceKind::Cloth && *amount >= 1.0
+                *kind == cat_sim::stockpiles::ResourceKind::Thread && *amount >= 5.0
             });
             stages[3] |= outbound.iter().any(|(kind, amount)| {
+                *kind == cat_sim::stockpiles::ResourceKind::Thread && *amount >= 5.0
+            });
+            stages[4] |= colony.resources.thread >= 5.0;
+            stages[5] |= inbound.iter().any(|(kind, amount)| {
+                *kind == cat_sim::stockpiles::ResourceKind::Thread && *amount >= 5.0
+            }) || local_input.iter().any(|(kind, amount)| {
+                *kind == cat_sim::stockpiles::ResourceKind::Thread && *amount >= 5.0
+            });
+            stages[6] |= local_output.iter().any(|(kind, amount)| {
                 *kind == cat_sim::stockpiles::ResourceKind::Cloth && *amount >= 1.0
             });
-            stages[4] |= colony.resources.cloth >= 1.0;
+            stages[7] |= outbound.iter().any(|(kind, amount)| {
+                *kind == cat_sim::stockpiles::ResourceKind::Cloth && *amount >= 1.0
+            });
+            stages[8] |= colony.resources.cloth >= 1.0;
             if stages.iter().all(|seen| *seen) {
                 break;
             }
         }
         let world = restarted.world.lock().await;
         assert_eq!(
-            stages, [true; 5],
+            stages, [true; 9],
             "restart missed a physical Clothier stage"
         );
         assert_eq!(world.colonies[0].resources.cloth, 1.0);

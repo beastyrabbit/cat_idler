@@ -119,7 +119,8 @@ use crate::{
 };
 
 pub use crate::station_recipes::{
-    FIBRE_TO_CLOTH_RECIPE_ID as CLOTHIER_RECIPE_ID, FLOUR_TO_FOOD_RECIPE_ID,
+    FIBRE_TO_CLOTH_RECIPE_ID as CLOTHIER_RECIPE_ID,
+    FIBRE_TO_THREAD_RECIPE_ID as CLOTHIER_THREAD_RECIPE_ID, FLOUR_TO_FOOD_RECIPE_ID,
     GRAIN_TO_FLOUR_RECIPE_ID, HIDE_TO_LEATHER_RECIPE_ID as TANNERY_RECIPE_ID,
     LOGS_TO_PLANKS_RECIPE_ID as WOOD_CUTTER_RECIPE_ID, MILL_RECIPE_ID, SAWMILL_RECIPE_ID,
     SMELTER_RECIPE_ID, SMITHY_ARMOR_RECIPE_ID, SMITHY_TOOL_RECIPE_ID, SMITHY_WEAPON_RECIPE_ID,
@@ -899,6 +900,57 @@ pub fn migrate_split_mill_queues(colony: &mut ColonyRuntime) {
             }
         }
         building.production_queue = migrated;
+    }
+}
+
+/// Add the newly explicit spinning step immediately before legacy weaving
+/// entries. Intentionally empty queues stay empty, authored order/repeat flags
+/// stay intact, and rerunning the migration is a no-op.
+pub fn migrate_split_clothier_queues(colony: &mut ColonyRuntime) {
+    let thread_in_flight = colony.resources.thread > f64::EPSILON
+        || colony
+            .stockpiles
+            .iter()
+            .any(|pile| pile.contents.thread > f64::EPSILON)
+        || colony.cats.iter().any(|cat| {
+            cat.carrying
+                .as_ref()
+                .is_some_and(|cargo| cargo.kind == CarryingKind::Thread)
+        });
+    fn migrate(queue: &mut Vec<ProductionQueueEntry>, thread_in_flight: bool) {
+        if queue.is_empty()
+            || thread_in_flight
+            || queue
+                .iter()
+                .any(|entry| entry.recipe_id == CLOTHIER_THREAD_RECIPE_ID)
+        {
+            return;
+        }
+        let Some(index) = queue
+            .iter()
+            .position(|entry| entry.recipe_id == CLOTHIER_RECIPE_ID)
+        else {
+            return;
+        };
+        let repeat = queue[index].repeat;
+        queue.insert(
+            index,
+            ProductionQueueEntry {
+                recipe_id: CLOTHIER_THREAD_RECIPE_ID.to_owned(),
+                repeat,
+            },
+        );
+    }
+
+    for building in colony
+        .buildings
+        .iter_mut()
+        .filter(|building| building.building_type == BuildingType::Clothier)
+    {
+        migrate(&mut building.production_queue, thread_in_flight);
+        for slot in &mut building.additional_work_slots {
+            migrate(&mut slot.production_queue, thread_in_flight);
+        }
     }
 }
 
@@ -3710,6 +3762,7 @@ fn starting_resources(scale_kind: VillageScale) -> Resources {
         // Clothing chain (P16/P19 slice) — also empty at founding; fibre trickles in
         // passively and hide is a hunt byproduct.
         fibre: 0.0,
+        thread: 0.0,
         hide: 0.0,
         bone: 0.0,
         cloth: 0.0,
@@ -4319,6 +4372,7 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
         sync_colony_from_shared(shared, colony);
         migrate_retired_inert_capacity_studies(colony);
         migrate_split_mill_queues(colony);
+        migrate_split_clothier_queues(colony);
         migrate_finite_equipment_authority(colony);
         let Some(gate) = phase_1_colony_selection_and_elapsed_time_gate(colony, now_ms) else {
             publish_colony_spatial(shared, colony);
@@ -5102,6 +5156,7 @@ fn phase_7_consumption_spoilage_resource_pre_patch_minute_cadence(
     colony.resources.blocks = clamp_resource(colony.resources.blocks, caps.blocks);
     colony.resources.tools = clamp_resource(colony.resources.tools, caps.tools);
     colony.resources.fibre = clamp_resource(colony.resources.fibre, caps.fibre);
+    colony.resources.thread = clamp_resource(colony.resources.thread, caps.thread);
     colony.resources.hide = clamp_resource(colony.resources.hide, caps.hide);
     colony.resources.bone = clamp_resource(colony.resources.bone, caps.bone);
     colony.resources.cloth = clamp_resource(colony.resources.cloth, caps.cloth);
@@ -14573,6 +14628,7 @@ fn carrying_kind_for_resource(kind: ResourceKind) -> Option<CarryingKind> {
         ResourceKind::Bone => Some(CarryingKind::Bone),
         ResourceKind::Leather => Some(CarryingKind::Leather),
         ResourceKind::Fibre => Some(CarryingKind::Fibre),
+        ResourceKind::Thread => Some(CarryingKind::Thread),
         ResourceKind::Cloth => Some(CarryingKind::Cloth),
         ResourceKind::Catnip => Some(CarryingKind::Catnip),
         ResourceKind::Grain => Some(CarryingKind::Grain),
@@ -18344,6 +18400,7 @@ fn clamp_resources_to_caps(resources: &mut Resources, caps: StorageCapacities) {
     resources.blocks = clamp_resource(resources.blocks, caps.blocks);
     resources.tools = clamp_resource(resources.tools, caps.tools);
     resources.fibre = clamp_resource(resources.fibre, caps.fibre);
+    resources.thread = clamp_resource(resources.thread, caps.thread);
     resources.hide = clamp_resource(resources.hide, caps.hide);
     resources.bone = clamp_resource(resources.bone, caps.bone);
     resources.cloth = clamp_resource(resources.cloth, caps.cloth);
@@ -21659,7 +21716,7 @@ fn automation_role_for_building(building_type: BuildingType) -> Option<OfficerRo
 /// work keeps (or recruits) its Cloth Leader worker after a non-repeating queue entry
 /// is consumed, so cargo, local output, and committed progress cannot strand.
 fn physical_textile_route_committed(colony: &ColonyRuntime, building: &BuildingRuntime) -> bool {
-    let Some(recipe) = single_input_physical_recipe(building.building_type).filter(|_| {
+    let Some(recipe) = active_single_input_physical_recipe(building).filter(|_| {
         matches!(
             building.building_type,
             BuildingType::Clothier | BuildingType::Tannery
@@ -21674,14 +21731,14 @@ fn physical_textile_route_committed(colony: &ColonyRuntime, building: &BuildingR
                     .is_some_and(|(_, building_id, _)| building_id == building.id)
             })
     });
-    let local_output = station_inventory_amount(colony, &building.id, true, recipe.output_kind)
-        > f64::EPSILON
-        && nearest_output_pile(
-            colony,
-            recipe.output_kind,
-            tile_pos_to_world(building.position),
-        )
-        .is_some_and(|index| stockpile_headroom(colony, index, recipe.output_kind) > f64::EPSILON);
+    let local_output =
+        station_resource_sets(building.building_type).is_some_and(|(_, output_kinds)| {
+            output_kinds.iter().copied().any(|kind| {
+                station_inventory_amount(colony, &building.id, true, kind) > f64::EPSILON
+                    && nearest_output_pile(colony, kind, tile_pos_to_world(building.position))
+                        .is_some_and(|index| stockpile_headroom(colony, index, kind) > f64::EPSILON)
+            })
+        });
     let local_input = station_inventory_amount(colony, &building.id, false, recipe.input_kind);
     let slot_has_active_progress = |progress: f64, paused: bool, queue: &[ProductionQueueEntry]| {
         progress > f64::EPSILON
@@ -21716,7 +21773,7 @@ fn physical_textile_route_committed(colony: &ColonyRuntime, building: &BuildingR
 /// A Cloth Leader claims a fresh worker only when one complete physical batch can
 /// be fetched and its whole output has a real finite destination.
 fn physical_textile_runnable(colony: &ColonyRuntime, building: &BuildingRuntime) -> bool {
-    let Some(recipe) = single_input_physical_recipe(building.building_type).filter(|_| {
+    let Some(recipe) = active_single_input_physical_recipe(building).filter(|_| {
         matches!(
             building.building_type,
             BuildingType::Clothier | BuildingType::Tannery
@@ -23733,14 +23790,16 @@ fn item_physical_recipe(recipe_id: &str) -> Option<ItemPhysicalRecipe> {
     let input_kind = *descriptor.input_resources.first()?;
     debug_assert_eq!(descriptor.input_resources.len(), 1);
     let input_per_cycle = match input_kind {
-        ResourceKind::Metal => {
-            let (_, tier) = industrial_generated_recipe_tier(descriptor.id)?;
-            [6.0, 5.0, 5.0, 4.0, 3.0][usize::from(tier)]
-        }
+        ResourceKind::Metal => industrial_generated_recipe_tier(descriptor.id)
+            .map_or(3.0, |(_, tier)| {
+                [6.0, 5.0, 5.0, 4.0, 3.0][usize::from(tier)]
+            }),
         ResourceKind::Gem => 1.0,
         ResourceKind::Bone | ResourceKind::Clay | ResourceKind::Hide => 2.0,
         ResourceKind::Sand
+        | ResourceKind::Stone
         | ResourceKind::Fibre
+        | ResourceKind::Leather
         | ResourceKind::Planks
         | ResourceKind::Materials
         | ResourceKind::Cloth => 3.0,
@@ -23770,6 +23829,7 @@ const fn item_recipe_resource_label(kind: ResourceKind) -> &'static str {
         ResourceKind::Clay => "clay",
         ResourceKind::Sand => "sand",
         ResourceKind::Fibre => "fibre",
+        ResourceKind::Thread => "thread",
         ResourceKind::Hide => "hide",
         ResourceKind::Planks => "planks",
         ResourceKind::Materials => "supplies",
@@ -23784,6 +23844,7 @@ fn subsistence_frontier_item_recipe_family(recipe_id: &str) -> Option<&'static s
         recipe_id,
         crate::station_recipes::BONE_TRINKET_RECIPE_ID
             | crate::station_recipes::BONE_TOY_RECIPE_ID
+            | crate::station_recipes::BONE_MUG_RECIPE_ID
             | crate::station_recipes::HUNTING_QUALITY_RECIPE_ID
             | crate::station_recipes::HUNTING_SPECIALTY_RECIPE_ID
             | crate::station_recipes::HUNTING_MASTERWORK_RECIPE_ID
@@ -23942,17 +24003,38 @@ fn single_input_physical_recipe(building_type: BuildingType) -> Option<SingleInp
             output_name: "leather",
         }),
         BuildingType::Clothier => Some(SingleInputPhysicalRecipe {
-            recipe_id: CLOTHIER_RECIPE_ID,
+            recipe_id: CLOTHIER_THREAD_RECIPE_ID,
             input_kind: ResourceKind::Fibre,
             input_per_cycle: crate::production::CLOTHIER_FIBRE_PER_CYCLE,
-            output_kind: ResourceKind::Cloth,
-            output_per_cycle: crate::production::CLOTHIER_CLOTH_PER_CYCLE,
+            output_kind: ResourceKind::Thread,
+            output_per_cycle: crate::production::CLOTHIER_THREAD_PER_CYCLE,
             cycle_sec: crate::production::WORKSHOP_CYCLE_SEC,
             labor: Labor::Textile,
             input_budget: StationInputBudget::Aggregate,
             fetching_reason: "fetching_fibre",
             missing_reason: "missing_fibre",
             source_name: "fibre",
+            output_name: "thread",
+        }),
+        _ => None,
+    }
+}
+
+fn clothier_physical_recipe(recipe_id: &str) -> Option<SingleInputPhysicalRecipe> {
+    match recipe_id {
+        CLOTHIER_THREAD_RECIPE_ID => single_input_physical_recipe(BuildingType::Clothier),
+        CLOTHIER_RECIPE_ID => Some(SingleInputPhysicalRecipe {
+            recipe_id: CLOTHIER_RECIPE_ID,
+            input_kind: ResourceKind::Thread,
+            input_per_cycle: crate::production::CLOTHIER_THREAD_FOR_CLOTH_PER_CYCLE,
+            output_kind: ResourceKind::Cloth,
+            output_per_cycle: crate::production::CLOTHIER_CLOTH_PER_CYCLE,
+            cycle_sec: crate::production::WORKSHOP_CYCLE_SEC,
+            labor: Labor::Textile,
+            input_budget: StationInputBudget::Aggregate,
+            fetching_reason: "fetching_thread",
+            missing_reason: "missing_thread",
+            source_name: "thread",
             output_name: "cloth",
         }),
         _ => None,
@@ -24251,11 +24333,13 @@ fn industrial_recipe_family(recipe_id: &str) -> Option<&'static str> {
         return Some(family);
     }
     match recipe_id {
-        crate::station_recipes::FIBRE_TO_CLOTH_RECIPE_ID => Some("textile_work"),
+        crate::station_recipes::FIBRE_TO_THREAD_RECIPE_ID
+        | crate::station_recipes::FIBRE_TO_CLOTH_RECIPE_ID => Some("textile_work"),
         crate::station_recipes::HIDE_TO_LEATHER_RECIPE_ID => Some("leatherworking"),
         crate::station_recipes::SAWMILL_RECIPE_ID
         | crate::station_recipes::LOGS_TO_PLANKS_RECIPE_ID => Some("carpentry"),
         crate::station_recipes::STONE_TO_BLOCKS_RECIPE_ID
+        | crate::station_recipes::STONE_MUG_RECIPE_ID
         | crate::station_recipes::CLAY_MUG_RECIPE_ID
         | crate::station_recipes::CLAY_BOWL_RECIPE_ID
         | crate::station_recipes::CLAY_BRICK_RECIPE_ID => Some("stonecraft"),
@@ -24266,6 +24350,7 @@ fn industrial_recipe_family(recipe_id: &str) -> Option<&'static str> {
         crate::station_recipes::SMITHY_WEAPON_RECIPE_ID => Some("weaponcraft"),
         crate::station_recipes::SMITHY_ARMOR_RECIPE_ID => Some("armorcraft"),
         crate::station_recipes::WORKSHOP_RECIPE_ID
+        | crate::station_recipes::METAL_MUG_RECIPE_ID
         | crate::station_recipes::GEM_TRINKET_RECIPE_ID
         | crate::station_recipes::SAND_MUG_RECIPE_ID
         | crate::station_recipes::SAND_BOWL_RECIPE_ID
@@ -24277,6 +24362,7 @@ fn industrial_recipe_family(recipe_id: &str) -> Option<&'static str> {
 const fn industrial_resource_name(kind: ResourceKind) -> &'static str {
     match kind {
         ResourceKind::Fibre => "fibre",
+        ResourceKind::Thread => "thread",
         ResourceKind::Hide => "hide",
         ResourceKind::Logs => "logs",
         ResourceKind::Stone => "stone",
@@ -24289,6 +24375,7 @@ const fn industrial_resource_name(kind: ResourceKind) -> &'static str {
 const fn industrial_output_name(kind: ResourceKind) -> &'static str {
     match kind {
         ResourceKind::Cloth => "cloth",
+        ResourceKind::Thread => "thread",
         ResourceKind::Leather => "leather",
         ResourceKind::Lumber => "lumber",
         ResourceKind::Planks => "planks",
@@ -24365,6 +24452,12 @@ fn active_single_input_physical_recipe(
             .production_queue
             .first()
             .and_then(|entry| smithy_physical_recipe(&entry.recipe_id));
+    }
+    if building.building_type == BuildingType::Clothier {
+        return building
+            .production_queue
+            .first()
+            .and_then(|entry| clothier_physical_recipe(&entry.recipe_id));
     }
     single_input_physical_recipe(building.building_type)
 }
@@ -25939,21 +26032,16 @@ fn advance_physical_refiner_slot(
         return;
     }
 
-    if allow_output_haul && building_type == BuildingType::Smithy {
-        for kind in [
-            ResourceKind::Weapons,
-            ResourceKind::Armor,
-            ResourceKind::Tools,
-        ] {
+    // Flush every descriptor-owned scalar output, not merely the output of the
+    // queue's current front entry. Multi-stage queues can advance from a recipe
+    // producing an intermediate (Thread) to one consuming it (Cloth), and that
+    // intermediate must make the same physical output→storage→input round trip.
+    if allow_output_haul && let Some((_, output_kinds)) = station_resource_sets(building_type) {
+        for &kind in output_kinds {
             if begin_station_output_haul(colony, &building, cat_index, kind, gate) {
                 return;
             }
         }
-    } else if allow_output_haul
-        && let Some(recipe) = active_single_input_physical_recipe(&building)
-        && begin_station_output_haul(colony, &building, cat_index, recipe.output_kind, gate)
-    {
-        return;
     }
     let Some(mut recipe) = active_single_input_physical_recipe(&building) else {
         return;
@@ -26755,6 +26843,7 @@ fn carrying_resource_kind(kind: CarryingKind) -> Option<ResourceKind> {
         CarryingKind::Hide => Some(ResourceKind::Hide),
         CarryingKind::Leather => Some(ResourceKind::Leather),
         CarryingKind::Fibre => Some(ResourceKind::Fibre),
+        CarryingKind::Thread => Some(ResourceKind::Thread),
         CarryingKind::Cloth => Some(ResourceKind::Cloth),
         CarryingKind::Bone => Some(ResourceKind::Bone),
         CarryingKind::Ore => Some(ResourceKind::Ore),
@@ -27726,6 +27815,7 @@ fn credit_carrying(colony: &mut ColonyRuntime, carrying: &Carrying, deposit_at: 
         CarryingKind::Hide => ResourceKind::Hide,
         CarryingKind::Leather => ResourceKind::Leather,
         CarryingKind::Fibre => ResourceKind::Fibre,
+        CarryingKind::Thread => ResourceKind::Thread,
         CarryingKind::Cloth => ResourceKind::Cloth,
         CarryingKind::Bone => ResourceKind::Bone,
         CarryingKind::Ore => ResourceKind::Ore,
@@ -28149,6 +28239,7 @@ fn deposit_message(cat_id: &str, carrying: &Carrying) -> String {
         CarryingKind::Hide => format!("{cat_id} hauled {} hide.", carrying.amount),
         CarryingKind::Leather => format!("{cat_id} hauled {} leather.", carrying.amount),
         CarryingKind::Fibre => format!("{cat_id} hauled {} fibre.", carrying.amount),
+        CarryingKind::Thread => format!("{cat_id} hauled {} thread.", carrying.amount),
         CarryingKind::Cloth => format!("{cat_id} hauled {} cloth.", carrying.amount),
         CarryingKind::Bone => format!("{cat_id} hauled {} bone.", carrying.amount),
         CarryingKind::Ore => format!("{cat_id} hauled {} ore.", carrying.amount),
@@ -28835,6 +28926,7 @@ mod tests {
             blocks: 1_000.0,
             tools: 1_000.0,
             fibre: 1_000.0,
+            thread: 1_000.0,
             hide: 1_000.0,
             cloth: 1_000.0,
             leather: 1_000.0,
@@ -29793,6 +29885,7 @@ mod tests {
                     blocks: 0.0,
                     tools: 0.0,
                     fibre: 0.0,
+                    thread: 0.0,
                     hide: 0.0,
                     cloth: 0.0,
                     leather: 0.0,
@@ -29880,6 +29973,7 @@ mod tests {
                     blocks: 0.0,
                     tools: 0.0,
                     fibre: 0.0,
+                    thread: 0.0,
                     hide: 0.0,
                     cloth: 0.0,
                     leather: 0.0,
@@ -32241,6 +32335,7 @@ mod tests {
                     blocks: 0.0,
                     tools: 0.0,
                     fibre: 0.0,
+                    thread: 0.0,
                     hide: 0.0,
                     cloth: 0.0,
                     leather: 0.0,
@@ -36018,7 +36113,10 @@ mod tests {
                 BuildingType::Woodworking,
                 vec![crate::station_recipes::PLANKS_AND_BLOCKS_TO_TOOLS_RECIPE_ID],
             ),
-            (BuildingType::Clothier, vec![CLOTHIER_RECIPE_ID]),
+            (
+                BuildingType::Clothier,
+                vec![CLOTHIER_THREAD_RECIPE_ID, CLOTHIER_RECIPE_ID],
+            ),
             (BuildingType::Tannery, vec![TANNERY_RECIPE_ID]),
             (
                 BuildingType::Smithy,
@@ -36101,12 +36199,110 @@ mod tests {
     }
 
     #[test]
+    fn persisted_clothier_queue_adds_spinning_once_without_touching_empty_queues() {
+        let mut colony = ColonyRuntime::default();
+        colony.buildings.push(BuildingRuntime {
+            building_type: BuildingType::Clothier,
+            production_queue: vec![
+                ProductionQueueEntry {
+                    recipe_id: "before".to_owned(),
+                    repeat: false,
+                },
+                ProductionQueueEntry {
+                    recipe_id: CLOTHIER_RECIPE_ID.to_owned(),
+                    repeat: true,
+                },
+                ProductionQueueEntry {
+                    recipe_id: "after".to_owned(),
+                    repeat: false,
+                },
+            ],
+            additional_work_slots: vec![ProductionWorkSlot {
+                assigned_cat: "additional-worker".to_owned(),
+                automated_by: None,
+                production_progress: 0.0,
+                production_queue: vec![ProductionQueueEntry {
+                    recipe_id: CLOTHIER_RECIPE_ID.to_owned(),
+                    repeat: false,
+                }],
+                production_paused: false,
+            }],
+            ..BuildingRuntime::default()
+        });
+        colony.buildings.push(BuildingRuntime {
+            building_type: BuildingType::Clothier,
+            production_queue: Vec::new(),
+            ..BuildingRuntime::default()
+        });
+
+        migrate_split_clothier_queues(&mut colony);
+        let migrated = colony.buildings.clone();
+        assert_eq!(
+            colony.buildings[0].production_queue,
+            vec![
+                ProductionQueueEntry {
+                    recipe_id: "before".to_owned(),
+                    repeat: false,
+                },
+                ProductionQueueEntry {
+                    recipe_id: CLOTHIER_THREAD_RECIPE_ID.to_owned(),
+                    repeat: true,
+                },
+                ProductionQueueEntry {
+                    recipe_id: CLOTHIER_RECIPE_ID.to_owned(),
+                    repeat: true,
+                },
+                ProductionQueueEntry {
+                    recipe_id: "after".to_owned(),
+                    repeat: false,
+                },
+            ]
+        );
+        assert_eq!(
+            colony.buildings[0].additional_work_slots[0].production_queue,
+            vec![
+                ProductionQueueEntry {
+                    recipe_id: CLOTHIER_THREAD_RECIPE_ID.to_owned(),
+                    repeat: false,
+                },
+                ProductionQueueEntry {
+                    recipe_id: CLOTHIER_RECIPE_ID.to_owned(),
+                    repeat: false,
+                },
+            ]
+        );
+        assert!(colony.buildings[1].production_queue.is_empty());
+        migrate_split_clothier_queues(&mut colony);
+        assert_eq!(colony.buildings, migrated);
+
+        let mut completed_spin = ColonyRuntime::default();
+        completed_spin.buildings.push(BuildingRuntime {
+            building_type: BuildingType::Clothier,
+            production_queue: vec![ProductionQueueEntry {
+                recipe_id: CLOTHIER_RECIPE_ID.to_owned(),
+                repeat: false,
+            }],
+            ..BuildingRuntime::default()
+        });
+        completed_spin.resources.thread = crate::production::CLOTHIER_THREAD_PER_CYCLE;
+        migrate_split_clothier_queues(&mut completed_spin);
+        assert_eq!(
+            completed_spin.buildings[0].production_queue,
+            [ProductionQueueEntry {
+                recipe_id: CLOTHIER_RECIPE_ID.to_owned(),
+                repeat: false,
+            }],
+            "completed spinning stock is not mistaken for a legacy queue"
+        );
+    }
+
+    #[test]
     fn physical_clothier_queue_block_reason_is_entitlement_aware() {
         let mut colony = chain_colony(BuildingType::Clothier, Resources::default(), true);
         colony.recipe_entitlement_rules_version = CURRENT_RECIPE_ENTITLEMENT_RULES_VERSION;
         assert_eq!(
             colony.buildings[0].production_queue[0].recipe_id,
-            CLOTHIER_RECIPE_ID
+            CLOTHIER_THREAD_RECIPE_ID
         );
         assert_eq!(
             building_production_block_reason(&colony, &colony.buildings[0]),
@@ -39974,6 +40170,33 @@ mod tests {
                 1,
             ),
             (
+                crate::station_recipes::BONE_MUG_RECIPE_ID,
+                BuildingType::StonePrep,
+                ResourceKind::Bone,
+                2.0,
+                ItemKind::Mug,
+                Material::Bone,
+                1,
+            ),
+            (
+                crate::station_recipes::STONE_MUG_RECIPE_ID,
+                BuildingType::StonePrep,
+                ResourceKind::Stone,
+                3.0,
+                ItemKind::Mug,
+                Material::Stone,
+                1,
+            ),
+            (
+                crate::station_recipes::METAL_MUG_RECIPE_ID,
+                BuildingType::Smithy,
+                ResourceKind::Metal,
+                3.0,
+                ItemKind::Mug,
+                Material::Metal,
+                1,
+            ),
+            (
                 crate::station_recipes::GEM_TRINKET_RECIPE_ID,
                 BuildingType::Workshop,
                 ResourceKind::Gem,
@@ -40484,7 +40707,10 @@ mod tests {
             ),
             (
                 BuildingType::Clothier,
-                &[crate::station_recipes::FIBRE_TO_CLOTH_RECIPE_ID][..],
+                &[
+                    crate::station_recipes::FIBRE_TO_THREAD_RECIPE_ID,
+                    crate::station_recipes::FIBRE_TO_CLOTH_RECIPE_ID,
+                ][..],
             ),
             (
                 BuildingType::Tannery,
@@ -41554,7 +41780,7 @@ mod tests {
         assert_eq!(stable(&runs[0]), stable(&runs[2]));
     }
 
-    fn run_one_full_clothier_route(cadence_sec: i64) -> (ColonyRuntime, [bool; 4]) {
+    fn run_one_full_clothier_route(cadence_sec: i64) -> (ColonyRuntime, [bool; 8]) {
         let mut colony = chain_colony(
             BuildingType::Clothier,
             Resources {
@@ -41563,13 +41789,19 @@ mod tests {
             },
             true,
         );
-        colony.buildings[0].production_queue = vec![ProductionQueueEntry {
-            recipe_id: CLOTHIER_RECIPE_ID.to_owned(),
-            repeat: false,
-        }];
+        colony.buildings[0].production_queue = vec![
+            ProductionQueueEntry {
+                recipe_id: CLOTHIER_THREAD_RECIPE_ID.to_owned(),
+                repeat: false,
+            },
+            ProductionQueueEntry {
+                recipe_id: CLOTHIER_RECIPE_ID.to_owned(),
+                repeat: false,
+            },
+        ];
         colony.clothier_craft_progress = 317.25;
         place_chain_worker_at_seeded_store(&mut colony);
-        let mut stages = [false; 4];
+        let mut stages = [false; 8];
         for step in 1..=3_600 / cadence_sec {
             let gate = production_gate(cadence_sec, step * cadence_sec * 1_000);
             stages[1] |= station_inventory_amount(
@@ -41587,9 +41819,26 @@ mod tests {
                 &colony,
                 &colony.buildings[0].id,
                 true,
-                ResourceKind::Cloth,
+                ResourceKind::Thread,
             ) > f64::EPSILON;
             stages[3] |= colony.cats[0]
+                .carrying
+                .as_ref()
+                .is_some_and(|cargo| cargo.kind == CarryingKind::Thread);
+            stages[4] |= colony.resources.thread > f64::EPSILON;
+            stages[5] |= station_inventory_amount(
+                &colony,
+                &colony.buildings[0].id,
+                false,
+                ResourceKind::Thread,
+            ) > f64::EPSILON;
+            stages[6] |= station_inventory_amount(
+                &colony,
+                &colony.buildings[0].id,
+                true,
+                ResourceKind::Cloth,
+            ) > f64::EPSILON;
+            stages[7] |= colony.cats[0]
                 .carrying
                 .as_ref()
                 .is_some_and(|cargo| cargo.kind == CarryingKind::Cloth);
@@ -41615,8 +41864,9 @@ mod tests {
     fn full_clothier_route_converges_at_one_five_and_sixty_second_cadence() {
         let runs = [1, 5, 60].map(run_one_full_clothier_route);
         for (colony, stages) in &runs {
-            assert_eq!(*stages, [true; 4]);
+            assert_eq!(*stages, [true; 8]);
             assert_eq!(colony.resources.fibre, 0.0);
+            assert_eq!(colony.resources.thread, 0.0);
             assert_eq!(
                 colony.resources.cloth,
                 crate::production::CLOTHIER_CLOTH_PER_CYCLE
@@ -41639,7 +41889,7 @@ mod tests {
                 crate::production::CLOTHIER_CLOTH_PER_CYCLE
             );
         }
-        let stable = |(colony, _): &(ColonyRuntime, [bool; 4])| {
+        let stable = |(colony, _): &(ColonyRuntime, [bool; 8])| {
             (
                 colony.resources.clone(),
                 colony.stockpiles.clone(),
@@ -42300,20 +42550,24 @@ mod tests {
                 building_station_inventory(colony, &colony.buildings[0], false),
                 [(ResourceKind::Fibre, 5.0)]
             );
-            let local_cloth = station_inventory_amount(
+            let local_thread = station_inventory_amount(
                 colony,
                 &colony.buildings[0].id,
                 true,
-                ResourceKind::Cloth,
+                ResourceKind::Thread,
             );
-            let carried_cloth = colony
+            let carried_thread = colony
                 .cats
                 .iter()
                 .filter_map(|cat| cat.carrying.as_ref())
-                .filter(|cargo| cargo.kind == CarryingKind::Cloth)
+                .filter(|cargo| cargo.kind == CarryingKind::Thread)
                 .map(|cargo| cargo.amount)
                 .sum::<f64>();
-            assert_eq!(local_cloth + carried_cloth, 1.0);
+            assert_eq!(local_thread + carried_thread, 5.0);
+            assert!(
+                physical_textile_route_committed(colony, &colony.buildings[0]),
+                "the intermediate Thread output keeps a worker for the outbound leg"
+            );
         }
         assert_eq!(one_tick.resources, partitioned.resources);
         assert_eq!(
@@ -42330,7 +42584,7 @@ mod tests {
         assert_eq!(manual.resources.fibre, 0.0);
         assert_eq!(
             building_station_inventory(&manual, &manual.buildings[0], true),
-            [(ResourceKind::Cloth, 1.0)]
+            [(ResourceKind::Thread, 5.0)]
         );
 
         let mut auto_release = make(0.0, true, 5.0);
@@ -42718,6 +42972,10 @@ mod tests {
         assert_eq!(inbound.resources.cloth, 0.0);
 
         let mut outbound = chain_colony(BuildingType::Clothier, Resources::default(), true);
+        outbound.buildings[0].production_queue = vec![ProductionQueueEntry {
+            recipe_id: CLOTHIER_RECIPE_ID.to_owned(),
+            repeat: true,
+        }];
         ensure_station_stores(&mut outbound, 0);
         let building = outbound.buildings[0].clone();
         let output_id = stockpiles::station_output_id(&building.id);
@@ -42801,7 +43059,7 @@ mod tests {
         let mut blocked = chain_colony(
             BuildingType::Clothier,
             Resources {
-                fibre: 5.0,
+                thread: 5.0,
                 cloth: BASE_CAPACITY.cloth,
                 food: 100.0,
                 water: 100.0,
@@ -42813,7 +43071,10 @@ mod tests {
             .officers
             .insert(OfficerRole::ClothLeader, "crafter".to_owned());
         blocked.buildings[0].automated_by = Some(OfficerRole::ClothLeader);
-        blocked.buildings[0].production_queue.clear();
+        blocked.buildings[0].production_queue = vec![ProductionQueueEntry {
+            recipe_id: CLOTHIER_RECIPE_ID.to_owned(),
+            repeat: true,
+        }];
         ensure_station_stores(&mut blocked, 0);
         let blocked_output = stockpiles::station_output_id(&blocked.buildings[0].id);
         stockpiles::add_resource(
@@ -53439,6 +53700,7 @@ mod tests {
             blocks: 0.0,
             tools: 0.0,
             fibre: 100.0,
+            thread: 100.0,
             hide: 100.0,
             cloth: 0.0,
             leather: 0.0,
@@ -58731,6 +58993,7 @@ mod tests {
             blocks: 10.0,
             tools: 0.0,
             fibre: 0.0,
+            thread: 0.0,
             hide: 0.0,
             cloth: 0.0,
             leather: 0.0,
@@ -58767,6 +59030,7 @@ mod tests {
             blocks: 20.0,
             tools: 0.0,
             fibre: 0.0,
+            thread: 0.0,
             hide: 0.0,
             cloth: 0.0,
             leather: 0.0,
@@ -65257,6 +65521,7 @@ fn steward_resource_key(kind: ResourceKind) -> &'static str {
         ResourceKind::Blocks => "blocks",
         ResourceKind::Tools => "tools",
         ResourceKind::Fibre => "fibre",
+        ResourceKind::Thread => "thread",
         ResourceKind::Hide => "hide",
         ResourceKind::Bone => "bone",
         ResourceKind::Cloth => "cloth",

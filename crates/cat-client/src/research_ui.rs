@@ -1214,7 +1214,11 @@ pub(super) fn recipe_display_name(recipe_id: &str) -> String {
         "logs_to_lumber" => "Lumber cutting".to_owned(),
         "materials_to_refined" => "Refined materials".to_owned(),
         "ore_to_metal" => "Metal smelting".to_owned(),
+        "fibre_to_thread" => "Thread spinning".to_owned(),
         "fibre_to_cloth" => "Cloth weaving".to_owned(),
+        "bone_mug" => "Bone mug carving".to_owned(),
+        "stone_mug" => "Stone mug carving".to_owned(),
+        "metal_mug" => "Metal mug forging".to_owned(),
         "hide_to_leather" => "Leather tanning".to_owned(),
         "smithy_weapon" => "Weapon forging".to_owned(),
         "smithy_tool" => "Tool forging".to_owned(),
@@ -1602,6 +1606,7 @@ mod tests {
             (
                 "textiles",
                 [
+                    "Unlock recipe: Thread spinning",
                     "Unlock recipe: Cloth weaving",
                     "Unlock recipe: Leather tanning",
                 ]

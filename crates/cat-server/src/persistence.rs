@@ -6122,6 +6122,10 @@ mod tests {
             .as_object_mut()
             .expect("resource object")
             .remove("bone");
+        legacy
+            .as_object_mut()
+            .expect("resource object")
+            .remove("thread");
         conn.execute(
             "UPDATE colonies SET resources = ?1 WHERE id = ?2",
             rusqlite::params![legacy.to_string(), "legacy-stone"],
@@ -6134,6 +6138,7 @@ mod tests {
         assert_eq!(restored.colonies[0].resources.materials, 13.0);
         assert_eq!(restored.colonies[0].resources.stone, 0.0);
         assert_eq!(restored.colonies[0].resources.bone, 0.0);
+        assert_eq!(restored.colonies[0].resources.thread, 0.0);
     }
 
     #[test]
@@ -6875,6 +6880,7 @@ mod tests {
             blocks: 19.0,
             tools: 20.0,
             fibre: 21.0,
+            thread: 21.5,
             hide: 22.0,
             bone: 22.5,
             cloth: 23.0,

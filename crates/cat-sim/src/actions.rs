@@ -3863,6 +3863,7 @@ fn trade_would_overflow(
         stockpiles::ResourceKind::Blocks => Some(capacities.blocks),
         stockpiles::ResourceKind::Tools => Some(capacities.tools),
         stockpiles::ResourceKind::Fibre => Some(capacities.fibre),
+        stockpiles::ResourceKind::Thread => Some(capacities.thread),
         stockpiles::ResourceKind::Hide => Some(capacities.hide),
         stockpiles::ResourceKind::Bone => Some(capacities.bone),
         stockpiles::ResourceKind::Cloth => Some(capacities.cloth),
@@ -4391,6 +4392,7 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
                 blocks: caps.blocks,
                 tools: caps.tools,
                 fibre: caps.fibre,
+                thread: caps.thread,
                 hide: caps.hide,
                 bone: caps.bone,
                 cloth: caps.cloth,
@@ -5942,6 +5944,7 @@ fn resources_snapshot(resources: &entities::Resources) -> proto::ResourceAmounts
         blocks: resources.blocks,
         tools: resources.tools,
         fibre: resources.fibre,
+        thread: resources.thread,
         hide: resources.hide,
         bone: resources.bone,
         cloth: resources.cloth,
@@ -6229,6 +6232,7 @@ fn proto_to_sim_resource_kind(kind: proto::ResourceKind) -> stockpiles::Resource
         proto::ResourceKind::Blocks => ResourceKind::Blocks,
         proto::ResourceKind::Tools => ResourceKind::Tools,
         proto::ResourceKind::Fibre => ResourceKind::Fibre,
+        proto::ResourceKind::Thread => ResourceKind::Thread,
         proto::ResourceKind::Hide => ResourceKind::Hide,
         proto::ResourceKind::Bone => ResourceKind::Bone,
         proto::ResourceKind::Cloth => ResourceKind::Cloth,
@@ -6266,6 +6270,7 @@ fn sim_to_proto_resource_kind(kind: stockpiles::ResourceKind) -> proto::Resource
         ResourceKind::Blocks => proto::ResourceKind::Blocks,
         ResourceKind::Tools => proto::ResourceKind::Tools,
         ResourceKind::Fibre => proto::ResourceKind::Fibre,
+        ResourceKind::Thread => proto::ResourceKind::Thread,
         ResourceKind::Hide => proto::ResourceKind::Hide,
         ResourceKind::Bone => proto::ResourceKind::Bone,
         ResourceKind::Cloth => proto::ResourceKind::Cloth,
@@ -6556,6 +6561,7 @@ fn sim_to_proto_carrying_kind(kind: entities::CarryingKind) -> proto::CarryingKi
         entities::CarryingKind::Hide => proto::CarryingKind::Hide,
         entities::CarryingKind::Leather => proto::CarryingKind::Leather,
         entities::CarryingKind::Fibre => proto::CarryingKind::Fibre,
+        entities::CarryingKind::Thread => proto::CarryingKind::Thread,
         entities::CarryingKind::Cloth => proto::CarryingKind::Cloth,
         entities::CarryingKind::Bone => proto::CarryingKind::Bone,
         entities::CarryingKind::Ore => proto::CarryingKind::Ore,
@@ -9951,7 +9957,7 @@ mod tests {
     fn designate_stockpile_accepts_all_physical_kinds_and_rejects_only_blessings() {
         const NONPHYSICAL_MESSAGE: &str = "Stockpiles accept only physical goods; Blessings are divine favor and are never hauled or stored in piles.";
 
-        assert_eq!(proto::ResourceKind::ALL.len(), 31);
+        assert_eq!(proto::ResourceKind::ALL.len(), 32);
         for &kind in proto::ResourceKind::ALL {
             let mut world = world_with_one_colony();
             let before = world.colonies[0].stockpiles.len();
@@ -12213,14 +12219,17 @@ mod tests {
             [
                 "hunting_preparation",
                 "hunting_staples",
+                "stonecraft_preparation",
                 "toolmaking_quality",
                 "stonecraft_staples",
                 "stonecraft_quality",
                 "stonecraft_specialty",
                 "trade_goods_staples",
+                "trade_goods_preparation",
                 "trade_goods_quality",
                 "trade_goods_specialty",
                 "trade_goods_masterwork",
+                "textiles",
             ]
             .map(str::to_owned),
         );
@@ -12228,6 +12237,8 @@ mod tests {
             ("guided-woodworking", BuildingType::Woodworking),
             ("guided-stone-prep", BuildingType::StonePrep),
             ("guided-workshop", BuildingType::Workshop),
+            ("guided-smithy", BuildingType::Smithy),
+            ("guided-clothier", BuildingType::Clothier),
         ] {
             colony.buildings.push(BuildingRuntime {
                 id: id.to_owned(),
@@ -12250,6 +12261,14 @@ mod tests {
             (
                 "guided-stone-prep",
                 crate::station_recipes::BONE_TOY_RECIPE_ID,
+            ),
+            (
+                "guided-stone-prep",
+                crate::station_recipes::BONE_MUG_RECIPE_ID,
+            ),
+            (
+                "guided-stone-prep",
+                crate::station_recipes::STONE_MUG_RECIPE_ID,
             ),
             (
                 "guided-stone-prep",
@@ -12278,6 +12297,15 @@ mod tests {
             (
                 "guided-workshop",
                 crate::station_recipes::SAND_TRINKET_RECIPE_ID,
+            ),
+            ("guided-smithy", crate::station_recipes::METAL_MUG_RECIPE_ID),
+            (
+                "guided-clothier",
+                crate::station_recipes::FIBRE_TO_THREAD_RECIPE_ID,
+            ),
+            (
+                "guided-clothier",
+                crate::station_recipes::FIBRE_TO_CLOTH_RECIPE_ID,
             ),
         ];
         for (building_id, recipe_id) in routes {
@@ -12355,7 +12383,10 @@ mod tests {
             (
                 "clothier-descriptor",
                 BuildingType::Clothier,
-                vec![crate::world_tick::CLOTHIER_RECIPE_ID],
+                vec![
+                    crate::world_tick::CLOTHIER_THREAD_RECIPE_ID,
+                    crate::world_tick::CLOTHIER_RECIPE_ID,
+                ],
             ),
             (
                 "tannery-descriptor",

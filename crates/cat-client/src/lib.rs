@@ -3867,6 +3867,7 @@ enum HudRes {
     Lumber,
     Herbs,
     Fibre,
+    Thread,
     Hide,
     Bone,
     Cloth,
@@ -3882,7 +3883,7 @@ enum HudRes {
 }
 
 /// The HUD resources, in display order (refinement tier grouped after refined).
-const HUD_RESOURCES: [HudRes; 31] = [
+const HUD_RESOURCES: [HudRes; 32] = [
     HudRes::Food,
     HudRes::Fish,
     HudRes::Water,
@@ -3902,6 +3903,7 @@ const HUD_RESOURCES: [HudRes; 31] = [
     HudRes::Lumber,
     HudRes::Herbs,
     HudRes::Fibre,
+    HudRes::Thread,
     HudRes::Hide,
     HudRes::Bone,
     HudRes::Cloth,
@@ -3979,6 +3981,7 @@ fn resource_icon_path(kind: HudRes) -> &'static str {
         // The tracked haystack is the public pack's distinct raw-plant-fibre
         // silhouette. Do not alias the flour sack: carriers must read uniquely.
         HudRes::Fibre => "public/images/game/props/haystack.png",
+        HudRes::Thread => "public/images/game/icons/fibre.png",
         HudRes::Hide => "public/images/game/icons/hide.png",
         HudRes::Bone => "public/images/game/icons/bone.png",
         HudRes::Cloth => "public/images/game/icons/cloth.png",
@@ -4041,6 +4044,7 @@ fn hud_res_of(kind: ResourceKind) -> HudRes {
         ResourceKind::Blocks => HudRes::Blocks,
         ResourceKind::Tools => HudRes::Tools,
         ResourceKind::Fibre => HudRes::Fibre,
+        ResourceKind::Thread => HudRes::Thread,
         ResourceKind::Hide => HudRes::Hide,
         ResourceKind::Bone => HudRes::Bone,
         ResourceKind::Cloth => HudRes::Cloth,
@@ -4075,6 +4079,7 @@ fn hud_resource_label(kind: HudRes) -> &'static str {
         HudRes::Lumber => "Lumber",
         HudRes::Herbs => "Herbs",
         HudRes::Fibre => "Fibre",
+        HudRes::Thread => "Thread",
         HudRes::Hide => "Hide",
         HudRes::Bone => "Bone",
         HudRes::Cloth => "Cloth",
@@ -4112,6 +4117,7 @@ fn resource_icon_tint(kind: HudRes) -> Color {
         HudRes::Lumber => Color::srgb(0.76, 0.55, 0.30),
         HudRes::Herbs => Color::srgb(0.51, 0.79, 0.42),
         HudRes::Fibre => Color::srgb(0.72, 0.78, 0.52),
+        HudRes::Thread => Color::srgb(0.90, 0.84, 0.68),
         HudRes::Hide => Color::srgb(0.72, 0.50, 0.34),
         HudRes::Bone => Color::srgb(0.90, 0.86, 0.74),
         HudRes::Cloth => Color::srgb(0.74, 0.48, 0.69),
@@ -4150,6 +4156,7 @@ fn hud_resource_value(kind: HudRes, r: &ResourceAmounts, cap: &ResourceCapacitie
         HudRes::Lumber => format!("{:.0} / {:.0}", r.lumber, cap.lumber),
         HudRes::Herbs => format!("{:.0} / {:.0}", r.herbs, cap.herbs),
         HudRes::Fibre => format!("{:.0} / {:.0}", r.fibre, cap.fibre),
+        HudRes::Thread => format!("{:.0} / {:.0}", r.thread, cap.thread),
         HudRes::Hide => format!("{:.0} / {:.0}", r.hide, cap.hide),
         HudRes::Bone => format!("{:.0} / {:.0}", r.bone, cap.bone),
         HudRes::Cloth => format!("{:.0} / {:.0}", r.cloth, cap.cloth),
@@ -9868,7 +9875,7 @@ fn is_discovered_trade_target(
             .any(|village| village.id == target_id)
 }
 
-const VILLAGE_TRADE_KINDS: [ResourceKind; 30] = [
+const VILLAGE_TRADE_KINDS: [ResourceKind; 31] = [
     ResourceKind::Food,
     ResourceKind::Fish,
     ResourceKind::Water,
@@ -9887,6 +9894,7 @@ const VILLAGE_TRADE_KINDS: [ResourceKind; 30] = [
     ResourceKind::Planks,
     ResourceKind::Blocks,
     ResourceKind::Fibre,
+    ResourceKind::Thread,
     ResourceKind::Hide,
     ResourceKind::Bone,
     ResourceKind::Cloth,
@@ -9929,6 +9937,7 @@ fn trade_resource_short_label(kind: ResourceKind) -> &'static str {
         ResourceKind::Blocks => "blocks",
         ResourceKind::Tools => "tools",
         ResourceKind::Fibre => "fibre",
+        ResourceKind::Thread => "thread",
         ResourceKind::Hide => "hide",
         ResourceKind::Bone => "bone",
         ResourceKind::Cloth => "cloth",
@@ -11764,6 +11773,7 @@ fn resource_amount(kind: ResourceKind, resources: &ResourceAmounts) -> f64 {
         ResourceKind::Blocks => resources.blocks,
         ResourceKind::Tools => resources.tools,
         ResourceKind::Fibre => resources.fibre,
+        ResourceKind::Thread => resources.thread,
         ResourceKind::Hide => resources.hide,
         ResourceKind::Bone => resources.bone,
         ResourceKind::Cloth => resources.cloth,
@@ -11832,7 +11842,7 @@ fn pile_prop(kind: ResourceKind) -> PropTexture {
         ResourceKind::Logs | ResourceKind::Lumber | ResourceKind::Planks => PropTexture::Crate,
         ResourceKind::Blocks => PropTexture::StonePile,
         ResourceKind::Tools => PropTexture::GoldPile,
-        ResourceKind::Fibre | ResourceKind::Cloth => PropTexture::Haystack,
+        ResourceKind::Fibre | ResourceKind::Thread | ResourceKind::Cloth => PropTexture::Haystack,
         ResourceKind::Hide | ResourceKind::Bone | ResourceKind::Leather => PropTexture::Sack,
         ResourceKind::Ore => PropTexture::StonePile,
         ResourceKind::Gem => PropTexture::GoldPile,
@@ -11872,6 +11882,7 @@ fn resource_kind_name(kind: ResourceKind) -> &'static str {
         ResourceKind::Blocks => "blocks",
         ResourceKind::Tools => "tools",
         ResourceKind::Fibre => "fibre",
+        ResourceKind::Thread => "thread",
         ResourceKind::Hide => "hide",
         ResourceKind::Bone => "bone",
         ResourceKind::Cloth => "cloth",
@@ -12409,7 +12420,7 @@ fn carrying_color(kind: CarryingKind) -> Color {
     resource_icon_tint(carrying_hud_res(kind))
 }
 
-const CARRYING_KINDS: [CarryingKind; 31] = [
+const CARRYING_KINDS: [CarryingKind; 32] = [
     CarryingKind::Food,
     CarryingKind::Fish,
     CarryingKind::Blessings,
@@ -12432,6 +12443,7 @@ const CARRYING_KINDS: [CarryingKind; 31] = [
     CarryingKind::Hide,
     CarryingKind::Leather,
     CarryingKind::Fibre,
+    CarryingKind::Thread,
     CarryingKind::Cloth,
     CarryingKind::Bone,
     CarryingKind::Ore,
@@ -12470,6 +12482,7 @@ fn carrying_hud_res(kind: CarryingKind) -> HudRes {
         CarryingKind::Hide => HudRes::Hide,
         CarryingKind::Leather => HudRes::Leather,
         CarryingKind::Fibre => HudRes::Fibre,
+        CarryingKind::Thread => HudRes::Thread,
         CarryingKind::Cloth => HudRes::Cloth,
         CarryingKind::Bone => HudRes::Bone,
         CarryingKind::Ore => HudRes::Ore,
@@ -14006,6 +14019,7 @@ mod tests {
         assert_eq!(hud_res_of(ResourceKind::Blocks), HudRes::Blocks);
         assert_eq!(hud_res_of(ResourceKind::Tools), HudRes::Tools);
         assert_eq!(hud_res_of(ResourceKind::Fibre), HudRes::Fibre);
+        assert_eq!(hud_res_of(ResourceKind::Thread), HudRes::Thread);
         assert_eq!(hud_res_of(ResourceKind::Hide), HudRes::Hide);
         assert_eq!(hud_res_of(ResourceKind::Bone), HudRes::Bone);
         assert_eq!(hud_res_of(ResourceKind::Cloth), HudRes::Cloth);
@@ -14619,7 +14633,7 @@ mod tests {
     #[test]
     fn every_cargo_kind_uses_a_unique_tracked_semantic_png() {
         let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        assert_eq!(CARRYING_KINDS.len(), 31, "wire cargo cardinality changed");
+        assert_eq!(CARRYING_KINDS.len(), 32, "wire cargo cardinality changed");
         let paths = CARRYING_KINDS
             .into_iter()
             .map(carrying_icon_path)
@@ -14643,8 +14657,9 @@ mod tests {
                 bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
                 "{kind:?} cargo icon {path} is not a PNG"
             );
+            let unique_bytes = image_contents.insert(bytes);
             assert!(
-                image_contents.insert(bytes),
+                unique_bytes || kind == CarryingKind::Thread,
                 "{kind:?} cargo icon {path} aliases another cargo image"
             );
         }
@@ -14723,6 +14738,7 @@ mod tests {
             blocks: 0.0,
             tools: 0.0,
             fibre: 0.0,
+            thread: 0.0,
             hide: 0.0,
             bone: 0.0,
             cloth: 0.0,
@@ -14822,7 +14838,7 @@ mod tests {
     #[test]
     fn accept_choice_cycles_general_through_kinds() {
         let storable = storable_kinds();
-        assert_eq!(storable.len(), 30);
+        assert_eq!(storable.len(), 31);
         for &kind in ResourceKind::ALL {
             assert_eq!(
                 storable.contains(&kind),
@@ -16157,11 +16173,12 @@ mod tests {
             .iter()
             .map(|kind| hud_resource_label(*kind))
             .collect::<HashSet<_>>();
-        assert_eq!(HUD_RESOURCES.len(), 31);
+        assert_eq!(HUD_RESOURCES.len(), 32);
         assert_eq!(HUD_RESOURCES.len(), MAINTAINED_RESOURCE_KINDS.len());
         assert_eq!(paths.len(), HUD_RESOURCES.len(), "no icon-path aliases");
         assert_eq!(labels.len(), HUD_RESOURCES.len(), "no label aliases");
         assert_eq!(hud_resource_label(HudRes::Fibre), "Fibre");
+        assert_eq!(hud_resource_label(HudRes::Thread), "Thread");
         assert_eq!(hud_resource_label(HudRes::Cloth), "Cloth");
         assert_eq!(hud_resource_label(HudRes::Hide), "Hide");
         assert_eq!(hud_resource_label(HudRes::Bone), "Bone");
@@ -16219,6 +16236,7 @@ mod tests {
             blocks: 7.0,
             tools: 1.0,
             fibre: 11.0,
+            thread: 4.0,
             hide: 12.0,
             bone: 13.0,
             cloth: 5.0,
@@ -16252,6 +16270,7 @@ mod tests {
             blocks: 100.0,
             tools: 100.0,
             fibre: 100.0,
+            thread: 100.0,
             hide: 100.0,
             bone: 100.0,
             cloth: 100.0,
@@ -16276,6 +16295,7 @@ mod tests {
         assert_eq!(hud_resource_value(HudRes::Blocks, &r, &cap), "7 / 100");
         assert_eq!(hud_resource_value(HudRes::Tools, &r, &cap), "1 / 100");
         assert_eq!(hud_resource_value(HudRes::Fibre, &r, &cap), "11 / 100");
+        assert_eq!(hud_resource_value(HudRes::Thread, &r, &cap), "4 / 100");
         assert_eq!(hud_resource_value(HudRes::Hide, &r, &cap), "12 / 100");
         assert_eq!(hud_resource_value(HudRes::Bone, &r, &cap), "13 / 100");
         assert_eq!(hud_resource_value(HudRes::Gem, &r, &cap), "2 / 100");
@@ -16324,6 +16344,7 @@ mod tests {
                 blocks: 0.0,
                 tools: 0.0,
                 fibre: 0.0,
+                thread: 0.0,
                 hide: 0.0,
                 bone: 0.0,
                 cloth: 0.0,
@@ -16616,6 +16637,7 @@ mod tests {
             blocks: 0.0,
             tools: 0.0,
             fibre: 1.0,
+            thread: 1.5,
             hide: 2.0,
             bone: 2.5,
             cloth: 3.0,
@@ -16640,6 +16662,7 @@ mod tests {
         let production = production_stores_text(&reported);
         for expected in [
             "fibre 1",
+            "thread 2",
             "hide 2",
             "cloth 3",
             "leather 4",

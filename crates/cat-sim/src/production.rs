@@ -108,6 +108,13 @@ pub const STONEPREP_BLOCKS_PER_CYCLE: f64 = WORKSHOP_REFINED_PER_CYCLE;
 /// aliased to the same refinement-workshop rate as the wood-cutter/stone-prep
 /// benches — see the module doc above).
 pub const CLOTHIER_FIBRE_PER_CYCLE: f64 = WORKSHOP_MATERIALS_PER_CYCLE;
+/// Spun thread one clothier spinning cycle produces.
+/// One spin consumes one five-unit fibre bundle and yields enough thread for
+/// exactly one weave. This keeps the default repeating spin/weave queue live
+/// instead of stranding a one-thread partial input at its front.
+pub const CLOTHIER_THREAD_PER_CYCLE: f64 = CLOTHIER_FIBRE_PER_CYCLE;
+/// Thread one clothier weaving cycle consumes.
+pub const CLOTHIER_THREAD_FOR_CLOTH_PER_CYCLE: f64 = WORKSHOP_MATERIALS_PER_CYCLE;
 /// Cloth one clothier refine cycle produces.
 pub const CLOTHIER_CLOTH_PER_CYCLE: f64 = WORKSHOP_REFINED_PER_CYCLE;
 /// Raw hide one tannery refine cycle consumes.
