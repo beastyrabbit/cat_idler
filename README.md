@@ -89,10 +89,11 @@ Plus **cat-dev**, a small launcher bin (`cargo dev`) that builds and runs `cat-s
   player-founded villages (`found_colony`) as a first-class primitive.
 - **`cat-protocol`** — `serde` wire types shared by client and server: `WorldSnapshot` /
   `ColonySnapshot` (resources, cats, jobs, buildings, upgrades, threat, raiders, zones, items,
-  officers, gather spots, road tiles…) and a typed `ClientAction` enum (found/join
-  village, request job, boost, purchase upgrade, vote, zones, plan building, unlock node,
-  assign worker/officer, train warrior, defend raid, build road, designate/clear farms,
-  designate stockpile/gather spot, sell/buy goods, boost cat, test-acceleration controls).
+  officers, gather spots, roads, transport, and physical caravans) and a typed `ClientAction`
+  enum (found/join/select/trade villages, request jobs, purchase research, vote, plan and staff
+  buildings, assign officers and labor preferences, defend raids, author farms/roads/stockpiles/
+  gather spots/fishing, edit station queues, equip/repair goods, construct and route rail/shipping,
+  trade with visitors, and use release-disabled test controls).
 - **`cat-server`** — `axum` exposes `GET /health`, stateful `GET /ready`, and `GET /ws`
   (WebSocket). CPU-heavy simulation and synchronous persistence run on Tokio's blocking pool;
   new sockets receive a startup-initialized last-completed snapshot without waiting behind an

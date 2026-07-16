@@ -84,7 +84,8 @@ store.
 ### The tick
 
 `world_tick(&mut WorldState, now_ms) -> Vec<TickReport>` is the single entry point, called once
-per colony per second by `cat-server`. It runs many explicitly ordered phase functions
+per shared world per second by `cat-server`; it then advances every colony in stable order. It
+runs many explicitly ordered phase functions
 (`fn phase_*` in `crates/cat-sim/src/world_tick.rs`) — life sim → consumption/spoilage → elections/zones → path
 decay/regrowth → job promotion → leader plan/direct/assign → production/research → survival →
 due-job completion → hauling → movement → roads → raids → status/persist-prep — mirroring the
@@ -100,10 +101,10 @@ through this one function, same discipline the TS game enforced for `workerTick`
 | Foundation | `rng`, `types`, `entities`, `cost_constants`, `needs_constants`, `test_acceleration` |
 | World generation | `noise`, `terrain_gen`, `world_gen`, `biomes`, `climate` |
 | Cat AI | `pathfinding`, `movement`, `policy`, `tasks`, `cat_ai`, `leader_ai`, `leader_director`, `officers` |
-| Life sim | `needs`, `age`, `breeding`, `genetics`, `life_sim`, `survival` |
-| Economy | `idle_engine`, `idle_rules`, `production`, `smithy`, `storage`, `shrine`, `trips`, `depletion`, `spoilage`, `housing`, `roads`, `village_layout`, `village_area`, `stockpiles`, `skills`, `ledger` |
+| Life sim | `needs`, `age`, `breeding`, `genetics`, `life_sim`, `survival`, `migration` |
+| Economy | `idle_engine`, `idle_rules`, `production`, `processing`, `productivity`, `farming`, `smithy`, `storage`, `shrine`, `trips`, `depletion`, `spoilage`, `housing`, `roads`, `transport`, `village_layout`, `village_area`, `village_sites`, `stockpiles`, `skills`, `ledger` |
 | Military & governance | `threat`, `warriors`, `combat`, `elections`, `zones`, `upgrade_tree` |
-| Item economy (P19) | `items`, `recipes`, `trader` |
+| Item and research economy | `items`, `recipes`, `station_recipes`, `research_catalog`, `trader` |
 | Orchestration | `world_tick` (the tick loop), `actions` (pure `apply_action` + `build_snapshot`) |
 
 Each module's doc comment cites the original TypeScript file it was ported from (e.g.
@@ -214,12 +215,13 @@ over the WebSocket:
   jobs, buildings, upgrade-tree progress, research, open-election/vote-kick state plus the
   authoritative between-term election schedule, zones, threat +
   raiders, claimed tiles/fence/gate, village radius/anchor, officers, stockpiles, gather spots,
-  item store, road tiles, online count.
+  item store, road/rail/shipping infrastructure and routes, physical village caravans, online count.
 - **`ClientAction`** — an exhaustive typed contract. It covers handshake,
   signed jobs/scouts/shrine work, upgrades/research, elections, zones, exact construction and
   roads, staffing/officers/labor preferences, farm/stockpile/gather/fishing designations, village
-  founding/selection/barter, trader buy/sell, exact finite-item repair, station queue editing,
-  raids, and the three release-disabled test controls. The exhaustive enum in
+  founding/selection/barter/caravan cancellation, trader buy/sell, exact finite-item
+  equip/unequip/repair, station queue editing, rail/dock/vehicle construction and transport
+  routing, raids, and the three release-disabled test controls. The exhaustive enum in
   `crates/cat-protocol/src/lib.rs` is authoritative when this inventory changes.
 
 Field names are `camelCase` on the wire (matching the old TS API shape where it still matters)
