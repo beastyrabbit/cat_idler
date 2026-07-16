@@ -10,7 +10,7 @@ and any changed Bevy visuals have been verified.
 | Finding | Required correction | State |
 | --- | --- | --- |
 | Research recipe/resource breadth remains incomplete | Thirteen maintained runtime recipe IDs now have data-owned station descriptors and exact catalog ownership metadata: ten are research-gated and three are founding baselines. All thirteen execute through physical queues. The explicit Grain→Flour, Flour→Food, and Metal→exact Tool routes are live. The other 91 generated recipe IDs and all 64 generated resource IDs have no authoritative consumer, are visibly marked `FUTURE`, and cannot spend points. Continue only from the evidence boundary in `RECIPE_RESOURCE_MATRIX.md`. | in progress |
-| Fine-biome resources and transport are incomplete | Bone has a finite hunt source, and Gem/Clay/Sand now have distinct finite fine-biome deposits, physical quarry cargo, depletion, storage/trade/persistence/wire/HUD identities, and zero-stock village interiors. Their downstream crafting variants remain incomplete. Rail and Shipping remain separate transport work: blueprint ownership alone must never alter ordinary walking. | in progress |
+| Fine-biome recipe breadth is incomplete | Bone has a finite hunt source, and Gem/Clay/Sand have distinct finite fine-biome deposits, physical quarry cargo, depletion, storage/trade/persistence/wire/HUD identities, and zero-stock village interiors. Their downstream crafting variants remain incomplete. | in progress |
 
 ## Verified fixes
 
@@ -39,6 +39,32 @@ contents. The inspected client-owned `/tmp/fine-biome-resource-ecology.png` is a
 the top-down village, cats, roads, open stations, and bottom controls remain readable without
 clipping or overlap. The temporary hook and isolated processes were removed. Downstream
 Gem/Clay/Sand/Bone recipes remain explicitly open rather than being advertised as implemented.
+## 2026-07-16 — Rail and Shipping are constructed, staffed physical logistics
+
+**Problem:** Rail and Shipping correctly stopped granting magical walking effects, but the
+blueprints had no tracks, rolling stock, docks, vessels, crews, or finite cargo routes.
+
+**Fix:** Both studies remain neutral until a signed action designates exact infrastructure.
+Track, dock, rolling-stock, and vessel projects reserve exact visible Metal/Lumber/Blocks, require
+a living builder to visit their source piles and work at the project tiles, and consume nothing
+before pickup. A route requires adjacent constructed track or a dock-to-dock water path, an idle
+matching vehicle, two physical stockpiles, finite cargo, and a living crew cat. Its persisted
+Boarding→Loading→Outbound→Unloading→Returning lifecycle debits cargo only on loading, waits behind
+full destination storage, and releases the vehicle only after return. Cancellation, source loss,
+crew death, and project death recover exact cargo; research ownership alone remains physically
+neutral. The client renders connected dark track, timber docks, wagons, and vessels without map
+labels.
+
+**Evidence:** Typed wire round trips cover all designation/vehicle/route/cancel payloads and the
+snapshot. A signed guided action authors a finite four-tile rail route. Passive deterministic
+twins, staffed rail and vessel campaigns, paid on-site track construction, cancellation, crew
+death, storage wait, and exact aggregate-plus-transit conservation pass. SQLite resumes an
+in-flight loaded vehicle with its exact phase, path index, fractional segment progress, crew,
+cargo, and repeat flag. The inspected client-owned 1090×1046 RGB framebuffer
+`/tmp/physical-rail-shipping.png` (SHA-256
+`63646bbf2db832afb0dc2f8103f0923ca8af6b56b52cb18d02a651da4362cba6`) shows the constructed
+dark rail alignment and loaded wagon in the live top-down village. The temporary fixture/capture
+hook and isolated client/server processes were removed.
 
 ## 2026-07-15 — Palisades read as solid top-down fortress cells
 

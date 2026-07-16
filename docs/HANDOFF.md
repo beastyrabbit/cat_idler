@@ -240,11 +240,13 @@ so a correct scout route cannot conceal a missing founding dispatch.
    drive A* and physical per-tile travel through one cached truth, with road/obstacle composition
    and tick-partition determinism. Finite fresh-Fish habitats deplete only on physical catches,
    replenish at 0.5 fish per game-hour up to 24, survive repaint/restart, and pass guided plus
-   unattended twins. Rail and Shipping studies are now truthful blueprint entitlements:
+   unattended twins. Rail and Shipping studies remain truthful blueprint entitlements:
    Shipping cannot make a walking cat enter water and Rail cannot accelerate a long walk merely
-   from ownership. Preserve those guardrails while adding built tracks, vehicles, docks, boarding,
-   vessels, and staffed routes, making fine biomes own their promised physical resource ecology, and
-   extending physical logistics to the remaining workshops. Item durability now has a real
+   from ownership. Signed exact-reservation projects now construct tracks, rolling stock, docks,
+   and vessels; staffed finite-cargo routes board, load, follow matching physical paths, wait for
+   storage, unload, return, and survive cancellation/death/restart without minting. Continue by
+   making fine biomes own their promised physical resource ecology and extending physical logistics
+   to the remaining workshops. Item durability now has a real
    wear/break/repair consumer. Food Storage, Water Bowl, and Smithy capacity studies are now
    target-correct across clamp, physical routing, snapshot, trade, and persistence. Keep the other
    22 generated `*_stores` studies and the fixed 10-unit Mill/Sawmill/Wood Cutter/Stone Prep/Woodworking/Workshop/Smelter local stores

@@ -40,7 +40,7 @@ codex, plus a Claude review for high-value slices) signs off.
 | P14 | Spatial placement: footprints, tile occupancy, soft obstacles, road accessibility | done — atomic action validation, reservations, connectivity, scaffold recovery, exact occupancy/roads, persisted exterior agricultural claims, durable outer-before-inner wall construction with atomic one-gate cutover, and physical authored-road labor are verified |
 | P15 | Playtest-feedback backlog: controls/feel, fog-of-war, booster, movement smoothing | in progress — movement/booster, visible roads, exact controls, authoritative election schedule visibility, knowledge-blind shrine-return search, restart-safe notebooks, and 32-seed fast wood are verified; baseline Leader hunt/water/scout passes exact 48-hour personal/communal campaigns with optimized-browser and signed-native shrine-return confirmation; all ten maintained processors are physical |
 | P16 | Founding village blueprint, gather spots, tile recalibration | in progress — the 15-adult/three-five-bed-Den lifecycle, physical gate-routed migration/pregnancy/aging/reset, physical emergency water, authoritative interior clearing, exterior water, exact roads, selectable/removable gather controls, persisted outside-wall agricultural territory, physical farm labor, and physical shoreline fishing are verified; broader physical production work remains in progress |
-| P17 | Climate-driven biome generator (~26 biomes), mining, crop fertility, transport upgrades | in progress — climate generation, crop fertility, finite Gem/Clay/Sand deposits and physical extraction, ore/metal, exterior plots, finite fish habitats, and cached fine-biome path/movement costs are live; built Rail/Shipping routes and vehicles remain open |
+| P17 | Climate-driven biome generator (~26 biomes), mining, crop fertility, transport upgrades | done — climate generation, crop fertility, finite Gem/Clay/Sand deposits and physical extraction, ore/metal, exterior plots, finite fish habitats, cached fine-biome movement, and exact constructed/staffed Rail plus Shipping routes are live |
 | P18 | Visual polish: DF-Steam parchment UI, craft-station sprites | done — persistent map plaques, building compositions, the Adventure skin, research ledger, square top-down public-pack palisades, staged wall cutover, exterior agriculture, optimized-WASM interaction, and unique tracked semantic glyphs for all 25 maintained HUD resources are framebuffer-verified |
 | P19 | Item/material economy: crafting chains, traders, coin | in progress — the canonical source/station/taxonomy contract now reconciles P12 and P16 while preserving stable IDs and open-top buildings; raw Stone and Bone, physical quarry Stone/rubble/Ore, hunt Hide/Bone, forage Fibre cargo, finite fresh Fish, physical scaffold inputs, thirteen station recipe descriptors/default queues across all ten physical processors, exact finite functional equipment, useful tools, trade goods, a shrine-visiting physical trader with finite persisted stock/purse/wagon, coin, and stable weighted item units with wear/break/repair are live. The 91 generated recipe/64 resource future entries and broader local inventories remain |
 
@@ -728,9 +728,10 @@ for exact commit hashes/messages, and the corresponding spec doc for the origina
   Focused generated-map/cadence tests, all 11 signed guided/manual campaign cases, and four
   live-cadence passive game-hours for seeds 7/42/20240712 as byte-identical twins verify the
   integration; fog grew 289→459/414/474 with no death or reset.
-  Rail and Shipping preserve their stable capability IDs as blueprint entitlements, but ownership
-  alone is physically neutral: ordinary cats cannot walk water and long routes receive no Rail
-  speed boost. Real tracks, trains, docks, vessels, boarding, and staffed routes remain open.
+  Rail and Shipping preserve their stable capability IDs as blueprint entitlements, and ownership
+  alone remains physically neutral. Signed exact-reservation projects now construct tracks,
+  rolling stock, docks, and vessels; staffed finite-cargo routes board, load, travel, wait for
+  storage, unload, and return with death/cancel/restart conservation.
 
 ### P18 — Visual polish (spec: `docs/migration/specs/p18-visual-polish.md`)
 - The maintained Adventure art is live through Bevy sliced images: parchment, dark, and ornate

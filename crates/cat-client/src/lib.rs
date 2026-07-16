@@ -36,7 +36,8 @@ use cat_protocol::{
     RaiderStatus, ResourceAmounts, ResourceCapacities, ResourceKind, ResourceStackSnapshot, RoleXp,
     ScoutMission, ScoutResource, Specialization, StationCompartment, StockLedgerSnapshot,
     StockpileSnapshot, TilePoint, TraderBuyOffer, TraderSellOffer, TraderSnapshot,
-    TraderVisitState, VillageKind, VillageScale, VillageTradeCaravanPhase, WorldSnapshot, ZoneKind,
+    TraderVisitState, TransportMode, VillageKind, VillageScale, VillageTradeCaravanPhase,
+    WorldSnapshot, ZoneKind,
 };
 use cat_sim::climate::{Biome, ResourceHint};
 use cat_sim::terrain_gen::{
@@ -6127,6 +6128,66 @@ fn render_roads(
                 ..default()
             },
             Transform::from_xyz(p.x, p.y, Z_ROAD),
+            RoadTile,
+        ));
+    }
+    let track_set = colony
+        .transport
+        .track_tiles
+        .iter()
+        .map(|tile| (tile.x, tile.y))
+        .collect::<HashSet<_>>();
+    for &(x, y) in &track_set {
+        let sprite = road_sprite_kind(
+            track_set.contains(&(x, y - 1)),
+            track_set.contains(&(x, y + 1)),
+            track_set.contains(&(x + 1, y)),
+            track_set.contains(&(x - 1, y)),
+        );
+        let p = grid_to_world(x, y);
+        commands.spawn((
+            Sprite {
+                image: art.road(sprite),
+                custom_size: Some(Vec2::splat(TILE)),
+                color: Color::srgb(0.24, 0.27, 0.30),
+                ..default()
+            },
+            Transform::from_xyz(p.x, p.y, Z_ROAD + 0.08),
+            RoadTile,
+        ));
+    }
+    for dock in &colony.transport.docks {
+        let land = grid_to_world(dock.land_tile.x, dock.land_tile.y);
+        let water = grid_to_world(dock.water_tile.x, dock.water_tile.y);
+        commands.spawn((
+            Sprite::from_color(Color::srgb(0.48, 0.29, 0.13), Vec2::splat(TILE * 0.82)),
+            Transform::from_xyz(land.x, land.y, Z_ROAD + 0.12),
+            RoadTile,
+        ));
+        commands.spawn((
+            Sprite::from_color(
+                Color::srgb(0.64, 0.42, 0.20),
+                Vec2::new(TILE * 0.48, TILE * 0.86),
+            ),
+            Transform::from_xyz(water.x, water.y, Z_ROAD + 0.12),
+            RoadTile,
+        ));
+    }
+    for vehicle in &colony.transport.vehicles {
+        let position = grid_to_world(vehicle.position.x, vehicle.position.y);
+        let (color, size) = match vehicle.mode {
+            TransportMode::Rail => (
+                Color::srgb(0.53, 0.18, 0.11),
+                Vec2::new(TILE * 0.72, TILE * 0.44),
+            ),
+            TransportMode::Shipping => (
+                Color::srgb(0.72, 0.48, 0.16),
+                Vec2::new(TILE * 0.56, TILE * 0.84),
+            ),
+        };
+        commands.spawn((
+            Sprite::from_color(color, size),
+            Transform::from_xyz(position.x, position.y, Z_ROAD + 0.20),
             RoadTile,
         ));
     }

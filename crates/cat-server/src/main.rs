@@ -1066,6 +1066,21 @@ fn action_authentication(action: &ClientAction) -> ActionAuthentication<'_> {
         | ClientAction::BuildRoad {
             session_id, sig, ..
         }
+        | ClientAction::DesignateRail {
+            session_id, sig, ..
+        }
+        | ClientAction::BuildDock {
+            session_id, sig, ..
+        }
+        | ClientAction::BuildTransportVehicle {
+            session_id, sig, ..
+        }
+        | ClientAction::CreateTransportRoute {
+            session_id, sig, ..
+        }
+        | ClientAction::CancelTransportRoute {
+            session_id, sig, ..
+        }
         | ClientAction::SellGoods {
             session_id, sig, ..
         }
@@ -2145,6 +2160,69 @@ mod tests {
             plot_id: "farm-1".to_owned(),
         };
         for action in [&designate, &clear] {
+            assert_eq!(
+                action_authentication(action),
+                ActionAuthentication::Signed {
+                    session_id: "session-1",
+                    sig: "signed"
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn every_transport_control_requires_the_standard_signed_session_policy() {
+        let common = (
+            "session-1".to_owned(),
+            "Guest Cat".to_owned(),
+            "signed".to_owned(),
+        );
+        let actions = vec![
+            ClientAction::DesignateRail {
+                session_id: common.0.clone(),
+                nickname: common.1.clone(),
+                sig: common.2.clone(),
+                a: TilePoint { x: 1, y: 1 },
+                b: TilePoint { x: 4, y: 1 },
+                cat_id: "cat-1".to_owned(),
+            },
+            ClientAction::BuildDock {
+                session_id: common.0.clone(),
+                nickname: common.1.clone(),
+                sig: common.2.clone(),
+                land: TilePoint { x: 1, y: 1 },
+                water: TilePoint { x: 1, y: 2 },
+                cat_id: "cat-1".to_owned(),
+            },
+            ClientAction::BuildTransportVehicle {
+                session_id: common.0.clone(),
+                nickname: common.1.clone(),
+                sig: common.2.clone(),
+                mode: cat_protocol::TransportMode::Rail,
+                home: TilePoint { x: 1, y: 1 },
+                cat_id: "cat-1".to_owned(),
+            },
+            ClientAction::CreateTransportRoute {
+                session_id: common.0.clone(),
+                nickname: common.1.clone(),
+                sig: common.2.clone(),
+                mode: cat_protocol::TransportMode::Rail,
+                source_stockpile_id: "source".to_owned(),
+                destination_stockpile_id: "destination".to_owned(),
+                resource: cat_protocol::ResourceKind::Food,
+                amount: 4.0,
+                path: vec![TilePoint { x: 1, y: 1 }, TilePoint { x: 2, y: 1 }],
+                cat_id: "cat-1".to_owned(),
+                repeat: true,
+            },
+            ClientAction::CancelTransportRoute {
+                session_id: common.0.clone(),
+                nickname: common.1.clone(),
+                sig: common.2.clone(),
+                route_id: "route-1".to_owned(),
+            },
+        ];
+        for action in &actions {
             assert_eq!(
                 action_authentication(action),
                 ActionAuthentication::Signed {

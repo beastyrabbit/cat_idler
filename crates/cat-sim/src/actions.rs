@@ -30,6 +30,10 @@ use crate::{
     stockpiles,
     storage::{self, StorageBuilding},
     threat, trader,
+    transport::{
+        self, CargoReservation, InfrastructureKind, InfrastructureProject, ProjectPhase,
+        RoutePhase, TransportRoute,
+    },
     types::{BuildingType, CatSpecialization, JobKind, JobStatus, TaskType, TileType, UpgradeKey},
     upgrade_tree,
     village_area::{self, gate_placement_default},
@@ -183,6 +187,56 @@ pub fn apply_action(
             let world_seed = world.world_seed;
             with_colony(world, ctx, |colony| {
                 build_road(colony, *a, *b, world_seed, ctx)
+            })
+        }
+        proto::ClientAction::DesignateRail { a, b, cat_id, .. } => {
+            let world_seed = world.world_seed;
+            with_colony(world, ctx, |colony| {
+                designate_rail(colony, *a, *b, cat_id, world_seed, ctx)
+            })
+        }
+        proto::ClientAction::BuildDock {
+            land,
+            water,
+            cat_id,
+            ..
+        } => with_colony(world, ctx, |colony| {
+            build_dock(colony, *land, *water, cat_id, ctx)
+        }),
+        proto::ClientAction::BuildTransportVehicle {
+            mode, home, cat_id, ..
+        } => with_colony(world, ctx, |colony| {
+            build_transport_vehicle(colony, *mode, *home, cat_id, ctx)
+        }),
+        proto::ClientAction::CreateTransportRoute {
+            mode,
+            source_stockpile_id,
+            destination_stockpile_id,
+            resource,
+            amount,
+            path,
+            cat_id,
+            repeat,
+            ..
+        } => with_colony(world, ctx, |colony| {
+            create_transport_route(
+                colony,
+                CreateTransportRoute {
+                    mode: *mode,
+                    source_stockpile_id,
+                    destination_stockpile_id,
+                    resource: proto_to_sim_resource_kind(*resource),
+                    amount: *amount,
+                    path,
+                    cat_id,
+                    repeat: *repeat,
+                    ctx,
+                },
+            )
+        }),
+        proto::ClientAction::CancelTransportRoute { route_id, .. } => {
+            with_colony(world, ctx, |colony| {
+                cancel_transport_route(colony, route_id, ctx)
             })
         }
         proto::ClientAction::SetTestAcceleration { preset } => {
@@ -2728,6 +2782,482 @@ fn build_road(
     ok()
 }
 
+fn transport_cat_available(colony: &ColonyRuntime, cat_id: &str) -> bool {
+    colony.cats.iter().any(|cat| {
+        cat.id == cat_id
+            && cat.death_time.is_none()
+            && can_work(get_life_stage(cat.age_hours))
+            && cat.carrying.is_none()
+            && !colony
+                .buildings
+                .iter()
+                .any(|building| building.has_worker(cat_id))
+            && !colony.jobs.iter().any(|job| {
+                matches!(job.status, JobStatus::Queued | JobStatus::Active)
+                    && job.assigned_cat.as_deref() == Some(cat_id)
+            })
+    }) && !colony.transport.projects.values().any(|project| {
+        project.assigned_cat_id == cat_id
+            && !matches!(
+                project.phase,
+                ProjectPhase::Complete | ProjectPhase::Cancelled
+            )
+    }) && !colony.transport.routes.values().any(|route| {
+        route.assigned_cat_id == cat_id
+            && !matches!(route.phase, RoutePhase::Complete | RoutePhase::Cancelled)
+    })
+}
+
+fn reserve_transport_resource(
+    colony: &ColonyRuntime,
+    kind: stockpiles::ResourceKind,
+    amount: f64,
+) -> Option<Vec<CargoReservation>> {
+    let mut remaining = amount;
+    let mut reservations = Vec::new();
+    let mut piles = colony
+        .stockpiles
+        .iter()
+        .filter(|pile| !pile.is_station_local())
+        .collect::<Vec<_>>();
+    piles.sort_by(|left, right| left.id.cmp(&right.id));
+    for pile in piles {
+        let available = (stockpiles::resource_amount(&pile.contents, kind)
+            - crate::world_tick::construction_reserved_from_pile(colony, &pile.id, kind))
+        .max(0.0);
+        if available <= f64::EPSILON {
+            continue;
+        }
+        let take = available.min(remaining);
+        reservations.push(CargoReservation {
+            source_stockpile_id: pile.id.clone(),
+            kind,
+            amount: take,
+        });
+        remaining -= take;
+        if remaining <= f64::EPSILON {
+            break;
+        }
+    }
+    (remaining <= f64::EPSILON).then_some(reservations)
+}
+
+fn insert_transport_project(
+    colony: &mut ColonyRuntime,
+    kind: InfrastructureKind,
+    tiles: Vec<TilePos>,
+    cat_id: &str,
+    costs: &[(stockpiles::ResourceKind, f64)],
+    ctx: &ActionCtx,
+) -> proto::ActionResult {
+    if !transport_cat_available(colony, cat_id) {
+        return fail("That cat is not available for transport construction.");
+    }
+    let mut reservations = Vec::new();
+    for (resource, amount) in costs {
+        let Some(mut found) = reserve_transport_resource(colony, *resource, *amount) else {
+            return fail(format!(
+                "Not enough unreserved {resource:?} for that project."
+            ));
+        };
+        reservations.append(&mut found);
+    }
+    let id = format!(
+        "transport-project-{}-{}",
+        ctx.now_ms,
+        colony.transport.projects.len() + 1
+    );
+    colony.transport.projects.insert(
+        id.clone(),
+        InfrastructureProject {
+            id,
+            kind,
+            required_work_seconds: tiles.len().max(1) as f64 * 30.0,
+            tiles,
+            assigned_cat_id: cat_id.to_owned(),
+            phase: ProjectPhase::Fetching,
+            reservations,
+            delivered: BTreeMap::new(),
+            work_done_seconds: 0.0,
+        },
+    );
+    colony.last_player_activity_at = Some(ctx.now_ms);
+    ok()
+}
+
+fn designate_rail(
+    colony: &mut ColonyRuntime,
+    a: proto::TilePoint,
+    b: proto::TilePoint,
+    cat_id: &str,
+    world_seed: u32,
+    ctx: &ActionCtx,
+) -> proto::ActionResult {
+    if !upgrade_tree::is_owned(&colony.upgrade_tree, "rail") {
+        return fail("Research the Rail Line blueprint first.");
+    }
+    let Some(path) = transport::cardinal_line(proto_tile_pos(a), proto_tile_pos(b)) else {
+        return fail("Rail alignments must be straight and cardinal.");
+    };
+    if path.len() < 2 || path.len() > 128 {
+        return fail("Rail alignments must be 2..128 tiles long.");
+    }
+    if path.iter().any(|tile| {
+        !colony.revealed_tiles.contains(tile)
+            || crate::world_tick::tile_has_water(colony.world_tiles.get(tile))
+            || crate::world_tick::road_placement_error(colony, *tile, world_seed).is_some()
+    }) {
+        return fail("Tracks require revealed dry land.");
+    }
+    if colony.transport.projects.values().any(|project| {
+        !matches!(
+            project.phase,
+            ProjectPhase::Complete | ProjectPhase::Cancelled
+        ) && project.tiles.iter().any(|tile| path.contains(tile))
+    }) {
+        return fail("That alignment overlaps transport work already in progress.");
+    }
+    let new_tiles = path
+        .into_iter()
+        .filter(|tile| !colony.transport.track_tiles.contains(tile))
+        .collect::<Vec<_>>();
+    if new_tiles.is_empty() {
+        return ok();
+    }
+    insert_transport_project(
+        colony,
+        InfrastructureKind::Track,
+        new_tiles.clone(),
+        cat_id,
+        &[(
+            stockpiles::ResourceKind::Metal,
+            new_tiles.len() as f64 * transport::RAIL_METAL_PER_TILE,
+        )],
+        ctx,
+    )
+}
+
+fn build_dock(
+    colony: &mut ColonyRuntime,
+    land: proto::TilePoint,
+    water: proto::TilePoint,
+    cat_id: &str,
+    ctx: &ActionCtx,
+) -> proto::ActionResult {
+    if !upgrade_tree::is_owned(&colony.upgrade_tree, "shipping") {
+        return fail("Research the Shipping blueprint first.");
+    }
+    let land = proto_tile_pos(land);
+    let water = proto_tile_pos(water);
+    if !transport::adjacent(land, water)
+        || crate::world_tick::tile_has_water(colony.world_tiles.get(&land))
+        || !crate::world_tick::tile_has_water(colony.world_tiles.get(&water))
+        || !colony.revealed_tiles.contains(&land)
+        || !colony.revealed_tiles.contains(&water)
+    {
+        return fail("A dock needs one revealed dry bank tile beside revealed water.");
+    }
+    if colony
+        .transport
+        .docks
+        .values()
+        .any(|dock| dock.land_tile == land)
+    {
+        return fail("A dock already occupies that bank tile.");
+    }
+    insert_transport_project(
+        colony,
+        InfrastructureKind::Dock,
+        vec![land, water],
+        cat_id,
+        &[
+            (stockpiles::ResourceKind::Lumber, transport::DOCK_LUMBER),
+            (stockpiles::ResourceKind::Blocks, transport::DOCK_BLOCKS),
+        ],
+        ctx,
+    )
+}
+
+fn proto_transport_mode(mode: proto::TransportMode) -> transport::TransportMode {
+    match mode {
+        proto::TransportMode::Rail => transport::TransportMode::Rail,
+        proto::TransportMode::Shipping => transport::TransportMode::Shipping,
+    }
+}
+
+fn build_transport_vehicle(
+    colony: &mut ColonyRuntime,
+    mode: proto::TransportMode,
+    home: proto::TilePoint,
+    cat_id: &str,
+    ctx: &ActionCtx,
+) -> proto::ActionResult {
+    let mode = proto_transport_mode(mode);
+    let home = proto_tile_pos(home);
+    let project_home = match mode {
+        transport::TransportMode::Rail => {
+            if !upgrade_tree::is_owned(&colony.upgrade_tree, "rail")
+                || !colony.transport.track_tiles.contains(&home)
+            {
+                return fail("Construct the matching transport infrastructure at that tile first.");
+            }
+            home
+        }
+        transport::TransportMode::Shipping => {
+            if !upgrade_tree::is_owned(&colony.upgrade_tree, "shipping") {
+                return fail("Research the Shipping blueprint first.");
+            }
+            let Some(dock) = colony
+                .transport
+                .docks
+                .values()
+                .find(|dock| dock.water_tile == home)
+            else {
+                return fail("Construct the matching transport infrastructure at that tile first.");
+            };
+            dock.land_tile
+        }
+    };
+    let (kind, costs) = match mode {
+        transport::TransportMode::Rail => (
+            InfrastructureKind::RollingStock,
+            vec![(
+                stockpiles::ResourceKind::Metal,
+                transport::ROLLING_STOCK_METAL,
+            )],
+        ),
+        transport::TransportMode::Shipping => (
+            InfrastructureKind::Vessel,
+            vec![(stockpiles::ResourceKind::Lumber, transport::VESSEL_LUMBER)],
+        ),
+    };
+    insert_transport_project(colony, kind, vec![project_home], cat_id, &costs, ctx)
+}
+
+struct CreateTransportRoute<'a> {
+    mode: proto::TransportMode,
+    source_stockpile_id: &'a str,
+    destination_stockpile_id: &'a str,
+    resource: stockpiles::ResourceKind,
+    amount: f64,
+    path: &'a [proto::TilePoint],
+    cat_id: &'a str,
+    repeat: bool,
+    ctx: &'a ActionCtx,
+}
+
+fn create_transport_route(
+    colony: &mut ColonyRuntime,
+    request: CreateTransportRoute<'_>,
+) -> proto::ActionResult {
+    let CreateTransportRoute {
+        mode,
+        source_stockpile_id,
+        destination_stockpile_id,
+        resource,
+        amount,
+        path,
+        cat_id,
+        repeat,
+        ctx,
+    } = request;
+    if !amount.is_finite() || amount <= 0.0 || amount > 100.0 {
+        return fail("Transport amount must be finite and in (0, 100].");
+    }
+    if source_stockpile_id == destination_stockpile_id
+        || resource == stockpiles::ResourceKind::Blessings
+    {
+        return fail("Choose two different physical stockpiles.");
+    }
+    if !transport_cat_available(colony, cat_id) {
+        return fail("That cat is not available to crew a route.");
+    }
+    let Some(source) = colony
+        .stockpiles
+        .iter()
+        .find(|pile| pile.id == source_stockpile_id && !pile.is_station_local())
+    else {
+        return fail("Source stockpile not found.");
+    };
+    let Some(destination) = colony.stockpiles.iter().find(|pile| {
+        pile.id == destination_stockpile_id
+            && !pile.is_station_local()
+            && pile.accepts.contains(&resource)
+    }) else {
+        return fail("Destination stockpile does not accept that resource.");
+    };
+    let unreserved = stockpiles::resource_amount(&source.contents, resource)
+        - crate::world_tick::construction_reserved_from_pile(colony, &source.id, resource);
+    if unreserved + f64::EPSILON < amount {
+        return fail("The source does not hold that much cargo.");
+    }
+    let path = path.iter().copied().map(proto_tile_pos).collect::<Vec<_>>();
+    if path.len() < 2
+        || path.len() > 512
+        || !path
+            .windows(2)
+            .all(|pair| transport::adjacent(pair[0], pair[1]))
+    {
+        return fail("Transport paths must be adjacent and 2..512 tiles long.");
+    }
+    let mode = proto_transport_mode(mode);
+    let source_center = source.center();
+    let destination_center = destination.center();
+    let source_tile = TilePos {
+        x: source_center.0.round() as i32,
+        y: source_center.1.round() as i32,
+    };
+    let destination_tile = TilePos {
+        x: destination_center.0.round() as i32,
+        y: destination_center.1.round() as i32,
+    };
+    if !transport::adjacent(source_tile, path[0]) && source_tile != path[0] {
+        return fail("The route must board beside its source stockpile.");
+    }
+    if !transport::adjacent(destination_tile, *path.last().unwrap())
+        && destination_tile != *path.last().unwrap()
+    {
+        return fail("The route must unload beside its destination stockpile.");
+    }
+    let physical_path = match mode {
+        transport::TransportMode::Rail => colony.transport.track_connects(&path),
+        transport::TransportMode::Shipping => {
+            path.iter()
+                .all(|tile| crate::world_tick::tile_has_water(colony.world_tiles.get(tile)))
+                && colony
+                    .transport
+                    .docks
+                    .values()
+                    .any(|dock| dock.water_tile == path[0])
+                && colony
+                    .transport
+                    .docks
+                    .values()
+                    .any(|dock| dock.water_tile == *path.last().unwrap())
+        }
+    };
+    if !physical_path {
+        return fail("The route is not covered by constructed matching infrastructure.");
+    }
+    let Some(vehicle_id) = colony
+        .transport
+        .idle_vehicle(mode)
+        .map(|vehicle| vehicle.id.clone())
+    else {
+        return fail("No idle matching vehicle is available.");
+    };
+    let route_id = format!(
+        "transport-route-{}-{}",
+        ctx.now_ms,
+        colony.transport.routes.len() + 1
+    );
+    let position = path[0];
+    colony.transport.routes.insert(
+        route_id.clone(),
+        TransportRoute {
+            id: route_id.clone(),
+            mode,
+            source_stockpile_id: source_stockpile_id.to_owned(),
+            destination_stockpile_id: destination.id.clone(),
+            resource,
+            amount,
+            assigned_cat_id: cat_id.to_owned(),
+            phase: RoutePhase::Boarding,
+            path,
+            path_index: 0,
+            segment_progress: 0.0,
+            cargo_loaded: 0.0,
+            vehicle_id: vehicle_id.clone(),
+            position,
+            repeat,
+        },
+    );
+    if let Some(vehicle) = colony.transport.vehicles.get_mut(&vehicle_id) {
+        vehicle.assigned_route_id = Some(route_id);
+    }
+    colony.last_player_activity_at = Some(ctx.now_ms);
+    ok()
+}
+
+fn cancel_transport_route(
+    colony: &mut ColonyRuntime,
+    route_id: &str,
+    ctx: &ActionCtx,
+) -> proto::ActionResult {
+    let Some(route) = colony.transport.routes.get_mut(route_id) else {
+        return fail("Transport route not found.");
+    };
+    route.phase = RoutePhase::Cancelled;
+    colony.last_player_activity_at = Some(ctx.now_ms);
+    ok()
+}
+
+fn transport_snapshot(colony: &ColonyRuntime) -> proto::TransportSnapshot {
+    proto::TransportSnapshot {
+        track_tiles: colony
+            .transport
+            .track_tiles
+            .iter()
+            .map(tile_point)
+            .collect(),
+        docks: colony
+            .transport
+            .docks
+            .values()
+            .map(|dock| proto::TransportDockSnapshot {
+                id: dock.id.clone(),
+                land_tile: tile_point(&dock.land_tile),
+                water_tile: tile_point(&dock.water_tile),
+            })
+            .collect(),
+        vehicles: colony
+            .transport
+            .vehicles
+            .values()
+            .map(|vehicle| {
+                let route = vehicle
+                    .assigned_route_id
+                    .as_ref()
+                    .and_then(|id| colony.transport.routes.get(id));
+                proto::TransportVehicleSnapshot {
+                    id: vehicle.id.clone(),
+                    mode: sim_transport_mode(vehicle.mode),
+                    position: tile_point(&route.map_or(vehicle.home, |route| route.position)),
+                    crew_cat_id: route.map(|route| route.assigned_cat_id.clone()),
+                    cargo: route.map_or(0.0, |route| route.cargo_loaded),
+                }
+            })
+            .collect(),
+        routes: colony
+            .transport
+            .routes
+            .values()
+            .map(|route| proto::TransportRouteSnapshot {
+                id: route.id.clone(),
+                mode: sim_transport_mode(route.mode),
+                resource: sim_to_proto_resource_kind(route.resource),
+                amount: route.amount,
+                phase: format!("{:?}", route.phase).to_lowercase(),
+                repeat: route.repeat,
+            })
+            .collect(),
+    }
+}
+
+fn sim_transport_mode(mode: transport::TransportMode) -> proto::TransportMode {
+    match mode {
+        transport::TransportMode::Rail => proto::TransportMode::Rail,
+        transport::TransportMode::Shipping => proto::TransportMode::Shipping,
+    }
+}
+
+const fn proto_tile_pos(point: proto::TilePoint) -> TilePos {
+    TilePos {
+        x: point.x,
+        y: point.y,
+    }
+}
+
 fn found_village(
     world: &mut WorldState,
     name: &str,
@@ -3906,6 +4436,7 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
             })
             .map(|(pos, _)| tile_point(pos))
             .collect(),
+        transport: transport_snapshot(colony),
         stump_tiles: colony
             .world_tiles
             .iter()
@@ -5990,6 +6521,7 @@ mod tests {
         BuildingRuntime, ConstructionCargoReservation, ConstructionCargoState, TraderRuntime,
         found_colony, found_global_colony, new_world, stockpile_placement_error,
     };
+    use crate::zones::ZoneRect;
 
     fn ctx() -> ActionCtx {
         ActionCtx {
@@ -6063,6 +6595,88 @@ mod tests {
             building_type,
             site: None,
         }
+    }
+
+    #[test]
+    fn signed_player_guides_a_staffed_finite_rail_route() {
+        let mut world = world_with_one_colony();
+        let colony = &mut world.colonies[0];
+        colony.jobs.clear();
+        colony.stockpiles = vec![
+            stockpiles::Stockpile {
+                id: "rail-source".to_owned(),
+                rect: ZoneRect {
+                    x1: 1,
+                    y1: 1,
+                    x2: 1,
+                    y2: 1,
+                },
+                accepts: [stockpiles::ResourceKind::Food].into_iter().collect(),
+                contents: entities::Resources {
+                    food: 10.0,
+                    ..entities::Resources::default()
+                },
+            },
+            stockpiles::Stockpile {
+                id: "rail-destination".to_owned(),
+                rect: ZoneRect {
+                    x1: 4,
+                    y1: 1,
+                    x2: 4,
+                    y2: 1,
+                },
+                accepts: [stockpiles::ResourceKind::Food].into_iter().collect(),
+                contents: entities::Resources::default(),
+            },
+        ];
+        colony.resources = entities::Resources {
+            food: 10.0,
+            ..entities::Resources::default()
+        };
+        colony
+            .transport
+            .track_tiles
+            .extend((1..=4).map(|x| TilePos { x, y: 1 }));
+        colony.transport.vehicles.insert(
+            "guided-wagon".to_owned(),
+            transport::Vehicle {
+                id: "guided-wagon".to_owned(),
+                mode: transport::TransportMode::Rail,
+                home: TilePos { x: 1, y: 1 },
+                assigned_route_id: None,
+            },
+        );
+        let cat_id = colony.cats[0].id.clone();
+        let action = proto::ClientAction::CreateTransportRoute {
+            session_id: "sess_1".to_owned(),
+            nickname: "Rail Planner".to_owned(),
+            sig: "server-verified".to_owned(),
+            mode: proto::TransportMode::Rail,
+            source_stockpile_id: "rail-source".to_owned(),
+            destination_stockpile_id: "rail-destination".to_owned(),
+            resource: proto::ResourceKind::Food,
+            amount: 4.0,
+            path: (1..=4).map(|x| proto::TilePoint { x, y: 1 }).collect(),
+            cat_id: cat_id.clone(),
+            repeat: false,
+        };
+        let result = apply_action(&mut world, &action, &ctx());
+        assert!(result.ok, "guided route failed: {:?}", result.message);
+        let route = world.colonies[0].transport.routes.values().next().unwrap();
+        assert_eq!(route.assigned_cat_id, cat_id);
+        assert_eq!(route.amount, 4.0);
+        assert_eq!(route.phase, RoutePhase::Boarding);
+        assert_eq!(
+            world.colonies[0].transport.vehicles["guided-wagon"].assigned_route_id,
+            Some(route.id.clone())
+        );
+        let snapshot = build_snapshot(&world, ctx().now_ms, 1);
+        assert_eq!(snapshot.colonies[0].transport.track_tiles.len(), 4);
+        assert_eq!(snapshot.colonies[0].transport.routes.len(), 1);
+        assert_eq!(
+            snapshot.colonies[0].transport.vehicles[0].crew_cat_id,
+            Some(cat_id)
+        );
     }
 
     #[test]

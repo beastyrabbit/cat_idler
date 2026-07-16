@@ -59,6 +59,7 @@ pub mod spoilage;
 pub mod station_recipes;
 pub mod stockpiles;
 pub mod storage;
+pub mod transport;
 pub mod trips;
 pub mod village_area;
 pub mod village_layout;

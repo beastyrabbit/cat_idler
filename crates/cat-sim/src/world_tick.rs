@@ -361,6 +361,10 @@ pub struct ColonyRuntime {
     /// This survives removing/re-designating a fishing spot, so the player
     /// cannot refill a depleted habitat by repainting its bank.
     pub fish_habitats: BTreeMap<TilePos, stockpiles::FishPopulation>,
+    /// Constructed P17 transport infrastructure, vehicles, and staffed routes.
+    /// Research ownership is deliberately absent from this state: blueprints do
+    /// not move a cat or a unit of cargo until this ledger says the work exists.
+    pub transport: crate::transport::TransportState,
     /// Reported stock ledger (P12.4a). A lagging *view* of `resources`; only completed
     /// physical pile counts refresh it after the exact founding report. Never affects the
     /// true `resources`.
@@ -2160,7 +2164,7 @@ impl EventKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct TilePos {
     pub x: i32,
     pub y: i32,
@@ -2462,6 +2466,7 @@ impl Default for ColonyRuntime {
             farms: Vec::new(),
             gather_spots: Vec::new(),
             fish_habitats: BTreeMap::new(),
+            transport: crate::transport::TransportState::default(),
             stock_ledger: StockLedger::default(),
             items: ItemStore::default(),
             wood_craft_progress: 0.0,
@@ -4420,6 +4425,7 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
             continue;
         }
         phase_36b_trader_lifecycle(colony, gate, &movement);
+        phase_36c_physical_transport(colony, gate, &movement);
         let reset_reason = phase_37_final_clamp_critical_collapse_status_persist(colony, gate);
         reconcile_colony_stockpiles(colony);
         if reset_reason.is_some() {
@@ -5390,7 +5396,38 @@ pub(crate) fn construction_reserved_from_pile(
         })
         .map(|reservation| reservation.amount)
         .sum::<f64>();
-    scaffold + roads
+    let transport_projects = colony
+        .transport
+        .projects
+        .values()
+        .filter(|project| {
+            !matches!(
+                project.phase,
+                crate::transport::ProjectPhase::Complete
+                    | crate::transport::ProjectPhase::Cancelled
+            )
+        })
+        .flat_map(|project| project.reservations.iter())
+        .filter(|reservation| {
+            reservation.source_stockpile_id == pile_id && reservation.kind == kind
+        })
+        .map(|reservation| reservation.amount)
+        .sum::<f64>();
+    let transport_routes = colony
+        .transport
+        .routes
+        .values()
+        .filter(|route| {
+            route.source_stockpile_id == pile_id
+                && route.resource == kind
+                && matches!(
+                    route.phase,
+                    crate::transport::RoutePhase::Boarding | crate::transport::RoutePhase::Loading
+                )
+        })
+        .map(|route| route.amount)
+        .sum::<f64>();
+    scaffold + roads + transport_projects + transport_routes
 }
 
 fn construction_committed_amount(colony: &ColonyRuntime, kind: ResourceKind) -> f64 {
@@ -14981,6 +15018,426 @@ fn phase_36b_trader_lifecycle(
     }
 }
 
+fn transport_cat_index(colony: &ColonyRuntime, cat_id: &str) -> Option<usize> {
+    colony
+        .cats
+        .iter()
+        .position(|cat| cat.id == cat_id && cat.death_time.is_none())
+}
+
+fn transport_cat_at(colony: &ColonyRuntime, cat_index: usize, tile: TilePos) -> bool {
+    let position = position_to_world(colony.anchor, colony.cats[cat_index].position);
+    (position.x - f64::from(tile.x)).abs() <= 0.1 && (position.y - f64::from(tile.y)).abs() <= 0.1
+}
+
+fn send_transport_cat_to(colony: &mut ColonyRuntime, cat_index: usize, tile: TilePos) {
+    send_cat_to(colony, cat_index, tile_pos_to_world(tile));
+}
+
+fn recover_transport_project(colony: &mut ColonyRuntime, project_id: &str) -> bool {
+    let Some(project) = colony.transport.projects.get(project_id) else {
+        return true;
+    };
+    let delivered = project.delivered.clone();
+    for (kind, amount) in &delivered {
+        if *amount <= f64::EPSILON {
+            continue;
+        }
+        let caps = storage_caps(colony);
+        let Some(destination) = colony.stockpiles.iter().position(|pile| {
+            !pile.is_station_local()
+                && pile.accepts.contains(kind)
+                && stockpiles::headroom_for(pile, *kind, &caps) + f64::EPSILON >= *amount
+        }) else {
+            return false;
+        };
+        stockpiles::add_resource(&mut colony.stockpiles[destination].contents, *kind, *amount);
+        stockpiles::add_resource(&mut colony.resources, *kind, *amount);
+    }
+    if let Some(project) = colony.transport.projects.get_mut(project_id) {
+        project.delivered.clear();
+    }
+    true
+}
+
+fn finish_transport_project(colony: &mut ColonyRuntime, project_id: &str) {
+    let Some(project) = colony.transport.projects.get(project_id).cloned() else {
+        return;
+    };
+    match project.kind {
+        crate::transport::InfrastructureKind::Track => {
+            colony.transport.track_tiles.extend(project.tiles);
+        }
+        crate::transport::InfrastructureKind::Dock => {
+            if let [land_tile, water_tile, ..] = project.tiles.as_slice() {
+                let id = format!("dock-{}", project.id);
+                colony.transport.docks.insert(
+                    id.clone(),
+                    crate::transport::Dock {
+                        id,
+                        land_tile: *land_tile,
+                        water_tile: *water_tile,
+                    },
+                );
+            }
+        }
+        crate::transport::InfrastructureKind::RollingStock
+        | crate::transport::InfrastructureKind::Vessel => {
+            let mode = if project.kind == crate::transport::InfrastructureKind::RollingStock {
+                crate::transport::TransportMode::Rail
+            } else {
+                crate::transport::TransportMode::Shipping
+            };
+            if let Some(home) = project.tiles.first().copied() {
+                let id = format!("vehicle-{}", project.id);
+                colony.transport.vehicles.insert(
+                    id.clone(),
+                    crate::transport::Vehicle {
+                        id,
+                        mode,
+                        home,
+                        assigned_route_id: None,
+                    },
+                );
+            }
+        }
+    }
+    if let Some(project) = colony.transport.projects.get_mut(project_id) {
+        project.phase = crate::transport::ProjectPhase::Complete;
+        project.delivered.clear();
+    }
+}
+
+fn advance_transport_projects(colony: &mut ColonyRuntime, gate: TickGate) {
+    let project_ids = colony
+        .transport
+        .projects
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    for project_id in project_ids {
+        let Some(snapshot) = colony.transport.projects.get(&project_id).cloned() else {
+            continue;
+        };
+        if matches!(
+            snapshot.phase,
+            crate::transport::ProjectPhase::Complete | crate::transport::ProjectPhase::Cancelled
+        ) {
+            if snapshot.phase == crate::transport::ProjectPhase::Cancelled {
+                let _ = recover_transport_project(colony, &project_id);
+            }
+            continue;
+        }
+        let Some(cat_index) = transport_cat_index(colony, &snapshot.assigned_cat_id) else {
+            if let Some(project) = colony.transport.projects.get_mut(&project_id) {
+                project.phase = crate::transport::ProjectPhase::Cancelled;
+            }
+            let _ = recover_transport_project(colony, &project_id);
+            continue;
+        };
+        match snapshot.phase {
+            crate::transport::ProjectPhase::Fetching => {
+                let next = snapshot
+                    .reservations
+                    .iter()
+                    .enumerate()
+                    .find(|(_, reservation)| reservation.amount > f64::EPSILON)
+                    .map(|(index, reservation)| (index, reservation.clone()));
+                let Some((reservation_index, reservation)) = next else {
+                    if let Some(project) = colony.transport.projects.get_mut(&project_id) {
+                        project.phase = crate::transport::ProjectPhase::Building;
+                    }
+                    continue;
+                };
+                let Some(source_index) = colony.stockpiles.iter().position(|pile| {
+                    pile.id == reservation.source_stockpile_id && !pile.is_station_local()
+                }) else {
+                    if let Some(project) = colony.transport.projects.get_mut(&project_id) {
+                        project.phase = crate::transport::ProjectPhase::Cancelled;
+                    }
+                    continue;
+                };
+                let center = colony.stockpiles[source_index].center();
+                let source_tile = TilePos {
+                    x: center.0.round() as i32,
+                    y: center.1.round() as i32,
+                };
+                if !transport_cat_at(colony, cat_index, source_tile) {
+                    send_transport_cat_to(colony, cat_index, source_tile);
+                    continue;
+                }
+                let available = stockpiles::resource_amount(
+                    &colony.stockpiles[source_index].contents,
+                    reservation.kind,
+                );
+                if available + f64::EPSILON < reservation.amount {
+                    continue;
+                }
+                stockpiles::add_resource(
+                    &mut colony.stockpiles[source_index].contents,
+                    reservation.kind,
+                    -reservation.amount,
+                );
+                stockpiles::add_resource(
+                    &mut colony.resources,
+                    reservation.kind,
+                    -reservation.amount,
+                );
+                if let Some(project) = colony.transport.projects.get_mut(&project_id) {
+                    *project.delivered.entry(reservation.kind).or_default() += reservation.amount;
+                    project.reservations[reservation_index].amount = 0.0;
+                }
+            }
+            crate::transport::ProjectPhase::Building => {
+                let tile_index = (snapshot.work_done_seconds / 30.0).floor() as usize;
+                let Some(tile) = snapshot.tiles.get(tile_index).copied() else {
+                    finish_transport_project(colony, &project_id);
+                    continue;
+                };
+                if !transport_cat_at(colony, cat_index, tile) {
+                    send_transport_cat_to(colony, cat_index, tile);
+                    continue;
+                }
+                let elapsed_game_sec = gate.elapsed_sec as f64 * normalize_time_scale(colony);
+                if let Some(project) = colony.transport.projects.get_mut(&project_id) {
+                    project.work_done_seconds += elapsed_game_sec;
+                    if project.work_done_seconds + f64::EPSILON >= project.required_work_seconds {
+                        finish_transport_project(colony, &project_id);
+                    }
+                }
+            }
+            crate::transport::ProjectPhase::Complete
+            | crate::transport::ProjectPhase::Cancelled => {}
+        }
+    }
+}
+
+fn advance_route_path(route: &mut crate::transport::TransportRoute, elapsed_game_sec: f64) {
+    let speed = match route.mode {
+        crate::transport::TransportMode::Rail => crate::transport::RAIL_TILES_PER_GAME_SECOND,
+        crate::transport::TransportMode::Shipping => crate::transport::SHIP_TILES_PER_GAME_SECOND,
+    };
+    route.segment_progress += elapsed_game_sec.max(0.0) * speed;
+    while route.segment_progress + f64::EPSILON >= 1.0 {
+        match route.phase {
+            crate::transport::RoutePhase::Outbound => {
+                if route.path_index + 1 >= route.path.len() {
+                    route.phase = crate::transport::RoutePhase::Unloading;
+                    route.segment_progress = 0.0;
+                    break;
+                }
+                route.path_index += 1;
+            }
+            crate::transport::RoutePhase::Returning => {
+                if route.path_index == 0 {
+                    route.phase = if route.repeat {
+                        crate::transport::RoutePhase::Boarding
+                    } else {
+                        crate::transport::RoutePhase::Complete
+                    };
+                    route.segment_progress = 0.0;
+                    break;
+                }
+                route.path_index -= 1;
+            }
+            _ => break,
+        }
+        route.segment_progress -= 1.0;
+        route.position = route.path[route.path_index];
+    }
+}
+
+fn release_transport_route(colony: &mut ColonyRuntime, route_id: &str) {
+    let Some(route) = colony.transport.routes.get(route_id) else {
+        return;
+    };
+    if let Some(vehicle) = colony.transport.vehicles.get_mut(&route.vehicle_id) {
+        vehicle.assigned_route_id = None;
+    }
+    if let Some(cat) = colony
+        .cats
+        .iter_mut()
+        .find(|cat| cat.id == route.assigned_cat_id && cat.death_time.is_none())
+    {
+        cat.destination = None;
+        cat.activity = CatActivity::Idle;
+    }
+}
+
+fn advance_transport_routes(colony: &mut ColonyRuntime, gate: TickGate) {
+    let route_ids = colony.transport.routes.keys().cloned().collect::<Vec<_>>();
+    for route_id in route_ids {
+        let Some(snapshot) = colony.transport.routes.get(&route_id).cloned() else {
+            continue;
+        };
+        if matches!(snapshot.phase, crate::transport::RoutePhase::Complete) {
+            release_transport_route(colony, &route_id);
+            continue;
+        }
+        if transport_cat_index(colony, &snapshot.assigned_cat_id).is_none()
+            && snapshot.phase != crate::transport::RoutePhase::Cancelled
+            && let Some(route) = colony.transport.routes.get_mut(&route_id)
+        {
+            route.phase = crate::transport::RoutePhase::Cancelled;
+        }
+        let phase = colony.transport.routes[&route_id].phase;
+        match phase {
+            crate::transport::RoutePhase::Boarding => {
+                let Some(cat_index) = transport_cat_index(colony, &snapshot.assigned_cat_id) else {
+                    continue;
+                };
+                let Some(source) = colony.stockpiles.iter().find(|pile| {
+                    pile.id == snapshot.source_stockpile_id && !pile.is_station_local()
+                }) else {
+                    if let Some(route) = colony.transport.routes.get_mut(&route_id) {
+                        route.phase = crate::transport::RoutePhase::Cancelled;
+                    }
+                    continue;
+                };
+                let center = source.center();
+                let tile = TilePos {
+                    x: center.0.round() as i32,
+                    y: center.1.round() as i32,
+                };
+                if transport_cat_at(colony, cat_index, tile) {
+                    if let Some(route) = colony.transport.routes.get_mut(&route_id) {
+                        route.phase = crate::transport::RoutePhase::Loading;
+                    }
+                } else {
+                    send_transport_cat_to(colony, cat_index, tile);
+                }
+            }
+            crate::transport::RoutePhase::Loading => {
+                let Some(source_index) = colony.stockpiles.iter().position(|pile| {
+                    pile.id == snapshot.source_stockpile_id && !pile.is_station_local()
+                }) else {
+                    continue;
+                };
+                if stockpiles::resource_amount(
+                    &colony.stockpiles[source_index].contents,
+                    snapshot.resource,
+                ) + f64::EPSILON
+                    < snapshot.amount
+                {
+                    continue;
+                }
+                stockpiles::add_resource(
+                    &mut colony.stockpiles[source_index].contents,
+                    snapshot.resource,
+                    -snapshot.amount,
+                );
+                stockpiles::add_resource(
+                    &mut colony.resources,
+                    snapshot.resource,
+                    -snapshot.amount,
+                );
+                if let Some(route) = colony.transport.routes.get_mut(&route_id) {
+                    route.cargo_loaded = snapshot.amount;
+                    route.phase = crate::transport::RoutePhase::Outbound;
+                }
+            }
+            crate::transport::RoutePhase::Outbound | crate::transport::RoutePhase::Returning => {
+                let infrastructure_ok = match snapshot.mode {
+                    crate::transport::TransportMode::Rail => {
+                        colony.transport.track_connects(&snapshot.path)
+                    }
+                    crate::transport::TransportMode::Shipping => snapshot
+                        .path
+                        .iter()
+                        .all(|tile| tile_has_water(colony.world_tiles.get(tile))),
+                };
+                if !infrastructure_ok {
+                    continue;
+                }
+                let elapsed_game_sec = gate.elapsed_sec as f64 * normalize_time_scale(colony);
+                if let Some(route) = colony.transport.routes.get_mut(&route_id) {
+                    advance_route_path(route, elapsed_game_sec);
+                    if let Some(cat) = colony
+                        .cats
+                        .iter_mut()
+                        .find(|cat| cat.id == route.assigned_cat_id && cat.death_time.is_none())
+                    {
+                        cat.position = position_from_world(tile_pos_to_world(route.position));
+                        cat.destination = Some(cat.position);
+                        cat.activity = CatActivity::Traveling;
+                    }
+                }
+            }
+            crate::transport::RoutePhase::Unloading
+            | crate::transport::RoutePhase::WaitingForStorage => {
+                let caps = storage_caps(colony);
+                let Some(destination_index) = colony.stockpiles.iter().position(|pile| {
+                    pile.id == snapshot.destination_stockpile_id
+                        && !pile.is_station_local()
+                        && pile.accepts.contains(&snapshot.resource)
+                        && stockpiles::headroom_for(pile, snapshot.resource, &caps) + f64::EPSILON
+                            >= snapshot.cargo_loaded
+                }) else {
+                    if let Some(route) = colony.transport.routes.get_mut(&route_id) {
+                        route.phase = crate::transport::RoutePhase::WaitingForStorage;
+                    }
+                    continue;
+                };
+                stockpiles::add_resource(
+                    &mut colony.stockpiles[destination_index].contents,
+                    snapshot.resource,
+                    snapshot.cargo_loaded,
+                );
+                stockpiles::add_resource(
+                    &mut colony.resources,
+                    snapshot.resource,
+                    snapshot.cargo_loaded,
+                );
+                if let Some(route) = colony.transport.routes.get_mut(&route_id) {
+                    route.cargo_loaded = 0.0;
+                    route.phase = crate::transport::RoutePhase::Returning;
+                }
+            }
+            crate::transport::RoutePhase::Cancelled => {
+                if snapshot.cargo_loaded > f64::EPSILON {
+                    let caps = storage_caps(colony);
+                    let destination = colony.stockpiles.iter().position(|pile| {
+                        pile.id == snapshot.source_stockpile_id
+                            && !pile.is_station_local()
+                            && stockpiles::headroom_for(pile, snapshot.resource, &caps)
+                                + f64::EPSILON
+                                >= snapshot.cargo_loaded
+                    });
+                    let Some(destination) = destination else {
+                        continue;
+                    };
+                    stockpiles::add_resource(
+                        &mut colony.stockpiles[destination].contents,
+                        snapshot.resource,
+                        snapshot.cargo_loaded,
+                    );
+                    stockpiles::add_resource(
+                        &mut colony.resources,
+                        snapshot.resource,
+                        snapshot.cargo_loaded,
+                    );
+                    if let Some(route) = colony.transport.routes.get_mut(&route_id) {
+                        route.cargo_loaded = 0.0;
+                    }
+                }
+                release_transport_route(colony, &route_id);
+            }
+            crate::transport::RoutePhase::Complete => {}
+        }
+    }
+}
+
+/// P17 physical transport. Ordinary movement remains unaware of Shipping/Rail;
+/// only constructed, staffed state machines enter water or receive vehicle speed.
+fn phase_36c_physical_transport(
+    colony: &mut ColonyRuntime,
+    gate: TickGate,
+    _movement: &MovementPassContext,
+) {
+    advance_transport_projects(colony, gate);
+    advance_transport_routes(colony, gate);
+}
+
 /// Phase 37: clamp resources, handle critical collapse, update status, persist
 /// final state, and record `last_tick = processed_through`.
 /// One full unspecialized hunt (8h) plus a bounded return/deposit runway. This is
@@ -24039,6 +24496,47 @@ pub fn reconcile_colony_stockpiles(colony: &mut ColonyRuntime) {
                     reservation.source_stockpile_id.clone(),
                     reservation.kind,
                     reservation.amount,
+                )
+            }),
+    );
+    protected.extend(
+        colony
+            .transport
+            .projects
+            .values()
+            .filter(|project| {
+                !matches!(
+                    project.phase,
+                    crate::transport::ProjectPhase::Complete
+                        | crate::transport::ProjectPhase::Cancelled
+                )
+            })
+            .flat_map(|project| project.reservations.iter())
+            .filter(|reservation| reservation.amount > f64::EPSILON)
+            .map(|reservation| {
+                (
+                    reservation.source_stockpile_id.clone(),
+                    reservation.kind,
+                    reservation.amount,
+                )
+            }),
+    );
+    protected.extend(
+        colony
+            .transport
+            .routes
+            .values()
+            .filter(|route| {
+                matches!(
+                    route.phase,
+                    crate::transport::RoutePhase::Boarding | crate::transport::RoutePhase::Loading
+                )
+            })
+            .map(|route| {
+                (
+                    route.source_stockpile_id.clone(),
+                    route.resource,
+                    route.amount,
                 )
             }),
     );
@@ -61078,5 +61576,228 @@ fn cancel_stockpile_balance_job_by_id(colony: &mut ColonyRuntime, job_id: &str, 
     } = &mut colony.jobs[job_index].metadata
     {
         *amount_in_transit = remaining;
+    }
+}
+
+#[cfg(test)]
+mod physical_transport_tests {
+    use super::*;
+    use crate::transport::{
+        InfrastructureKind, InfrastructureProject, ProjectPhase, RoutePhase, TransportMode,
+        TransportRoute, Vehicle,
+    };
+    use crate::zones::ZoneRect;
+
+    fn pile(id: &str, x: i32, food: f64) -> Stockpile {
+        Stockpile {
+            id: id.to_owned(),
+            rect: ZoneRect {
+                x1: x,
+                y1: 1,
+                x2: x,
+                y2: 1,
+            },
+            accepts: [ResourceKind::Food].into_iter().collect(),
+            contents: Resources {
+                food,
+                ..Resources::default()
+            },
+        }
+    }
+
+    fn rail_colony(phase: RoutePhase, cargo: f64) -> ColonyRuntime {
+        let mut colony = found_colony(7, "rail-test", 0, 11);
+        colony.jobs.clear();
+        colony
+            .buildings
+            .iter_mut()
+            .for_each(|building| building.assigned_cat = None);
+        colony.stockpiles = vec![pile("source", 1, 10.0 - cargo), pile("destination", 4, 0.0)];
+        colony.resources = Resources {
+            food: 10.0 - cargo,
+            ..Resources::default()
+        };
+        let cat_id = colony.cats[0].id.clone();
+        colony.cats[0].position = position_from_world(tile_pos_to_world(TilePos { x: 1, y: 1 }));
+        colony
+            .transport
+            .track_tiles
+            .extend((1..=4).map(|x| TilePos { x, y: 1 }));
+        colony.transport.vehicles.insert(
+            "wagon".to_owned(),
+            Vehicle {
+                id: "wagon".to_owned(),
+                mode: TransportMode::Rail,
+                home: TilePos { x: 1, y: 1 },
+                assigned_route_id: Some("route".to_owned()),
+            },
+        );
+        colony.transport.routes.insert(
+            "route".to_owned(),
+            TransportRoute {
+                id: "route".to_owned(),
+                mode: TransportMode::Rail,
+                source_stockpile_id: "source".to_owned(),
+                destination_stockpile_id: "destination".to_owned(),
+                resource: ResourceKind::Food,
+                amount: 4.0,
+                assigned_cat_id: cat_id,
+                phase,
+                path: (1..=4).map(|x| TilePos { x, y: 1 }).collect(),
+                path_index: 0,
+                segment_progress: 0.0,
+                cargo_loaded: cargo,
+                vehicle_id: "wagon".to_owned(),
+                position: TilePos { x: 1, y: 1 },
+                repeat: false,
+            },
+        );
+        colony
+    }
+
+    fn gate(seconds: i64, through: i64) -> TickGate {
+        TickGate {
+            elapsed_sec: seconds,
+            processed_through: through,
+            minute_rolled: false,
+            previous_water: 0,
+        }
+    }
+
+    #[test]
+    fn staffed_rail_route_loads_travels_unloads_and_returns_without_minting() {
+        let mut colony = rail_colony(RoutePhase::Loading, 0.0);
+        for second in 1..=100 {
+            advance_transport_routes(&mut colony, gate(1, second * 1_000));
+        }
+        assert_eq!(colony.stockpiles[0].contents.food, 6.0);
+        assert_eq!(colony.stockpiles[1].contents.food, 4.0);
+        assert_eq!(colony.resources.food, 10.0);
+        assert_eq!(colony.transport.routes["route"].cargo_loaded, 0.0);
+        assert_eq!(colony.transport.routes["route"].phase, RoutePhase::Complete);
+        assert_eq!(colony.transport.vehicles["wagon"].assigned_route_id, None);
+    }
+
+    #[test]
+    fn cancel_and_crew_death_recover_loaded_cargo_exactly() {
+        for interruption in ["cancel", "death"] {
+            let mut colony = rail_colony(RoutePhase::Outbound, 4.0);
+            if interruption == "death" {
+                colony.cats[0].death_time = Some(1);
+            } else {
+                colony.transport.routes.get_mut("route").unwrap().phase = RoutePhase::Cancelled;
+            }
+            advance_transport_routes(&mut colony, gate(1, 1_000));
+            assert_eq!(colony.stockpiles[0].contents.food, 10.0, "{interruption}");
+            assert_eq!(colony.resources.food, 10.0, "{interruption}");
+            assert_eq!(
+                colony.transport.routes["route"].cargo_loaded, 0.0,
+                "{interruption}"
+            );
+            assert_eq!(
+                colony.transport.vehicles["wagon"].assigned_route_id, None,
+                "{interruption}"
+            );
+        }
+    }
+
+    #[test]
+    fn unloading_waits_for_real_destination_headroom_without_losing_cargo() {
+        let mut colony = rail_colony(RoutePhase::Unloading, 4.0);
+        colony.stockpiles[1].contents.food = 40.0;
+        colony.resources.food = 46.0;
+        colony.transport.routes.get_mut("route").unwrap().position = TilePos { x: 4, y: 1 };
+
+        advance_transport_routes(&mut colony, gate(1, 1_000));
+        assert_eq!(
+            colony.transport.routes["route"].phase,
+            RoutePhase::WaitingForStorage
+        );
+        assert_eq!(colony.transport.routes["route"].cargo_loaded, 4.0);
+        assert_eq!(colony.stockpiles[1].contents.food, 40.0);
+        assert_eq!(colony.resources.food, 46.0);
+
+        colony.stockpiles[1].contents.food -= 4.0;
+        colony.resources.food -= 4.0;
+        advance_transport_routes(&mut colony, gate(1, 2_000));
+        assert_eq!(
+            colony.transport.routes["route"].phase,
+            RoutePhase::Returning
+        );
+        assert_eq!(colony.transport.routes["route"].cargo_loaded, 0.0);
+        assert_eq!(colony.stockpiles[1].contents.food, 40.0);
+        assert_eq!(colony.resources.food, 46.0);
+    }
+
+    #[test]
+    fn passive_route_twins_are_deterministic() {
+        let mut left = rail_colony(RoutePhase::Loading, 0.0);
+        let mut right = left.clone();
+        for second in 1..=100 {
+            let tick = gate(1, second * 1_000);
+            advance_transport_routes(&mut left, tick);
+            advance_transport_routes(&mut right, tick);
+        }
+        assert_eq!(left.transport, right.transport);
+        assert_eq!(left.resources, right.resources);
+        assert_eq!(left.stockpiles, right.stockpiles);
+    }
+
+    #[test]
+    fn staffed_vessel_uses_only_the_constructed_water_route() {
+        let mut colony = rail_colony(RoutePhase::Loading, 0.0);
+        colony.transport.track_tiles.clear();
+        for x in 1..=4 {
+            set_water_tile(&mut colony, TilePos { x, y: 1 });
+        }
+        colony.transport.vehicles.get_mut("wagon").unwrap().mode = TransportMode::Shipping;
+        colony.transport.routes.get_mut("route").unwrap().mode = TransportMode::Shipping;
+
+        for second in 1..=120 {
+            advance_transport_routes(&mut colony, gate(1, second * 1_000));
+        }
+        assert_eq!(colony.stockpiles[0].contents.food, 6.0);
+        assert_eq!(colony.stockpiles[1].contents.food, 4.0);
+        assert_eq!(colony.resources.food, 10.0);
+        assert_eq!(colony.transport.routes["route"].phase, RoutePhase::Complete);
+    }
+
+    #[test]
+    fn paid_track_project_becomes_physical_only_after_on_site_work() {
+        let mut colony = found_colony(9, "track-build", 0, 13);
+        colony.jobs.clear();
+        let cat_id = colony.cats[0].id.clone();
+        let tiles = vec![TilePos { x: 20, y: 20 }, TilePos { x: 21, y: 20 }];
+        colony.transport.projects.insert(
+            "track-project".to_owned(),
+            InfrastructureProject {
+                id: "track-project".to_owned(),
+                kind: InfrastructureKind::Track,
+                tiles: tiles.clone(),
+                assigned_cat_id: cat_id,
+                phase: ProjectPhase::Building,
+                reservations: Vec::new(),
+                delivered: [(ResourceKind::Metal, 2.0)].into_iter().collect(),
+                work_done_seconds: 0.0,
+                required_work_seconds: 60.0,
+            },
+        );
+
+        colony.cats[0].position = position_from_world(tile_pos_to_world(tiles[0]));
+        advance_transport_projects(&mut colony, gate(30, 30_000));
+        assert!(colony.transport.track_tiles.is_empty());
+        colony.cats[0].position = position_from_world(tile_pos_to_world(tiles[1]));
+        advance_transport_projects(&mut colony, gate(30, 60_000));
+
+        assert_eq!(colony.transport.track_tiles, tiles.into_iter().collect());
+        assert_eq!(
+            colony.transport.projects["track-project"].phase,
+            ProjectPhase::Complete
+        );
+        assert!(
+            colony.transport.projects["track-project"]
+                .delivered
+                .is_empty()
+        );
     }
 }

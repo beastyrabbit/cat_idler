@@ -207,6 +207,10 @@ pub struct ColonySnapshot {
     /// over these. Additive; empty/absent when none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub road_tiles: Vec<TilePoint>,
+    /// Constructed transport truth. Empty means the corresponding research is
+    /// still only a blueprint and must not affect ordinary movement.
+    #[serde(default)]
+    pub transport: TransportSnapshot,
     /// Persisted felled tree anchors. Generated mature canopies are hidden and a
     /// stump prop is rendered at these coordinates.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1593,6 +1597,55 @@ pub struct TilePoint {
     pub y: i32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TransportMode {
+    Rail,
+    Shipping,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TransportSnapshot {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub track_tiles: Vec<TilePoint>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub docks: Vec<TransportDockSnapshot>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub vehicles: Vec<TransportVehicleSnapshot>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub routes: Vec<TransportRouteSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransportDockSnapshot {
+    pub id: String,
+    pub land_tile: TilePoint,
+    pub water_tile: TilePoint,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransportVehicleSnapshot {
+    pub id: String,
+    pub mode: TransportMode,
+    pub position: TilePoint,
+    pub crew_cat_id: Option<String>,
+    pub cargo: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransportRouteSnapshot {
+    pub id: String,
+    pub mode: TransportMode,
+    pub resource: ResourceKind,
+    pub amount: f64,
+    pub phase: String,
+    pub repeat: bool,
+}
+
 /// A resource the player or colony leader can ask a scout to locate.
 ///
 /// Kept deliberately separate from [`ResourceKind`]: scouting targets terrain
@@ -1781,6 +1834,54 @@ pub enum ClientAction {
         sig: String,
         a: TilePoint,
         b: TilePoint,
+    },
+    /// Designate a cardinal, revealed land alignment. A living builder must
+    /// carry exact Metal to every tile before it becomes track.
+    DesignateRail {
+        session_id: String,
+        nickname: String,
+        sig: String,
+        a: TilePoint,
+        b: TilePoint,
+        cat_id: String,
+    },
+    /// Designate one land/water edge as a staffed physical dock project.
+    BuildDock {
+        session_id: String,
+        nickname: String,
+        sig: String,
+        land: TilePoint,
+        water: TilePoint,
+        cat_id: String,
+    },
+    /// Construct rolling stock or a vessel at existing infrastructure.
+    BuildTransportVehicle {
+        session_id: String,
+        nickname: String,
+        sig: String,
+        mode: TransportMode,
+        home: TilePoint,
+        cat_id: String,
+    },
+    /// Author one finite stockpile-to-stockpile route over an explicit physical path.
+    CreateTransportRoute {
+        session_id: String,
+        nickname: String,
+        sig: String,
+        mode: TransportMode,
+        source_stockpile_id: String,
+        destination_stockpile_id: String,
+        resource: ResourceKind,
+        amount: f64,
+        path: Vec<TilePoint>,
+        cat_id: String,
+        repeat: bool,
+    },
+    CancelTransportRoute {
+        session_id: String,
+        nickname: String,
+        sig: String,
+        route_id: String,
     },
     SetTestAcceleration {
         preset: AccelerationPreset,
@@ -2956,6 +3057,7 @@ mod tests {
                 revealed_tiles: vec![TilePoint { x: 6, y: 6 }],
                 provisional_tiles: vec![],
                 road_tiles: vec![],
+                transport: TransportSnapshot::default(),
                 stump_tiles: vec![],
                 sapling_tiles: vec![],
                 dirt_road_tiles: vec![],
@@ -3941,6 +4043,56 @@ mod tests {
         assert_eq!(
             serde_json::to_value(CarryingKind::Fish).unwrap(),
             json!("fish")
+        );
+    }
+
+    #[test]
+    fn physical_transport_actions_and_snapshot_round_trip_typed_state() {
+        let action = ClientAction::CreateTransportRoute {
+            session_id: "session".to_owned(),
+            nickname: "Conductor".to_owned(),
+            sig: "signed".to_owned(),
+            mode: TransportMode::Rail,
+            source_stockpile_id: "source".to_owned(),
+            destination_stockpile_id: "destination".to_owned(),
+            resource: ResourceKind::Food,
+            amount: 4.0,
+            path: vec![TilePoint { x: 1, y: 2 }, TilePoint { x: 2, y: 2 }],
+            cat_id: "cat-1".to_owned(),
+            repeat: true,
+        };
+        let wire = serde_json::to_value(&action).unwrap();
+        assert_eq!(wire["action"], json!("createTransportRoute"));
+        assert_eq!(wire["sourceStockpileId"], json!("source"));
+        assert_eq!(wire["mode"], json!("rail"));
+        assert_eq!(
+            serde_json::from_value::<ClientAction>(wire).unwrap(),
+            action
+        );
+
+        let snapshot = TransportSnapshot {
+            track_tiles: vec![TilePoint { x: 1, y: 2 }],
+            docks: Vec::new(),
+            vehicles: vec![TransportVehicleSnapshot {
+                id: "wagon".to_owned(),
+                mode: TransportMode::Rail,
+                position: TilePoint { x: 1, y: 2 },
+                crew_cat_id: Some("cat-1".to_owned()),
+                cargo: 4.0,
+            }],
+            routes: vec![TransportRouteSnapshot {
+                id: "route".to_owned(),
+                mode: TransportMode::Rail,
+                resource: ResourceKind::Food,
+                amount: 4.0,
+                phase: "outbound".to_owned(),
+                repeat: true,
+            }],
+        };
+        let wire = serde_json::to_value(&snapshot).unwrap();
+        assert_eq!(
+            serde_json::from_value::<TransportSnapshot>(wire).unwrap(),
+            snapshot
         );
     }
 }

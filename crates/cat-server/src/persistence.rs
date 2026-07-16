@@ -135,7 +135,8 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             knownVillageIds TEXT,
             villageTradeOffers TEXT,
             villageTradeCaravans TEXT,
-            fishHabitats TEXT
+            fishHabitats TEXT,
+            transportState TEXT
         );
 
         CREATE TABLE IF NOT EXISTS cats (
@@ -317,6 +318,7 @@ fn migrate_add_missing_columns(conn: &Connection) -> rusqlite::Result<()> {
         ("colonies", "farms", "TEXT"),
         ("colonies", "gatherSpots", "TEXT"),
         ("colonies", "fishHabitats", "TEXT"),
+        ("colonies", "transportState", "TEXT"),
         ("colonies", "stockLedger", "TEXT"),
         ("colonies", "revealedTiles", "TEXT"),
         ("colonies", "agriculturalTiles", "TEXT"),
@@ -703,7 +705,7 @@ pub fn load_world(conn: &Connection) -> rusqlite::Result<Option<WorldState>> {
                 stockLedger, coin, trader, lastTraderDepartedAt, traderVisitCount, items, woodCraftProgress, stoneCraftProgress,
                 clothierCraftProgress, tanneryCraftProgress, metalForgeProgress, anchorX, anchorY,
                 migrationState, migrationDepartures, knownVillageIds, villageTradeOffers, villageTradeCaravans, fishHabitats,
-                finiteEquipmentRulesVersion
+                finiteEquipmentRulesVersion, transportState
          FROM colonies
          ORDER BY rowid",
     )?;
@@ -769,12 +771,12 @@ fn save_colony(conn: &Connection, world_seed: u32, colony: &ColonyRuntime) -> ru
             stoneCraftProgress, clothierCraftProgress, tanneryCraftProgress, metalForgeProgress,
             anchorX, anchorY, migrationState, migrationDepartures, isGlobal, ownerPlayerId,
             knownVillageIds, villageTradeOffers, villageTradeCaravans, foundingScale, fishHabitats,
-            finiteEquipmentRulesVersion
+            finiteEquipmentRulesVersion, transportState
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
             ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31,
             ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45, ?46, ?47,
-            ?48, ?49, ?50, ?51, ?52, ?53, ?54, ?55, ?56, ?57, ?58, ?59, ?60, ?61
+            ?48, ?49, ?50, ?51, ?52, ?53, ?54, ?55, ?56, ?57, ?58, ?59, ?60, ?61, ?62
         )",
         params![
             colony.id,
@@ -850,6 +852,7 @@ fn save_colony(conn: &Connection, world_seed: u32, colony: &ColonyRuntime) -> ru
             )
             .map_err(to_sql_json)?,
             i64::from(colony.finite_equipment_rules_version),
+            serde_json::to_string(&colony.transport).map_err(to_sql_json)?,
         ],
     )?;
 
@@ -905,6 +908,7 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
     let village_trade_offers_json: Option<String> = row.get("villageTradeOffers")?;
     let village_trade_caravans_json: Option<String> = row.get("villageTradeCaravans")?;
     let fish_habitats_json: Option<String> = row.get("fishHabitats")?;
+    let transport_state_json: Option<String> = row.get("transportState")?;
     let anchor = TilePos {
         x: row.get::<_, Option<i32>>("anchorX")?.unwrap_or(6),
         y: row.get::<_, Option<i32>>("anchorY")?.unwrap_or(6),
@@ -1011,6 +1015,10 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
                     })
                     .map_err(from_sql_json)
             })
+            .transpose()?
+            .unwrap_or_default(),
+        transport: transport_state_json
+            .map(|raw| serde_json::from_str(&raw).map_err(from_sql_json))
             .transpose()?
             .unwrap_or_default(),
         stock_ledger: stock_ledger_json
@@ -6939,6 +6947,43 @@ mod tests {
             cat_a.preferred_labors = BTreeSet::from([Labor::Hunt, Labor::Research]);
         }
         colony.cats[1].death_time = Some(5_700_000);
+
+        // P17 physical transport is a restart-safe state machine, including an
+        // in-flight loaded vehicle rather than merely reconstructed blueprints.
+        let transport_path = vec![TilePos { x: 40, y: 40 }, TilePos { x: 41, y: 40 }];
+        colony
+            .transport
+            .track_tiles
+            .extend(transport_path.iter().copied());
+        colony.transport.vehicles.insert(
+            "restart-wagon".to_owned(),
+            cat_sim::transport::Vehicle {
+                id: "restart-wagon".to_owned(),
+                mode: cat_sim::transport::TransportMode::Rail,
+                home: transport_path[0],
+                assigned_route_id: Some("restart-route".to_owned()),
+            },
+        );
+        colony.transport.routes.insert(
+            "restart-route".to_owned(),
+            cat_sim::transport::TransportRoute {
+                id: "restart-route".to_owned(),
+                mode: cat_sim::transport::TransportMode::Rail,
+                source_stockpile_id: "stockpile-a".to_owned(),
+                destination_stockpile_id: "gather-1".to_owned(),
+                resource: cat_sim::stockpiles::ResourceKind::Food,
+                amount: 2.0,
+                assigned_cat_id: colony.cats[2].id.clone(),
+                phase: cat_sim::transport::RoutePhase::Outbound,
+                path: transport_path,
+                path_index: 1,
+                segment_progress: 0.25,
+                cargo_loaded: 2.0,
+                vehicle_id: "restart-wagon".to_owned(),
+                position: TilePos { x: 41, y: 40 },
+                repeat: true,
+            },
+        );
 
         let expected = world.clone();
         save_world(&conn, &world).expect("save world");
