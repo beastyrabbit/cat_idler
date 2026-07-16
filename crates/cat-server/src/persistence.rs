@@ -5302,6 +5302,7 @@ mod tests {
                 "textiles",
                 "weaponsmithing",
                 "armorsmithing",
+                "weaponcraft_preparation",
             ]
             .map(str::to_owned),
         );
@@ -5314,6 +5315,17 @@ mod tests {
             production_queue: vec![ProductionQueueEntry {
                 recipe_id: cat_sim::world_tick::SAWMILL_RECIPE_ID.to_owned(),
                 repeat: false,
+            }],
+            ..BuildingRuntime::default()
+        });
+        colony.buildings.push(BuildingRuntime {
+            id: "persisted-smithy".to_owned(),
+            building_type: BuildingType::Smithy,
+            is_complete: true,
+            construction_progress: 100,
+            production_queue: vec![ProductionQueueEntry {
+                recipe_id: cat_sim::station_recipes::WEAPONCRAFT_PREPARATION_RECIPE_ID.to_owned(),
+                repeat: true,
             }],
             ..BuildingRuntime::default()
         });
@@ -5331,6 +5343,7 @@ mod tests {
             "textiles",
             "weaponsmithing",
             "armorsmithing",
+            "weaponcraft_preparation",
         ] {
             assert!(
                 colony
@@ -5363,6 +5376,25 @@ mod tests {
                 recipe_id: cat_sim::world_tick::SAWMILL_RECIPE_ID.to_owned(),
                 repeat: false,
             }]
+        );
+        assert_eq!(
+            colony
+                .buildings
+                .iter()
+                .find(|building| building.id == "persisted-smithy")
+                .unwrap()
+                .production_queue,
+            [ProductionQueueEntry {
+                recipe_id: cat_sim::station_recipes::WEAPONCRAFT_PREPARATION_RECIPE_ID.to_owned(),
+                repeat: true,
+            }]
+        );
+        assert!(
+            cat_sim::world_tick::catalog_recipe_entitlement(
+                colony,
+                cat_sim::station_recipes::WEAPONCRAFT_PREPARATION_RECIPE_ID,
+            )
+            .available
         );
     }
 

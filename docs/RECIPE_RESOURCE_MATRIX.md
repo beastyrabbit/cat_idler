@@ -49,9 +49,18 @@ rules, and P19's canonical production table. Runtime identity comes only from
 | hunt → Hide | five `animal_husbandry_*` recipe IDs | Tannery / Textile | exact leather Clothing, Toy, Armor, Tool, and Furniture | matching Animal Husbandry study |
 | stored Supplies | five `field_craft_*` recipe IDs | Workshop / Process | exact wooden Tool, Clothing, Armor, Furniture, and Toy field wares | matching Field Craft study |
 | stored Cloth | five `expedition_supplies_*` recipe IDs | Workshop / Process | exact quality-2/3 fibre Bowl, Clothing, Tool, Armor, and Furniture travel wares | matching Expedition Supplies study |
+| forage → Fibre | `textile_work_{preparation,staples,quality,specialty,masterwork}` | Clothier / Textile | Cloth, tiered 3–8 units | matching Textile Work stage |
+| hunt → Hide | `leatherworking_{preparation,staples,quality,specialty,masterwork}` | Tannery / Textile | Leather, tiered 3–8 units | matching Leatherworking stage |
+| observed tree → Logs | `carpentry_quality`, `carpentry_masterwork` | Sawmill / Process | Lumber | matching Carpentry stage |
+| observed tree → Logs | `carpentry_specialty` | Wood Cutter / Process | Planks | `carpentry_specialty` |
+| quarry rock → Stone | `stonecraft_masterwork` | Stone Prep / Process | Blocks | `stonecraft_masterwork` |
+| mountain quarry → Ore | `metallurgy_{staples,quality,specialty,masterwork}` | Smelter / Metalwork | Metal | matching Metallurgy stage |
+| stored Metal | `toolmaking_{specialty,masterwork}` | Smithy / Metalwork | exact quality-3/4 metal Tool | matching Toolmaking stage |
+| stored Metal | `weaponcraft_{preparation,staples,quality,specialty,masterwork}` | Smithy / Metalwork | exact quality-0–4 metal Weapon | matching Weaponcraft stage |
+| stored Metal | `armorcraft_{preparation,staples,quality,specialty,masterwork}` | Smithy / Metalwork | exact quality-0–4 metal Armor | matching Armorcraft stage |
 
-All 74 operations use pile → carried input → station-local input → work → station-local output →
-carried delivery. The 38 exact-item routes create a stable finite item identity in local output and
+All 104 operations use pile → carried input → station-local input → work → station-local output →
+carried delivery. Every exact-item route creates one stable finite identity in local output and
 move that same identity, material, quality, maximum/current durability, and condition to storage;
 there is no shadow scalar good. The two Mill operations are deliberately separate: Flour must be
 delivered to storage before it can return as the selected baking input. Rules-v7 SQLite migration
@@ -71,20 +80,17 @@ only that family's staffed physical cycles by 10%. `hunting_reserves` adds finit
 headroom; `foraging_reserves` adds finite Fibre/Herbs/Catnip headroom. Full and compact hauling
 capacity resolution share those exact additions.
 
-## Catalog promises that remain future content
+The 27 live industrial resource stages also bind to finite state rather than a generic registry:
+each family's `*_sources` raises scalar batch yield by 10% or reduces exact-item input by 10%,
+`*_preservation` adds 50 units of capacity only to that family's real delivered goods, and
+`*_bulk` shortens only that family's physical station cycle by 10%. Carpentry preservation covers
+both Lumber and Planks; the other exact capacity targets are Cloth, Leather, Blocks, Metal, Tools,
+Weapons, Armor, and Refined.
 
-There are exactly **30 generated recipe payload IDs** without a runtime descriptor and **27
-generated resource payload IDs** without an authoritative source/consumer. They
-remain visible as `FUTURE` in the research ledger, cannot spend points, and cannot be selected by
-the Leader.
+## Catalog future boundary
 
-| Generated breadth | Missing authoritative layer |
-| --- | --- |
-| Remaining gem, clay, sand, and bone families | The selected starter variants above are live; the other generated combinations have no selected runtime descriptor |
-| Furniture and remaining clothing, weapon/armor, decorative, and material-family variants | No P19-selected station recipe descriptor and complete physical route |
-| Remaining generic `*_sources` resource IDs | They are catalog registry labels without an exact physical source or consumer |
-| Remaining material/category combinations | Item definitions alone do not provide a selected recipe, station-local input, exact output identity, or delivery loop |
-
-This boundary prevents research points from buying no-ops. A future entry moves into the live table
-only with a design-backed source/station choice and end-to-end simulation, persistence, protocol,
-client, unattended, and signed-player evidence.
+There are **zero generated recipe payload IDs** without a runtime descriptor and **zero generated
+resource payload IDs** without an authoritative source/consumer. All recipe/resource studies are
+implemented; the catalog's thirteen unrelated unbacked Crews studies remain explicit future work.
+New design-selected combinations must retain the same source/station choice and end-to-end
+simulation, persistence, protocol, client, unattended, and signed-player evidence.

@@ -1706,21 +1706,22 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_generated_promises_are_future_and_never_dispatch() {
+    fn supported_generated_recipe_resource_study_dispatches_research() {
         let model = ResearchUiModel::from_catalog();
-        let research = snapshot(&["research_hut", "basic_tools"], 999.0);
+        let mut research = snapshot(&["research_hut", "basic_tools", "textiles"], 0.0);
+        research.research_points = 999.0;
         assert_eq!(
             model.purchase_state("textile_work_sources", &research),
-            PurchaseState::Future
+            PurchaseState::ResearchReady
         );
-        assert!(!model.dispatchable_research_node("textile_work_sources", &research));
-        assert!(
-            research_purchase_action(&model, &research, "textile_work_sources", &session())
-                .is_none()
-        );
-        assert!(research_purchase_disabled(
+        assert!(model.dispatchable_research_node("textile_work_sources", &research));
+        assert!(matches!(
+            research_purchase_action(&model, &research, "textile_work_sources", &session()),
+            Some(ClientAction::ResearchNode { node_id, .. }) if node_id == "textile_work_sources"
+        ));
+        assert!(!research_purchase_disabled(
             true,
-            Some(PurchaseState::Future)
+            Some(PurchaseState::ResearchReady)
         ));
     }
 

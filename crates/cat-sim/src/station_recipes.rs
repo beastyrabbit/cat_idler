@@ -124,6 +124,71 @@ pub const SUBSISTENCE_FRONTIER_RECIPE_IDS: &[&str] = &[
     EXPEDITION_SUPPLIES_SPECIALTY_RECIPE_ID,
     EXPEDITION_SUPPLIES_MASTERWORK_RECIPE_ID,
 ];
+pub const TEXTILE_WORK_PREPARATION_RECIPE_ID: &str = "textile_work_preparation";
+pub const TEXTILE_WORK_STAPLES_RECIPE_ID: &str = "textile_work_staples";
+pub const TEXTILE_WORK_QUALITY_RECIPE_ID: &str = "textile_work_quality";
+pub const TEXTILE_WORK_SPECIALTY_RECIPE_ID: &str = "textile_work_specialty";
+pub const TEXTILE_WORK_MASTERWORK_RECIPE_ID: &str = "textile_work_masterwork";
+pub const LEATHERWORKING_PREPARATION_RECIPE_ID: &str = "leatherworking_preparation";
+pub const LEATHERWORKING_STAPLES_RECIPE_ID: &str = "leatherworking_staples";
+pub const LEATHERWORKING_QUALITY_RECIPE_ID: &str = "leatherworking_quality";
+pub const LEATHERWORKING_SPECIALTY_RECIPE_ID: &str = "leatherworking_specialty";
+pub const LEATHERWORKING_MASTERWORK_RECIPE_ID: &str = "leatherworking_masterwork";
+pub const CARPENTRY_QUALITY_RECIPE_ID: &str = "carpentry_quality";
+pub const CARPENTRY_SPECIALTY_RECIPE_ID: &str = "carpentry_specialty";
+pub const CARPENTRY_MASTERWORK_RECIPE_ID: &str = "carpentry_masterwork";
+pub const STONECRAFT_MASTERWORK_RECIPE_ID: &str = "stonecraft_masterwork";
+pub const METALLURGY_STAPLES_RECIPE_ID: &str = "metallurgy_staples";
+pub const METALLURGY_QUALITY_RECIPE_ID: &str = "metallurgy_quality";
+pub const METALLURGY_SPECIALTY_RECIPE_ID: &str = "metallurgy_specialty";
+pub const METALLURGY_MASTERWORK_RECIPE_ID: &str = "metallurgy_masterwork";
+pub const TOOLMAKING_SPECIALTY_RECIPE_ID: &str = "toolmaking_specialty";
+pub const TOOLMAKING_MASTERWORK_RECIPE_ID: &str = "toolmaking_masterwork";
+pub const WEAPONCRAFT_PREPARATION_RECIPE_ID: &str = "weaponcraft_preparation";
+pub const WEAPONCRAFT_STAPLES_RECIPE_ID: &str = "weaponcraft_staples";
+pub const WEAPONCRAFT_QUALITY_RECIPE_ID: &str = "weaponcraft_quality";
+pub const WEAPONCRAFT_SPECIALTY_RECIPE_ID: &str = "weaponcraft_specialty";
+pub const WEAPONCRAFT_MASTERWORK_RECIPE_ID: &str = "weaponcraft_masterwork";
+pub const ARMORCRAFT_PREPARATION_RECIPE_ID: &str = "armorcraft_preparation";
+pub const ARMORCRAFT_STAPLES_RECIPE_ID: &str = "armorcraft_staples";
+pub const ARMORCRAFT_QUALITY_RECIPE_ID: &str = "armorcraft_quality";
+pub const ARMORCRAFT_SPECIALTY_RECIPE_ID: &str = "armorcraft_specialty";
+pub const ARMORCRAFT_MASTERWORK_RECIPE_ID: &str = "armorcraft_masterwork";
+
+/// Every newly activated recipe-bearing study in the industrial material
+/// families. Trade Goods retains its established exact material-variant routes.
+pub const INDUSTRIAL_MATERIAL_RECIPE_IDS: &[&str] = &[
+    TEXTILE_WORK_PREPARATION_RECIPE_ID,
+    TEXTILE_WORK_STAPLES_RECIPE_ID,
+    TEXTILE_WORK_QUALITY_RECIPE_ID,
+    TEXTILE_WORK_SPECIALTY_RECIPE_ID,
+    TEXTILE_WORK_MASTERWORK_RECIPE_ID,
+    LEATHERWORKING_PREPARATION_RECIPE_ID,
+    LEATHERWORKING_STAPLES_RECIPE_ID,
+    LEATHERWORKING_QUALITY_RECIPE_ID,
+    LEATHERWORKING_SPECIALTY_RECIPE_ID,
+    LEATHERWORKING_MASTERWORK_RECIPE_ID,
+    CARPENTRY_QUALITY_RECIPE_ID,
+    CARPENTRY_SPECIALTY_RECIPE_ID,
+    CARPENTRY_MASTERWORK_RECIPE_ID,
+    STONECRAFT_MASTERWORK_RECIPE_ID,
+    METALLURGY_STAPLES_RECIPE_ID,
+    METALLURGY_QUALITY_RECIPE_ID,
+    METALLURGY_SPECIALTY_RECIPE_ID,
+    METALLURGY_MASTERWORK_RECIPE_ID,
+    TOOLMAKING_SPECIALTY_RECIPE_ID,
+    TOOLMAKING_MASTERWORK_RECIPE_ID,
+    WEAPONCRAFT_PREPARATION_RECIPE_ID,
+    WEAPONCRAFT_STAPLES_RECIPE_ID,
+    WEAPONCRAFT_QUALITY_RECIPE_ID,
+    WEAPONCRAFT_SPECIALTY_RECIPE_ID,
+    WEAPONCRAFT_MASTERWORK_RECIPE_ID,
+    ARMORCRAFT_PREPARATION_RECIPE_ID,
+    ARMORCRAFT_STAPLES_RECIPE_ID,
+    ARMORCRAFT_QUALITY_RECIPE_ID,
+    ARMORCRAFT_SPECIALTY_RECIPE_ID,
+    ARMORCRAFT_MASTERWORK_RECIPE_ID,
+];
 
 /// Exact finite output identity for a material-variant station recipe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -180,6 +245,23 @@ macro_rules! item_recipe {
             output_item: Some(StationItemOutput {
                 kind: ItemKind::$kind,
                 material: Material::$material,
+                quality: $quality,
+            }),
+            founding_available: false,
+        }
+    };
+}
+
+macro_rules! equipment_recipe {
+    ($id:ident, $kind:ident, $quality:literal) => {
+        StationRecipeDescriptor {
+            id: $id,
+            building_type: BuildingType::Smithy,
+            input_resources: &[ResourceKind::Metal],
+            output_resources: &[],
+            output_item: Some(StationItemOutput {
+                kind: ItemKind::$kind,
+                material: Material::Metal,
                 quality: $quality,
             }),
             founding_available: false,
@@ -270,14 +352,18 @@ const MILL_RECIPES: &[StationRecipeDescriptor] = &[
     scalar_recipe!(BREW_SPICED_ALE_RECIPE_ID, Mill, Catnip, Brew),
     scalar_recipe!(BREW_MASTERWORK_RECIPE_ID, Mill, Herbs, Brew),
 ];
-const SAWMILL_RECIPES: &[StationRecipeDescriptor] = &[StationRecipeDescriptor {
-    id: SAWMILL_RECIPE_ID,
-    building_type: BuildingType::Sawmill,
-    input_resources: SAWMILL_INPUTS,
-    output_resources: SAWMILL_OUTPUTS,
-    output_item: None,
-    founding_available: false,
-}];
+const SAWMILL_RECIPES: &[StationRecipeDescriptor] = &[
+    StationRecipeDescriptor {
+        id: SAWMILL_RECIPE_ID,
+        building_type: BuildingType::Sawmill,
+        input_resources: SAWMILL_INPUTS,
+        output_resources: SAWMILL_OUTPUTS,
+        output_item: None,
+        founding_available: false,
+    },
+    scalar_recipe!(CARPENTRY_QUALITY_RECIPE_ID, Sawmill, Logs, Lumber),
+    scalar_recipe!(CARPENTRY_MASTERWORK_RECIPE_ID, Sawmill, Logs, Lumber),
+];
 const WORKSHOP_RECIPES: &[StationRecipeDescriptor] = &[
     StationRecipeDescriptor {
         id: WORKSHOP_RECIPE_ID,
@@ -426,22 +512,31 @@ const WORKSHOP_RECIPES: &[StationRecipeDescriptor] = &[
         founding_available: false,
     },
 ];
-const SMELTER_RECIPES: &[StationRecipeDescriptor] = &[StationRecipeDescriptor {
-    id: SMELTER_RECIPE_ID,
-    building_type: BuildingType::Smelter,
-    input_resources: SMELTER_INPUTS,
-    output_resources: SMELTER_OUTPUTS,
-    output_item: None,
-    founding_available: false,
-}];
-const WOOD_CUTTER_RECIPES: &[StationRecipeDescriptor] = &[StationRecipeDescriptor {
-    id: LOGS_TO_PLANKS_RECIPE_ID,
-    building_type: BuildingType::WoodCutter,
-    input_resources: WOOD_CUTTER_INPUTS,
-    output_resources: WOOD_CUTTER_OUTPUTS,
-    output_item: None,
-    founding_available: true,
-}];
+const SMELTER_RECIPES: &[StationRecipeDescriptor] = &[
+    StationRecipeDescriptor {
+        id: SMELTER_RECIPE_ID,
+        building_type: BuildingType::Smelter,
+        input_resources: SMELTER_INPUTS,
+        output_resources: SMELTER_OUTPUTS,
+        output_item: None,
+        founding_available: false,
+    },
+    scalar_recipe!(METALLURGY_STAPLES_RECIPE_ID, Smelter, Ore, Metal),
+    scalar_recipe!(METALLURGY_QUALITY_RECIPE_ID, Smelter, Ore, Metal),
+    scalar_recipe!(METALLURGY_SPECIALTY_RECIPE_ID, Smelter, Ore, Metal),
+    scalar_recipe!(METALLURGY_MASTERWORK_RECIPE_ID, Smelter, Ore, Metal),
+];
+const WOOD_CUTTER_RECIPES: &[StationRecipeDescriptor] = &[
+    StationRecipeDescriptor {
+        id: LOGS_TO_PLANKS_RECIPE_ID,
+        building_type: BuildingType::WoodCutter,
+        input_resources: WOOD_CUTTER_INPUTS,
+        output_resources: WOOD_CUTTER_OUTPUTS,
+        output_item: None,
+        founding_available: true,
+    },
+    scalar_recipe!(CARPENTRY_SPECIALTY_RECIPE_ID, WoodCutter, Logs, Planks),
+];
 const STONE_PREP_RECIPES: &[StationRecipeDescriptor] = &[
     StationRecipeDescriptor {
         id: STONE_TO_BLOCKS_RECIPE_ID,
@@ -511,6 +606,7 @@ const STONE_PREP_RECIPES: &[StationRecipeDescriptor] = &[
         }),
         founding_available: false,
     },
+    scalar_recipe!(STONECRAFT_MASTERWORK_RECIPE_ID, StonePrep, Stone, Blocks),
 ];
 const WOODWORKING_RECIPES: &[StationRecipeDescriptor] = &[
     StationRecipeDescriptor {
@@ -633,6 +729,11 @@ const CLOTHIER_RECIPES: &[StationRecipeDescriptor] = &[
         Fibre,
         2
     ),
+    scalar_recipe!(TEXTILE_WORK_PREPARATION_RECIPE_ID, Clothier, Fibre, Cloth),
+    scalar_recipe!(TEXTILE_WORK_STAPLES_RECIPE_ID, Clothier, Fibre, Cloth),
+    scalar_recipe!(TEXTILE_WORK_QUALITY_RECIPE_ID, Clothier, Fibre, Cloth),
+    scalar_recipe!(TEXTILE_WORK_SPECIALTY_RECIPE_ID, Clothier, Fibre, Cloth),
+    scalar_recipe!(TEXTILE_WORK_MASTERWORK_RECIPE_ID, Clothier, Fibre, Cloth),
 ];
 const TANNERY_RECIPES: &[StationRecipeDescriptor] = &[
     StationRecipeDescriptor {
@@ -683,6 +784,11 @@ const TANNERY_RECIPES: &[StationRecipeDescriptor] = &[
         Leather,
         2
     ),
+    scalar_recipe!(LEATHERWORKING_PREPARATION_RECIPE_ID, Tannery, Hide, Leather),
+    scalar_recipe!(LEATHERWORKING_STAPLES_RECIPE_ID, Tannery, Hide, Leather),
+    scalar_recipe!(LEATHERWORKING_QUALITY_RECIPE_ID, Tannery, Hide, Leather),
+    scalar_recipe!(LEATHERWORKING_SPECIALTY_RECIPE_ID, Tannery, Hide, Leather),
+    scalar_recipe!(LEATHERWORKING_MASTERWORK_RECIPE_ID, Tannery, Hide, Leather),
 ];
 const SMITHY_RECIPES: &[StationRecipeDescriptor] = &[
     StationRecipeDescriptor {
@@ -709,6 +815,18 @@ const SMITHY_RECIPES: &[StationRecipeDescriptor] = &[
         output_item: None,
         founding_available: false,
     },
+    equipment_recipe!(TOOLMAKING_SPECIALTY_RECIPE_ID, Tool, 3),
+    equipment_recipe!(TOOLMAKING_MASTERWORK_RECIPE_ID, Tool, 4),
+    equipment_recipe!(WEAPONCRAFT_PREPARATION_RECIPE_ID, Weapon, 0),
+    equipment_recipe!(WEAPONCRAFT_STAPLES_RECIPE_ID, Weapon, 1),
+    equipment_recipe!(WEAPONCRAFT_QUALITY_RECIPE_ID, Weapon, 2),
+    equipment_recipe!(WEAPONCRAFT_SPECIALTY_RECIPE_ID, Weapon, 3),
+    equipment_recipe!(WEAPONCRAFT_MASTERWORK_RECIPE_ID, Weapon, 4),
+    equipment_recipe!(ARMORCRAFT_PREPARATION_RECIPE_ID, Armor, 0),
+    equipment_recipe!(ARMORCRAFT_STAPLES_RECIPE_ID, Armor, 1),
+    equipment_recipe!(ARMORCRAFT_QUALITY_RECIPE_ID, Armor, 2),
+    equipment_recipe!(ARMORCRAFT_SPECIALTY_RECIPE_ID, Armor, 3),
+    equipment_recipe!(ARMORCRAFT_MASTERWORK_RECIPE_ID, Armor, 4),
 ];
 
 /// Whether a catalog recipe payload names a physical runtime recipe.
@@ -776,7 +894,7 @@ mod tests {
         let cases = [
             (
                 BuildingType::WoodCutter,
-                &[LOGS_TO_PLANKS_RECIPE_ID][..],
+                &[LOGS_TO_PLANKS_RECIPE_ID, CARPENTRY_SPECIALTY_RECIPE_ID][..],
                 &[ResourceKind::Logs][..],
                 &[ResourceKind::Planks][..],
             ),
@@ -789,6 +907,7 @@ mod tests {
                     CLAY_MUG_RECIPE_ID,
                     CLAY_BOWL_RECIPE_ID,
                     CLAY_BRICK_RECIPE_ID,
+                    STONECRAFT_MASTERWORK_RECIPE_ID,
                 ][..],
                 &[ResourceKind::Stone, ResourceKind::Bone, ResourceKind::Clay][..],
                 &[ResourceKind::Blocks][..],
@@ -823,6 +942,11 @@ mod tests {
                     FORAGING_QUALITY_RECIPE_ID,
                     FORAGING_SPECIALTY_RECIPE_ID,
                     FORAGING_MASTERWORK_RECIPE_ID,
+                    TEXTILE_WORK_PREPARATION_RECIPE_ID,
+                    TEXTILE_WORK_STAPLES_RECIPE_ID,
+                    TEXTILE_WORK_QUALITY_RECIPE_ID,
+                    TEXTILE_WORK_SPECIALTY_RECIPE_ID,
+                    TEXTILE_WORK_MASTERWORK_RECIPE_ID,
                 ][..],
                 &[ResourceKind::Fibre][..],
                 &[ResourceKind::Cloth][..],
@@ -836,6 +960,11 @@ mod tests {
                     ANIMAL_HUSBANDRY_QUALITY_RECIPE_ID,
                     ANIMAL_HUSBANDRY_SPECIALTY_RECIPE_ID,
                     ANIMAL_HUSBANDRY_MASTERWORK_RECIPE_ID,
+                    LEATHERWORKING_PREPARATION_RECIPE_ID,
+                    LEATHERWORKING_STAPLES_RECIPE_ID,
+                    LEATHERWORKING_QUALITY_RECIPE_ID,
+                    LEATHERWORKING_SPECIALTY_RECIPE_ID,
+                    LEATHERWORKING_MASTERWORK_RECIPE_ID,
                 ][..],
                 &[ResourceKind::Hide][..],
                 &[ResourceKind::Leather][..],
@@ -846,6 +975,18 @@ mod tests {
                     SMITHY_WEAPON_RECIPE_ID,
                     SMITHY_TOOL_RECIPE_ID,
                     SMITHY_ARMOR_RECIPE_ID,
+                    TOOLMAKING_SPECIALTY_RECIPE_ID,
+                    TOOLMAKING_MASTERWORK_RECIPE_ID,
+                    WEAPONCRAFT_PREPARATION_RECIPE_ID,
+                    WEAPONCRAFT_STAPLES_RECIPE_ID,
+                    WEAPONCRAFT_QUALITY_RECIPE_ID,
+                    WEAPONCRAFT_SPECIALTY_RECIPE_ID,
+                    WEAPONCRAFT_MASTERWORK_RECIPE_ID,
+                    ARMORCRAFT_PREPARATION_RECIPE_ID,
+                    ARMORCRAFT_STAPLES_RECIPE_ID,
+                    ARMORCRAFT_QUALITY_RECIPE_ID,
+                    ARMORCRAFT_SPECIALTY_RECIPE_ID,
+                    ARMORCRAFT_MASTERWORK_RECIPE_ID,
                 ][..],
                 &[ResourceKind::Metal][..],
                 &[
@@ -901,8 +1042,98 @@ mod tests {
                 assert!(ids.insert(recipe.id), "duplicate recipe id {}", recipe.id);
             }
         }
-        assert_eq!(ids.len(), 74);
+        assert_eq!(ids.len(), 104);
         assert!(station_recipe_set(BuildingType::Den).is_none());
+    }
+
+    #[test]
+    fn all_new_industrial_recipes_have_one_finite_physical_authority() {
+        let ids = [
+            TEXTILE_WORK_PREPARATION_RECIPE_ID,
+            TEXTILE_WORK_STAPLES_RECIPE_ID,
+            TEXTILE_WORK_QUALITY_RECIPE_ID,
+            TEXTILE_WORK_SPECIALTY_RECIPE_ID,
+            TEXTILE_WORK_MASTERWORK_RECIPE_ID,
+            LEATHERWORKING_PREPARATION_RECIPE_ID,
+            LEATHERWORKING_STAPLES_RECIPE_ID,
+            LEATHERWORKING_QUALITY_RECIPE_ID,
+            LEATHERWORKING_SPECIALTY_RECIPE_ID,
+            LEATHERWORKING_MASTERWORK_RECIPE_ID,
+            CARPENTRY_QUALITY_RECIPE_ID,
+            CARPENTRY_SPECIALTY_RECIPE_ID,
+            CARPENTRY_MASTERWORK_RECIPE_ID,
+            STONECRAFT_MASTERWORK_RECIPE_ID,
+            METALLURGY_STAPLES_RECIPE_ID,
+            METALLURGY_QUALITY_RECIPE_ID,
+            METALLURGY_SPECIALTY_RECIPE_ID,
+            METALLURGY_MASTERWORK_RECIPE_ID,
+            TOOLMAKING_SPECIALTY_RECIPE_ID,
+            TOOLMAKING_MASTERWORK_RECIPE_ID,
+            WEAPONCRAFT_PREPARATION_RECIPE_ID,
+            WEAPONCRAFT_STAPLES_RECIPE_ID,
+            WEAPONCRAFT_QUALITY_RECIPE_ID,
+            WEAPONCRAFT_SPECIALTY_RECIPE_ID,
+            WEAPONCRAFT_MASTERWORK_RECIPE_ID,
+            ARMORCRAFT_PREPARATION_RECIPE_ID,
+            ARMORCRAFT_STAPLES_RECIPE_ID,
+            ARMORCRAFT_QUALITY_RECIPE_ID,
+            ARMORCRAFT_SPECIALTY_RECIPE_ID,
+            ARMORCRAFT_MASTERWORK_RECIPE_ID,
+        ];
+        for id in ids {
+            let recipe = station_recipe(id).unwrap_or_else(|| panic!("missing recipe {id}"));
+            assert_eq!(recipe.input_resources.len(), 1, "{id}");
+            assert_eq!(
+                usize::from(!recipe.output_resources.is_empty())
+                    + usize::from(recipe.output_item.is_some()),
+                1,
+                "{id} must have exactly one scalar or exact-item output authority"
+            );
+            assert!(!recipe.founding_available, "{id}");
+        }
+
+        for (kind, recipes) in [
+            (
+                ItemKind::Weapon,
+                [
+                    WEAPONCRAFT_PREPARATION_RECIPE_ID,
+                    WEAPONCRAFT_STAPLES_RECIPE_ID,
+                    WEAPONCRAFT_QUALITY_RECIPE_ID,
+                    WEAPONCRAFT_SPECIALTY_RECIPE_ID,
+                    WEAPONCRAFT_MASTERWORK_RECIPE_ID,
+                ],
+            ),
+            (
+                ItemKind::Armor,
+                [
+                    ARMORCRAFT_PREPARATION_RECIPE_ID,
+                    ARMORCRAFT_STAPLES_RECIPE_ID,
+                    ARMORCRAFT_QUALITY_RECIPE_ID,
+                    ARMORCRAFT_SPECIALTY_RECIPE_ID,
+                    ARMORCRAFT_MASTERWORK_RECIPE_ID,
+                ],
+            ),
+        ] {
+            for (quality, id) in recipes.into_iter().enumerate() {
+                let recipe = station_recipe(id).unwrap();
+                let output = recipe.output_item.expect("exact equipment output");
+                assert_eq!(recipe.output_resources, &[], "{id} shadow scalar");
+                assert_eq!(output.kind, kind, "{id}");
+                assert_eq!(output.material, Material::Metal, "{id}");
+                assert_eq!(output.quality, quality as u8, "{id}");
+            }
+        }
+        for (id, quality) in [
+            (TOOLMAKING_SPECIALTY_RECIPE_ID, 3),
+            (TOOLMAKING_MASTERWORK_RECIPE_ID, 4),
+        ] {
+            let recipe = station_recipe(id).unwrap();
+            let output = recipe.output_item.expect("exact tool output");
+            assert_eq!(recipe.output_resources, &[], "{id} shadow scalar");
+            assert_eq!(output.kind, ItemKind::Tool);
+            assert_eq!(output.material, Material::Metal);
+            assert_eq!(output.quality, quality);
+        }
     }
 
     #[test]
@@ -922,18 +1153,11 @@ mod tests {
         }));
 
         let smithy = station_recipe_set(BuildingType::Smithy).unwrap();
-        assert_eq!(
-            smithy
-                .recipes
-                .iter()
-                .map(|recipe| recipe.id)
-                .collect::<Vec<_>>(),
-            [
-                SMITHY_WEAPON_RECIPE_ID,
-                SMITHY_TOOL_RECIPE_ID,
-                SMITHY_ARMOR_RECIPE_ID,
-            ]
-        );
+        assert_eq!(smithy.recipes.len(), 15);
+        assert_eq!(smithy.recipes[0].id, SMITHY_WEAPON_RECIPE_ID);
+        assert_eq!(smithy.recipes[1].id, SMITHY_TOOL_RECIPE_ID);
+        assert_eq!(smithy.recipes[2].id, SMITHY_ARMOR_RECIPE_ID);
+        assert_eq!(smithy.recipes[14].id, ARMORCRAFT_MASTERWORK_RECIPE_ID);
         assert_eq!(smithy.recipes[1].output_resources, &[ResourceKind::Tools]);
         assert!(mill.recipes.iter().all(|recipe| !recipe.founding_available));
         assert!(!smithy.recipes[1].founding_available);

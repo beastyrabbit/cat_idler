@@ -27,6 +27,16 @@ pub struct StorageResearchEffects {
     pub fibre_capacity_add: f64,
     pub herbs_capacity_add: f64,
     pub catnip_capacity_add: f64,
+    pub cloth_capacity_add: f64,
+    pub leather_capacity_add: f64,
+    pub lumber_capacity_add: f64,
+    pub planks_capacity_add: f64,
+    pub blocks_capacity_add: f64,
+    pub metal_capacity_add: f64,
+    pub tools_capacity_add: f64,
+    pub weapons_capacity_add: f64,
+    pub armor_capacity_add: f64,
+    pub refined_capacity_add: f64,
 }
 
 impl Default for StorageResearchEffects {
@@ -48,6 +58,16 @@ impl Default for StorageResearchEffects {
             fibre_capacity_add: 0.0,
             herbs_capacity_add: 0.0,
             catnip_capacity_add: 0.0,
+            cloth_capacity_add: 0.0,
+            leather_capacity_add: 0.0,
+            lumber_capacity_add: 0.0,
+            planks_capacity_add: 0.0,
+            blocks_capacity_add: 0.0,
+            metal_capacity_add: 0.0,
+            tools_capacity_add: 0.0,
+            weapons_capacity_add: 0.0,
+            armor_capacity_add: 0.0,
+            refined_capacity_add: 0.0,
         }
     }
 }
@@ -98,6 +118,18 @@ where
                 effects.herbs_capacity_add += 50.0;
                 effects.catnip_capacity_add += 50.0;
             }
+            "textile_work_preservation" => effects.cloth_capacity_add += 50.0,
+            "leatherworking_preservation" => effects.leather_capacity_add += 50.0,
+            "carpentry_preservation" => {
+                effects.lumber_capacity_add += 50.0;
+                effects.planks_capacity_add += 50.0;
+            }
+            "stonecraft_preservation" => effects.blocks_capacity_add += 50.0,
+            "metallurgy_preservation" => effects.metal_capacity_add += 50.0,
+            "toolmaking_preservation" => effects.tools_capacity_add += 50.0,
+            "weaponcraft_preservation" => effects.weapons_capacity_add += 50.0,
+            "armorcraft_preservation" => effects.armor_capacity_add += 50.0,
+            "trade_goods_preservation" => effects.refined_capacity_add += 50.0,
             _ => {}
         }
         let Some(node) = research_catalog().get(id.as_ref()) else {
@@ -406,6 +438,36 @@ pub fn research_aware_storage_capacities(
         effects.unlocked_resources.contains("hunting_reserves"),
         effects.unlocked_resources.contains("foraging_reserves"),
     );
+    apply_industrial_storage_additions(
+        &mut caps,
+        effects
+            .unlocked_resources
+            .contains("textile_work_preservation"),
+        effects
+            .unlocked_resources
+            .contains("leatherworking_preservation"),
+        effects
+            .unlocked_resources
+            .contains("carpentry_preservation"),
+        effects
+            .unlocked_resources
+            .contains("stonecraft_preservation"),
+        effects
+            .unlocked_resources
+            .contains("metallurgy_preservation"),
+        effects
+            .unlocked_resources
+            .contains("toolmaking_preservation"),
+        effects
+            .unlocked_resources
+            .contains("weaponcraft_preservation"),
+        effects
+            .unlocked_resources
+            .contains("armorcraft_preservation"),
+        effects
+            .unlocked_resources
+            .contains("trade_goods_preservation"),
+    );
     caps
 }
 
@@ -435,6 +497,16 @@ fn research_aware_storage_capacities_compact(
     caps.fibre += effects.fibre_capacity_add;
     caps.herbs += effects.herbs_capacity_add;
     caps.catnip += effects.catnip_capacity_add;
+    caps.cloth += effects.cloth_capacity_add;
+    caps.leather += effects.leather_capacity_add;
+    caps.lumber += effects.lumber_capacity_add;
+    caps.planks += effects.planks_capacity_add;
+    caps.blocks += effects.blocks_capacity_add;
+    caps.metal += effects.metal_capacity_add;
+    caps.tools += effects.tools_capacity_add;
+    caps.weapons += effects.weapons_capacity_add;
+    caps.armor += effects.armor_capacity_add;
+    caps.refined += effects.refined_capacity_add;
     caps
 }
 
@@ -470,6 +542,31 @@ fn apply_subsistence_frontier_storage_additions(
         caps.herbs += 50.0;
         caps.catnip += 50.0;
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_industrial_storage_additions(
+    caps: &mut StorageCapacities,
+    cloth: bool,
+    leather: bool,
+    carpentry: bool,
+    blocks: bool,
+    metal: bool,
+    tools: bool,
+    weapons: bool,
+    armor: bool,
+    refined: bool,
+) {
+    caps.cloth += if cloth { 50.0 } else { 0.0 };
+    caps.leather += if leather { 50.0 } else { 0.0 };
+    caps.lumber += if carpentry { 50.0 } else { 0.0 };
+    caps.planks += if carpentry { 50.0 } else { 0.0 };
+    caps.blocks += if blocks { 50.0 } else { 0.0 };
+    caps.metal += if metal { 50.0 } else { 0.0 };
+    caps.tools += if tools { 50.0 } else { 0.0 };
+    caps.weapons += if weapons { 50.0 } else { 0.0 };
+    caps.armor += if armor { 50.0 } else { 0.0 };
+    caps.refined += if refined { 50.0 } else { 0.0 };
 }
 
 impl StorageCapacities {
@@ -1200,6 +1297,37 @@ mod tests {
         assert_eq!(caps.preserves, BASE_CAPACITY.preserves + 50.0);
         assert_eq!(caps.medicine, BASE_CAPACITY.medicine + 50.0);
         assert_eq!(caps.brew, BASE_CAPACITY.brew + 50.0);
+        assert_eq!(caps.water, BASE_CAPACITY.water);
+    }
+
+    #[test]
+    fn industrial_preservation_studies_expand_only_their_real_finite_goods() {
+        let caps = authoritative_storage_capacities_for_owned(
+            &[],
+            &[],
+            [
+                "textile_work_preservation",
+                "leatherworking_preservation",
+                "carpentry_preservation",
+                "stonecraft_preservation",
+                "metallurgy_preservation",
+                "toolmaking_preservation",
+                "weaponcraft_preservation",
+                "armorcraft_preservation",
+                "trade_goods_preservation",
+            ],
+        );
+        assert_eq!(caps.cloth, BASE_CAPACITY.cloth + 50.0);
+        assert_eq!(caps.leather, BASE_CAPACITY.leather + 50.0);
+        assert_eq!(caps.lumber, BASE_CAPACITY.lumber + 50.0);
+        assert_eq!(caps.planks, BASE_CAPACITY.planks + 50.0);
+        assert_eq!(caps.blocks, BASE_CAPACITY.blocks + 50.0);
+        assert_eq!(caps.metal, BASE_CAPACITY.metal + 50.0);
+        assert_eq!(caps.tools, BASE_CAPACITY.tools + 50.0);
+        assert_eq!(caps.weapons, BASE_CAPACITY.weapons + 50.0);
+        assert_eq!(caps.armor, BASE_CAPACITY.armor + 50.0);
+        assert_eq!(caps.refined, BASE_CAPACITY.refined + 50.0);
+        assert_eq!(caps.food, BASE_CAPACITY.food);
         assert_eq!(caps.water, BASE_CAPACITY.water);
     }
 }

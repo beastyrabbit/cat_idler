@@ -3291,12 +3291,16 @@ mod tests {
             "smithy",
             "school",
             "advanced_storage",
+            "carpentry_sources",
             "carpentry_preparation",
             "grain_milling_sources",
             "grain_milling_preparation",
             "grain_milling_staples",
+            "metallurgy_sources",
             "metallurgy_preparation",
+            "trade_goods_sources",
             "trade_goods_preparation",
+            "toolmaking_sources",
             "toolmaking_preparation",
             "toolmaking_staples",
         ] {
@@ -5425,6 +5429,84 @@ mod tests {
                     .known_village_ids
                     .contains(&first_id)
             );
+
+            // This integration test verifies signed offer/acceptance and the physical caravan
+            // lifecycle, not whether these two hashed player sites happen to share a naturally
+            // passable wilderness corridor for this world seed. Materialize one deterministic
+            // meadow trail through both real gates so acceptance still exercises the production
+            // route planner and its wall-edge validation without depending on incidental rivers.
+            let gate_pair = |colony: &cat_sim::world_tick::ColonyRuntime| {
+                let area = cat_sim::village_area::from_tiles(
+                    &colony
+                        .claimed_tiles
+                        .iter()
+                        .map(|tile| cat_sim::village_layout::GridPos {
+                            x: tile.x,
+                            y: tile.y,
+                        })
+                        .collect::<Vec<_>>(),
+                );
+                let gate = cat_sim::village_area::gate_placement_default(&area)
+                    .expect("founded village gate");
+                let delta = cat_sim::village_area::side_delta(gate.side);
+                (
+                    TilePos {
+                        x: gate.x,
+                        y: gate.y,
+                    },
+                    TilePos {
+                        x: gate.x + delta.x,
+                        y: gate.y + delta.y,
+                    },
+                )
+            };
+            let (first_gate, first_outside) = gate_pair(&world.colonies[first_index]);
+            let (second_gate, second_outside) = gate_pair(&world.colonies[second_index]);
+            let corridor_y = first_outside.y.max(second_outside.y) + 64;
+            let waypoints = [
+                first_gate,
+                first_outside,
+                TilePos {
+                    x: first_outside.x,
+                    y: corridor_y,
+                },
+                TilePos {
+                    x: second_outside.x,
+                    y: corridor_y,
+                },
+                second_outside,
+                second_gate,
+            ];
+            for pair in waypoints.windows(2) {
+                let mut pos = pair[0];
+                loop {
+                    world.shared_spatial.tiles.insert(
+                        pos,
+                        cat_sim::world_tick::WorldTileRuntime {
+                            pos,
+                            tile_type: cat_sim::types::TileType::Meadow,
+                            resources: cat_sim::world_gen::TileResources {
+                                food: 0,
+                                herbs: 0,
+                                water: 0,
+                                gem: 0,
+                                clay: 0,
+                                sand: 0,
+                            },
+                            max_resources: cat_sim::biomes::MaxResources { food: 0, herbs: 0 },
+                            danger_level: 0.0,
+                            path_wear: 0,
+                            last_depleted: 0,
+                            overlay_feature: None,
+                        },
+                    );
+                    if pos == pair[1] {
+                        break;
+                    }
+                    pos.x += (pair[1].x - pos.x).signum();
+                    pos.y += (pair[1].y - pos.y).signum();
+                }
+            }
             world.colonies[first_index].resources.food = 80.0;
             world.colonies[second_index].resources.materials = 80.0;
             let directory = village_directory(&world);

@@ -9,7 +9,7 @@ and any changed Bevy visuals have been verified.
 
 | Finding | Required correction | State |
 | --- | --- | --- |
-| Research recipe/resource breadth remains incomplete | Seventy-four runtime recipe IDs now have data-owned station descriptors and exact catalog ownership metadata. The remaining 30 generated recipe IDs and 27 generated resource IDs have no authoritative consumer, are visibly marked `FUTURE`, and cannot spend points. Continue only from the evidence boundary in `RECIPE_RESOURCE_MATRIX.md`. | in progress |
+| Research recipe/resource breadth | All 104 runtime recipe IDs have data-owned station descriptors and exact catalog ownership metadata. All generated recipe and resource payloads now have authoritative consumers; none remain disabled as `FUTURE` content. | verified |
 
 ## Verified fixes
 
@@ -33,9 +33,30 @@ descriptions and catalog-derived entitlements. Descriptor tests cover all thirty
 Every route consumes its exact aggregate/local input, creates one uncredited station identity,
 moves that same ID in a carrier, and credits it only at storage in deterministic twins. Effect and
 capacity tests cover all twenty resource stages, and signed player actions queue all thirty
-recipes only at their actual station. The supported boundary is now 74 physical recipes with 30
-recipe and 27 resource payloads intentionally still `FUTURE`. No protocol/client surface or art
-changed, so no framebuffer recapture was required.
+recipes only at their actual station. At this slice boundary there were 74 physical recipes with
+30 recipe and 27 resource payloads still pending. No protocol/client surface or art changed, so no
+framebuffer recapture was required.
+
+## 2026-07-16 — Industrial material research owns finite recipes and goods
+
+**Problem:** All generated stages in Textile Work, Leatherworking, Carpentry, Stonecraft,
+Metallurgy, Toolmaking, Weaponcraft, Armorcraft, and Trade Goods were still partly disabled
+`FUTURE` promises. Thirty recipe stages lacked a physical selected operation and 27 resource
+stages had no exact yield, cycle, or capacity consumer.
+
+**Fix:** Thirty data-owned recipes now consume finite Fibre, Hide, Logs, Stone, Ore, or Metal at
+the existing open-top station and deliver Cloth, Leather, Lumber, Planks, Blocks, Metal, or exact
+equipment. The twelve researched equipment recipes mint one stable quality-mapped metal
+Tool/Weapon/Armor identity—never a shadow scalar—and carry it through local output, paws, storage,
+equipment, traders, and restart. All nine `sources`, `preservation`, and `bulk` families now change
+only their exact input/yield, physical capacity, or selected cycle. Legacy default queues are
+unchanged.
+
+**Evidence:** Exhaustive tests pin all 72 family nodes, all 30 descriptors, exact catalog owners,
+all 27 resource consumers, quality/durability mapping, signed purchase/queue editing, deterministic
+physical input/output, exact-ID haul/equip/sale/restart conservation, and SQLite queue/ownership
+restart. Combined with the subsistence/frontier slice, the maintained catalog now has 104 physical
+recipes and no remaining generated recipe or resource payload marked `FUTURE`.
 
 ## 2026-07-16 — Useful labor pressure is measured, not inferred from idle labels
 

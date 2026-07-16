@@ -1691,7 +1691,7 @@ mod tests {
             .iter()
             .filter(|node| crate::research_catalog::research_node_is_implemented(node))
             .count();
-        assert_eq!(implemented_count, 417);
+        assert_eq!(implemented_count, 474);
         while state.owned_node_ids.len() < implemented_count {
             let next = crate::research_catalog::research_catalog()
                 .nodes()
@@ -1796,17 +1796,38 @@ mod tests {
     }
 
     #[test]
-    fn future_recipe_and_resource_studies_cannot_spend_research_points() {
+    fn generated_recipe_resources_are_live_while_unbacked_crews_remain_future() {
+        let catalog = crate::research_catalog::research_catalog();
+        let textile_sources = catalog.get("textile_work_sources").unwrap();
         let state = state_with(
-            &["research_hut", "basic_tools", "foraging_lore", "textiles"],
+            &textile_sources
+                .prerequisites
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
             100.0,
         );
-        assert!(!can_unlock(&state, "textile_work_sources"));
+        assert!(can_unlock(&state, "textile_work_sources"));
         let result = cat_purchase(&state, "textile_work_sources");
-        assert!(!result.ok);
+        assert!(result.ok);
+        assert!(is_owned(&result.state, "textile_work_sources"));
+
+        let future_crews = catalog.get("den_crews").unwrap();
+        assert!(future_crews.is_future_content());
+        let future_state = state_with(
+            &future_crews
+                .prerequisites
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            100.0,
+        );
+        assert!(!can_unlock(&future_state, "den_crews"));
+        let denied = cat_purchase(&future_state, "den_crews");
+        assert!(!denied.ok);
         assert_eq!(
-            result.state.research_points.to_bits(),
-            state.research_points.to_bits()
+            denied.state.research_points.to_bits(),
+            future_state.research_points.to_bits()
         );
 
         let supported = state_with(

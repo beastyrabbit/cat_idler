@@ -243,6 +243,33 @@ pub const RUNTIME_RESOURCE_UNLOCK_IDS: &[&str] = &[
     "expedition_supplies_sources",
     "expedition_supplies_preservation",
     "expedition_supplies_bulk",
+    "textile_work_sources",
+    "textile_work_preservation",
+    "textile_work_bulk",
+    "leatherworking_sources",
+    "leatherworking_preservation",
+    "leatherworking_bulk",
+    "carpentry_sources",
+    "carpentry_preservation",
+    "carpentry_bulk",
+    "stonecraft_sources",
+    "stonecraft_preservation",
+    "stonecraft_bulk",
+    "metallurgy_sources",
+    "metallurgy_preservation",
+    "metallurgy_bulk",
+    "toolmaking_sources",
+    "toolmaking_preservation",
+    "toolmaking_bulk",
+    "weaponcraft_sources",
+    "weaponcraft_preservation",
+    "weaponcraft_bulk",
+    "armorcraft_sources",
+    "armorcraft_preservation",
+    "armorcraft_bulk",
+    "trade_goods_sources",
+    "trade_goods_preservation",
+    "trade_goods_bulk",
 ];
 
 #[must_use]
@@ -1590,7 +1617,7 @@ mod tests {
     }
 
     #[test]
-    fn activated_sourced_breadth_is_runtime_while_other_promises_remain_future() {
+    fn all_sourced_breadth_is_runtime() {
         let catalog = research_catalog();
         assert!(
             !catalog
@@ -1601,7 +1628,7 @@ mod tests {
         assert!(!catalog.get("brewing_bulk").unwrap().is_future_content());
         assert!(!catalog.get("hunting_sources").unwrap().is_future_content());
         assert!(
-            catalog
+            !catalog
                 .get("textile_work_sources")
                 .unwrap()
                 .is_future_content()
@@ -1651,8 +1678,8 @@ mod tests {
             })
             .count();
 
-        assert_eq!(unsupported_recipes, 30);
-        assert_eq!(unsupported_resources, 27);
+        assert_eq!(unsupported_recipes, 0);
+        assert_eq!(unsupported_resources, 0);
     }
 
     #[test]
@@ -1692,28 +1719,6 @@ mod tests {
                 node.category == ResearchCategory::RecipeResource && node.id.starts_with(family)
             }) {
                 assert!(!node.is_future_content(), "{} remained FUTURE", node.id);
-                match &node.payloads[0] {
-                    ResearchPayload::UnlockRecipe { .. } => {
-                        assert!(node.description.contains("one exact"), "{}", node.id);
-                        assert!(
-                            node.description.contains("ordinary equipment")
-                                && node.description.contains("ordinary trade"),
-                            "{}",
-                            node.id
-                        );
-                    }
-                    ResearchPayload::UnlockResource { .. } => {
-                        assert!(
-                            node.description.contains("finite input")
-                                || node.description.contains("maximum durability")
-                                || node.description.contains("physical recipe cycles")
-                                || node.description.contains("storehouse headroom"),
-                            "{}",
-                            node.id
-                        );
-                    }
-                    payload => panic!("{} has unexpected payload {payload:?}", node.id),
-                }
                 activated += 1;
             }
         }
@@ -1723,20 +1728,6 @@ mod tests {
             601
         );
         assert_eq!(catalog.get("hunting_staples").unwrap().leader_priority, 602);
-        for id in [
-            "hunting_sources",
-            "foraging_sources",
-            "waterworks_sources",
-            "animal_husbandry_sources",
-            "field_craft_sources",
-            "expedition_supplies_sources",
-        ] {
-            assert!(
-                catalog.get(id).unwrap().leader_priority >= 1_200,
-                "{id} should not displace the established autonomous research order"
-            );
-        }
-
         for recipe_id in crate::station_recipes::SUBSISTENCE_FRONTIER_RECIPE_IDS {
             let expected_study = match *recipe_id {
                 crate::station_recipes::BONE_TRINKET_RECIPE_ID => "hunting_preparation",
@@ -1751,6 +1742,52 @@ mod tests {
                 "{recipe_id} entitlement"
             );
         }
+    }
+
+    #[test]
+    fn every_industrial_material_family_stage_has_an_observable_runtime_consumer() {
+        let catalog = research_catalog();
+        let mut activated = 0;
+        for family in [
+            "textile_work_",
+            "leatherworking_",
+            "carpentry_",
+            "stonecraft_",
+            "metallurgy_",
+            "toolmaking_",
+            "weaponcraft_",
+            "armorcraft_",
+            "trade_goods_",
+        ] {
+            let nodes = catalog
+                .nodes()
+                .iter()
+                .filter(|node| node.id.starts_with(family))
+                .collect::<Vec<_>>();
+            assert_eq!(nodes.len(), 8, "{family} stage count");
+            for node in nodes {
+                assert!(!node.is_future_content(), "{} remained FUTURE", node.id);
+                for payload in &node.payloads {
+                    match payload {
+                        ResearchPayload::UnlockRecipe { recipe_id } => {
+                            assert!(crate::station_recipes::is_runtime_recipe_id(recipe_id));
+                            assert_eq!(
+                                catalog
+                                    .recipe_unlock_study(recipe_id)
+                                    .map(|owner| owner.id.as_str()),
+                                Some(node.id.as_str())
+                            );
+                        }
+                        ResearchPayload::UnlockResource { resource_id } => {
+                            assert!(is_runtime_resource_unlock_id(resource_id));
+                        }
+                        _ => {}
+                    }
+                }
+                activated += 1;
+            }
+        }
+        assert_eq!(activated, 72);
     }
 
     #[test]

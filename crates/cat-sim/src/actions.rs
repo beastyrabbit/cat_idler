@@ -11977,7 +11977,12 @@ mod tests {
                 .find(|building| building.id == "sawmill-player")
                 .unwrap()
                 .available_recipes,
-            vec![crate::world_tick::SAWMILL_RECIPE_ID.to_owned()]
+            crate::station_recipes::station_recipe_set(BuildingType::Sawmill)
+                .unwrap()
+                .recipes
+                .iter()
+                .map(|recipe| recipe.id.to_owned())
+                .collect::<Vec<_>>()
         );
 
         for (id, building_type, recipe_id) in [
@@ -12088,6 +12093,7 @@ mod tests {
             "basic_tools",
             "foraging_lore",
             "sawmill",
+            "carpentry_sources",
             "carpentry_preparation",
         ] {
             assert!(
@@ -12374,11 +12380,12 @@ mod tests {
             .unwrap();
         assert_eq!(
             smithy.available_recipes,
-            [
-                crate::world_tick::SMITHY_WEAPON_RECIPE_ID,
-                crate::world_tick::SMITHY_TOOL_RECIPE_ID,
-                crate::world_tick::SMITHY_ARMOR_RECIPE_ID,
-            ]
+            crate::station_recipes::station_recipe_set(BuildingType::Smithy)
+                .unwrap()
+                .recipes
+                .iter()
+                .map(|recipe| recipe.id.to_owned())
+                .collect::<Vec<_>>()
         );
         assert_eq!(smithy.required_recipe_study, None);
         assert_eq!(smithy.production_block_reason.as_deref(), Some("no_worker"));
@@ -12471,7 +12478,12 @@ mod tests {
             .expect("physical Wood Cutter snapshot");
         assert_eq!(
             building.available_recipes,
-            [crate::world_tick::WOOD_CUTTER_RECIPE_ID]
+            crate::station_recipes::station_recipe_set(BuildingType::WoodCutter)
+                .unwrap()
+                .recipes
+                .iter()
+                .map(|recipe| recipe.id.to_owned())
+                .collect::<Vec<_>>()
         );
         assert_eq!(
             building
@@ -12769,6 +12781,118 @@ mod tests {
         assert_eq!(queued.len(), 30);
         assert!(
             crate::station_recipes::SUBSISTENCE_FRONTIER_RECIPE_IDS
+                .iter()
+                .all(|id| queued.contains(id))
+        );
+    }
+
+    #[test]
+    fn signed_player_can_purchase_and_queue_every_industrial_material_recipe() {
+        let mut world = world_with_one_colony();
+        let colony = &mut world.colonies[0];
+        colony.recipe_entitlement_rules_version =
+            crate::world_tick::CURRENT_RECIPE_ENTITLEMENT_RULES_VERSION;
+        let industrial_prefixes = [
+            "textile_work_",
+            "leatherworking_",
+            "carpentry_",
+            "stonecraft_",
+            "metallurgy_",
+            "toolmaking_",
+            "weaponcraft_",
+            "armorcraft_",
+            "trade_goods_",
+        ];
+        let catalog = crate::research_catalog::research_catalog();
+        colony.upgrade_tree.owned_node_ids = catalog
+            .nodes()
+            .iter()
+            .filter(|node| {
+                !industrial_prefixes
+                    .iter()
+                    .any(|prefix| node.id.starts_with(prefix))
+            })
+            .map(|node| node.id.clone())
+            .collect();
+        colony.upgrade_tree.research_points = 10_000.0;
+
+        let industrial_node_ids = catalog
+            .nodes()
+            .iter()
+            .filter(|node| {
+                industrial_prefixes
+                    .iter()
+                    .any(|prefix| node.id.starts_with(prefix))
+            })
+            .map(|node| node.id.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(industrial_node_ids.len(), 72);
+        for node_id in industrial_node_ids {
+            let purchased = apply_action(
+                &mut world,
+                &proto::ClientAction::ResearchNode {
+                    session_id: "sess_1".to_owned(),
+                    nickname: "Player".to_owned(),
+                    sig: "signed".to_owned(),
+                    node_id: node_id.clone(),
+                },
+                &ctx(),
+            );
+            assert!(
+                purchased.ok,
+                "signed research purchase failed for {node_id}: {purchased:?}"
+            );
+        }
+
+        let mut station_types = Vec::new();
+        for recipe_id in crate::station_recipes::INDUSTRIAL_MATERIAL_RECIPE_IDS {
+            let building_type = crate::station_recipes::station_recipe(recipe_id)
+                .unwrap()
+                .building_type;
+            if !station_types.contains(&building_type) {
+                station_types.push(building_type);
+            }
+        }
+        for building_type in station_types {
+            world.colonies[0].buildings.push(BuildingRuntime {
+                id: format!("industrial-{}", building_type.as_str()),
+                building_type,
+                is_complete: true,
+                construction_progress: 100,
+                production_queue: Vec::new(),
+                ..BuildingRuntime::default()
+            });
+        }
+
+        for recipe_id in crate::station_recipes::INDUSTRIAL_MATERIAL_RECIPE_IDS {
+            let descriptor = crate::station_recipes::station_recipe(recipe_id).unwrap();
+            let queued = apply_action(
+                &mut world,
+                &proto::ClientAction::EditProductionQueue {
+                    session_id: "sess_1".to_owned(),
+                    nickname: "Player".to_owned(),
+                    sig: "signed".to_owned(),
+                    building_id: format!("industrial-{}", descriptor.building_type.as_str()),
+                    edit: proto::ProductionQueueEdit::Add {
+                        recipe_id: (*recipe_id).to_owned(),
+                        repeat: false,
+                    },
+                },
+                &ctx(),
+            );
+            assert!(queued.ok, "signed queue failed for {recipe_id}: {queued:?}");
+        }
+
+        let queued = world.colonies[0]
+            .buildings
+            .iter()
+            .filter(|building| building.id.starts_with("industrial-"))
+            .flat_map(|building| &building.production_queue)
+            .map(|entry| entry.recipe_id.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(queued.len(), 30);
+        assert!(
+            crate::station_recipes::INDUSTRIAL_MATERIAL_RECIPE_IDS
                 .iter()
                 .all(|id| queued.contains(id))
         );
