@@ -401,11 +401,20 @@ struct UpgradeFamily {
     id: String,
     display_name: String,
     effect_id: String,
+    /// Some cross-cutting effect tracks belong to a product category other than
+    /// the default Upgrade bucket. For example, every Construction study changes
+    /// the real physical scaffold timer and is therefore building research.
+    #[serde(default = "upgrade_research_category")]
+    category: ResearchCategory,
     root_prerequisites: Vec<String>,
     era_start: u8,
     cost_base: f64,
     layout_x: i32,
     leader_priority_base: u16,
+}
+
+const fn upgrade_research_category() -> ResearchCategory {
+    ResearchCategory::Upgrade
 }
 
 fn build_catalog(legacy_source: &str, track_source: &str) -> Result<ResearchCatalog, String> {
@@ -627,7 +636,7 @@ fn expand_upgrade_family(
             id,
             name: format!("{} {}", family.display_name, stage.name),
             description: format!("{} {}", family.display_name, stage.description),
-            category: ResearchCategory::Upgrade,
+            category: family.category,
             cost: family.cost_base + 4.5 * index as f64,
             prerequisites,
             era: family
@@ -752,7 +761,8 @@ fn validate_node(node: &ResearchNode) -> Result<(), String> {
                     | ResearchPayload::ModifyBuilding { .. }
             ) || matches!(
                 payload,
-                ResearchPayload::Modify { effect_id, .. } if effect_id == "housingPerDen"
+                ResearchPayload::Modify { effect_id, .. }
+                    if matches!(effect_id.as_str(), "housingPerDen" | "constructionSpeed")
             )
         }),
         ResearchCategory::RecipeResource => node.payloads.iter().any(|payload| {
@@ -786,11 +796,13 @@ fn validate_categories(nodes: &[ResearchNode]) -> Result<(), String> {
         .filter(|node| node.category == ResearchCategory::RecipeResource)
         .count();
     // Building families deliberately omit a generic `stores` stage when their runtime
-    // building owns no physical capacity domain. Keep that truth gap explicit instead
-    // of padding the catalog with thirteen inert purchases.
-    if buildings != 154 || recipes != 167 {
+    // building owns no physical capacity domain. Construction's eleven live scaffold-
+    // speed studies keep the truthful graph above the one-third product requirement
+    // without restoring those inert purchases.
+    if buildings * 3 < nodes.len() || recipes * 3 < nodes.len() {
         return Err(format!(
-            "unexpected truthful category counts: {buildings} building, {recipes} recipe/resource"
+            "research categories miss the one-third design floor: {buildings} building, {recipes} recipe/resource, {} total",
+            nodes.len()
         ));
     }
     Ok(())
@@ -902,12 +914,19 @@ mod tests {
     fn embedded_catalog_expands_to_the_exact_design_size_and_ratios() {
         let catalog = research_catalog();
         assert_eq!(catalog.nodes().len(), RESEARCH_NODE_COUNT);
-        assert_eq!(catalog.category_count(ResearchCategory::Building), 154);
-        assert_eq!(
-            catalog.category_count(ResearchCategory::RecipeResource),
-            167
+        let buildings = catalog.category_count(ResearchCategory::Building);
+        let recipes = catalog.category_count(ResearchCategory::RecipeResource);
+        assert_eq!(buildings, 165);
+        assert_eq!(recipes, 167);
+        assert_eq!(catalog.category_count(ResearchCategory::Upgrade), 155);
+        assert!(
+            buildings * 3 >= RESEARCH_NODE_COUNT,
+            "building research must remain at least one third of the catalog"
         );
-        assert_eq!(catalog.category_count(ResearchCategory::Upgrade), 166);
+        assert!(
+            recipes * 3 >= RESEARCH_NODE_COUNT,
+            "recipe/resource research must remain at least one third of the catalog"
+        );
     }
 
     #[test]
@@ -1126,12 +1145,34 @@ mod tests {
             )));
         }
 
-        assert_eq!(catalog.category_count(ResearchCategory::Building), 154);
+        assert_eq!(catalog.category_count(ResearchCategory::Building), 165);
         assert_eq!(
             catalog.category_count(ResearchCategory::RecipeResource),
             167
         );
-        assert_eq!(catalog.category_count(ResearchCategory::Upgrade), 166);
+        assert_eq!(catalog.category_count(ResearchCategory::Upgrade), 155);
+    }
+
+    #[test]
+    fn construction_track_is_truthful_building_research_with_live_effects() {
+        let construction = research_catalog()
+            .nodes()
+            .iter()
+            .filter(|node| node.id.starts_with("construction_"))
+            .collect::<Vec<_>>();
+        assert_eq!(construction.len(), 11);
+        for node in construction {
+            assert_eq!(node.category, ResearchCategory::Building, "{}", node.id);
+            assert!(!node.is_future_content(), "{}", node.id);
+            assert!(node.payloads.iter().any(|payload| matches!(
+                payload,
+                ResearchPayload::Modify {
+                    effect_id,
+                    operation: EffectOperation::Add,
+                    value,
+                } if effect_id == "constructionSpeed" && *value > 0.0
+            )));
+        }
     }
 
     #[test]

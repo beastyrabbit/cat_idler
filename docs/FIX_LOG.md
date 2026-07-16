@@ -66,6 +66,33 @@ cargo, and repeat flag. The inspected client-owned 1090×1046 RGB framebuffer
 dark rail alignment and loaded wagon in the live top-down village. The temporary fixture/capture
 hook and isolated client/server processes were removed.
 
+## 2026-07-16 — Building research meets the one-third design floor
+
+**Problem:** Removing thirteen fake `*_stores` purchases correctly left a truthful 487-study
+catalog, but it also reduced the Building category to 154 studies (31.62%). That missed the game
+vision's requirement that at least one third of the graph be building-related. Restoring inert
+container studies merely to improve a ratio would have reopened the no-op bug.
+
+**Fix:** The existing eleven-study Construction branch is now data-classified as Building
+research. Every one of those stable studies already applies a positive `constructionSpeed`
+payload to the authoritative physical scaffold timer; no node, ID, dependency, cost, layout,
+priority, ownership record, effect, or save shape changed. The resulting split is 165 Building,
+167 Recipe/Resource, and 155 Upgrade studies. Both required categories therefore independently
+meet the mathematical one-third floor while the catalog remains exactly 487 studies.
+
+**Evidence:** Catalog construction rejects either category falling below one third. Exhaustive sim
+tests pin all eleven `construction_*` studies to the Building category, positive live scaffold
+effects, and non-future purchase status. Client model tests pin the same 165/167/155 filter split
+and both ratios. The pre-existing physical-scaffold campaign proves those exact studies shorten
+real construction and preserve pinned progress across reassignment. The inspected client-owned
+`/tmp/research-building-third.png` is a 1090×1046 RGB framebuffer (SHA-256
+`bc5db26f323b28354ea4ffd24394d77a7618361db3ee5a7b1fdf4187879c1bb4`): its Building filter reads
+`165 / 487 nodes`, the centered Construction branch is visible, and the selected inspector labels
+Construction Basics `BUILDING` with `constructionSpeed add 0.03`; there is no black screen,
+clipping, or overlap. The capture-only hook was removed before final full sim/client gates, strict
+Clippy, and formatting. Final gates pass all 1,290 simulation tests (one intentional skip), all
+146 client tests, strict `cat-sim` and `cat-client` Clippy, formatting, and diff checks.
+
 ## 2026-07-15 — Palisades read as solid top-down fortress cells
 
 **Problem:** The former 16×4 side-view rail was stretched into a square wall cell. At play scale it

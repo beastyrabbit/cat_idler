@@ -83,7 +83,7 @@
   ],
   "upgradeFamilies": [
     { "id": "logistics", "displayName": "Logistics", "effectId": "haulCapacity", "rootPrerequisites": ["basic_tools"], "eraStart": 2, "costBase": 12.0, "layoutX": 80, "leaderPriorityBase": 850 },
-    { "id": "construction", "displayName": "Construction", "effectId": "constructionSpeed", "rootPrerequisites": ["masonry"], "eraStart": 3, "costBase": 16.0, "layoutX": 81, "leaderPriorityBase": 870 },
+    { "id": "construction", "displayName": "Construction", "effectId": "constructionSpeed", "category": "building", "rootPrerequisites": ["masonry"], "eraStart": 3, "costBase": 16.0, "layoutX": 81, "leaderPriorityBase": 870 },
     { "id": "scholarship", "displayName": "Scholarship", "effectId": "researchRate", "rootPrerequisites": ["school"], "eraStart": 3, "costBase": 16.0, "layoutX": 82, "leaderPriorityBase": 890 },
     { "id": "governance", "displayName": "Governance", "effectId": "productionRate", "rootPrerequisites": ["school", "advanced_storage"], "eraStart": 3, "costBase": 18.0, "layoutX": 83, "leaderPriorityBase": 910 },
     { "id": "welfare", "displayName": "Colony Welfare", "effectId": "healthRecovery", "rootPrerequisites": ["den_insulation"], "eraStart": 2, "costBase": 13.0, "layoutX": 84, "leaderPriorityBase": 930 },

@@ -1464,9 +1464,11 @@ mod tests {
             model.category_count(ResearchCategory::Building),
             research_catalog().category_count(ResearchCategory::Building)
         );
-        assert_eq!(model.category_count(ResearchCategory::Building), 154);
+        assert_eq!(model.category_count(ResearchCategory::Building), 165);
         assert_eq!(model.category_count(ResearchCategory::RecipeResource), 167);
-        assert_eq!(model.category_count(ResearchCategory::Upgrade), 166);
+        assert_eq!(model.category_count(ResearchCategory::Upgrade), 155);
+        assert!(model.category_count(ResearchCategory::Building) * 3 >= RESEARCH_NODE_COUNT);
+        assert!(model.category_count(ResearchCategory::RecipeResource) * 3 >= RESEARCH_NODE_COUNT);
     }
 
     #[test]
