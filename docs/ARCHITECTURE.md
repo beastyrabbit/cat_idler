@@ -180,8 +180,9 @@ maintained product behavior rather than migration:
   campaigns and byte-identical twins, and the 30-cat communal 48-hour campaign is green.
 - **Spatial, transport, and visual completeness.** Exact tree/rock occupancy, visible road
   surfaces, persisted exterior agricultural claims, staged outer-wall construction with an
-  atomic one-gate cutover, and persisted finite-water-habitat fishing routes are live. Real
-  rail/ship routes remain incomplete. The integrated staged-wall, physical Accounting Tent, native UI,
+  atomic one-gate cutover, persisted finite-water-habitat fishing routes, and finite conserved
+  rail/shipping routes with physical vehicles, loading, travel, unloading, and return legs are live.
+  The integrated staged-wall, physical Accounting Tent, native UI,
   and optimized-WASM skin captures are verified. Accounting Tent is snapshot-reachable and has
   an explicit open-station client composition; the maintained Adventure panel, button, progress,
   minimap, and cursor foundation is native- and browser-framebuffer verified.
