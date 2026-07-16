@@ -10,7 +10,6 @@ and any changed Bevy visuals have been verified.
 | Finding | Required correction | State |
 | --- | --- | --- |
 | Research recipe/resource breadth remains incomplete | Thirteen maintained runtime recipe IDs now have data-owned station descriptors and exact catalog ownership metadata: ten are research-gated and three are founding baselines. All thirteen execute through physical queues. The explicit Grain→Flour, Flour→Food, and Metal→exact Tool routes are live. The other 91 generated recipe IDs and all 64 generated resource IDs have no authoritative consumer, are visibly marked `FUTURE`, and cannot spend points. Continue only from the evidence boundary in `RECIPE_RESOURCE_MATRIX.md`. | in progress |
-| Shared terrain is duplicated per colony | Terrain, ecology, roads, wear, depletion, and fish are colony-owned, so two villages at the same coordinates do not inhabit one authoritative mutable world. Move canonical spatial state to world scope while keeping fog and learned contact private. | queued |
 | Inter-village trade is nonphysical | Contact summaries and atomic scalar barter exist, but cats do not meet, carry items, form caravans, or travel trade routes. Preserve knowledge-blind scouting and shrine-return discovery while adding physical exchange. | queued |
 | Fine-biome resources and transport are incomplete | Bone has a finite hunt source, and Gem/Clay/Sand now have distinct finite fine-biome deposits, physical quarry cargo, depletion, storage/trade/persistence/wire/HUD identities, and zero-stock village interiors. Their downstream crafting variants remain incomplete. Rail and Shipping remain separate transport work: blueprint ownership alone must never alter ordinary walking. | in progress |
 
@@ -60,6 +59,33 @@ booted authoritative server and visually inspected: the complete timber perimete
 upright solid stakes, corners join coherently, the south gate remains an obvious opening, and the
 wall does not cover cats, roads, buildings, exterior water, fog, or UI. Capture-only code and both
 processes were removed.
+
+## 2026-07-16 — Mutable terrain and ecology have one shared-world authority
+
+**Problem:** Every colony persisted its own mutable copy of a world coordinate. A road, worn path,
+depleted source, felled/regrown tree, or Fish population changed by one village could remain
+untouched for another village standing on the same coordinate. Simply sharing the maps would also
+have leaked road/resource discoveries through fog.
+
+**Fix:** `WorldState` now owns the canonical mutable tile and Fish ledgers. Colony tile/habitat maps
+remain compatibility and bounded-view caches: signed actions and each deterministic colony tick
+hydrate them from world truth, publish physical mutations back, and refresh overlapping caches.
+Ecology aging and path-wear decay run once per coordinate per world tick even when multiple
+colonies map it. Fresh founding plateaus register without overwriting existing authority. Legacy
+per-colony copies merge in stable colony-id order while conservatively preserving authored roads,
+maximum wear/latest depletion, minimum remaining source/Fish stock, and maximum Fish capacity.
+Fog, provisional scout notes, known contacts, farms, claims, and village ownership remain private.
+Snapshot road, dirt-road, stump, and sapling projections now require that colony's committed reveal.
+
+**Evidence:** An overlapping signed fishing-designation campaign proves that one road/depletion/
+wear/Fish mutation is immediately identical in the other colony cache while its unrevealed road and
+habitat remain absent from the wire snapshot. SQLite owns a new world-level tile table plus Fish
+ledger and rules marker; a focused test covers whole-world round trip, old per-colony migration,
+private fog, and bit-identical post-restart replay. Existing passive/guided simulation and server
+gates cover founding, physical roads, logging/regrowth, fishing, deterministic multi-village ticks,
+and signed action breadth. The final gates execute 1,284 simulation tests (plus one intentional
+skip) and 99 server tests, with strict Clippy and formatting clean. No renderer or protocol shape
+changed, so framebuffer recapture was not required for this authority-only slice.
 
 ## 2026-07-15 — Authored roads require physical supplies, travel, and labor
 

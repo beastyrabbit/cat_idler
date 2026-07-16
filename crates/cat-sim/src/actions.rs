@@ -40,14 +40,15 @@ use crate::{
         JobMetadata, JobRequester, JobRuntime, RaiderRuntime, ScoutMission, ScoutResource, TilePos,
         TradeDirection, VillageKind, VillageScale, VillageTradeOffer, VoteRuntime, WorldState,
         ZoneRuntime, election_schedule_timing, ensure_farm_gather_spot_at,
-        farm_designation_route_is_reachable, farm_gather_spot_id, farm_rect_touches_claim_boundary,
-        farm_route_is_reachable, found_colony_at, found_global_colony, has_frontier,
-        has_logging_site, has_quarry_site, has_replant_site, has_water_site,
-        inside_village_interior, is_farm_gather_spot_id, legal_farm_gather_spots,
+        ensure_shared_spatial_authority, farm_designation_route_is_reachable, farm_gather_spot_id,
+        farm_rect_touches_claim_boundary, farm_route_is_reachable, found_colony_at,
+        found_global_colony, has_frontier, has_logging_site, has_quarry_site, has_replant_site,
+        has_water_site, inside_village_interior, is_farm_gather_spot_id, legal_farm_gather_spots,
         material_offering_metadata, migration_game_minute_at, occupied_farm_tiles,
-        reconcile_colony_stockpiles, release_farm_worker, release_role_automation,
-        road_material_reservations, village_exterior_is_road_connected, visible_offering_materials,
-        world_tick,
+        publish_colony_spatial, reconcile_colony_stockpiles, register_colony_spatial,
+        release_farm_worker, release_role_automation, road_material_reservations,
+        sync_all_colonies_from_shared, sync_colony_from_shared, village_exterior_is_road_connected,
+        visible_offering_materials, world_tick,
     },
     zones,
 };
@@ -365,17 +366,27 @@ fn with_colony(
     ctx: &ActionCtx,
     f: impl FnOnce(&mut ColonyRuntime) -> proto::ActionResult,
 ) -> proto::ActionResult {
-    let Some(colony) = world
-        .colonies
-        .iter_mut()
-        .find(|colony| colony.id == ctx.colony_id)
-    else {
-        return fail("Village not found.");
+    ensure_shared_spatial_authority(world);
+    let result = {
+        let (shared, colonies) = (&mut world.shared_spatial, &mut world.colonies);
+        let Some(colony) = colonies
+            .iter_mut()
+            .find(|colony| colony.id == ctx.colony_id)
+        else {
+            return fail("Village not found.");
+        };
+        if !can_control_village(colony, &ctx.player_id) {
+            return fail("Village is not available.");
+        }
+        sync_colony_from_shared(shared, colony);
+        let result = f(colony);
+        if result.ok {
+            publish_colony_spatial(shared, colony);
+        }
+        result
     };
-    if !can_control_village(colony, &ctx.player_id) {
-        return fail("Village is not available.");
-    }
-    f(colony)
+    sync_all_colonies_from_shared(world);
+    result
 }
 
 /// Defense-in-depth authorization used by every colony-scoped mutation. The
@@ -394,6 +405,7 @@ fn ensure_colony(world: &mut WorldState, now_ms: i64) {
         world
             .colonies
             .push(found_global_colony(world.world_seed, "colony-1", now_ms, 1));
+        register_colony_spatial(world, 0);
     }
 }
 
@@ -2751,6 +2763,9 @@ fn found_village(
     );
     let colony_id = colony.id.clone();
     world.colonies.push(colony);
+    let colony_index = world.colonies.len() - 1;
+    register_colony_spatial(world, colony_index);
+    sync_all_colonies_from_shared(world);
     ok_for_colony(&colony_id)
 }
 
@@ -3342,25 +3357,36 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
         road_tiles: colony
             .world_tiles
             .iter()
-            .filter(|(_, tile)| tile.overlay_feature.as_deref() == Some("road_built"))
+            .filter(|(pos, tile)| {
+                colony.revealed_tiles.contains(pos)
+                    && tile.overlay_feature.as_deref() == Some("road_built")
+            })
             .map(|(pos, _)| tile_point(pos))
             .collect(),
         stump_tiles: colony
             .world_tiles
             .iter()
-            .filter(|(_, tile)| tile.overlay_feature.as_deref() == Some("stump"))
+            .filter(|(pos, tile)| {
+                colony.revealed_tiles.contains(pos)
+                    && tile.overlay_feature.as_deref() == Some("stump")
+            })
             .map(|(pos, _)| tile_point(pos))
             .collect(),
         sapling_tiles: colony
             .world_tiles
             .iter()
-            .filter(|(_, tile)| tile.overlay_feature.as_deref() == Some("sapling"))
+            .filter(|(pos, tile)| {
+                colony.revealed_tiles.contains(pos)
+                    && tile.overlay_feature.as_deref() == Some("sapling")
+            })
             .map(|(pos, _)| tile_point(pos))
             .collect(),
         dirt_road_tiles: colony
             .world_tiles
             .iter()
-            .filter(|(_, tile)| crate::world_tick::tile_forms_dirt_road(tile))
+            .filter(|(pos, tile)| {
+                colony.revealed_tiles.contains(pos) && crate::world_tick::tile_forms_dirt_road(tile)
+            })
             .map(|(pos, _)| tile_point(pos))
             .collect(),
         village_gate: village_gate_snapshot(colony),
@@ -5376,6 +5402,7 @@ mod tests {
 
     fn world_with_one_colony() -> WorldState {
         WorldState {
+            shared_spatial: Default::default(),
             world_seed: 20_240_703,
             colonies: vec![found_colony(20_240_703, "c1", 1_000_000, 1234)],
         }
@@ -5624,6 +5651,7 @@ mod tests {
         unfunded.resources.blocks = 0.0;
         reconcile_colony_stockpiles(&mut unfunded);
         let mut unfunded_world = WorldState {
+            shared_spatial: Default::default(),
             world_seed: world.world_seed,
             colonies: vec![unfunded],
         };
@@ -5737,6 +5765,7 @@ mod tests {
         );
 
         let mut communal = WorldState {
+            shared_spatial: Default::default(),
             world_seed: 20_240_703,
             colonies: vec![found_global_colony(20_240_703, "c1", 1_000_000, 1234)],
         };
@@ -6363,6 +6392,7 @@ mod tests {
             .get_mut(&site)
             .unwrap()
             .overlay_feature = Some("sapling".to_owned());
+        publish_colony_spatial(&mut world.shared_spatial, &world.colonies[0]);
         let before = world.clone();
         let denied = apply_action(&mut world, &action, &ctx());
         assert!(!denied.ok);
@@ -8241,6 +8271,7 @@ mod tests {
             .expect("open stockpile point is mapped");
         water_tile.tile_type = crate::types::TileType::River;
         water_tile.resources.water = 999;
+        publish_colony_spatial(&mut world.shared_spatial, &world.colonies[0]);
         let before_water = world.colonies[0].clone();
         let on_water = apply_action(
             &mut world,
@@ -8842,6 +8873,8 @@ mod tests {
             .expect("stone ground tile");
         stone.tile_type = crate::types::TileType::Mountains;
         stone.path_wear = crate::movement::WORN_ROAD_WEAR;
+        world.colonies[0].revealed_tiles.insert(dirt);
+        world.colonies[0].revealed_tiles.insert(stone_ground);
 
         let snap = build_snapshot(&world, 1_000_000, 1);
         assert!(
@@ -10786,6 +10819,7 @@ mod tests {
             .get_mut(&water)
             .expect("designation creates its canonical habitat")
             .stock = 0.0;
+        publish_colony_spatial(&mut world.shared_spatial, &world.colonies[0]);
 
         let result = apply_action(
             &mut world,
@@ -10808,6 +10842,80 @@ mod tests {
                 .jobs
                 .iter()
                 .all(|job| job.kind != JobKind::Fish)
+        );
+    }
+
+    #[test]
+    fn signed_guidance_mutates_one_shared_ecology_without_leaking_foreign_fog() {
+        let mut world = world_with_one_colony();
+        let (bank, water) = prepare_fishing_shore(&mut world);
+        let mut foreign = world.colonies[0].clone();
+        foreign.id = "foreign-overlap".to_owned();
+        foreign.name = "Hidden Bank".to_owned();
+        foreign.kind = VillageKind::Personal;
+        foreign.owner_player_id = Some("foreign-player".to_owned());
+        foreign.revealed_tiles.remove(&bank);
+        foreign.revealed_tiles.remove(&water);
+        foreign.provisional_tiles.clear();
+        world.colonies.push(foreign);
+
+        let designated = apply_action(
+            &mut world,
+            &proto::ClientAction::DesignateFishingSpot {
+                session_id: "sess_1".to_owned(),
+                nickname: "Angler".to_owned(),
+                sig: "signed".to_owned(),
+                at: tile_point(&bank),
+            },
+            &ctx(),
+        );
+        assert!(designated.ok, "signed player guidance creates the habitat");
+
+        let changed = with_colony(&mut world, &ctx(), |colony| {
+            let tile = colony.world_tiles.get_mut(&bank).expect("mapped bank");
+            tile.overlay_feature = Some("road_built".to_owned());
+            tile.path_wear = 100;
+            tile.resources.food = 0;
+            tile.last_depleted = 1_234_567;
+            colony
+                .fish_habitats
+                .get_mut(&water)
+                .expect("signed designation created shared habitat")
+                .stock = 3.5;
+            ok()
+        });
+        assert!(changed.ok);
+
+        let hidden = world
+            .colonies
+            .iter()
+            .find(|colony| colony.id == "foreign-overlap")
+            .expect("overlapping village");
+        assert_eq!(
+            hidden.world_tiles[&bank], world.shared_spatial.tiles[&bank],
+            "road, depletion and wear are one physical-world mutation"
+        );
+        assert_eq!(hidden.fish_habitats[&water].stock, 3.5);
+        assert!(!hidden.revealed_tiles.contains(&bank));
+        assert!(!hidden.revealed_tiles.contains(&water));
+
+        let snapshot = build_snapshot(&world, ctx().now_ms, 2);
+        let hidden_snapshot = snapshot
+            .colonies
+            .iter()
+            .find(|colony| colony.id == "foreign-overlap")
+            .expect("foreign snapshot");
+        assert!(
+            !hidden_snapshot.road_tiles.contains(&tile_point(&bank)),
+            "shared road authority must not disclose an unrevealed coordinate"
+        );
+        assert!(
+            hidden_snapshot
+                .stockpiles
+                .iter()
+                .filter_map(|pile| pile.gather_spot)
+                .all(|spot| spot.fish_population.is_none()),
+            "foreign habitat stock remains private without a revealed designation"
         );
     }
 

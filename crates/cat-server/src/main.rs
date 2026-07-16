@@ -32,7 +32,8 @@ use cat_protocol::{
 use cat_sim::{
     actions::{ActionCtx, apply_action, build_snapshot},
     world_tick::{
-        TilePos, VillageKind, VillageScale, WorldState, found_global_colony, new_world, world_tick,
+        TilePos, VillageKind, VillageScale, WorldState, found_global_colony, new_world,
+        register_colony_spatial, world_tick,
     },
 };
 use hosting::ServerConfig;
@@ -270,6 +271,7 @@ fn starter_world(now_ms: i64) -> WorldState {
         now_ms,
         STARTER_COLONY_SEED,
     ));
+    register_colony_spatial(&mut world, 0);
     world
 }
 
@@ -2985,6 +2987,11 @@ mod tests {
             let tile = colony.world_tiles.get_mut(&water).unwrap();
             tile.tile_type = cat_sim::types::TileType::River;
             tile.resources.water = 100;
+            let spatial_fixture = colony.clone();
+            cat_sim::world_tick::publish_colony_spatial(
+                &mut world.shared_spatial,
+                &spatial_fixture,
+            );
             bank
         };
         let designation = ClientAction::DesignateFishingSpot {

@@ -20,8 +20,9 @@ use cat_sim::{
     world_tick::{
         BuildingRuntime, ElectionKind, EventKind, RaidPhase, RaiderRuntime, TilePos, TraderRuntime,
         WorldState, building_is_road_connected_to_shrine, can_plan_building_at,
-        default_production_queue, found_colony, new_world, road_path_attaches_to_shrine,
-        road_placement_error, stockpile_placement_error, tile_is_occupied, world_tick,
+        default_production_queue, found_colony, new_world, publish_colony_spatial,
+        road_path_attaches_to_shrine, road_placement_error, stockpile_placement_error,
+        tile_is_occupied, world_tick,
     },
     zones::ZoneRect,
 };
@@ -1140,6 +1141,7 @@ fn run_action_campaign() -> WorldState {
         .get_mut(&water)
         .unwrap()
         .tile_type = TileType::River;
+    publish_colony_spatial(&mut world.shared_spatial, &world.colonies[0]);
     let (session_id, nickname, sig) = signed_fields();
     apply_ok(
         &mut world,

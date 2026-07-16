@@ -22,8 +22,9 @@ use cat_sim::{
     world_tick::{
         BuildingRuntime, ColonyRuntime, ConstructionPhase, ElectionKind, ElectionRuntime,
         EventKind, EventLog, JobMetadata, JobRequester, JobRuntime, ProductionQueueEntry,
-        RaiderRuntime, TilePos, VillageKind, VillageScale, VoteRuntime, WorldState,
-        WorldTileRuntime, ZoneRuntime, default_production_queue, founding_revealed_tiles,
+        RaiderRuntime, SharedSpatialState, TilePos, VillageKind, VillageScale, VoteRuntime,
+        WorldState, WorldTileRuntime, ZoneRuntime, default_production_queue,
+        ensure_shared_spatial_authority, founding_revealed_tiles, sync_all_colonies_from_shared,
     },
     zones::{ZoneKind, ZoneRect},
 };
@@ -53,7 +54,22 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
 
         CREATE TABLE IF NOT EXISTS world (
             id INTEGER PRIMARY KEY CHECK (id = 1),
-            worldSeed INTEGER NOT NULL
+            worldSeed INTEGER NOT NULL,
+            sharedSpatialRulesVersion INTEGER NOT NULL DEFAULT 0,
+            sharedFishHabitats TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS shared_world_tiles (
+            id TEXT PRIMARY KEY,
+            x INTEGER NOT NULL,
+            y INTEGER NOT NULL,
+            type TEXT NOT NULL,
+            resources TEXT NOT NULL,
+            maxResources TEXT NOT NULL,
+            dangerLevel REAL NOT NULL,
+            pathWear REAL NOT NULL,
+            lastDepleted INTEGER NOT NULL,
+            overlayFeature TEXT
         );
 
         CREATE TABLE IF NOT EXISTS colonies (
@@ -286,6 +302,12 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
 /// ADD COLUMN` is not idempotent, so we only add the ones that are missing.
 fn migrate_add_missing_columns(conn: &Connection) -> rusqlite::Result<()> {
     const ADDITIONS: &[(&str, &str, &str)] = &[
+        (
+            "world",
+            "sharedSpatialRulesVersion",
+            "INTEGER NOT NULL DEFAULT 0",
+        ),
+        ("world", "sharedFishHabitats", "TEXT"),
         ("colonies", "isGlobal", "INTEGER"),
         ("colonies", "foundingScale", "TEXT"),
         ("colonies", "upgradeLevels", "TEXT"),
@@ -599,6 +621,11 @@ pub fn save_world(conn: &Connection, world: &WorldState) -> rusqlite::Result<()>
     // deletes and the complete replacement in one transaction so a failed row
     // can never strand the live database empty or partially written.
     let transaction = conn.unchecked_transaction()?;
+    let mut canonical = world.clone();
+    if canonical.shared_spatial.tiles.is_empty() && !canonical.colonies.is_empty() {
+        canonical.shared_spatial.rules_version = 0;
+    }
+    ensure_shared_spatial_authority(&mut canonical);
     transaction.execute_batch(
         "DELETE FROM raiders;
          DELETE FROM votes;
@@ -610,28 +637,55 @@ pub fn save_world(conn: &Connection, world: &WorldState) -> rusqlite::Result<()>
          DELETE FROM jobs;
          DELETE FROM cats;
          DELETE FROM colonies;
+         DELETE FROM shared_world_tiles;
          DELETE FROM world;",
     )?;
     transaction.execute(
-        "INSERT INTO world (id, worldSeed) VALUES (1, ?1)",
-        params![i64::from(world.world_seed)],
+        "INSERT INTO world (
+            id, worldSeed, sharedSpatialRulesVersion, sharedFishHabitats
+         ) VALUES (1, ?1, ?2, ?3)",
+        params![
+            i64::from(canonical.world_seed),
+            i64::from(canonical.shared_spatial.rules_version),
+            serde_json::to_string(
+                &canonical
+                    .shared_spatial
+                    .fish_habitats
+                    .iter()
+                    .map(|(tile, population)| (tile.x, tile.y, *population))
+                    .collect::<Vec<_>>(),
+            )
+            .map_err(to_sql_json)?,
+        ],
     )?;
 
-    for colony in &world.colonies {
-        save_colony(&transaction, world.world_seed, colony)?;
+    for tile in canonical.shared_spatial.tiles.values() {
+        save_shared_world_tile(&transaction, tile)?;
+    }
+    for colony in &canonical.colonies {
+        save_colony(&transaction, canonical.world_seed, colony)?;
     }
 
     transaction.commit()
 }
 
 pub fn load_world(conn: &Connection) -> rusqlite::Result<Option<WorldState>> {
-    let world_seed = conn
-        .query_row("SELECT worldSeed FROM world WHERE id = 1", [], |row| {
-            row.get::<_, i64>(0)
-        })
+    let world_row = conn
+        .query_row(
+            "SELECT worldSeed, sharedSpatialRulesVersion, sharedFishHabitats
+             FROM world WHERE id = 1",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Option<i64>>(1)?.unwrap_or(0),
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            },
+        )
         .optional()?;
 
-    let Some(world_seed) = world_seed else {
+    let Some((world_seed, shared_rules_version, shared_fish_json)) = world_row else {
         return Ok(None);
     };
 
@@ -671,10 +725,31 @@ pub fn load_world(conn: &Connection) -> rusqlite::Result<Option<WorldState>> {
         }
     }
 
-    Ok(Some(WorldState {
+    let shared_fish_habitats = shared_fish_json
+        .map(|raw| {
+            serde_json::from_str::<Vec<(i32, i32, FishPopulation)>>(&raw)
+                .map_err(from_sql_json)
+                .map(|entries| {
+                    entries
+                        .into_iter()
+                        .map(|(x, y, population)| (TilePos { x, y }, population))
+                        .collect()
+                })
+        })
+        .transpose()?
+        .unwrap_or_default();
+    let mut world = WorldState {
         world_seed: world_seed as u32,
         colonies,
-    }))
+        shared_spatial: SharedSpatialState {
+            rules_version: u32::try_from(shared_rules_version).unwrap_or(0),
+            tiles: load_shared_world_tiles(conn)?,
+            fish_habitats: shared_fish_habitats,
+        },
+    };
+    ensure_shared_spatial_authority(&mut world);
+    sync_all_colonies_from_shared(&mut world);
+    Ok(Some(world))
 }
 
 fn save_colony(conn: &Connection, world_seed: u32, colony: &ColonyRuntime) -> rusqlite::Result<()> {
@@ -1359,6 +1434,61 @@ fn save_world_tile(
         ],
     )?;
     Ok(())
+}
+
+fn save_shared_world_tile(conn: &Connection, tile: &WorldTileRuntime) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO shared_world_tiles (
+            id, x, y, type, resources, maxResources, dangerLevel,
+            pathWear, lastDepleted, overlayFeature
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        params![
+            format!("{}:{}", tile.pos.x, tile.pos.y),
+            tile.pos.x,
+            tile.pos.y,
+            tile.tile_type.as_str(),
+            tile_resources_json(tile.resources).to_string(),
+            max_resources_json(tile.max_resources).to_string(),
+            tile.danger_level,
+            i64::from(tile.path_wear),
+            tile.last_depleted,
+            tile.overlay_feature,
+        ],
+    )?;
+    Ok(())
+}
+
+fn load_shared_world_tiles(
+    conn: &Connection,
+) -> rusqlite::Result<BTreeMap<TilePos, WorldTileRuntime>> {
+    let mut stmt = conn.prepare(
+        "SELECT x, y, type, resources, maxResources, dangerLevel, pathWear,
+                lastDepleted, overlayFeature
+         FROM shared_world_tiles ORDER BY x, y",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        let pos = TilePos {
+            x: row.get("x")?,
+            y: row.get("y")?,
+        };
+        let resources_json: String = row.get("resources")?;
+        let max_resources_json: String = row.get("maxResources")?;
+        let path_wear: f64 = row.get("pathWear")?;
+        Ok((
+            pos,
+            WorldTileRuntime {
+                pos,
+                tile_type: parse_wire_enum::<TileType>(&row.get::<_, String>("type")?)?,
+                resources: parse_tile_resources(&resources_json)?,
+                max_resources: parse_max_resources(&max_resources_json)?,
+                danger_level: row.get("dangerLevel")?,
+                path_wear: path_wear.max(0.0) as u32,
+                last_depleted: row.get("lastDepleted")?,
+                overlay_feature: row.get("overlayFeature")?,
+            },
+        ))
+    })?;
+    rows.collect()
 }
 
 fn load_world_tiles(
@@ -2289,7 +2419,8 @@ mod tests {
         migration::ProbationaryMigrant,
         world_tick::{
             ProductionWorkSlot, RaidPhase, ScoutMission, ScoutResource, found_colony,
-            found_colony_at, found_global_colony, founding_revealed_tiles, new_world, world_tick,
+            found_colony_at, found_global_colony, founding_revealed_tiles, new_world,
+            publish_colony_spatial, world_tick,
         },
     };
 
@@ -2872,6 +3003,8 @@ mod tests {
                 });
         }
         world.colonies.push(colony);
+        world.shared_spatial.rules_version = 0;
+        ensure_shared_spatial_authority(&mut world);
 
         save_world(&conn, &world).expect("save spatial migration");
         let mut restarted = load_world(&conn)
@@ -3087,6 +3220,8 @@ mod tests {
             ..JobRuntime::default()
         });
         world.colonies.push(colony);
+        world.shared_spatial.rules_version = 0;
+        ensure_shared_spatial_authority(&mut world);
 
         save_world(&conn, &world).expect("save mid-scaffold haul");
         let restarted = load_world(&conn)
@@ -4927,11 +5062,14 @@ mod tests {
         let mut colony = found_colony(42, "legacy", 1_000_000, 9);
         colony.upgrade_levels.click_power = 3;
         world.colonies.push(colony);
+        let mut expected = world.clone();
+        expected.shared_spatial.rules_version = 0;
+        ensure_shared_spatial_authority(&mut expected);
         save_world(&conn, &world).expect("save migrated world");
         let loaded = load_world(&conn)
             .expect("load migrated world")
             .expect("saved world exists");
-        assert_eq!(loaded, world);
+        assert_eq!(loaded, expected);
     }
 
     #[test]
@@ -5649,6 +5787,8 @@ mod tests {
             },
             ..JobRuntime::default()
         });
+
+        publish_colony_spatial(&mut world.shared_spatial, &world.colonies[0]);
 
         save_world(&conn, &world).expect("save world");
         let mut loaded = load_world(&conn)
@@ -6791,5 +6931,103 @@ mod tests {
         // Documented transient field: confirm the reset, not just its absence from the
         // equality check above.
         assert!(loaded_colony.pending_scout_delivery_tiles.is_empty());
+    }
+
+    #[test]
+    fn shared_spatial_authority_round_trips_migrates_and_replays_without_fog_leaks() {
+        let conn = Connection::open_in_memory().expect("open sqlite");
+        init_schema(&conn).expect("schema");
+        let mut world = new_world(20_260_716);
+        let mut alpha = found_colony(20_260_716, "alpha", 1_000_000, 11);
+        let mut beta = found_colony(20_260_716, "beta", 1_000_000, 12);
+        beta.kind = VillageKind::Personal;
+        beta.owner_player_id = Some("beta-owner".to_owned());
+        let shared_tile = alpha
+            .world_tiles
+            .keys()
+            .copied()
+            .find(|tile| alpha.revealed_tiles.contains(tile))
+            .expect("founding map has a revealed coordinate");
+        let habitat = TilePos {
+            x: shared_tile.x,
+            y: shared_tile.y - 1,
+        };
+        alpha.revealed_tiles.insert(habitat);
+        beta.revealed_tiles.remove(&shared_tile);
+        beta.revealed_tiles.remove(&habitat);
+        alpha.fish_habitats.insert(
+            habitat,
+            FishPopulation {
+                stock: 2.25,
+                capacity: 24.0,
+                last_replenished_at_ms: 1_234_000,
+            },
+        );
+        beta.fish_habitats.insert(
+            habitat,
+            FishPopulation {
+                stock: 9.0,
+                capacity: 24.0,
+                last_replenished_at_ms: 1_200_000,
+            },
+        );
+        let alpha_tile = alpha.world_tiles.get_mut(&shared_tile).unwrap();
+        alpha_tile.overlay_feature = Some("road_built".to_owned());
+        alpha_tile.path_wear = 100;
+        alpha_tile.resources.food = 0;
+        alpha_tile.last_depleted = 1_234_000;
+        beta.world_tiles.get_mut(&shared_tile).unwrap().path_wear = 7;
+        world.colonies = vec![beta, alpha];
+        world.shared_spatial.rules_version = 0;
+
+        ensure_shared_spatial_authority(&mut world);
+        assert_eq!(world.shared_spatial.tiles[&shared_tile].path_wear, 100);
+        assert_eq!(world.shared_spatial.tiles[&shared_tile].resources.food, 0);
+        assert_eq!(world.shared_spatial.fish_habitats[&habitat].stock, 2.25);
+        assert!(
+            !world.colonies[0].revealed_tiles.contains(&shared_tile),
+            "spatial migration must not merge private fog"
+        );
+
+        save_world(&conn, &world).expect("save shared world");
+        let loaded = load_world(&conn).expect("load").expect("world");
+        assert_eq!(loaded.shared_spatial, world.shared_spatial);
+        assert_eq!(
+            loaded.colonies[0].world_tiles[&shared_tile],
+            loaded.shared_spatial.tiles[&shared_tile]
+        );
+        assert!(!loaded.colonies[0].revealed_tiles.contains(&shared_tile));
+
+        let mut uninterrupted = loaded.clone();
+        let mut restarted = loaded.clone();
+        let _ = world_tick(&mut uninterrupted, 1_060_000);
+        save_world(&conn, &restarted).expect("restart checkpoint");
+        restarted = load_world(&conn).expect("reload").expect("world");
+        let _ = world_tick(&mut restarted, 1_060_000);
+        assert_eq!(
+            restarted, uninterrupted,
+            "restart replay stays bit-identical"
+        );
+
+        // Compatibility proof: deleting the new world rows emulates the old schema's
+        // semantic state. Load deterministically rebuilds authority from colony caches.
+        save_world(&conn, &world).expect("save migration fixture");
+        conn.execute("DELETE FROM shared_world_tiles", [])
+            .expect("erase new table rows");
+        conn.execute(
+            "UPDATE world SET sharedSpatialRulesVersion = 0, sharedFishHabitats = NULL",
+            [],
+        )
+        .expect("mark legacy world");
+        let migrated = load_world(&conn).expect("legacy load").expect("world");
+        assert_eq!(migrated.shared_spatial.rules_version, 1);
+        assert_eq!(
+            migrated.shared_spatial.tiles[&shared_tile]
+                .overlay_feature
+                .as_deref(),
+            Some("road_built")
+        );
+        assert_eq!(migrated.shared_spatial.fish_habitats[&habitat].stock, 2.25);
+        assert!(!migrated.colonies[0].revealed_tiles.contains(&shared_tile));
     }
 }

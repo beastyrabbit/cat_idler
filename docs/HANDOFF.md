@@ -218,9 +218,12 @@ so a correct scout route cannot conceal a missing founding dispatch.
    fixed with persisted route-block observation state; 1,153 simulation and 80 server tests plus
    strict touched-crate Clippy pass. The physical finite visiting-trader slice is closed.
 2. **Deepen the shared world.** The durable 30-cat/six-Den/19×19 communal hub is mechanically
-   larger than exact 15-cat/three-Den personal villages. Replace per-colony duplicated mutable
-   terrain with an authoritative shared spatial model where appropriate, then turn summary contact
-   and atomic scalar barter into physical meeting, item trade, and routes. Deterministic
+   larger than exact 15-cat/three-Den personal villages. Mutable terrain, ecology, authored and
+   traffic roads, wear, depletion/regrowth, and Fish populations now have one deterministic
+   world-scoped authority; colony maps are compatibility/view caches, while committed/provisional
+   fog and learned contact remain private. Legacy saves migrate conservatively and SQLite persists
+   the whole shared ledger transactionally. Next, turn summary contact and atomic scalar barter
+   into physical meeting, item trade, and routes. Deterministic
    knowledge-blind scout search is verified; preserve its physical-observation and shrine-return
    contracts as shared-world depth grows. The physical finite NPC trader is a local proof of the
    route, inventory, and restart rules, but player villages still need real inter-village caravans,

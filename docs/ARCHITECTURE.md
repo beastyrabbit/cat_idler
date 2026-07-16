@@ -241,7 +241,9 @@ via `#[serde(rename_all = "camelCase")]`-style annotations; most actions carry `
 - **Persistence** (`persistence.rs`) is `rusqlite` (bundled SQLite) with tables mirroring the
   old Drizzle schema (`world`, `colonies`, `cats`, `jobs`, `buildings`, `world_tiles`, `events`,
   `zones`, `elections`, `votes`, `raiders`) and additive `ALTER TABLE`-style migrations applied
-  on open — same "migrate on connect" discipline as the old `db/client.ts`.
+  on open — same "migrate on connect" discipline as the old `db/client.ts`. Mutable terrain and
+  Fish ecology additionally persist in the world-scoped `shared_world_tiles`/world Fish ledger;
+  per-colony spatial rows are compatibility/view caches, not competing authorities.
 - **Identity** (`identity.rs`) issues and verifies HMAC-signed sessions
   (`SESSION_HMAC_SECRET`; refuses to boot in `NODE_ENV=production` without one, falls back to
   an insecure dev secret otherwise) — the hardening the old TS game's `docs/plan.md` flagged as

@@ -808,6 +808,7 @@ These cards record runtime work; reconciling the specs did not complete them.
 | --- | --- | --- |
 | P16.R1 — physical authored-road labor | done | Signed and Steward routes preserve mapped-terrain, shrine-network, surface, and speed rules while reserving exact visible Materials. A living Build worker carries and works one unit per ordered tile; partial progress, death/reassignment, source/spill recovery, tool wear, map reservation, cadence, and SQLite restart are verified by passive and player-guided campaigns. |
 | P12.R2 — truthful Crews worker slots | done | Twelve existing labor domains gain a deterministic second worker station from their exact `*_crews` study. Each station owns worker/provenance/queue/pause/progress, uses finite shared station stores, survives death/reassignment/restart, and is individually controlled/inspected. Thirteen passive or unsafe families remain catalog-visible as `(future)` but non-purchasable and do not block later research. Simulation, signed action, protocol, persistence, client, passive/guided campaign, cadence, and framebuffer gates verify the slice. |
+| P16.R2 — shared mutable spatial authority | done | `WorldState` owns canonical mutable tiles and Fish ecology; colony maps are compatibility/view caches hydrated and published at signed-action/tick boundaries. Overlapping roads, wear, source depletion/regrowth, and habitat stock agree immediately; ecology ages once per coordinate, while fog/contact remain private and terrain overlay snapshots require committed reveal. Deterministic legacy merge, transactional SQLite whole-world persistence, restart replay, and signed overlap coverage are verified. |
 
 ### Also shipped alongside P12–P19 (not tagged to a phase in commit subjects)
 - **Multi-village founding and contact**: one larger durable communal global village (30 adults,
@@ -815,9 +816,10 @@ These cards record runtime work; reconciling the specs did not complete them.
   owner-only personal sites; restart-persistent secure socket routing; explicit returned-scout
   discovery provenance; summary-only foreign contact; configurable signed direct barter capped at
   32 open source offers; transactional whole-world persistence; and storage-scoped child ids for
-  simultaneous villages. Personal villages remain exact 15-cat/three-Den foundings. Each colony
-  still owns duplicated mutable terrain, and meeting/trade remain summary/scalar operations
-  rather than physical shared-map encounters or caravans.
+  simultaneous villages. Personal villages remain exact 15-cat/three-Den foundings. Villages share
+  one authoritative mutable terrain/ecology ledger: roads, wear, depletion, regrowth, and Fish
+  populations propagate at overlapping coordinates while fog and contact stay private.
+  Meeting/trade remain summary/scalar operations rather than physical encounters or caravans.
 - **Top-down building interiors**: cutaway (no-roof) interiors, then a second slice adding
   textured floors + furnace/altar props (`546d852`, `4b6a375`).
 - **Life-sim breeding wired into the tick loop** — population is a loop, not a fixed roster

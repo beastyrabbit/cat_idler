@@ -153,6 +153,38 @@ pub enum VillageScale {
 pub struct WorldState {
     pub world_seed: u32,
     pub colonies: Vec<ColonyRuntime>,
+    /// Canonical mutable terrain and ecology for the shared world. Colony-local
+    /// `world_tiles` and `fish_habitats` remain persisted compatibility/view caches:
+    /// they are hydrated from this ledger before simulation and projected back only
+    /// for coordinates that colony has mapped. Fog and contact never enter this type.
+    pub shared_spatial: SharedSpatialState,
+}
+
+/// Save-rule version for the first world-scoped mutable spatial authority.
+pub const CURRENT_SHARED_SPATIAL_RULES_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SharedSpatialState {
+    pub rules_version: u32,
+    pub tiles: BTreeMap<TilePos, WorldTileRuntime>,
+    pub fish_habitats: BTreeMap<TilePos, stockpiles::FishPopulation>,
+}
+
+impl Default for SharedSpatialState {
+    fn default() -> Self {
+        Self::current()
+    }
+}
+
+impl SharedSpatialState {
+    #[must_use]
+    pub fn current() -> Self {
+        Self {
+            rules_version: CURRENT_SHARED_SPATIAL_RULES_VERSION,
+            tiles: BTreeMap::new(),
+            fish_habitats: BTreeMap::new(),
+        }
+    }
 }
 
 /// One atomic barter proposal between villages that have met in the shared
@@ -3309,6 +3341,11 @@ pub const fn new_world(world_seed: u32) -> WorldState {
     WorldState {
         world_seed,
         colonies: Vec::new(),
+        shared_spatial: SharedSpatialState {
+            rules_version: CURRENT_SHARED_SPATIAL_RULES_VERSION,
+            tiles: BTreeMap::new(),
+            fish_habitats: BTreeMap::new(),
+        },
     }
 }
 
@@ -4058,19 +4095,140 @@ fn starter_world_tiles(anchor: TilePos, world_seed: u32) -> BTreeMap<TilePos, Wo
     tiles
 }
 
+/// Upgrade legacy per-colony spatial copies into one deterministic world ledger.
+/// Colony id order is the compatibility tie-breaker; conserved mutations are then
+/// merged so an authored road, heavier wear, later depletion, or lower remaining
+/// source stock cannot be resurrected by a stale overlapping copy.
+pub fn ensure_shared_spatial_authority(state: &mut WorldState) {
+    if state.shared_spatial.rules_version >= CURRENT_SHARED_SPATIAL_RULES_VERSION {
+        return;
+    }
+
+    let mut order = (0..state.colonies.len()).collect::<Vec<_>>();
+    order.sort_by(|left, right| state.colonies[*left].id.cmp(&state.colonies[*right].id));
+    let mut shared = SharedSpatialState::current();
+    for index in order {
+        let colony = &state.colonies[index];
+        for (&pos, candidate) in &colony.world_tiles {
+            match shared.tiles.entry(pos) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert(candidate.clone());
+                }
+                std::collections::btree_map::Entry::Occupied(mut entry) => {
+                    merge_legacy_world_tile(entry.get_mut(), candidate);
+                }
+            }
+        }
+        for (&pos, candidate) in &colony.fish_habitats {
+            match shared.fish_habitats.entry(pos) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert(*candidate);
+                }
+                std::collections::btree_map::Entry::Occupied(mut entry) => {
+                    let current = entry.get_mut();
+                    current.stock = current.stock.min(candidate.stock);
+                    current.capacity = current.capacity.max(candidate.capacity);
+                    current.last_replenished_at_ms = current
+                        .last_replenished_at_ms
+                        .max(candidate.last_replenished_at_ms);
+                }
+            }
+        }
+    }
+    state.shared_spatial = shared;
+    sync_all_colonies_from_shared(state);
+}
+
+fn merge_legacy_world_tile(current: &mut WorldTileRuntime, candidate: &WorldTileRuntime) {
+    current.path_wear = current.path_wear.max(candidate.path_wear);
+    current.last_depleted = current.last_depleted.max(candidate.last_depleted);
+    current.resources.food = current.resources.food.min(candidate.resources.food);
+    current.resources.herbs = current.resources.herbs.min(candidate.resources.herbs);
+    current.resources.water = current.resources.water.min(candidate.resources.water);
+    current.resources.gem = current.resources.gem.min(candidate.resources.gem);
+    current.resources.clay = current.resources.clay.min(candidate.resources.clay);
+    current.resources.sand = current.resources.sand.min(candidate.resources.sand);
+    let candidate_wins_overlay = candidate.overlay_feature.as_deref() == Some("road_built")
+        || (current.overlay_feature.as_deref() != Some("road_built")
+            && candidate.last_depleted >= current.last_depleted
+            && candidate.overlay_feature.is_some());
+    if candidate_wins_overlay {
+        current.overlay_feature = candidate.overlay_feature.clone();
+    }
+}
+
+/// Add a freshly founded colony's plateau to the world without overwriting any
+/// already-authoritative coordinate. Valid site selection keeps plateaus disjoint;
+/// the entry rule is nevertheless deterministic for compatibility and tests.
+pub fn register_colony_spatial(state: &mut WorldState, colony_index: usize) {
+    ensure_shared_spatial_authority(state);
+    let colony = &state.colonies[colony_index];
+    for (&pos, tile) in &colony.world_tiles {
+        state
+            .shared_spatial
+            .tiles
+            .entry(pos)
+            .or_insert_with(|| tile.clone());
+    }
+    for (&pos, population) in &colony.fish_habitats {
+        state
+            .shared_spatial
+            .fish_habitats
+            .entry(pos)
+            .or_insert(*population);
+    }
+    sync_colony_from_shared(&state.shared_spatial, &mut state.colonies[colony_index]);
+}
+
+pub fn sync_colony_from_shared(shared: &SharedSpatialState, colony: &mut ColonyRuntime) {
+    for (pos, tile) in &mut colony.world_tiles {
+        if let Some(authoritative) = shared.tiles.get(pos) {
+            *tile = authoritative.clone();
+        }
+    }
+    for (&pos, population) in &shared.fish_habitats {
+        if colony.world_tiles.contains_key(&pos) || colony.revealed_tiles.contains(&pos) {
+            colony.fish_habitats.insert(pos, *population);
+        }
+    }
+}
+
+pub fn publish_colony_spatial(shared: &mut SharedSpatialState, colony: &ColonyRuntime) {
+    shared.rules_version = CURRENT_SHARED_SPATIAL_RULES_VERSION;
+    for (&pos, tile) in &colony.world_tiles {
+        shared.tiles.insert(pos, tile.clone());
+    }
+    for (&pos, population) in &colony.fish_habitats {
+        shared.fish_habitats.insert(pos, *population);
+    }
+}
+
+pub fn sync_all_colonies_from_shared(state: &mut WorldState) {
+    let shared = &state.shared_spatial;
+    for colony in &mut state.colonies {
+        sync_colony_from_shared(shared, colony);
+    }
+}
+
 #[must_use]
 pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
+    ensure_shared_spatial_authority(state);
     let world_seed = state.world_seed;
     let mut indices: Vec<usize> = (0..state.colonies.len()).collect();
     indices.sort_by(|left, right| state.colonies[*left].id.cmp(&state.colonies[*right].id));
 
     let mut reports = Vec::with_capacity(indices.len());
+    let mut ecology_processed_tiles = BTreeSet::new();
+    let mut ecology_processed_habitats = BTreeSet::new();
     for index in indices {
-        let colony = &mut state.colonies[index];
+        let (shared, colonies) = (&mut state.shared_spatial, &mut state.colonies);
+        let colony = &mut colonies[index];
+        sync_colony_from_shared(shared, colony);
         migrate_retired_inert_capacity_studies(colony);
         migrate_split_mill_queues(colony);
         migrate_finite_equipment_authority(colony);
         let Some(gate) = phase_1_colony_selection_and_elapsed_time_gate(colony, now_ms) else {
+            publish_colony_spatial(shared, colony);
             reports.push(TickReport {
                 colony_id: colony.id.clone(),
                 skipped: true,
@@ -4089,9 +4247,34 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
         phase_8_water_low_crisis_edge(colony, gate);
         phase_9_elections_lifecycle(colony, gate);
         phase_10_zones_and_event_pruning(colony, gate);
+        let already_aged_tiles = ecology_processed_tiles
+            .iter()
+            .filter_map(|pos| shared.tiles.get(pos).map(|tile| (*pos, tile.clone())))
+            .collect::<Vec<_>>();
+        let already_aged_habitats = ecology_processed_habitats
+            .iter()
+            .filter_map(|pos| {
+                shared
+                    .fish_habitats
+                    .get(pos)
+                    .map(|population| (*pos, *population))
+            })
+            .collect::<Vec<_>>();
         phase_11_path_wear_decay(colony, gate);
         phase_12_resource_regrowth(colony, gate, world_seed);
         phase_12b_fish_replenishment(colony, gate);
+        for (pos, tile) in already_aged_tiles {
+            if colony.world_tiles.contains_key(&pos) {
+                colony.world_tiles.insert(pos, tile);
+            }
+        }
+        for (pos, population) in already_aged_habitats {
+            if colony.fish_habitats.contains_key(&pos) {
+                colony.fish_habitats.insert(pos, population);
+            }
+        }
+        ecology_processed_tiles.extend(colony.world_tiles.keys().copied());
+        ecology_processed_habitats.extend(colony.fish_habitats.keys().copied());
         phase_13_tick_local_target_caches(colony, gate);
         phase_14_promote_queued_jobs_and_break_ground(colony, gate, world_seed);
         phase_15_assign_promoted_job_destinations(colony, gate, world_seed);
@@ -4127,6 +4310,7 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
                 &colony.stockpiles,
                 gate.processed_through,
             );
+            publish_colony_spatial(shared, colony);
             reports.push(TickReport {
                 colony_id: colony.id.clone(),
                 skipped: false,
@@ -4157,6 +4341,7 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
                 &colony.stockpiles,
                 gate.processed_through,
             );
+            publish_colony_spatial(shared, colony);
             reports.push(TickReport {
                 colony_id: colony.id.clone(),
                 skipped: false,
@@ -4175,6 +4360,8 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
             );
         }
 
+        publish_colony_spatial(shared, colony);
+
         reports.push(TickReport {
             colony_id: colony.id.clone(),
             skipped: false,
@@ -4182,6 +4369,7 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
         });
     }
 
+    sync_all_colonies_from_shared(state);
     reconcile_village_discoveries(state);
 
     reports
@@ -26631,6 +26819,7 @@ mod tests {
     #[test]
     fn empty_world_returns_empty_reports() {
         let mut world = WorldState {
+            shared_spatial: Default::default(),
             world_seed: 123,
             colonies: Vec::new(),
         };
@@ -26641,6 +26830,7 @@ mod tests {
     #[test]
     fn sub_second_elapsed_skips_and_leaves_last_tick_unchanged() {
         let mut world = WorldState {
+            shared_spatial: Default::default(),
             world_seed: 123,
             colonies: vec![ColonyRuntime {
                 id: "colony-1".to_owned(),
@@ -26665,6 +26855,7 @@ mod tests {
     #[test]
     fn single_adult_idle_cat_consumes_spoils_and_persists_tick_and_seed() {
         let mut world = WorldState {
+            shared_spatial: Default::default(),
             world_seed: 123,
             colonies: vec![ColonyRuntime {
                 id: "colony-1".to_owned(),
@@ -26752,6 +26943,7 @@ mod tests {
         cats[2].stats.building = 80.0;
 
         let mut world = WorldState {
+            shared_spatial: Default::default(),
             world_seed: 123,
             colonies: vec![ColonyRuntime {
                 id: "colony-1".to_owned(),
@@ -26910,6 +27102,7 @@ mod tests {
     #[test]
     fn tick_sweeps_expired_zones_by_processed_time() {
         let mut world = WorldState {
+            shared_spatial: Default::default(),
             world_seed: 123,
             colonies: vec![ColonyRuntime {
                 id: "colony-1".to_owned(),
@@ -26966,6 +27159,7 @@ mod tests {
     #[test]
     fn path_decay_is_clamped_and_preserves_roads_and_revealed_tiles() {
         let mut world = WorldState {
+            shared_spatial: Default::default(),
             world_seed: 123,
             colonies: vec![ColonyRuntime {
                 id: "colony-1".to_owned(),
@@ -26996,6 +27190,7 @@ mod tests {
     #[test]
     fn queued_hunt_promotion_assigns_anchor_destination_and_food_site() {
         let mut world = WorldState {
+            shared_spatial: Default::default(),
             world_seed: 123,
             colonies: vec![ColonyRuntime {
                 id: "colony-1".to_owned(),
@@ -27074,6 +27269,7 @@ mod tests {
         };
 
         let mut world = WorldState {
+            shared_spatial: Default::default(),
             world_seed: 123,
             colonies: vec![ColonyRuntime {
                 id: "colony-1".to_owned(),
@@ -27583,6 +27779,7 @@ mod tests {
             y: 6.0,
         };
         WorldState {
+            shared_spatial: Default::default(),
             world_seed: 123,
             colonies: vec![ColonyRuntime {
                 id: "colony-1".to_owned(),
@@ -28348,6 +28545,7 @@ mod tests {
         }
 
         let mut world = WorldState {
+            shared_spatial: Default::default(),
             world_seed: 123,
             colonies: vec![ColonyRuntime {
                 id: "colony-1".to_owned(),
@@ -28783,10 +28981,12 @@ mod tests {
         }];
 
         let mut peaceful = WorldState {
+            shared_spatial: Default::default(),
             world_seed: 123,
             colonies: vec![base_colony],
         };
         let mut raided = WorldState {
+            shared_spatial: Default::default(),
             world_seed: 123,
             colonies: vec![active_raid_colony],
         };
@@ -28836,6 +29036,7 @@ mod tests {
         let grace_ms = (crate::threat::RAID_GRACE_SEC * 1000.0) as i64;
         let now = grace_ms + 10 * 60_000; // comfortably past the 8h grace window
         let mut world = WorldState {
+            shared_spatial: Default::default(),
             world_seed: 123,
             colonies: vec![ColonyRuntime {
                 id: "colony-1".to_owned(),
@@ -28960,10 +29161,12 @@ mod tests {
         prepared.active_raid = Some("raid-1".to_owned());
 
         let mut unprepared_world = WorldState {
+            shared_spatial: Default::default(),
             world_seed: 123,
             colonies: vec![unprepared],
         };
         let mut prepared_world = WorldState {
+            shared_spatial: Default::default(),
             world_seed: 123,
             colonies: vec![prepared],
         };
@@ -29036,10 +29239,12 @@ mod tests {
         });
 
         let mut filled = WorldState {
+            shared_spatial: Default::default(),
             world_seed: 123,
             colonies: vec![colony.clone()],
         };
         let mut vacant = WorldState {
+            shared_spatial: Default::default(),
             world_seed: 123,
             colonies: vec![colony],
         };
@@ -29098,6 +29303,7 @@ mod tests {
         dead.death_time = Some(1);
 
         let mut world = WorldState {
+            shared_spatial: Default::default(),
             world_seed: 123,
             colonies: vec![ColonyRuntime {
                 id: "colony-1".to_owned(),
@@ -31817,6 +32023,7 @@ mod tests {
         };
 
         let mut world = WorldState {
+            shared_spatial: Default::default(),
             world_seed: 123,
             colonies: vec![ColonyRuntime {
                 id: "colony-1".to_owned(),
@@ -34006,6 +34213,7 @@ mod tests {
         colony.last_tick = 10_000;
         (
             WorldState {
+                shared_spatial: Default::default(),
                 world_seed: seed,
                 colonies: vec![colony],
             },
@@ -40554,6 +40762,7 @@ mod tests {
         assert_eq!(colony.items.count_kind(ItemKind::Tool), 1);
 
         let mut world = WorldState {
+            shared_spatial: Default::default(),
             world_seed: 123,
             colonies: vec![colony],
         };
@@ -41613,6 +41822,7 @@ mod tests {
             reconcile_colony_stockpiles(&mut colony);
             let cat_id = colony.cats[0].id.clone();
             let mut world = WorldState {
+                shared_spatial: Default::default(),
                 world_seed: 123,
                 colonies: vec![colony],
             };
@@ -48302,6 +48512,7 @@ mod tests {
         let food_a = pos(12, 6);
         let food_b = pos(12, 12);
         let build_world = |zones: Vec<ZoneRuntime>| WorldState {
+            shared_spatial: Default::default(),
             world_seed: 123,
             colonies: vec![ColonyRuntime {
                 id: "colony-1".to_owned(),
@@ -48756,10 +48967,10 @@ mod tests {
     }
 
     #[test]
-    fn colony_zero_is_unchanged_by_the_presence_of_a_second_village() {
-        // The critical survival guardrail: adding a second village must not perturb colony 0's
-        // simulation at all. Run colony 0 alone and again alongside a distant second village on
-        // the same world seed/cadence, and its full runtime state must stay byte-identical.
+    fn a_second_village_keeps_colony_zero_identity_and_private_knowledge_isolated() {
+        // Mutable ecology is intentionally shared now, so an overlapping mapped fringe may
+        // influence target choice or resource yield. Identity, settlement frame, and private
+        // fog knowledge must remain colony-local even while the physical tiles agree.
         let world_seed = 1234u32;
         let start = 10_000;
 
@@ -48784,10 +48995,20 @@ mod tests {
 
         let solo_zero = solo.colonies.iter().find(|c| c.id == "colony-1").unwrap();
         let shared_zero = shared.colonies.iter().find(|c| c.id == "colony-1").unwrap();
-        assert_eq!(
-            solo_zero, shared_zero,
-            "colony 0 diverged when a second village existed"
-        );
+        assert_eq!(solo_zero.id, shared_zero.id);
+        assert_eq!(solo_zero.anchor, shared_zero.anchor);
+        assert_eq!(solo_zero.claimed_tiles, shared_zero.claimed_tiles);
+        assert_eq!(solo_zero.agricultural_tiles, shared_zero.agricultural_tiles);
+        assert_eq!(solo_zero.revealed_tiles, shared_zero.revealed_tiles);
+        assert_eq!(solo_zero.provisional_tiles, shared_zero.provisional_tiles);
+        assert_eq!(solo_zero.known_village_ids, shared_zero.known_village_ids);
+        for pos in solo_zero.world_tiles.keys() {
+            assert_eq!(
+                shared_zero.world_tiles.get(pos),
+                shared.shared_spatial.tiles.get(pos),
+                "colony view must project the one physical tile at {pos:?}"
+            );
+        }
     }
 
     #[test]
@@ -48811,6 +49032,70 @@ mod tests {
         assert!(
             build() == build(),
             "two-village world tick is not deterministic"
+        );
+    }
+
+    #[test]
+    fn legacy_shared_merge_preserves_lowest_finite_deposit_stock() {
+        let mut current = typed_tile(3, 4, TileType::Meadow);
+        current.resources.gem = 2;
+        current.resources.clay = 12;
+        current.resources.sand = 16;
+        let mut candidate = current.clone();
+        candidate.resources.gem = 1;
+        candidate.resources.clay = 7;
+        candidate.resources.sand = 9;
+
+        merge_legacy_world_tile(&mut current, &candidate);
+
+        assert_eq!(current.resources.gem, 1);
+        assert_eq!(current.resources.clay, 7);
+        assert_eq!(current.resources.sand, 9);
+    }
+
+    #[test]
+    fn overlapping_villages_age_shared_roads_and_fish_once_per_world_tick() {
+        let world_seed = 42;
+        let start = 10_000;
+        let mut world = new_world(world_seed);
+        world
+            .colonies
+            .push(found_colony(world_seed, "alpha", start, 11));
+        world
+            .colonies
+            .push(found_colony(world_seed, "beta", start, 22));
+
+        let habitat = *world.colonies[0]
+            .world_tiles
+            .keys()
+            .max_by_key(|tile| cheb_from_anchor(VILLAGE_ANCHOR_TILE, **tile))
+            .expect("founding map has a distant physical tile");
+        for colony in &mut world.colonies {
+            colony.world_tiles.get_mut(&habitat).unwrap().path_wear = 80;
+            colony.fish_habitats.insert(
+                habitat,
+                stockpiles::FishPopulation {
+                    stock: 0.0,
+                    capacity: stockpiles::FISH_POPULATION_CAPACITY,
+                    last_replenished_at_ms: start,
+                },
+            );
+        }
+
+        let reports = world_tick(&mut world, start + 60_000);
+        assert!(reports.iter().all(|report| !report.skipped));
+        assert_eq!(world.shared_spatial.tiles[&habitat].path_wear, 79);
+        assert_eq!(
+            world.shared_spatial.fish_habitats[&habitat].stock,
+            stockpiles::FISH_REPLENISH_PER_GAME_HOUR / 60.0
+        );
+        assert_eq!(
+            world.colonies[0].world_tiles[&habitat],
+            world.colonies[1].world_tiles[&habitat]
+        );
+        assert_eq!(
+            world.colonies[0].fish_habitats[&habitat],
+            world.colonies[1].fish_habitats[&habitat]
         );
     }
 
@@ -53639,6 +53924,7 @@ mod tests {
         colony.last_tick = 59_000;
         colony.run_started_at = 60_000 - 30 * 60 * 60_000;
         let mut world = WorldState {
+            shared_spatial: Default::default(),
             world_seed: seed,
             colonies: vec![colony],
         };
@@ -56595,6 +56881,7 @@ mod tests {
             ..BuildingRuntime::default()
         });
         let mut world = WorldState {
+            shared_spatial: Default::default(),
             world_seed: 7,
             colonies: vec![colony],
         };
@@ -59050,6 +59337,7 @@ mod tests {
             .get_mut(&habitat)
             .unwrap()
             .stock = 1.25;
+        publish_colony_spatial(&mut world.shared_spatial, &world.colonies[0]);
         let spot_id = world.colonies[0].gather_spots[0].stockpile_id.clone();
         let removed = apply_action(
             &mut world,

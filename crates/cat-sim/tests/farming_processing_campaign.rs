@@ -443,6 +443,7 @@ fn grant_fixture_research_chain(state: &mut upgrade_tree::UpgradeTreeState, node
 
 fn run_guided_campaign(seed: u32) -> WorldState {
     let mut world = WorldState {
+        shared_spatial: Default::default(),
         world_seed: seed,
         colonies: vec![found_colony(
             seed,
@@ -868,6 +869,7 @@ fn run_signed_player_farm_smoke_from_preearned_research(seed: u32) -> WorldState
     const MAX_STEPS: usize = 2_400;
     const PRE_EARNED_RESEARCH_POINTS: f64 = 200.0;
     let mut world = WorldState {
+        shared_spatial: Default::default(),
         world_seed: seed,
         colonies: vec![found_global_colony(seed, "colony-1", START_MS, seed)],
     };
@@ -1390,6 +1392,7 @@ fn signed_player_guidance_from_preearned_research_reaches_physical_farm_to_mill_
 fn signed_manual_field_assignment_works_while_farmer_office_is_vacant() {
     let seed = 42;
     let mut world = WorldState {
+        shared_spatial: Default::default(),
         world_seed: seed,
         colonies: vec![found_colony(seed, "colony-1", START_MS, 59)],
     };
