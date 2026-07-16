@@ -1,6 +1,7 @@
 //! Production HTTP configuration and static hosting for the native server.
 
 use std::{
+    collections::BTreeSet,
     env,
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
@@ -17,6 +18,7 @@ pub struct ServerConfig {
     pub web_dist: Option<PathBuf>,
     pub public_images: Option<PathBuf>,
     pub allowed_origins: AllowedOrigins,
+    pub trusted_proxies: TrustedProxies,
 }
 
 impl ServerConfig {
@@ -63,13 +65,49 @@ impl ServerConfig {
             lookup("CAT_SERVER_ALLOWED_ORIGINS"),
             "CAT_SERVER_ALLOWED_ORIGINS",
         )?;
+        let trusted_proxies = TrustedProxies::parse(
+            lookup("CAT_SERVER_TRUSTED_PROXY_IPS"),
+            "CAT_SERVER_TRUSTED_PROXY_IPS",
+        )?;
+        if !bind_addr.is_loopback() && !allowed_origins.is_restricted() {
+            return Err(
+                "CAT_SERVER_ALLOWED_ORIGINS is required when BIND_ADDR is not loopback".to_owned(),
+            );
+        }
 
         Ok(Self {
             listen_addr: SocketAddr::new(bind_addr, port),
             web_dist,
             public_images,
             allowed_origins,
+            trusted_proxies,
         })
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TrustedProxies(BTreeSet<IpAddr>);
+
+impl TrustedProxies {
+    pub(crate) fn parse(value: Option<String>, variable: &str) -> Result<Self, String> {
+        let Some(value) = value else {
+            return Ok(Self::default());
+        };
+        if value.trim().is_empty() {
+            return Err(format!("{variable} cannot be empty when set"));
+        }
+        let mut proxies = BTreeSet::new();
+        for raw in value.split(',').map(str::trim) {
+            proxies.insert(
+                raw.parse::<IpAddr>()
+                    .map_err(|err| format!("invalid {variable} entry {raw:?}: {err}"))?,
+            );
+        }
+        Ok(Self(proxies))
+    }
+
+    pub fn contains(&self, peer: &IpAddr) -> bool {
+        self.0.contains(peer)
     }
 }
 
@@ -203,6 +241,7 @@ mod tests {
         assert!(config.public_images.is_none());
         assert!(!config.allowed_origins.is_restricted());
         assert!(config.allowed_origins.allows(None));
+        assert_eq!(config.trusted_proxies, TrustedProxies::default());
     }
 
     #[test]
@@ -219,6 +258,7 @@ mod tests {
                 "CAT_SERVER_ALLOWED_ORIGINS",
                 "https://cats.example, http://localhost:8080,https://cats.example",
             ),
+            ("CAT_SERVER_TRUSTED_PROXY_IPS", "127.0.0.2,10.0.0.8"),
         ])
         .expect("production config");
 
@@ -230,6 +270,11 @@ mod tests {
             config
                 .allowed_origins
                 .allows(Some(&HeaderValue::from_static("https://cats.example")))
+        );
+        assert!(
+            config
+                .trusted_proxies
+                .contains(&IpAddr::from([10, 0, 0, 8]))
         );
         assert!(!config.allowed_origins.allows(None));
         assert!(
@@ -248,5 +293,8 @@ mod tests {
         assert!(config(&[("CAT_SERVER_ALLOWED_ORIGINS", "https://cats.example/path")]).is_err());
         assert!(config(&[("CAT_SERVER_ALLOWED_ORIGINS", "https://cats.example/")]).is_err());
         assert!(config(&[("CAT_SERVER_ALLOWED_ORIGINS", "")]).is_err());
+        assert!(config(&[("BIND_ADDR", "0.0.0.0")]).is_err());
+        assert!(config(&[("CAT_SERVER_TRUSTED_PROXY_IPS", "proxy.local")]).is_err());
+        assert!(config(&[("CAT_SERVER_TRUSTED_PROXY_IPS", "")]).is_err());
     }
 }

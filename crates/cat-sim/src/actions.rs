@@ -405,6 +405,7 @@ pub fn apply_action(
 #[must_use]
 pub fn build_snapshot(world: &WorldState, now_ms: i64, online_count: u32) -> proto::WorldSnapshot {
     proto::WorldSnapshot {
+        protocol_version: proto::PROTOCOL_VERSION,
         now: now_ms,
         world_seed: i64::from(world.world_seed),
         online_count,
@@ -1480,15 +1481,24 @@ fn apply_production_queue_edit(
             });
         }
         proto::ProductionQueueEdit::Remove { index } => {
-            if *index >= queue.len() {
+            let Ok(index) = usize::try_from(*index) else {
+                return fail("That queue entry no longer exists.");
+            };
+            if index >= queue.len() {
                 return fail("That queue entry no longer exists.");
             }
-            queue.remove(*index);
-            if *index == 0 {
+            queue.remove(index);
+            if index == 0 {
                 *progress = 0.0;
             }
         }
         proto::ProductionQueueEdit::Move { index, direction } => {
+            let Ok(index) = usize::try_from(*index) else {
+                return fail("That queue entry no longer exists.");
+            };
+            if index >= queue.len() {
+                return fail("That queue entry no longer exists.");
+            }
             let target = match direction {
                 proto::QueueMoveDirection::Up => index.checked_sub(1),
                 proto::QueueMoveDirection::Down => index.checked_add(1),
@@ -1496,13 +1506,16 @@ fn apply_production_queue_edit(
             let Some(target) = target.filter(|target| *target < queue.len()) else {
                 return fail("That queue entry cannot move farther.");
             };
-            queue.swap(*index, target);
-            if *index == 0 || target == 0 {
+            queue.swap(index, target);
+            if index == 0 || target == 0 {
                 *progress = 0.0;
             }
         }
         proto::ProductionQueueEdit::SetRepeat { index, repeat } => {
-            let Some(entry) = queue.get_mut(*index) else {
+            let Ok(index) = usize::try_from(*index) else {
+                return fail("That queue entry no longer exists.");
+            };
+            let Some(entry) = queue.get_mut(index) else {
                 return fail("That queue entry no longer exists.");
             };
             entry.repeat = *repeat;
@@ -2929,6 +2942,19 @@ fn designate_rail(
     if !upgrade_tree::is_owned(&colony.upgrade_tree, "rail") {
         return fail("Research the Rail Line blueprint first.");
     }
+    if [a.x, a.y, b.x, b.y]
+        .iter()
+        .any(|&coord| i64::from(coord).abs() > 1_000)
+    {
+        return fail("Invalid rail endpoints.");
+    }
+    let distance =
+        (i64::from(b.x) - i64::from(a.x)).abs() + (i64::from(b.y) - i64::from(a.y)).abs();
+    if distance
+        > i64::try_from(transport::MAX_CARDINAL_LINE_TILES - 1).expect("rail line cap fits i64")
+    {
+        return fail("Rail alignments must be 2..128 tiles long.");
+    }
     let Some(path) = transport::cardinal_line(proto_tile_pos(a), proto_tile_pos(b)) else {
         return fail("Rail alignments must be straight and cardinal.");
     };
@@ -3257,7 +3283,7 @@ fn transport_snapshot(colony: &ColonyRuntime) -> proto::TransportSnapshot {
                     mode: sim_transport_mode(vehicle.mode),
                     position: tile_point(&route.map_or(vehicle.home, |route| route.position)),
                     crew_cat_id: route.map(|route| route.assigned_cat_id.clone()),
-                    cargo: route.map_or(0.0, |route| route.cargo_loaded),
+                    cargo: finite_snapshot_value(route.map_or(0.0, |route| route.cargo_loaded)),
                 }
             })
             .collect(),
@@ -3269,7 +3295,7 @@ fn transport_snapshot(colony: &ColonyRuntime) -> proto::TransportSnapshot {
                 id: route.id.clone(),
                 mode: sim_transport_mode(route.mode),
                 resource: sim_to_proto_resource_kind(route.resource),
-                amount: route.amount,
+                amount: finite_snapshot_value(route.amount),
                 phase: format!("{:?}", route.phase).to_lowercase(),
                 repeat: route.repeat,
             })
@@ -4354,6 +4380,7 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
         .iter()
         .filter(|cat| cat.specialization == Some(CatSpecialization::Warrior))
         .count() as u32;
+    let snapshot_threat_pressure = finite_snapshot_value(colony.threat_pressure);
 
     proto::ColonySnapshot {
         id: colony.id.clone(),
@@ -4371,39 +4398,39 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
         resources: colony_resources_snapshot(colony),
         storage: proto::StorageSnapshot {
             capacities: proto::ResourceCapacities {
-                food: caps.food,
-                fish: caps.fish,
-                water: caps.water,
-                herbs: caps.herbs,
-                catnip: caps.catnip,
-                grain: caps.grain,
-                flour: caps.flour,
-                preserves: caps.preserves,
-                medicine: caps.medicine,
-                brew: caps.brew,
-                materials: caps.materials,
-                stone: caps.stone,
-                refined: caps.refined,
-                weapons: caps.weapons,
-                armor: caps.armor,
-                planks: caps.planks,
-                logs: caps.logs,
-                lumber: caps.lumber,
-                blocks: caps.blocks,
-                tools: caps.tools,
-                fibre: caps.fibre,
-                thread: caps.thread,
-                hide: caps.hide,
-                bone: caps.bone,
-                cloth: caps.cloth,
-                leather: caps.leather,
-                ore: caps.ore,
-                gem: caps.gem,
-                clay: caps.clay,
-                sand: caps.sand,
-                metal: caps.metal,
+                food: finite_snapshot_value(caps.food),
+                fish: finite_snapshot_value(caps.fish),
+                water: finite_snapshot_value(caps.water),
+                herbs: finite_snapshot_value(caps.herbs),
+                catnip: finite_snapshot_value(caps.catnip),
+                grain: finite_snapshot_value(caps.grain),
+                flour: finite_snapshot_value(caps.flour),
+                preserves: finite_snapshot_value(caps.preserves),
+                medicine: finite_snapshot_value(caps.medicine),
+                brew: finite_snapshot_value(caps.brew),
+                materials: finite_snapshot_value(caps.materials),
+                stone: finite_snapshot_value(caps.stone),
+                refined: finite_snapshot_value(caps.refined),
+                weapons: finite_snapshot_value(caps.weapons),
+                armor: finite_snapshot_value(caps.armor),
+                planks: finite_snapshot_value(caps.planks),
+                logs: finite_snapshot_value(caps.logs),
+                lumber: finite_snapshot_value(caps.lumber),
+                blocks: finite_snapshot_value(caps.blocks),
+                tools: finite_snapshot_value(caps.tools),
+                fibre: finite_snapshot_value(caps.fibre),
+                thread: finite_snapshot_value(caps.thread),
+                hide: finite_snapshot_value(caps.hide),
+                bone: finite_snapshot_value(caps.bone),
+                cloth: finite_snapshot_value(caps.cloth),
+                leather: finite_snapshot_value(caps.leather),
+                ore: finite_snapshot_value(caps.ore),
+                gem: finite_snapshot_value(caps.gem),
+                clay: finite_snapshot_value(caps.clay),
+                sand: finite_snapshot_value(caps.sand),
+                metal: finite_snapshot_value(caps.metal),
             },
-            food_capacity: Some(caps.food),
+            food_capacity: Some(finite_snapshot_value(caps.food)),
             tithe_rates: proto::TitheRates {
                 food: 20.0,
                 refined: 5.0,
@@ -4457,12 +4484,12 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
         vote_kick: vote_kick_payload,
         zones: zones_snapshot(colony, now_ms),
         threat: proto::ThreatSnapshot {
-            pressure: colony.threat_pressure,
-            band: sim_to_proto_threat_band(threat::threat_band(colony.threat_pressure)),
+            pressure: snapshot_threat_pressure,
+            band: sim_to_proto_threat_band(threat::threat_band(snapshot_threat_pressure)),
             raid_active: colony.active_raid.is_some(),
             warriors: warrior_count,
-            weapons: colony.resources.weapons,
-            armor: colony.resources.armor,
+            weapons: finite_snapshot_value(colony.resources.weapons),
+            armor: finite_snapshot_value(colony.resources.armor),
         },
         raiders: raiders_snapshot(colony),
         buildings: buildings_snapshot(colony),
@@ -4561,14 +4588,14 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
                 crop: sim_to_proto_crop(plot.crop),
                 planted_at: plot.planted_at,
                 stage: sim_to_proto_farm_stage(plot.stage),
-                growth_hours: plot.growth_hours,
+                growth_hours: finite_snapshot_value(plot.growth_hours),
                 worker_id: plot.worker_id.clone(),
                 work_phase: sim_to_proto_farm_work_phase(plot.work_phase),
                 input_inventory: Vec::new(),
                 output_inventory: (plot.pending_output > 0.0)
                     .then_some(proto::ResourceStackSnapshot {
                         kind: sim_to_proto_crop_resource(plot.crop),
-                        amount: plot.pending_output,
+                        amount: finite_snapshot_value(plot.pending_output),
                     })
                     .into_iter()
                     .collect(),
@@ -4578,7 +4605,7 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
             .collect(),
         stock_ledger: Some(stock_ledger_snapshot(colony)),
         items: items_snapshot(&colony.items),
-        coin: colony.coin,
+        coin: finite_snapshot_value(colony.coin),
         trader: trader_snapshot(colony),
     }
 }
@@ -4595,7 +4622,8 @@ fn trader_snapshot(colony: &ColonyRuntime) -> Option<proto::TraderSnapshot> {
         .copied()
         .filter(|kind| trader::resource_unit_price(*kind).is_some())
         .map(|kind| {
-            let available = trader_unit.stock.get(&kind).copied().unwrap_or(0.0);
+            let available =
+                finite_snapshot_value(trader_unit.stock.get(&kind).copied().unwrap_or(0.0));
             proto::TraderStockSnapshot {
                 resource: sim_to_proto_resource_kind(kind),
                 available,
@@ -4613,7 +4641,9 @@ fn trader_snapshot(colony: &ColonyRuntime) -> Option<proto::TraderSnapshot> {
                 if held == 0 {
                     return None;
                 }
-                let unit_price = trader::trader_buy_price(*item, 1) * effects.trade_value_mult;
+                let unit_price = finite_snapshot_value(
+                    trader::trader_buy_price(*item, 1) * effects.trade_value_mult,
+                );
                 let load_limit = trader::max_item_units_per_load(*item);
                 let purse_limit = (trader_unit.coin / unit_price)
                     .floor()
@@ -4654,10 +4684,11 @@ fn trader_snapshot(colony: &ColonyRuntime) -> Option<proto::TraderSnapshot> {
         .iter()
         .filter_map(|&kind| {
             trader::trader_sell_price(kind, 1.0).map(|unit_price| {
-                let available = trader_unit.stock.get(&kind).copied().unwrap_or(0.0);
+                let available =
+                    finite_snapshot_value(trader_unit.stock.get(&kind).copied().unwrap_or(0.0));
                 proto::TraderSellOffer {
                     resource: sim_to_proto_resource_kind(kind),
-                    unit_price,
+                    unit_price: finite_snapshot_value(unit_price),
                     available,
                     sold_out: available <= f64::EPSILON,
                     blocked_reason: (available >= 1.0
@@ -4685,8 +4716,11 @@ fn trader_snapshot(colony: &ColonyRuntime) -> Option<proto::TraderSnapshot> {
         visit_number: trader_unit.visit_number,
         arrived_at: trader_unit.arrived_at,
         visit_ends_at: trader_unit.depart_at,
-        coin: trader_unit.coin,
-        cargo_weight_grams: trader::cargo_weight_grams(&trader_unit.stock, &trader_unit.items),
+        coin: finite_snapshot_value(trader_unit.coin),
+        cargo_weight_grams: finite_snapshot_value(trader::cargo_weight_grams(
+            &trader_unit.stock,
+            &trader_unit.items,
+        )),
         cargo_capacity_grams: trader::TRADER_CARGO_CAPACITY_GRAMS,
         cargo_items: items_snapshot(&trader_unit.items),
         stock,
@@ -4792,9 +4826,13 @@ fn stock_ledger_snapshot(colony: &ColonyRuntime) -> proto::StockLedgerSnapshot {
                     }
                 },
                 target_stockpile_id: round.target_stockpile_id.clone(),
-                remaining_piles: round.pending_stockpile_ids.len()
-                    + usize::from(round.target_stockpile_id.is_some()),
-                unreachable_piles: round.unreachable_stockpile_ids.len(),
+                remaining_piles: u32::try_from(
+                    round.pending_stockpile_ids.len()
+                        + usize::from(round.target_stockpile_id.is_some()),
+                )
+                .unwrap_or(u32::MAX),
+                unreachable_piles: u32::try_from(round.unreachable_stockpile_ids.len())
+                    .unwrap_or(u32::MAX),
                 dwell_elapsed_ms: round.dwell_elapsed_ms,
                 dwell_required_ms: crate::ledger::PILE_COUNT_DWELL_MS,
             }
@@ -4848,8 +4886,8 @@ fn stockpile_snapshot(
                         crate::world_tick::fishing_habitat_tile(colony, shore)
                             .and_then(|water| colony.fish_habitats.get(&water))
                             .map(|population| proto::FishPopulationSnapshot {
-                                stock: population.stock,
-                                capacity: population.capacity,
+                                stock: finite_snapshot_value(population.stock),
+                                capacity: finite_snapshot_value(population.capacity),
                                 last_replenished_at_ms: population.last_replenished_at_ms,
                             })
                     })
@@ -4899,7 +4937,7 @@ fn active_stockpile_haul_snapshot(colony: &ColonyRuntime) -> Option<proto::Stock
             source_stockpile_id: source_stockpile_id.clone(),
             destination_stockpile_id: destination_stockpile_id.clone(),
             resource: sim_to_proto_resource_kind(*kind),
-            amount: *amount_in_transit,
+            amount: finite_snapshot_value(*amount_in_transit),
             phase: if is_recovery {
                 proto::StockpileHaulPhase::RecoveryBlocked
             } else if carrying {
@@ -4926,7 +4964,7 @@ fn cat_snapshot(
         destination: cat.destination.map(map_position),
         carrying: cat.carrying.as_ref().map(|carrying| proto::Carrying {
             kind: sim_to_proto_carrying_kind(carrying.kind),
-            amount: carrying.amount,
+            amount: finite_snapshot_value(carrying.amount),
             job_ended_at: carrying.job_ended_at,
             item_ids: colony
                 .items
@@ -4955,12 +4993,12 @@ fn cat_snapshot(
                 .map(str::to_owned),
         },
         specialization: cat.specialization.map(sim_to_proto_specialization),
-        age_hours: cat.age_hours,
+        age_hours: finite_snapshot_value(cat.age_hours),
         needs: proto::CatNeeds {
-            hunger: cat.needs.hunger,
-            thirst: cat.needs.thirst,
-            rest: cat.needs.rest,
-            health: cat.needs.health,
+            hunger: finite_snapshot_value(cat.needs.hunger),
+            thirst: finite_snapshot_value(cat.needs.thirst),
+            rest: finite_snapshot_value(cat.needs.rest),
+            health: finite_snapshot_value(cat.needs.health),
         },
         current_task: cat.current_task.map(|task| task.as_str().to_owned()),
         assigned_building_id: colony
@@ -4969,18 +5007,18 @@ fn cat_snapshot(
             .find(|building| building.has_worker(&cat.id))
             .map(|building| building.id.clone()),
         role_xp: proto::RoleXp {
-            hunter: cat.role_xp.hunter,
-            architect: cat.role_xp.architect,
-            ritualist: cat.role_xp.ritualist,
-            warrior: cat.role_xp.warrior,
+            hunter: finite_snapshot_value(cat.role_xp.hunter),
+            architect: finite_snapshot_value(cat.role_xp.architect),
+            ritualist: finite_snapshot_value(cat.role_xp.ritualist),
+            warrior: finite_snapshot_value(cat.role_xp.warrior),
         },
         skills: cat
             .skills
             .iter()
-            .map(|(labor, xp)| (sim_to_proto_labor(*labor), *xp))
+            .map(|(labor, xp)| (sim_to_proto_labor(*labor), finite_snapshot_value(*xp)))
             .collect(),
         stats: proto::CatStats {
-            leadership: cat.stats.leadership,
+            leadership: finite_snapshot_value(cat.stats.leadership),
         },
         death_time: cat.death_time,
         parent_ids: cat.parent_ids.iter().flatten().cloned().collect(),
@@ -5122,9 +5160,9 @@ fn research_snapshot(colony: &ColonyRuntime) -> proto::ResearchSnapshot {
             })
             .cloned()
             .collect(),
-        research_points: colony.upgrade_tree.research_points,
+        research_points: finite_snapshot_value(colony.upgrade_tree.research_points),
         researcher_count: 0,
-        blessings: colony.global_upgrade_points,
+        blessings: finite_snapshot_value(colony.global_upgrade_points),
         next_target: next_target.map(|node| proto::ResearchTarget {
             id: node.id.to_owned(),
             name: node.name.to_owned(),
@@ -5259,8 +5297,8 @@ fn raiders_snapshot(colony: &ColonyRuntime) -> Vec<proto::RaiderSnapshot> {
                 x: raider.position.x.round() as i32,
                 y: raider.position.y.round() as i32,
             },
-            hp: raider.health,
-            strength: raider.attack.max(raider.defense),
+            hp: finite_snapshot_value(raider.health),
+            strength: finite_snapshot_value(raider.attack.max(raider.defense)),
             status: if raider.health <= 0.0 {
                 proto::RaiderStatus::Dead
             } else {
@@ -5303,9 +5341,9 @@ fn buildings_snapshot(colony: &ColonyRuntime) -> Vec<proto::BuildingSnapshot> {
             if let Some(cat_id) = building.assigned_cat.as_ref() {
                 work_slots.push(proto::ProductionWorkSlotSnapshot {
                     cat_id: cat_id.clone(),
-                    production_progress: cycle_sec.map_or(0.0, |cycle| {
+                    production_progress: finite_snapshot_value(cycle_sec.map_or(0.0, |cycle| {
                         (building.production_progress / cycle).clamp(0.0, 1.0)
-                    }),
+                    })),
                     production_queue: building
                         .production_queue
                         .iter()
@@ -5321,9 +5359,9 @@ fn buildings_snapshot(colony: &ColonyRuntime) -> Vec<proto::BuildingSnapshot> {
             work_slots.extend(building.additional_work_slots.iter().map(|slot| {
                 proto::ProductionWorkSlotSnapshot {
                     cat_id: slot.assigned_cat.clone(),
-                    production_progress: cycle_sec.map_or(0.0, |cycle| {
+                    production_progress: finite_snapshot_value(cycle_sec.map_or(0.0, |cycle| {
                         (slot.production_progress / cycle).clamp(0.0, 1.0)
-                    }),
+                    })),
                     production_queue: slot
                         .production_queue
                         .iter()
@@ -5336,10 +5374,11 @@ fn buildings_snapshot(colony: &ColonyRuntime) -> Vec<proto::BuildingSnapshot> {
                     automated_by: slot.automated_by.map(sim_to_proto_officer_role),
                 }
             }));
-            let production_progress = production::building_cycle_sec(building.building_type)
-                .map_or(0.0, |cycle_sec| {
+            let production_progress = finite_snapshot_value(
+                production::building_cycle_sec(building.building_type).map_or(0.0, |cycle_sec| {
                     (building.production_progress / cycle_sec).clamp(0.0, 1.0)
-                });
+                }),
+            );
             let recipe_availability =
                 crate::world_tick::available_production_recipes(building.building_type)
                     .iter()
@@ -5399,28 +5438,36 @@ fn buildings_snapshot(colony: &ColonyRuntime) -> Vec<proto::BuildingSnapshot> {
                 // Live sum of carried cargo whose haul target resolves to this building's
                 // tile (see `world_tick::building_inbound_haul`). Physical Mill/Sawmill
                 // inputs target their station; ordinary cargo targets stockpiles.
-                inbound_haul: crate::world_tick::building_inbound_haul(colony, building),
-                outbound_haul: crate::world_tick::building_outbound_haul(colony, building),
+                inbound_haul: finite_snapshot_value(crate::world_tick::building_inbound_haul(
+                    colony, building,
+                )),
+                outbound_haul: finite_snapshot_value(crate::world_tick::building_outbound_haul(
+                    colony, building,
+                )),
                 input_inventory: crate::world_tick::building_station_inventory(
                     colony, building, false,
                 )
                 .into_iter()
                 .map(|(kind, amount)| proto::ResourceStackSnapshot {
                     kind: sim_to_proto_resource_kind(kind),
-                    amount,
+                    amount: finite_snapshot_value(amount),
                 })
                 .collect(),
-                input_capacity: crate::world_tick::building_station_capacity(colony, building),
+                input_capacity: finite_snapshot_value(
+                    crate::world_tick::building_station_capacity(colony, building),
+                ),
                 output_inventory: crate::world_tick::building_station_inventory(
                     colony, building, true,
                 )
                 .into_iter()
                 .map(|(kind, amount)| proto::ResourceStackSnapshot {
                     kind: sim_to_proto_resource_kind(kind),
-                    amount,
+                    amount: finite_snapshot_value(amount),
                 })
                 .collect(),
-                output_capacity: crate::world_tick::building_station_capacity(colony, building),
+                output_capacity: finite_snapshot_value(
+                    crate::world_tick::building_station_capacity(colony, building),
+                ),
                 production_queue: crate::world_tick::building_production_queue(building)
                     .into_iter()
                     .map(|entry| proto::ProductionQueueEntrySnapshot {
@@ -5446,21 +5493,21 @@ fn buildings_snapshot(colony: &ColonyRuntime) -> Vec<proto::BuildingSnapshot> {
                     .into_iter()
                     .map(|(kind, amount)| proto::ResourceStackSnapshot {
                         kind: sim_to_proto_resource_kind(kind),
-                        amount,
+                        amount: finite_snapshot_value(amount),
                     })
                     .collect(),
                 outbound_cargo: crate::world_tick::building_station_cargo(colony, building, "out")
                     .into_iter()
                     .map(|(kind, amount)| proto::ResourceStackSnapshot {
                         kind: sim_to_proto_resource_kind(kind),
-                        amount,
+                        amount: finite_snapshot_value(amount),
                     })
                     .collect(),
                 construction_required: crate::world_tick::building_construction_required(building)
                     .into_iter()
                     .map(|(kind, amount)| proto::ResourceStackSnapshot {
                         kind: sim_to_proto_resource_kind(kind),
-                        amount,
+                        amount: finite_snapshot_value(amount),
                     })
                     .collect(),
                 construction_delivered: crate::world_tick::building_construction_delivered(
@@ -5469,7 +5516,7 @@ fn buildings_snapshot(colony: &ColonyRuntime) -> Vec<proto::BuildingSnapshot> {
                 .into_iter()
                 .map(|(kind, amount)| proto::ResourceStackSnapshot {
                     kind: sim_to_proto_resource_kind(kind),
-                    amount,
+                    amount: finite_snapshot_value(amount),
                 })
                 .collect(),
                 construction_in_transit: crate::world_tick::building_construction_in_transit(
@@ -5478,7 +5525,7 @@ fn buildings_snapshot(colony: &ColonyRuntime) -> Vec<proto::BuildingSnapshot> {
                 .into_iter()
                 .map(|(kind, amount)| proto::ResourceStackSnapshot {
                     kind: sim_to_proto_resource_kind(kind),
-                    amount,
+                    amount: finite_snapshot_value(amount),
                 })
                 .collect(),
                 construction_block_reason: crate::world_tick::building_construction_block_reason(
@@ -5497,7 +5544,7 @@ fn leader_snapshot(colony: &ColonyRuntime, alive_cats: &[&Cat]) -> Option<proto:
         .map(|cat| proto::LeaderSnapshot {
             id: cat.id.clone(),
             name: cat.name.clone(),
-            leadership: cat.stats.leadership,
+            leadership: finite_snapshot_value(cat.stats.leadership),
         })
 }
 
@@ -5915,46 +5962,53 @@ fn election_candidates(alive_cats: &[&Cat]) -> Vec<proto::ElectionCandidate> {
         .map(|cat| proto::ElectionCandidate {
             id: cat.id.clone(),
             name: cat.name.clone(),
-            leadership: cat.stats.leadership,
+            leadership: finite_snapshot_value(cat.stats.leadership),
             specialization: cat.specialization.map(sim_to_proto_specialization),
         })
         .collect()
 }
 
+/// JSON has no representation for NaN or infinity: `serde_json` writes either as
+/// `null`, which then rejects the protocol's required `f64` field on decode. Keep
+/// corrupt/degenerate persisted numerics from invalidating an entire world frame.
+fn finite_snapshot_value(value: f64) -> f64 {
+    if value.is_finite() { value } else { 0.0 }
+}
+
 fn resources_snapshot(resources: &entities::Resources) -> proto::ResourceAmounts {
     proto::ResourceAmounts {
-        food: resources.food,
-        fish: resources.fish,
-        water: resources.water,
-        herbs: resources.herbs,
-        catnip: resources.catnip,
-        grain: resources.grain,
-        flour: resources.flour,
-        preserves: resources.preserves,
-        medicine: resources.medicine,
-        brew: resources.brew,
-        materials: resources.materials,
-        stone: resources.stone,
-        refined: resources.refined,
-        weapons: resources.weapons,
-        armor: resources.armor,
-        planks: resources.planks,
-        logs: resources.logs,
-        lumber: resources.lumber,
-        blocks: resources.blocks,
-        tools: resources.tools,
-        fibre: resources.fibre,
-        thread: resources.thread,
-        hide: resources.hide,
-        bone: resources.bone,
-        cloth: resources.cloth,
-        leather: resources.leather,
-        ore: resources.ore,
-        gem: resources.gem,
-        clay: resources.clay,
-        sand: resources.sand,
-        metal: resources.metal,
-        blessings: resources.blessings,
+        food: finite_snapshot_value(resources.food),
+        fish: finite_snapshot_value(resources.fish),
+        water: finite_snapshot_value(resources.water),
+        herbs: finite_snapshot_value(resources.herbs),
+        catnip: finite_snapshot_value(resources.catnip),
+        grain: finite_snapshot_value(resources.grain),
+        flour: finite_snapshot_value(resources.flour),
+        preserves: finite_snapshot_value(resources.preserves),
+        medicine: finite_snapshot_value(resources.medicine),
+        brew: finite_snapshot_value(resources.brew),
+        materials: finite_snapshot_value(resources.materials),
+        stone: finite_snapshot_value(resources.stone),
+        refined: finite_snapshot_value(resources.refined),
+        weapons: finite_snapshot_value(resources.weapons),
+        armor: finite_snapshot_value(resources.armor),
+        planks: finite_snapshot_value(resources.planks),
+        logs: finite_snapshot_value(resources.logs),
+        lumber: finite_snapshot_value(resources.lumber),
+        blocks: finite_snapshot_value(resources.blocks),
+        tools: finite_snapshot_value(resources.tools),
+        fibre: finite_snapshot_value(resources.fibre),
+        thread: finite_snapshot_value(resources.thread),
+        hide: finite_snapshot_value(resources.hide),
+        bone: finite_snapshot_value(resources.bone),
+        cloth: finite_snapshot_value(resources.cloth),
+        leather: finite_snapshot_value(resources.leather),
+        ore: finite_snapshot_value(resources.ore),
+        gem: finite_snapshot_value(resources.gem),
+        clay: finite_snapshot_value(resources.clay),
+        sand: finite_snapshot_value(resources.sand),
+        metal: finite_snapshot_value(resources.metal),
+        blessings: finite_snapshot_value(resources.blessings),
     }
 }
 
@@ -5963,7 +6017,7 @@ fn resources_snapshot(resources: &entities::Resources) -> proto::ResourceAmounts
 /// report their real (normally zero) `Resources::blessings` field without double-counting it.
 fn colony_resources_snapshot(colony: &ColonyRuntime) -> proto::ResourceAmounts {
     let mut resources = resources_snapshot(&colony.resources);
-    resources.blessings = colony.global_upgrade_points;
+    resources.blessings = finite_snapshot_value(colony.global_upgrade_points);
     resources
 }
 
@@ -6290,9 +6344,9 @@ fn village_trade_offer_snapshot(offer: &VillageTradeOffer) -> proto::VillageTrad
         from_colony_id: offer.from_colony_id.clone(),
         to_colony_id: offer.to_colony_id.clone(),
         offered_kind: sim_to_proto_resource_kind(offer.offered_kind),
-        offered_amount: offer.offered_amount,
+        offered_amount: finite_snapshot_value(offer.offered_amount),
         requested_kind: sim_to_proto_resource_kind(offer.requested_kind),
-        requested_amount: offer.requested_amount,
+        requested_amount: finite_snapshot_value(offer.requested_amount),
         created_at: offer.created_at,
     }
 }
@@ -6306,9 +6360,9 @@ fn village_trade_caravan_snapshot(
         from_colony_id: caravan.from_colony_id.clone(),
         to_colony_id: caravan.to_colony_id.clone(),
         offered_kind: sim_to_proto_resource_kind(caravan.offered_kind),
-        offered_amount: caravan.offered_amount,
+        offered_amount: finite_snapshot_value(caravan.offered_amount),
         requested_kind: sim_to_proto_resource_kind(caravan.requested_kind),
-        requested_amount: caravan.requested_amount,
+        requested_amount: finite_snapshot_value(caravan.requested_amount),
         offered_item_ids: caravan
             .offered_items
             .iter()
@@ -6785,6 +6839,69 @@ mod tests {
             snapshot.colonies[0].transport.vehicles[0].crew_cat_id,
             Some(cat_id)
         );
+    }
+
+    #[test]
+    fn rail_designation_rejects_extreme_and_overlong_endpoints_before_expansion() {
+        let mut world = world_with_one_colony();
+        world.colonies[0]
+            .upgrade_tree
+            .owned_node_ids
+            .push("rail".to_owned());
+        let cat_id = world.colonies[0].cats[0].id.clone();
+        let action = |a, b| proto::ClientAction::DesignateRail {
+            session_id: "sess_1".to_owned(),
+            nickname: "Rail Planner".to_owned(),
+            sig: "server-verified".to_owned(),
+            a,
+            b,
+            cat_id: cat_id.clone(),
+        };
+
+        for (a, b) in [
+            (
+                proto::TilePoint { x: 0, y: 0 },
+                proto::TilePoint { x: 0, y: i32::MAX },
+            ),
+            (
+                proto::TilePoint { x: i32::MIN, y: 0 },
+                proto::TilePoint { x: i32::MAX, y: 0 },
+            ),
+            (
+                proto::TilePoint { x: 0, y: 0 },
+                proto::TilePoint { x: 0, y: 128 },
+            ),
+        ] {
+            let result = apply_action(&mut world, &action(a, b), &ctx());
+            assert!(!result.ok, "unbounded rail designation was accepted");
+            assert!(world.colonies[0].transport.projects.is_empty());
+        }
+    }
+
+    #[test]
+    fn moving_a_missing_production_queue_source_is_a_clean_failure() {
+        let mut queue = vec![crate::world_tick::ProductionQueueEntry {
+            recipe_id: "test-recipe".to_owned(),
+            repeat: false,
+        }];
+        let original = queue.clone();
+        let mut progress = 12.5;
+        let mut paused = false;
+
+        let result = apply_production_queue_edit(
+            &mut queue,
+            &mut progress,
+            &mut paused,
+            &proto::ProductionQueueEdit::Move {
+                index: 1,
+                direction: proto::QueueMoveDirection::Up,
+            },
+        );
+
+        assert!(!result.ok);
+        assert_eq!(queue, original);
+        assert_eq!(progress, 12.5);
+        assert!(!paused);
     }
 
     #[test]
@@ -9461,6 +9578,62 @@ mod tests {
         let decoded: proto::WorldSnapshot =
             serde_json::from_str(&websocket_text).expect("deserialize snapshot");
         assert_eq!(decoded, snapshot);
+    }
+
+    #[test]
+    fn degenerate_runtime_floats_cannot_invalidate_the_world_snapshot_frame() {
+        let mut world = world_with_one_colony();
+        let colony = &mut world.colonies[0];
+        colony
+            .buildings
+            .retain(|building| building.building_type != BuildingType::Den);
+        colony.threat_pressure = f64::NAN;
+        colony.resources.food = f64::INFINITY;
+        colony.resources.weapons = f64::NEG_INFINITY;
+        colony.coin = f64::NAN;
+        colony.upgrade_tree.research_points = f64::INFINITY;
+        colony.global_upgrade_points = f64::NAN;
+        let cat = &mut colony.cats[0];
+        cat.age_hours = f64::NAN;
+        cat.needs = entities::CatNeeds {
+            hunger: f64::NAN,
+            thirst: f64::INFINITY,
+            rest: f64::NEG_INFINITY,
+            health: f64::NAN,
+        };
+        cat.stats.leadership = f64::NAN;
+        cat.role_xp.hunter = f64::INFINITY;
+        cat.skills.insert(Labor::Hunt, f64::NAN);
+
+        let snapshot = build_snapshot(&world, 1_000_000, 1);
+        let websocket_text = serde_json::to_string(&snapshot).expect("serialize snapshot");
+        let decoded: proto::WorldSnapshot =
+            serde_json::from_str(&websocket_text).expect("deserialize finite snapshot");
+        let colony = &decoded.colonies[0];
+
+        assert_eq!(colony.housing.pressure, 15.0);
+        assert_eq!(colony.threat.pressure, 0.0);
+        assert_eq!(colony.resources.food, 0.0);
+        assert_eq!(colony.coin, 0.0);
+        assert_eq!(colony.research.research_points, 0.0);
+        let cat = colony
+            .cats
+            .iter()
+            .find(|snapshot_cat| snapshot_cat.id == world.colonies[0].cats[0].id)
+            .expect("degenerate cat remains visible");
+        assert_eq!(cat.age_hours, 0.0);
+        assert_eq!(
+            cat.needs,
+            proto::CatNeeds {
+                hunger: 0.0,
+                thirst: 0.0,
+                rest: 0.0,
+                health: 0.0,
+            }
+        );
+        assert_eq!(cat.stats.leadership, 0.0);
+        assert_eq!(cat.role_xp.hunter, 0.0);
+        assert_eq!(cat.skills.get(&proto::Labor::Hunt), Some(&0.0));
     }
 
     #[test]

@@ -12,7 +12,7 @@ zones, boost jobs, assign leadership roles, vote, and spend a slow tech tree.
 
 Built as a Rust **Cargo workspace** under `crates/`:
 - **cat-sim** — pure, deterministic simulation core (no I/O). `world_tick()` is the single
-  source of truth, ~40 ordered phases per colony per tick.
+  source of truth, 53 ordered phases per colony per tick.
 - **cat-protocol** — `serde` wire DTOs (`WorldSnapshot`/`ColonySnapshot` + `ClientAction`)
   shared by server and client.
 - **cat-server** — tokio + axum authoritative server: runs `world_tick` for every colony once
@@ -91,7 +91,7 @@ once the server's next tick includes its effect. No client-side prediction.
 
 - **`world_tick(&mut WorldState, now_ms) -> Vec<TickReport>`** (`crates/cat-sim/src/world_tick.rs`)
   is the single entry point, called once per colony per second by `cat-server`'s tokio loop.
-  It runs ~40 ordered phases (`fn phase_*`) — life sim → consumption/spoilage →
+  It runs 53 ordered phases (`fn phase_*`) — life sim → consumption/spoilage →
   elections/zones → path decay/regrowth → job promotion → leader plan/direct/assign →
   production/research → survival → due-job completion → hauling → movement → roads → raids →
   status/persist-prep — mirroring the original TS `server/game.ts:workerTick`'s phase ordering
@@ -115,12 +115,12 @@ tests possible (same seed → byte-identical trajectory across two independent r
 | Concern | Modules |
 | --- | --- |
 | Foundation | `rng`, `types`, `entities`, `cost_constants`, `needs_constants`, `test_acceleration` |
-| World generation | `noise`, `terrain_gen`, `world_gen`, `biomes`, `climate` |
+| World generation | `noise`, `terrain_gen`, `world_gen`, `biomes`, `climate`, `village_sites` |
 | Cat AI | `pathfinding`, `movement`, `policy`, `tasks`, `cat_ai`, `leader_ai`, `leader_director`, `officers` |
 | Life sim | `needs`, `age`, `breeding`, `genetics`, `life_sim`, `survival` |
-| Economy | `idle_engine`, `idle_rules`, `production`, `smithy`, `storage`, `shrine`, `trips`, `depletion`, `spoilage`, `housing`, `roads`, `village_layout`, `village_area`, `stockpiles`, `skills`, `ledger` |
+| Economy | `idle_engine`, `idle_rules`, `production`, `processing`, `farming`, `productivity`, `smithy`, `station_recipes`, `storage`, `shrine`, `trips`, `transport`, `village_trade_routes`, `depletion`, `spoilage`, `housing`, `roads`, `village_layout`, `village_area`, `stockpiles`, `skills`, `labor_pressure`, `ledger` |
 | Military & governance | `threat`, `warriors`, `combat`, `elections`, `zones`, `upgrade_tree` |
-| Item economy | `items`, `recipes`, `trader` |
+| Item economy | `items`, `recipes`, `trader`, `research_catalog`, `migration` |
 | Orchestration | `world_tick` (the tick loop), `actions` (pure `apply_action` + `build_snapshot`) |
 
 Each module's doc comment cites the original TypeScript file it was ported from (e.g.
@@ -129,6 +129,11 @@ behavior's original spec/tests. Design detail beyond this table (leader director
 curves, pathfinding cost model, world_tick phase list, per-phase P12–P19 gameplay specs) lives
 in `docs/migration/specs/` — read the relevant spec before touching a system, don't rely on
 memory of the old TS code.
+
+The research ledger is data-built rather than maintained as 487 handwritten Rust entries:
+`research_catalog_legacy.json` preserves the original studies and `research_catalog_tracks.json`
+defines named families and stages. `research_catalog.rs` expands both sources, validates unique
+IDs/dependencies/effect bindings, and exposes the one catalog used by simulation and snapshots.
 
 **Leader and officers.** The utility-AI director retains only the bounded founding safety floor
 for hunting, emergency water, and scouting. Steward, Accountant, Forester, Farmer, Captain,
@@ -143,7 +148,7 @@ Do not maintain a second detailed backlog in this file. The evidence-backed stat
 [`docs/IMPLEMENTATION_AUDIT.md`](docs/IMPLEMENTATION_AUDIT.md), and the concrete correction queue is
 [`docs/FIX_LOG.md`](docs/FIX_LOG.md). In summary, seven-role manual-to-officer ownership, the
   15-adult/three-Den founding lifecycle, spatial stockpiles, physical farming/fishing, ten processor
-  types with 104 physical recipes, the 487/487 live-study ledger, global/personal village routing,
+  types with 108 physical recipes, the 487/487 live-study ledger, global/personal village routing,
   shared terrain and physical trade, exact roads/rail/shipping, all 25 building compositions, and
   native/optimized-WASM Adventure UI campaigns are live. Twelve `Crews` studies add real concurrent
   station slots; thirteen others are completed-building-scoped services rather than fake slots.
@@ -157,6 +162,10 @@ everything a player can do — found/join village, request job, boost, purchase 
 zones, plan building, unlock node, assign worker/officer, train warrior, defend raid, build
 road, designate stockpile/gather spot, sell/buy goods, boost cat, test-acceleration controls).
 Field names are `camelCase` on the wire (matching the old TS API shape where it still matters).
+`WorldSnapshot.protocolVersion` is serialized first. Increment `PROTOCOL_VERSION` before any
+change that can make an older client reject a nested snapshot; the client then keeps its last
+frame visibly stale and reports `UPDATE REQUIRED` instead of presenting a frozen live world.
+Wire collection counts/indices use fixed-width integers, not target-width `usize`.
 
 ### cat-server — the authoritative server
 
@@ -170,10 +179,14 @@ startup-initialized last-completed snapshot; save ticks clone completed world st
 the authoritative lock before disk I/O; missed intervals skip rather than burst. The server
 broadcasts completed state, saves every 5 ticks, and saves once on graceful shutdown. Socket
 state binds signed identity and selected-colony routing, while each snapshot still contains the
-complete shared world. Identity (`identity.rs`) issues/verifies HMAC-signed sessions
-(`SESSION_HMAC_SECRET`; refuses to boot in `NODE_ENV=production` without one, falls back to an
-insecure dev secret otherwise). Rate limiting caps actions at 30 per 10-second window per
-session.
+complete shared world. Identity (`identity.rs`) issues/verifies timestamped HMAC-signed v2 sessions
+whose stable player token preserves village ownership across rotation. Ordinary action access
+expires after 30 days; authentic legacy or expired credentials have a seven-day renewal window.
+The development secret is loopback-only unless explicitly opted in;
+public binds require both `SESSION_HMAC_SECRET` and an exact Origin allowlist. Per-session and
+per-IP action, connection, issuance, village, and total-world caps bound abuse. Forwarding headers
+are ignored unless the TCP peer is in `CAT_SERVER_TRUSTED_PROXY_IPS`, in which case exactly one
+valid client IP is required.
 
 ### cat-client / cat-desktop / cat-web — the renderer
 
@@ -182,12 +195,12 @@ Connects to `cat-server` over WebSocket via `ewebsock`, deserializes `WorldSnaps
 receipt, stores it as a Bevy resource that render/UI systems read each frame. **Top-down**, not
 isometric — a deliberate design pivot mid-migration (`docs/GAME_VISION.md`). Draws biome
 terrain generated client-side from the shared `world_seed` (via `cat_sim::generate_terrain_chunk`
-— no need for the server to stream tile data), fog of war, paved roads, cats (colored by
-specialization, carrying marker), label-free roofed homes and typed open stations,
+— no need for the server to stream tile data), fog of war, paved roads, cats (shape-and-color
+specialization/officer badge, carrying marker), label-free roofed homes and typed open stations,
 stockpiles/gather spots, crop stages, raiders, and zone overlays. The HUD covers resources,
 census, events, trade, officers, persistent village selection, and inspectors. A full-page
   487-study ledger supports filter/search/pan/zoom and signed purchase of every affordable study.
-  All studies are live, all 104 recipes have physical descriptors, and every generated resource
+  All studies are live, all 108 recipes have physical descriptors, and every generated resource
   payload has an authoritative consumer; no research card is disabled as `FUTURE`.
 
 Art: curated pixel sprites under
@@ -205,7 +218,7 @@ regression.
 
 `crates/cat-server/src/persistence.rs` uses `rusqlite` (bundled SQLite, not Drizzle) with
 tables mirroring the old TS schema (`world`, `colonies`, `cats`, `jobs`, `buildings`,
-`world_tiles`, `events`, `zones`, `elections`, `votes`, `raiders`). Colony resources are stored
+`world_tiles`, `shared_world_tiles`, `events`, `zones`, `elections`, `votes`, `raiders`). Colony resources are stored
 as a JSON blob rather than one column per resource. Migrations are idempotent `ALTER
 TABLE`/`ADD COLUMN`-style statements applied on open — same "migrate on connect" discipline as
 the old `db/client.ts`, but hand-written Rust rather than generated SQL files (there is no
@@ -261,10 +274,11 @@ Bevy is a dependency (slow incremental compiles).
 PORT=8787                              # cat-server listen port (both binaries agree via cat-dev)
 BIND_ADDR=127.0.0.1                    # server bind IP; production image uses 0.0.0.0
 GAME_DB_PATH=data/cat.db               # SQLite file (created + migrated automatically)
-SESSION_HMAC_SECRET=...                # required in NODE_ENV=production; insecure dev default otherwise
+SESSION_HMAC_SECRET=...                # required for production and every public bind
 CAT_SERVER_WEB_DIST_DIR=...            # optional Trunk dist served by cat-server
 CAT_SERVER_PUBLIC_IMAGES_DIR=...       # optional image tree served at /public/images
-CAT_SERVER_ALLOWED_ORIGINS=...         # optional exact comma-separated WS Origin allowlist
+CAT_SERVER_ALLOWED_ORIGINS=...         # required exact WS Origin allowlist for public binds
+CAT_SERVER_TRUSTED_PROXY_IPS=...       # optional exact proxies allowed to supply one X-Forwarded-For IP
 CAT_SERVER_URL=ws://127.0.0.1:8787/ws  # cat-desktop/cat-web: which server to connect to
 BEVY_ASSET_ROOT=$PWD                   # cat-desktop: resolve public/images/... from the workspace root
 ```

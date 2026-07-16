@@ -267,6 +267,9 @@ pub fn find_path<G: WalkGrid + ?Sized>(
     let gx = js_round_to_i32(goal.x);
     let gy = js_round_to_i32(goal.y);
 
+    if options.margin < 0 {
+        return None;
+    }
     if sx == gx && sy == gy {
         return Some(vec![world_pos(sx, sy)]);
     }
@@ -275,37 +278,26 @@ pub fn find_path<G: WalkGrid + ?Sized>(
         return Some(vec![world_pos(sx, sy), world_pos(gx, gy)]);
     }
 
-    let min_x = sx.min(gx) - options.margin;
-    let max_x = sx.max(gx) + options.margin;
-    let min_y = sy.min(gy) - options.margin;
-    let max_y = sy.max(gy) + options.margin;
-    let width_i32 = max_x - min_x + 1;
-    let height_i32 = max_y - min_y + 1;
-    let width = usize::try_from(width_i32).expect("pathfinding width is non-negative");
-    let height = usize::try_from(height_i32).expect("pathfinding height is non-negative");
-    let size = width
-        .checked_mul(height)
-        .expect("pathfinding bounded search size fits usize");
+    let margin = i64::from(options.margin);
+    let min_x = i64::from(sx.min(gx)) - margin;
+    let max_x = i64::from(sx.max(gx)) + margin;
+    let min_y = i64::from(sy.min(gy)) - margin;
+    let max_y = i64::from(sy.max(gy)) + margin;
 
-    let key = |x: i32, y: i32| -> usize {
-        let local_x = usize::try_from(x - min_x).expect("x is inside pathfinding bounds");
-        let local_y = usize::try_from(y - min_y).expect("y is inside pathfinding bounds");
-        local_y * width + local_x
-    };
-
-    let mut g_score = vec![f64::INFINITY; size];
-    let mut came_from = vec![-1_isize; size];
-    let mut closed = vec![false; size];
-
-    let start_key = key(sx, sy);
-    g_score[start_key] = 0.0;
+    // Store only discovered nodes. The previous dense start-to-goal rectangle was
+    // attacker-controlled through distant movement goals and allocated O(distance²)
+    // memory before `max_expansions` could stop the search.
+    let start_pos = TilePos { x: sx, y: sy };
+    let mut nodes = vec![SearchNode {
+        pos: start_pos,
+        g_score: 0.0,
+        came_from: None,
+        closed: false,
+    }];
+    let mut node_keys = HashMap::from([(start_pos, 0_usize)]);
     let mut open = MinHeap::new();
-    open.push(
-        start_key,
-        f64::from(manhattan(sx, sy, gx, gy)) * MIN_STEP_COST,
-    );
+    open.push(0, manhattan_as_f64(sx, sy, gx, gy) * MIN_STEP_COST);
 
-    let goal_key = key(gx, gy);
     let mut expansions = 0_usize;
 
     while !open.is_empty() {
@@ -314,20 +306,18 @@ pub fn find_path<G: WalkGrid + ?Sized>(
             break;
         };
         let ck = current.key;
-        if closed[ck] {
+        if nodes[ck].closed {
             continue;
         }
-        closed[ck] = true;
+        nodes[ck].closed = true;
 
-        if ck == goal_key {
+        if nodes[ck].pos.x == gx && nodes[ck].pos.y == gy {
             let mut path = Vec::new();
-            let mut node = ck as isize;
-            while node != -1 {
-                let node_usize = usize::try_from(node).expect("came_from stores valid keys");
-                let px = i32::try_from(node_usize % width).expect("x offset fits i32") + min_x;
-                let py = i32::try_from(node_usize / width).expect("y offset fits i32") + min_y;
-                path.push(world_pos(px, py));
-                node = came_from[node_usize];
+            let mut node = Some(ck);
+            while let Some(node_key) = node {
+                let state = &nodes[node_key];
+                path.push(world_pos(state.pos.x, state.pos.y));
+                node = state.came_from;
             }
             path.reverse();
             return Some(path);
@@ -338,13 +328,20 @@ pub fn find_path<G: WalkGrid + ?Sized>(
             return None;
         }
 
-        let cx = i32::try_from(ck % width).expect("x offset fits i32") + min_x;
-        let cy = i32::try_from(ck / width).expect("y offset fits i32") + min_y;
+        let TilePos { x: cx, y: cy } = nodes[ck].pos;
 
         for (dx, dy) in NEIGHBOURS {
-            let nx = cx + dx;
-            let ny = cy + dy;
-            if nx < min_x || nx > max_x || ny < min_y || ny > max_y {
+            let Some(nx) = cx.checked_add(dx) else {
+                continue;
+            };
+            let Some(ny) = cy.checked_add(dy) else {
+                continue;
+            };
+            if i64::from(nx) < min_x
+                || i64::from(nx) > max_x
+                || i64::from(ny) < min_y
+                || i64::from(ny) > max_y
+            {
                 continue;
             }
 
@@ -359,8 +356,21 @@ pub fn find_path<G: WalkGrid + ?Sized>(
                 continue;
             }
 
-            let nk = key(nx, ny);
-            if closed[nk] {
+            let next_pos = TilePos { x: nx, y: ny };
+            let nk = if let Some(&key) = node_keys.get(&next_pos) {
+                key
+            } else {
+                let key = nodes.len();
+                nodes.push(SearchNode {
+                    pos: next_pos,
+                    g_score: f64::INFINITY,
+                    came_from: None,
+                    closed: false,
+                });
+                node_keys.insert(next_pos, key);
+                key
+            };
+            if nodes[nk].closed {
                 continue;
             }
 
@@ -369,13 +379,13 @@ pub fn find_path<G: WalkGrid + ?Sized>(
             } else {
                 0.0
             };
-            let tentative = g_score[ck] + grid.cost(nx, ny) + premature_y;
-            if tentative < g_score[nk] {
-                g_score[nk] = tentative;
-                came_from[nk] = ck as isize;
+            let tentative = nodes[ck].g_score + grid.cost(nx, ny) + premature_y;
+            if tentative < nodes[nk].g_score {
+                nodes[nk].g_score = tentative;
+                nodes[nk].came_from = Some(ck);
                 open.push(
                     nk,
-                    tentative + f64::from(manhattan(nx, ny, gx, gy)) * MIN_STEP_COST,
+                    tentative + manhattan_as_f64(nx, ny, gx, gy) * MIN_STEP_COST,
                 );
             }
         }
@@ -437,35 +447,46 @@ pub fn reachable_component<G: WalkGrid + ?Sized>(
             y: start.1,
         }]);
     }
+    if options.margin < 0 {
+        return HashSet::from([TilePos {
+            x: start.0,
+            y: start.1,
+        }]);
+    }
 
-    let min_x = remaining
-        .iter()
-        .map(|(x, _)| *x)
-        .chain(std::iter::once(start.0))
-        .min()
-        .expect("the start makes the search bounds non-empty")
-        - options.margin;
-    let max_x = remaining
-        .iter()
-        .map(|(x, _)| *x)
-        .chain(std::iter::once(start.0))
-        .max()
-        .expect("the start makes the search bounds non-empty")
-        + options.margin;
-    let min_y = remaining
-        .iter()
-        .map(|(_, y)| *y)
-        .chain(std::iter::once(start.1))
-        .min()
-        .expect("the start makes the search bounds non-empty")
-        - options.margin;
-    let max_y = remaining
-        .iter()
-        .map(|(_, y)| *y)
-        .chain(std::iter::once(start.1))
-        .max()
-        .expect("the start makes the search bounds non-empty")
-        + options.margin;
+    let margin = i64::from(options.margin);
+    let min_x = i64::from(
+        remaining
+            .iter()
+            .map(|(x, _)| *x)
+            .chain(std::iter::once(start.0))
+            .min()
+            .expect("the start makes the search bounds non-empty"),
+    ) - margin;
+    let max_x = i64::from(
+        remaining
+            .iter()
+            .map(|(x, _)| *x)
+            .chain(std::iter::once(start.0))
+            .max()
+            .expect("the start makes the search bounds non-empty"),
+    ) + margin;
+    let min_y = i64::from(
+        remaining
+            .iter()
+            .map(|(_, y)| *y)
+            .chain(std::iter::once(start.1))
+            .min()
+            .expect("the start makes the search bounds non-empty"),
+    ) - margin;
+    let max_y = i64::from(
+        remaining
+            .iter()
+            .map(|(_, y)| *y)
+            .chain(std::iter::once(start.1))
+            .max()
+            .expect("the start makes the search bounds non-empty"),
+    ) + margin;
 
     let mut frontier = VecDeque::from([start]);
     let mut visited = HashSet::from([start]);
@@ -477,8 +498,15 @@ pub fn reachable_component<G: WalkGrid + ?Sized>(
         }
 
         for (dx, dy) in NEIGHBOURS {
-            let next = (x + dx, y + dy);
-            if next.0 < min_x || next.0 > max_x || next.1 < min_y || next.1 > max_y {
+            let (Some(next_x), Some(next_y)) = (x.checked_add(dx), y.checked_add(dy)) else {
+                continue;
+            };
+            let next = (next_x, next_y);
+            if i64::from(next.0) < min_x
+                || i64::from(next.0) > max_x
+                || i64::from(next.1) < min_y
+                || i64::from(next.1) > max_y
+            {
                 continue;
             }
             let is_goal = remaining.contains(&next);
@@ -703,8 +731,12 @@ fn pack_tile_key(x: i32, y: i32) -> i64 {
     (i64::from(x) + TILE_MAP_OFFSET) * TILE_MAP_STRIDE + (i64::from(y) + TILE_MAP_OFFSET)
 }
 
-fn manhattan(ax: i32, ay: i32, bx: i32, by: i32) -> i32 {
-    (ax - bx).abs() + (ay - by).abs()
+fn manhattan(ax: i32, ay: i32, bx: i32, by: i32) -> u64 {
+    u64::from(ax.abs_diff(bx)) + u64::from(ay.abs_diff(by))
+}
+
+fn manhattan_as_f64(ax: i32, ay: i32, bx: i32, by: i32) -> f64 {
+    manhattan(ax, ay, bx, by) as f64
 }
 
 fn js_round_to_i32(value: f64) -> i32 {
@@ -716,6 +748,14 @@ fn world_pos(x: i32, y: i32) -> WorldPos {
         x: f64::from(x),
         y: f64::from(y),
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SearchNode {
+    pos: TilePos,
+    g_score: f64,
+    came_from: Option<usize>,
+    closed: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1124,6 +1164,68 @@ mod tests {
                 case.name
             );
         }
+    }
+
+    #[test]
+    fn distant_and_extreme_goals_respect_the_expansion_budget_without_dense_allocation() {
+        let grid = TestGrid {
+            blocked: HashSet::new(),
+            costs: HashMap::new(),
+            roads: HashSet::new(),
+        };
+        let options = FindPathOptions {
+            max_expansions: 8,
+            margin: DEFAULT_MARGIN,
+        };
+
+        assert_eq!(
+            find_path(
+                WorldPos { x: 0.0, y: 0.0 },
+                WorldPos {
+                    x: 1_000_000_000.0,
+                    y: 1_000_000_000.0,
+                },
+                &grid,
+                options,
+            ),
+            None
+        );
+        assert_eq!(
+            find_path(
+                WorldPos {
+                    x: f64::from(i32::MIN),
+                    y: f64::from(i32::MIN),
+                },
+                WorldPos {
+                    x: f64::from(i32::MAX),
+                    y: f64::from(i32::MAX),
+                },
+                &grid,
+                options,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn invalid_negative_margin_fails_without_bounds_arithmetic() {
+        let grid = TestGrid {
+            blocked: HashSet::new(),
+            costs: HashMap::new(),
+            roads: HashSet::new(),
+        };
+        assert_eq!(
+            find_path(
+                WorldPos { x: 0.0, y: 0.0 },
+                WorldPos { x: 2.0, y: 0.0 },
+                &grid,
+                FindPathOptions {
+                    max_expansions: 8,
+                    margin: -1,
+                },
+            ),
+            None
+        );
     }
 
     /// Build a grid with a mountain tile at (3,0) and a water tile at (5,0), then

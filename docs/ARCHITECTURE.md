@@ -131,6 +131,9 @@ ledger is `docs/IMPLEMENTATION_AUDIT.md`; the migration board retains dated impl
   disabled `FUTURE` promise. Twelve `Crews` studies expand real concurrent physical stations;
   thirteen others provide bounded effects scoped to their completed building rather than inventing
   worker slots. Thirteen former containerless capacity studies are omitted with migration refunds.
+  The catalog is deterministically expanded from `research_catalog_legacy.json` plus the named
+  family/stage matrix in `research_catalog_tracks.json`; `research_catalog.rs` validates the
+  resulting dependency graph and effect bindings before exposing it to the sim and wire snapshot.
 - **Items and reports.** Exact equipment preserves identity, material, quality, weight, durability,
   wear, repair, equipment, escrow, and persistence. A staffed Accountant physically visits piles;
   only visited reports become current, and private exact totals never leak through snapshots.
@@ -186,6 +189,10 @@ over the WebSocket:
 Field names are `camelCase` on the wire (matching the old TS API shape where it still matters)
 via `#[serde(rename_all = "camelCase")]`-style annotations; most actions carry `session_id` /
 `nickname` / `sig` for HMAC-verified identity.
+`WorldSnapshot.protocolVersion` is the first serialized field. A snapshot-breaking enum or shape
+change must increment `PROTOCOL_VERSION`; the client detects that prefix before nested decoding,
+retains the last frame as stale, and shows `UPDATE REQUIRED`. Legacy snapshots default to version
+1, and wire collection counts/indices use fixed-width integers across native and wasm targets.
 
 ## cat-server — the authoritative server
 
@@ -240,7 +247,7 @@ The renderer is **top-down**, not isometric — the maintained first game-vision
 draws: biome
 terrain generated client-side from the shared `world_seed` (via `cat_sim::generate_terrain_chunk`
 — the client doesn't need the server to stream tile data, just the seed), fog of war, paved
-roads, cats (colored by specialization, carrying marker, walk animation that interpolates toward
+roads, cats (shape-and-color specialization/officer badges, carrying marker, walk animation that interpolates toward
 the latest snapshot tile rather than teleporting), label-free roofed homes and typed open
 stations, stockpiles/gather spots, raiders, crop stages, and zone overlays. The compact world HUD
 shows critical survival stores and colony status; the Stores menu owns the full inventory, while

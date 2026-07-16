@@ -3,22 +3,23 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
+    net::{IpAddr, SocketAddr},
     sync::{
-        Arc,
-        atomic::{AtomicU32, AtomicU64, Ordering},
+        Arc, Mutex as StdMutex,
+        atomic::{AtomicU32, Ordering},
     },
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use axum::{
-    Router,
+    Extension, Router,
     body::Body,
     extract::{
-        State,
+        ConnectInfo, State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
     http::{
-        Request, StatusCode,
+        HeaderMap, Request, StatusCode,
         header::{CACHE_CONTROL, CONTENT_TYPE, X_CONTENT_TYPE_OPTIONS},
     },
     middleware::{self, Next},
@@ -37,7 +38,10 @@ use cat_sim::{
     },
 };
 use hosting::ServerConfig;
-use identity::{SignedSession, issue_session, signed_session, verify_session};
+use identity::{
+    SignedSession, issue_session, renew_session_at, signed_session, verify_session,
+    verify_session_at,
+};
 use persistence::{load_world, open_database_from_env, save_world};
 use rate_limit::RateLimiter;
 use rusqlite::Connection;
@@ -47,6 +51,9 @@ use tower_http::{
     services::{ServeDir, ServeFile},
 };
 use tracing::{debug, error, info, warn};
+
+#[cfg(test)]
+use std::sync::atomic::AtomicU64;
 
 mod hosting;
 mod identity;
@@ -59,10 +66,16 @@ const STARTER_COLONY_SEED: u32 = 1;
 const SNAPSHOT_CHANNEL_CAPACITY: usize = 32;
 const ACTION_LIMIT_MAX: usize = 30;
 const ACTION_LIMIT_WINDOW_MS: i64 = 10_000;
+const IP_ACTION_LIMIT_MAX: usize = 120;
+const SESSION_ISSUE_LIMIT_MAX: usize = 8;
+const SESSION_ISSUE_LIMIT_WINDOW_MS: i64 = 60 * 60 * 1_000;
+const MAX_CONNECTIONS_PER_IP: usize = 8;
+const MAX_PERSONAL_VILLAGES_PER_IP: usize = 8;
+const MAX_TOTAL_COLONIES: usize = 256;
+const MAX_WEBSOCKET_MESSAGE_BYTES: usize = 64 * 1_024;
+const SAVE_FAILURES_BEFORE_NOT_READY: u32 = 3;
 const SAVE_EVERY_TICKS: u64 = 5;
 const TEST_ACTIONS_ENV: &str = "CAT_SERVER_ENABLE_TEST_ACTIONS";
-
-static NEXT_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone)]
 struct AppState {
@@ -81,8 +94,62 @@ struct AppState {
     village_directory: Arc<RwLock<BTreeMap<String, VillageDirectoryEntry>>>,
     online_count: Arc<AtomicU32>,
     rate_limiter: Arc<Mutex<RateLimiter>>,
+    ip_rate_limiter: Arc<Mutex<RateLimiter>>,
+    abuse_guard: Arc<Mutex<AbuseGuard>>,
+    peer_connections: Arc<PeerConnections>,
+    consecutive_save_failures: Arc<AtomicU32>,
     session_secret: Arc<String>,
     allow_test_actions: bool,
+}
+
+#[derive(Debug)]
+struct AbuseGuard {
+    session_issuance: RateLimiter,
+    player_peers: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Default)]
+struct PeerConnections {
+    counts: StdMutex<BTreeMap<IpAddr, usize>>,
+}
+
+impl PeerConnections {
+    fn acquire(self: &Arc<Self>, peer: IpAddr) -> Option<PeerConnectionGuard> {
+        let mut counts = self
+            .counts
+            .lock()
+            .expect("peer connection registry poisoned");
+        let count = counts.entry(peer).or_default();
+        if *count >= MAX_CONNECTIONS_PER_IP {
+            return None;
+        }
+        *count += 1;
+        Some(PeerConnectionGuard {
+            registry: Arc::clone(self),
+            peer,
+        })
+    }
+}
+
+struct PeerConnectionGuard {
+    registry: Arc<PeerConnections>,
+    peer: IpAddr,
+}
+
+impl Drop for PeerConnectionGuard {
+    fn drop(&mut self) {
+        let mut counts = self
+            .registry
+            .counts
+            .lock()
+            .expect("peer connection registry poisoned");
+        if let Some(count) = counts.get_mut(&self.peer) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                counts.remove(&self.peer);
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -126,9 +193,9 @@ fn global_village_id(directory: &BTreeMap<String, VillageDirectoryEntry>) -> Str
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
-    let conn = open_database_from_env()?;
-    let session_secret = identity::session_secret_from_env()?;
     let config = ServerConfig::from_env()?;
+    let session_secret = identity::session_secret_from_env(config.listen_addr.ip())?;
+    let conn = open_database_from_env()?;
     let state = build_state_from_connection(now_ms(), conn, session_secret)?;
     if state.allow_test_actions {
         warn!(
@@ -147,9 +214,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if config.allowed_origins.is_restricted() {
         info!("strict WebSocket Origin allowlist enabled");
     }
-    axum::serve(listener, app(state.clone(), &config))
-        .with_graceful_shutdown(shutdown_signal(state))
-        .await?;
+    axum::serve(
+        listener,
+        app(state.clone(), &config).into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal(state))
+    .await?;
 
     Ok(())
 }
@@ -183,7 +253,9 @@ fn app(state: AppState, config: &ServerConfig) -> Router {
         router = router.merge(static_router);
     }
 
-    router.layer(CompressionLayer::new().br(true).gzip(true))
+    router
+        .layer(Extension(config.trusted_proxies.clone()))
+        .layer(CompressionLayer::new().br(true).gzip(true))
 }
 
 async fn health() -> &'static str {
@@ -191,15 +263,19 @@ async fn health() -> &'static str {
 }
 
 async fn readiness(State(state): State<AppState>) -> impl IntoResponse {
-    let database_ready = state
-        .db
-        .lock()
-        .await
-        .query_row("SELECT 1", [], |row| row.get::<_, i64>(0))
-        .is_ok_and(|value| value == 1);
-    let world_ready = !state.world.lock().await.colonies.is_empty();
+    let database_ready = state.db.try_lock().is_ok_and(|db| {
+        db.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))
+            .is_ok_and(|value| value == 1)
+    });
+    let world_ready = state
+        .world
+        .try_lock()
+        .is_ok_and(|world| !world.colonies.is_empty());
 
-    if database_ready && world_ready {
+    let persistence_ready =
+        state.consecutive_save_failures.load(Ordering::SeqCst) < SAVE_FAILURES_BEFORE_NOT_READY;
+
+    if database_ready && world_ready && persistence_ready {
         (StatusCode::OK, "ready")
     } else {
         (StatusCode::SERVICE_UNAVAILABLE, "not ready")
@@ -218,9 +294,59 @@ async fn enforce_ws_origin(
     next.run(request).await
 }
 
-async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> Response {
-    ws.on_upgrade(move |socket| handle_socket(socket, state))
+async fn ws_handler(
+    ws: WebSocketUpgrade,
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Extension(trusted_proxies): Extension<hosting::TrustedProxies>,
+    headers: HeaderMap,
+) -> Response {
+    let peer_ip = match effective_peer_ip(peer.ip(), &headers, &trusted_proxies) {
+        Ok(peer_ip) => peer_ip,
+        Err(message) => {
+            warn!(socket_peer = %peer.ip(), "rejected malformed trusted-proxy forwarding header");
+            return (StatusCode::BAD_REQUEST, message).into_response();
+        }
+    };
+    let Some(connection_guard) = state.peer_connections.acquire(peer_ip) else {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            "Too many connections from this address.",
+        )
+            .into_response();
+    };
+    ws.max_message_size(MAX_WEBSOCKET_MESSAGE_BYTES)
+        .max_frame_size(MAX_WEBSOCKET_MESSAGE_BYTES)
+        .on_upgrade(move |socket| handle_socket(socket, state, peer_ip, connection_guard))
         .into_response()
+}
+
+fn effective_peer_ip(
+    socket_peer: IpAddr,
+    headers: &HeaderMap,
+    trusted_proxies: &hosting::TrustedProxies,
+) -> Result<IpAddr, &'static str> {
+    if !trusted_proxies.contains(&socket_peer) {
+        // Forwarding headers from ordinary clients are untrusted input and deliberately ignored.
+        return Ok(socket_peer);
+    }
+    let mut forwarded_values = headers.get_all("x-forwarded-for").iter();
+    let raw = forwarded_values
+        .next()
+        .ok_or("Trusted proxy did not provide X-Forwarded-For.")?
+        .to_str()
+        .map_err(|_| "Trusted proxy provided an invalid X-Forwarded-For header.")?;
+    if forwarded_values.next().is_some() {
+        return Err("Trusted proxy must provide one X-Forwarded-For header.");
+    }
+    if raw.contains(',') {
+        // Require the edge proxy to overwrite rather than append. Accepting a chain without
+        // configuring every hop makes the leftmost address client-controlled.
+        return Err("Trusted proxy must provide exactly one client IP.");
+    }
+    raw.trim()
+        .parse::<IpAddr>()
+        .map_err(|_| "Trusted proxy provided an invalid client IP.")
 }
 
 async fn static_cache_headers(request: Request<Body>, next: Next) -> Response {
@@ -326,6 +452,19 @@ fn build_state_from_world(
             ACTION_LIMIT_MAX,
             ACTION_LIMIT_WINDOW_MS,
         ))),
+        ip_rate_limiter: Arc::new(Mutex::new(RateLimiter::new(
+            IP_ACTION_LIMIT_MAX,
+            ACTION_LIMIT_WINDOW_MS,
+        ))),
+        abuse_guard: Arc::new(Mutex::new(AbuseGuard {
+            session_issuance: RateLimiter::new(
+                SESSION_ISSUE_LIMIT_MAX,
+                SESSION_ISSUE_LIMIT_WINDOW_MS,
+            ),
+            player_peers: BTreeMap::new(),
+        })),
+        peer_connections: Arc::new(PeerConnections::default()),
+        consecutive_save_failures: Arc::new(AtomicU32::new(0)),
         session_secret: Arc::new(session_secret),
         allow_test_actions,
     }
@@ -420,8 +559,19 @@ async fn run_tick_once(
 
         if let Some(world) = world_to_save {
             let db = worker_state.db.blocking_lock();
-            if let Err(err) = save_world(&db, &world) {
-                error!(%err, "periodic world save failed");
+            match save_world(&db, &world) {
+                Ok(()) => {
+                    worker_state
+                        .consecutive_save_failures
+                        .store(0, Ordering::SeqCst);
+                }
+                Err(err) => {
+                    let failures = worker_state
+                        .consecutive_save_failures
+                        .fetch_add(1, Ordering::SeqCst)
+                        .saturating_add(1);
+                    error!(%err, failures, "periodic world save failed");
+                }
             }
         }
 
@@ -484,17 +634,21 @@ async fn shutdown_signal(state: AppState) {
 }
 
 async fn save_current_world(state: &AppState) -> rusqlite::Result<()> {
-    let world = state.world.lock().await;
+    let world = state.world.lock().await.clone();
     let db = state.db.lock().await;
     save_world(&db, &world)
 }
 
-async fn handle_socket(mut socket: WebSocket, state: AppState) {
-    let connection_id = NEXT_CONNECTION_ID.fetch_add(1, Ordering::SeqCst);
+async fn handle_socket(
+    mut socket: WebSocket,
+    state: AppState,
+    peer_ip: IpAddr,
+    _connection_guard: PeerConnectionGuard,
+) {
     let directory = state.village_directory.read().await;
     let global_id = global_village_id(&directory);
     drop(directory);
-    let mut connection = ConnectionContext::new(format!("ws-{connection_id}"), global_id);
+    let mut connection = ConnectionContext::for_peer_ip(peer_ip, global_id);
     let online_count = state.online_count.fetch_add(1, Ordering::SeqCst) + 1;
     let mut snapshots = state.snapshots.subscribe();
 
@@ -794,14 +948,26 @@ fn prioritize_colony(mut snapshot: WorldSnapshot, colony_id: &str) -> WorldSnaps
 #[derive(Debug)]
 struct ConnectionContext {
     limiter_fallback: String,
+    peer_ip: Option<IpAddr>,
     identity: Option<SignedSession>,
     colony_id: String,
 }
 
 impl ConnectionContext {
+    #[cfg(test)]
     fn new(limiter_fallback: String, global_colony_id: String) -> Self {
         Self {
             limiter_fallback,
+            peer_ip: None,
+            identity: None,
+            colony_id: global_colony_id,
+        }
+    }
+
+    fn for_peer_ip(peer_ip: IpAddr, global_colony_id: String) -> Self {
+        Self {
+            limiter_fallback: peer_ip.to_string(),
+            peer_ip: Some(peer_ip),
             identity: None,
             colony_id: global_colony_id,
         }
@@ -812,6 +978,10 @@ impl ConnectionContext {
             || format!("ip:{}", self.limiter_fallback),
             |identity| format!("s:{}", identity.session_id),
         )
+    }
+
+    fn peer_limiter_key(&self) -> String {
+        format!("ip:{}", self.limiter_fallback)
     }
 }
 
@@ -884,6 +1054,14 @@ async fn handle_client_text(
     };
 
     let now = now_ms();
+    let peer_limiter_key = connection.peer_limiter_key();
+    {
+        let mut limiter = state.ip_rate_limiter.lock().await;
+        limiter.prune(now);
+        if !limiter.check(&peer_limiter_key, now) {
+            return ServerActionResult::fail("Too many actions from this address — slow down.");
+        }
+    }
     let limiter_key = connection.limiter_key();
     {
         let mut limiter = state.rate_limiter.lock().await;
@@ -895,10 +1073,39 @@ async fn handle_client_text(
 
     let authentication = action_authentication(&action);
     if let ActionAuthentication::Presence { session_id, sig } = authentication {
-        let signed = if verify_session(session_id, sig, state.session_secret.as_str()) {
-            signed_session(session_id.to_owned(), state.session_secret.as_str())
+        let peer = connection.peer_ip.map(|ip| ip.to_string());
+        let valid_existing = verify_session_at(session_id, sig, state.session_secret.as_str(), now);
+        let signed = if valid_existing {
+            let signed = signed_session(session_id.to_owned(), state.session_secret.as_str());
+            let mut guard = state.abuse_guard.lock().await;
+            if let Some(peer) = peer {
+                // Attribute founding to the current direct socket peer. This is an abuse
+                // boundary, not an authentication factor: legitimate mobile users may move
+                // networks while their signed bearer remains valid.
+                guard.player_peers.insert(signed.player_id.clone(), peer);
+            }
+            signed
+        } else if let Some(signed) =
+            renew_session_at(session_id, sig, state.session_secret.as_str(), now)
+        {
+            let mut guard = state.abuse_guard.lock().await;
+            if let Some(peer) = peer {
+                guard.player_peers.insert(signed.player_id.clone(), peer);
+            }
+            signed
         } else {
-            issue_session(state.session_secret.as_str(), now)
+            let mut guard = state.abuse_guard.lock().await;
+            guard.session_issuance.prune(now);
+            if !guard.session_issuance.check(&peer_limiter_key, now) {
+                return ServerActionResult::fail(
+                    "Too many new sessions from this address. Reuse the session already issued to this browser.",
+                );
+            }
+            let signed = issue_session(state.session_secret.as_str(), now);
+            if let Some(peer) = peer {
+                guard.player_peers.insert(signed.player_id.clone(), peer);
+            }
+            signed
         };
         if connection
             .identity
@@ -953,7 +1160,35 @@ async fn handle_client_text(
         now_ms: now,
     };
 
+    let player_peers = if matches!(action, ClientAction::FoundVillage { .. }) {
+        Some(state.abuse_guard.lock().await.player_peers.clone())
+    } else {
+        None
+    };
     let mut world = state.world.lock().await;
+    if matches!(action, ClientAction::FoundVillage { .. }) {
+        if world.colonies.len() >= MAX_TOTAL_COLONIES {
+            return ServerActionResult::fail("The shared world has reached its village capacity.");
+        }
+        if let Some(peer_ip) = connection.peer_ip {
+            let peer = peer_ip.to_string();
+            let player_peers = player_peers
+                .as_ref()
+                .expect("founding snapshots the peer directory");
+            let personal_villages_from_peer = world
+                .colonies
+                .iter()
+                .filter(|colony| colony.kind == VillageKind::Personal)
+                .filter_map(|colony| colony.owner_player_id.as_ref())
+                .filter(|owner| player_peers.get(*owner) == Some(&peer))
+                .count();
+            if personal_villages_from_peer >= MAX_PERSONAL_VILLAGES_PER_IP {
+                return ServerActionResult::fail(
+                    "This network address has reached its personal-village capacity.",
+                );
+            }
+        }
+    }
     let result = apply_action(&mut world, &action, &ctx);
     if result.ok {
         match &action {
@@ -1256,6 +1491,7 @@ mod tests {
                 web_dist: Some(self.dist.clone()),
                 public_images: Some(self.images.clone()),
                 allowed_origins: hosting::AllowedOrigins::default(),
+                trusted_proxies: hosting::TrustedProxies::default(),
             }
         }
     }
@@ -1272,6 +1508,7 @@ mod tests {
             web_dist: None,
             public_images: None,
             allowed_origins: hosting::AllowedOrigins::default(),
+            trusted_proxies: hosting::TrustedProxies::default(),
         }
     }
 
@@ -1305,6 +1542,249 @@ mod tests {
             .await
             .expect("not-ready response");
         assert_eq!(not_ready_response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn readiness_fails_after_repeated_persistence_failures() {
+        let state = build_state(1_000_000);
+        state
+            .consecutive_save_failures
+            .store(SAVE_FAILURES_BEFORE_NOT_READY, Ordering::SeqCst);
+
+        let response = app(state, &local_config())
+            .oneshot(request("/ready"))
+            .await
+            .expect("readiness response");
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn periodic_save_failures_trip_and_success_resets_readiness_state() {
+        let state = build_state(1_000_000);
+        {
+            let mut world = state.world.lock().await;
+            let mut invalid_second_global = world.colonies[0].clone();
+            invalid_second_global.id = "invalid-second-global".to_owned();
+            world.colonies.push(invalid_second_global);
+        }
+        for attempt in 1..=SAVE_FAILURES_BEFORE_NOT_READY {
+            run_tick_once(
+                state.clone(),
+                u64::from(attempt) * SAVE_EVERY_TICKS,
+                1_000_000,
+                |_, _| {},
+            )
+            .await
+            .expect("save attempt worker");
+        }
+        assert_eq!(
+            state.consecutive_save_failures.load(Ordering::SeqCst),
+            SAVE_FAILURES_BEFORE_NOT_READY
+        );
+
+        state.world.lock().await.colonies.pop();
+        run_tick_once(state.clone(), 20, 1_000_000, |_, _| {})
+            .await
+            .expect("recovery save worker");
+        assert_eq!(state.consecutive_save_failures.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn peer_connection_registry_caps_and_releases_each_ip() {
+        let registry = Arc::new(PeerConnections::default());
+        let peer = IpAddr::from([192, 0, 2, 10]);
+        let mut guards = (0..MAX_CONNECTIONS_PER_IP)
+            .map(|_| registry.acquire(peer).expect("connection below cap"))
+            .collect::<Vec<_>>();
+        assert!(registry.acquire(peer).is_none());
+        assert!(registry.acquire(IpAddr::from([192, 0, 2, 11])).is_some());
+
+        guards.pop();
+        assert!(registry.acquire(peer).is_some());
+    }
+
+    #[test]
+    fn forwarding_headers_are_used_only_for_explicit_trusted_proxy_peers() {
+        let proxy = IpAddr::from([10, 0, 0, 8]);
+        let client = IpAddr::from([198, 51, 100, 42]);
+        let trusted =
+            hosting::TrustedProxies::parse(Some(proxy.to_string()), "CAT_SERVER_TRUSTED_PROXY_IPS")
+                .expect("trusted proxy fixture");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-forwarded-for",
+            client.to_string().parse().expect("forwarded header"),
+        );
+
+        assert_eq!(
+            effective_peer_ip(proxy, &headers, &trusted),
+            Ok(client),
+            "configured proxy may supply the one effective client address"
+        );
+        assert_eq!(
+            effective_peer_ip(IpAddr::from([203, 0, 113, 9]), &headers, &trusted),
+            Ok(IpAddr::from([203, 0, 113, 9])),
+            "ordinary clients cannot spoof their limiter identity"
+        );
+    }
+
+    #[test]
+    fn trusted_proxy_forwarding_header_is_strict_and_fail_closed() {
+        let proxy = IpAddr::from([10, 0, 0, 8]);
+        let trusted =
+            hosting::TrustedProxies::parse(Some(proxy.to_string()), "CAT_SERVER_TRUSTED_PROXY_IPS")
+                .expect("trusted proxy fixture");
+        assert!(effective_peer_ip(proxy, &HeaderMap::new(), &trusted).is_err());
+
+        let mut chained = HeaderMap::new();
+        chained.insert(
+            "x-forwarded-for",
+            "198.51.100.42, 10.0.0.7".parse().expect("forwarded chain"),
+        );
+        assert!(effective_peer_ip(proxy, &chained, &trusted).is_err());
+
+        let mut duplicate = HeaderMap::new();
+        duplicate.append(
+            "x-forwarded-for",
+            "198.51.100.42".parse().expect("first forwarded value"),
+        );
+        duplicate.append(
+            "x-forwarded-for",
+            "198.51.100.43".parse().expect("second forwarded value"),
+        );
+        assert!(effective_peer_ip(proxy, &duplicate, &trusted).is_err());
+
+        let mut malformed = HeaderMap::new();
+        malformed.insert(
+            "x-forwarded-for",
+            "not-an-ip".parse().expect("malformed header value"),
+        );
+        assert!(effective_peer_ip(proxy, &malformed, &trusted).is_err());
+    }
+
+    #[tokio::test]
+    async fn one_ip_cannot_mint_unbounded_sessions() {
+        let state = build_state(1_000_000);
+        for index in 0..SESSION_ISSUE_LIMIT_MAX {
+            let mut connection = ConnectionContext::for_peer_ip(
+                IpAddr::from([192, 0, 2, 20]),
+                STARTER_COLONY_ID.to_owned(),
+            );
+            let result = send_action(
+                &state,
+                &mut connection,
+                &ClientAction::Presence {
+                    session_id: String::new(),
+                    nickname: format!("Browser {index}"),
+                    sig: None,
+                },
+            )
+            .await;
+            assert!(result.result.ok, "session {index}: {result:?}");
+        }
+
+        let mut ninth = ConnectionContext::for_peer_ip(
+            IpAddr::from([192, 0, 2, 20]),
+            STARTER_COLONY_ID.to_owned(),
+        );
+        let rejected = send_action(
+            &state,
+            &mut ninth,
+            &ClientAction::Presence {
+                session_id: String::new(),
+                nickname: "Abusive browser".to_owned(),
+                sig: None,
+            },
+        )
+        .await;
+        assert!(!rejected.result.ok);
+        assert!(
+            rejected
+                .result
+                .message
+                .as_deref()
+                .is_some_and(|message| message.contains("Too many new sessions"))
+        );
+    }
+
+    #[tokio::test]
+    async fn world_colony_cap_rejects_founding_before_simulation_growth() {
+        let state = build_state(1_000_000);
+        {
+            let mut world = state.world.lock().await;
+            let template = world.colonies[0].clone();
+            while world.colonies.len() < MAX_TOTAL_COLONIES {
+                let mut colony = template.clone();
+                colony.id = format!("capacity-fixture-{}", world.colonies.len());
+                colony.kind = VillageKind::Personal;
+                colony.owner_player_id = Some(format!("capacity-owner-{}", world.colonies.len()));
+                world.colonies.push(colony);
+            }
+        }
+        let (mut connection, signed) = authenticated_connection(&state);
+        let result = send_action(
+            &state,
+            &mut connection,
+            &ClientAction::FoundVillage {
+                name: "One Too Many".to_owned(),
+                session_id: signed.session_id,
+                sig: Some(signed.sig),
+            },
+        )
+        .await;
+
+        assert!(!result.result.ok);
+        assert!(
+            result
+                .result
+                .message
+                .as_deref()
+                .is_some_and(|message| message.contains("world has reached"))
+        );
+        assert_eq!(state.world.lock().await.colonies.len(), MAX_TOTAL_COLONIES);
+    }
+
+    #[tokio::test]
+    async fn one_ip_cannot_found_more_than_the_household_village_allowance() {
+        let state = build_state(1_000_000);
+        let peer_ip = IpAddr::from([192, 0, 2, 30]);
+        let peer = peer_ip.to_string();
+        {
+            let mut world = state.world.lock().await;
+            let template = world.colonies[0].clone();
+            let mut guard = state.abuse_guard.lock().await;
+            for index in 0..MAX_PERSONAL_VILLAGES_PER_IP {
+                let owner = format!("household-owner-{index}");
+                let mut colony = template.clone();
+                colony.id = format!("household-village-{index}");
+                colony.kind = VillageKind::Personal;
+                colony.owner_player_id = Some(owner.clone());
+                world.colonies.push(colony);
+                guard.player_peers.insert(owner, peer.clone());
+            }
+        }
+        let signed = signed_session("household-next".to_owned(), state.session_secret.as_str());
+        let mut connection = ConnectionContext::for_peer_ip(peer_ip, STARTER_COLONY_ID.to_owned());
+        connection.identity = Some(signed.clone());
+        let result = send_action(
+            &state,
+            &mut connection,
+            &ClientAction::FoundVillage {
+                name: "Ninth Household Village".to_owned(),
+                session_id: signed.session_id,
+                sig: Some(signed.sig),
+            },
+        )
+        .await;
+
+        assert!(!result.result.ok);
+        assert!(
+            result
+                .result
+                .message
+                .as_deref()
+                .is_some_and(|message| message.contains("network address"))
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -5723,6 +6203,137 @@ mod tests {
         assert!(first_colony.resources.materials >= 67.0);
         assert!(second_colony.resources.food >= 62.0);
         assert!(first_colony.village_trade_offers.is_empty());
+    }
+
+    async fn assert_renewed_owner_retains_village(old: SignedSession) {
+        let private_id = "renewal-private-village";
+        let mut world = starter_world(1_000_000);
+        let mut personal = found_colony(WORLD_SEED, private_id, 1_000_000, 77);
+        personal.kind = VillageKind::Personal;
+        personal.owner_player_id = Some(old.player_id.clone());
+        world.colonies.push(personal);
+        let state = build_test_state_from_world(world, 1_000_000);
+        let mut connection =
+            ConnectionContext::new("renewal-browser".to_owned(), STARTER_COLONY_ID.to_owned());
+        let presence = send_action(
+            &state,
+            &mut connection,
+            &ClientAction::Presence {
+                session_id: old.session_id.clone(),
+                nickname: "Returning Owner".to_owned(),
+                sig: Some(old.sig.clone()),
+            },
+        )
+        .await;
+        assert!(presence.result.ok, "renewal presence: {presence:?}");
+        assert_eq!(presence.fields.get("playerId"), Some(&old.player_id));
+        let renewed_session = presence.fields["sessionId"].clone();
+        let renewed_sig = presence.fields["sig"].clone();
+        assert_ne!(renewed_session, old.session_id);
+
+        let joined = send_action(
+            &state,
+            &mut connection,
+            &ClientAction::JoinVillage {
+                colony_id: private_id.to_owned(),
+                session_id: renewed_session,
+                sig: Some(renewed_sig),
+            },
+        )
+        .await;
+        assert!(joined.result.ok, "renewed owner joins village: {joined:?}");
+        let snapshot = current_snapshot(&state, 1, &connection).await;
+        assert_eq!(snapshot.colonies[0].id, private_id);
+        assert!(snapshot.colonies[0].capabilities.is_owner);
+    }
+
+    async fn assert_unrenewable_credential_does_not_inherit_village(
+        old: SignedSession,
+        supplied_sig: String,
+    ) {
+        let private_id = "rejected-renewal-private-village";
+        let mut world = starter_world(1_000_000);
+        let mut personal = found_colony(WORLD_SEED, private_id, 1_000_000, 78);
+        personal.kind = VillageKind::Personal;
+        personal.owner_player_id = Some(old.player_id.clone());
+        world.colonies.push(personal);
+        let state = build_test_state_from_world(world, 1_000_000);
+        let mut connection = ConnectionContext::new(
+            "rejected-renewal-browser".to_owned(),
+            STARTER_COLONY_ID.to_owned(),
+        );
+        let presence = send_action(
+            &state,
+            &mut connection,
+            &ClientAction::Presence {
+                session_id: old.session_id,
+                nickname: "Untrusted Return".to_owned(),
+                sig: Some(supplied_sig),
+            },
+        )
+        .await;
+        assert!(
+            presence.result.ok,
+            "fresh replacement presence: {presence:?}"
+        );
+        assert_ne!(presence.fields.get("playerId"), Some(&old.player_id));
+
+        let joined = send_action(
+            &state,
+            &mut connection,
+            &ClientAction::JoinVillage {
+                colony_id: private_id.to_owned(),
+                session_id: presence.fields["sessionId"].clone(),
+                sig: Some(presence.fields["sig"].clone()),
+            },
+        )
+        .await;
+        assert!(
+            !joined.result.ok,
+            "replacement identity cannot inherit owner"
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_owner_session_upgrades_without_stranding_personal_village() {
+        let old = signed_session(
+            "session_0123456789abcdef0123456789abcdef".to_owned(),
+            "guided-campaign-secret",
+        );
+        assert_renewed_owner_retains_village(old).await;
+    }
+
+    #[tokio::test]
+    async fn recently_expired_v1_owner_renews_without_stranding_personal_village() {
+        let issued_at = now_ms() - identity::SESSION_MAX_AGE_MS - 1;
+        let old = signed_session(
+            format!("session_v1_{issued_at}_0123456789abcdef0123456789abcdef"),
+            "guided-campaign-secret",
+        );
+        assert_renewed_owner_retains_village(old).await;
+    }
+
+    #[tokio::test]
+    async fn tampered_and_over_grace_credentials_cannot_inherit_personal_village() {
+        let issued_at = now_ms() - identity::SESSION_MAX_AGE_MS - 1;
+        let tampered = signed_session(
+            format!("session_v1_{issued_at}_11111111111111111111111111111111"),
+            "guided-campaign-secret",
+        );
+        assert_unrenewable_credential_does_not_inherit_village(
+            tampered,
+            "tampered-signature".to_owned(),
+        )
+        .await;
+
+        let too_old_at =
+            now_ms() - identity::SESSION_MAX_AGE_MS - identity::SESSION_RENEWAL_GRACE_MS - 1;
+        let too_old = signed_session(
+            format!("session_v1_{too_old_at}_22222222222222222222222222222222"),
+            "guided-campaign-secret",
+        );
+        let authentic_sig = too_old.sig.clone();
+        assert_unrenewable_credential_does_not_inherit_village(too_old, authentic_sig).await;
     }
 
     #[tokio::test]

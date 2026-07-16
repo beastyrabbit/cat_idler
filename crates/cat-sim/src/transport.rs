@@ -10,6 +10,10 @@ use serde::{Deserialize, Serialize};
 use crate::{stockpiles::ResourceKind, world_tick::TilePos};
 
 pub const RAIL_METAL_PER_TILE: f64 = 1.0;
+/// Maximum endpoint-inclusive alignment accepted by one rail designation.
+/// The line builder shares the action cap so raw coordinates cannot allocate an
+/// attacker-controlled path before the caller validates it.
+pub const MAX_CARDINAL_LINE_TILES: usize = 128;
 pub const ROLLING_STOCK_METAL: f64 = 8.0;
 pub const DOCK_LUMBER: f64 = 8.0;
 pub const DOCK_BLOCKS: f64 = 4.0;
@@ -155,18 +159,26 @@ pub fn cardinal_line(a: TilePos, b: TilePos) -> Option<Vec<TilePos>> {
     if a.x != b.x && a.y != b.y {
         return None;
     }
-    let dx = (b.x - a.x).signum();
-    let dy = (b.y - a.y).signum();
+    let dx = i64::from(b.x) - i64::from(a.x);
+    let dy = i64::from(b.y) - i64::from(a.y);
+    let distance = dx.abs().checked_add(dy.abs())?;
+    let tile_count = usize::try_from(distance.checked_add(1)?).ok()?;
+    if tile_count > MAX_CARDINAL_LINE_TILES {
+        return None;
+    }
+    let step_x = i32::try_from(dx.signum()).ok()?;
+    let step_y = i32::try_from(dy.signum()).ok()?;
     let mut cursor = a;
-    let mut out = vec![a];
-    while cursor != b {
+    let mut out = Vec::with_capacity(tile_count);
+    out.push(a);
+    for _ in 0..distance {
         cursor = TilePos {
-            x: cursor.x + dx,
-            y: cursor.y + dy,
+            x: cursor.x.checked_add(step_x)?,
+            y: cursor.y.checked_add(step_y)?,
         };
         out.push(cursor);
     }
-    Some(out)
+    (cursor == b).then_some(out)
 }
 
 #[cfg(test)]
@@ -183,6 +195,40 @@ mod tests {
         );
         assert_eq!(
             cardinal_line(TilePos { x: 0, y: 0 }, TilePos { x: 1, y: 1 }),
+            None
+        );
+    }
+
+    #[test]
+    fn cardinal_lines_reject_unbounded_and_overflowing_coordinate_spans() {
+        assert_eq!(
+            cardinal_line(TilePos { x: 0, y: 0 }, TilePos { x: 0, y: i32::MAX },),
+            None
+        );
+        assert_eq!(
+            cardinal_line(TilePos { x: i32::MIN, y: 0 }, TilePos { x: i32::MAX, y: 0 },),
+            None
+        );
+        assert_eq!(
+            cardinal_line(
+                TilePos { x: 0, y: 0 },
+                TilePos {
+                    x: i32::try_from(MAX_CARDINAL_LINE_TILES - 1).unwrap(),
+                    y: 0,
+                },
+            )
+            .unwrap()
+            .len(),
+            MAX_CARDINAL_LINE_TILES
+        );
+        assert_eq!(
+            cardinal_line(
+                TilePos { x: 0, y: 0 },
+                TilePos {
+                    x: i32::try_from(MAX_CARDINAL_LINE_TILES).unwrap(),
+                    y: 0,
+                },
+            ),
             None
         );
     }

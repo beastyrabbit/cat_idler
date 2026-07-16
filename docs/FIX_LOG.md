@@ -27,6 +27,57 @@ sprite that motivated the change.
 
 ## Verified fixes
 
+## 2026-07-16 — Comprehensive review findings are resolved and release-bounded
+
+**Problem:** The five-pass review in `docs/reviews/` found a small set of cross-cutting defects
+despite feature parity being complete: hostile queue/rail/path inputs could panic or over-allocate,
+mutable non-finite state could poison a snapshot, wire evolution had no visible compatibility
+boundary, public server deployments lacked firm client/session/message bounds, a disconnected
+client could look live, and first-run/role guidance was too implicit. Workspace metadata, toolchain
+policy, dependency auditing, and several implementation counts in the docs had also drifted. The
+first consolidated long-horizon rerun then found a separate integration issue: established seeds
+42 and 99 remained healthy but four physical water carriers could be in transit while a
+migration-grown village consumed the last prosperity reserve.
+
+**Fix:** Queue moves, rail endpoints, cardinal-line construction, and sparse A* now reject bounded
+bad input without panic or dense allocation. Quarry staffing respects full Stone storage; d20 and
+all mutable snapshot float families are finite-projected. Protocol v1 is explicit and first on the
+wire, wire counts/indices are fixed-width, legacy trader fields default safely, and an incompatible
+frame produces `UPDATE REQUIRED`. The server now binds limits to a strict effective client IP,
+trusts forwarding only from an exact configured proxy allowlist, caps sockets/actions/sessions/
+villages/messages, rotates expiring sessions without changing durable player identity, requires
+Origin and secret configuration on public binds, fails readiness after repeated saves, avoids
+readiness lock waits, caches hot statements,
+and reports table/row/column context for every corrupt JSON field. The client keeps a
+LIVE/STALE/OFFLINE status with retry time, adds first-run/Help guidance and distinct
+specialization/officer cues, removes dead `FUTURE`
+presentation, and performs typed snapshot decoding after the version discriminator. The mature
+water transit reserve is now two units per cat; migration and research prosperity thresholds are
+unchanged. Workspace metadata/MSRV are unified, Forgejo runs cargo-deny advisory/ban/source checks,
+retired web build products are ignored, and every review disposition is recorded in
+`docs/reviews/RESOLUTION.md`.
+
+**Evidence:** `cargo nextest run --workspace` passed all 1,709 tests with two intentional skips.
+That suite includes passive exact-cadence and proxy controls plus signed, observed-state guided
+campaigns covering every public action, survival, migration/housing, research, roads, fog/scouts,
+farming, fishing, industry, equipment, officers, combat, trade, and restart. The corrected seeds
+42 and 99 each pass their established 300-hour campaign with positive water. Workspace strict
+Clippy, formatting, the `cat-web` wasm32 check, `git diff --check`, and
+`cargo deny check advisories bans sources` pass; the deny policy carries only narrow documented
+upstream Bevy/Wayland parser exceptions.
+
+Against a booted authoritative server, the native Bevy client captured its own 1906×1045 physical
+framebuffer after settled frames (the requested logical window was 1024×768). This review inspected
+the complete onboarding frame
+`/tmp/idle-cat-review-final.png` (SHA-256
+`db4cc9f898b9324f53c90a4e885c337b6645f6a203af35f3ef9ae0b5e0937ea5`) and complete world frame
+`/tmp/idle-cat-review-world-final-b.png` (SHA-256
+`e793993a16cb7085283477f2628d2f62c835e72918e4965dc0b9a62ac66c8a2c`). They visibly prove the
+onboarding/Help surface, persistent LIVE chip, compact command dock, connected roads, open-top
+stations, fog boundary, and one authoritative body per visible cat. Redundant captures exposed and
+were rejected for the known intermittent partial-readback artifact. Temporary capture code was
+removed before final gates.
+
 ## 2026-07-16 — Generalized correction gate closes the eight-player-feedback set
 
 **Problem:** Focused regressions proved the individual corrections but did not establish that the

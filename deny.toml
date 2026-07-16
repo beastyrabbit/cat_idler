@@ -1,0 +1,15 @@
+[advisories]
+ignore = [
+  { id = "RUSTSEC-2026-0194", reason = "quick-xml is only a build dependency of wayland-scanner and parses trusted bundled protocol XML; no project or network input reaches it" },
+  { id = "RUSTSEC-2026-0195", reason = "quick-xml is only a build dependency of wayland-scanner and parses trusted bundled protocol XML; no project or network input reaches it" },
+  { id = "RUSTSEC-2026-0192", reason = "ttf-parser is an upstream Bevy/winit dependency used for bundled UI fonts; track replacement through the upstream graphics stack" },
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

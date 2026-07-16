@@ -570,6 +570,7 @@ pub fn direct_colony(snapshot: &LeaderSnapshot) -> DirectorPlan {
 
 fn allocate_labor(snapshot: &LeaderSnapshot, goals: &[LaborGoal]) -> Vec<OpenSlots> {
     let food_r = ratio(snapshot.resources.food, snapshot.food_capacity);
+    let stone_r = stone_fill_ratio(snapshot);
     let mut labour_left = snapshot.idle_cats;
     let mut ranked = goals.to_vec();
     ranked.sort_by(rank_goals);
@@ -598,7 +599,10 @@ fn allocate_labor(snapshot: &LeaderSnapshot, goals: &[LaborGoal]) -> Vec<OpenSlo
     let fill_order = [
         (LaborGoalKind::Hunt, food_r < 1.0),
         (LaborGoalKind::Scout, snapshot.has_frontier),
-        (LaborGoalKind::Quarry, snapshot.has_quarry_site),
+        (
+            LaborGoalKind::Quarry,
+            snapshot.has_quarry_site && stone_r < 1.0,
+        ),
     ];
     let mut progress = true;
     while fill_wanted > 0 && progress {
@@ -1865,6 +1869,26 @@ mod tests {
             scout_wild_deficit(&mapped),
             0.0,
             "a fully-mapped colony must generate no scouting demand"
+        );
+    }
+
+    #[test]
+    fn employment_floor_does_not_fill_quarry_slots_when_stone_is_full() {
+        let mut snapshot = healthy_snapshot(10, 0);
+        snapshot.has_quarry_site = true;
+        snapshot.has_frontier = false;
+        snapshot.has_water_site = false;
+        snapshot.resources.food = snapshot.food_capacity;
+        snapshot.stone_capacity = 100.0;
+        snapshot.stone = snapshot.stone_capacity;
+
+        let plan = direct_colony(&snapshot);
+        assert!(
+            plan.slots
+                .iter()
+                .all(|slot| slot.goal != LaborGoalKind::Quarry),
+            "a saturated stone store must not receive fill-pass quarriers: {:?}",
+            plan.slots
         );
     }
 

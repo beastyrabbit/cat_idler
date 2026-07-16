@@ -29,6 +29,7 @@ use cat_sim::{
     zones::{ZoneKind, ZoneRect},
 };
 use rusqlite::{Connection, OptionalExtension, Row, params, types::Type};
+use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 pub fn open_database_from_env() -> rusqlite::Result<Connection> {
@@ -294,7 +295,14 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             ON colonies(isGlobal) WHERE isGlobal = 1;
          CREATE UNIQUE INDEX IF NOT EXISTS colonies_one_personal_owner
             ON colonies(ownerPlayerId)
-            WHERE isGlobal = 0 AND ownerPlayerId IS NOT NULL;",
+            WHERE isGlobal = 0 AND ownerPlayerId IS NOT NULL;
+         CREATE INDEX IF NOT EXISTS cats_colony_id ON cats(colonyId);
+         CREATE INDEX IF NOT EXISTS jobs_colony_id ON jobs(colonyId);
+         CREATE INDEX IF NOT EXISTS events_colony_id ON events(colonyId);
+         CREATE INDEX IF NOT EXISTS zones_colony_id ON zones(colonyId);
+         CREATE INDEX IF NOT EXISTS elections_colony_id ON elections(colonyId);
+         CREATE INDEX IF NOT EXISTS votes_colony_id ON votes(colonyId);
+         CREATE INDEX IF NOT EXISTS raiders_colony_id ON raiders(colonyId);",
     )
 }
 
@@ -731,14 +739,18 @@ pub fn load_world(conn: &Connection) -> rusqlite::Result<Option<WorldState>> {
 
     let shared_fish_habitats = shared_fish_json
         .map(|raw| {
-            serde_json::from_str::<Vec<(i32, i32, FishPopulation)>>(&raw)
-                .map_err(from_sql_json)
-                .map(|entries| {
-                    entries
-                        .into_iter()
-                        .map(|(x, y, population)| (TilePos { x, y }, population))
-                        .collect()
-                })
+            parse_json_at::<Vec<(i32, i32, FishPopulation)>>(
+                &raw,
+                "world",
+                "1",
+                "sharedFishHabitats",
+            )
+            .map(|entries| {
+                entries
+                    .into_iter()
+                    .map(|(x, y, population)| (TilePos { x, y }, population))
+                    .collect()
+            })
         })
         .transpose()?
         .unwrap_or_default();
@@ -913,9 +925,11 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
         x: row.get::<_, Option<i32>>("anchorX")?.unwrap_or(6),
         y: row.get::<_, Option<i32>>("anchorY")?.unwrap_or(6),
     };
-    let claimed_tiles = parse_tile_list(claimed_tiles_json.as_deref())?;
+    let claimed_tiles = parse_tile_list(claimed_tiles_json.as_deref())
+        .map_err(|err| from_sql_error_at("colonies", &id, "claimedTiles", err))?;
     let revealed_tiles = if revealed_tiles_json.is_some() {
-        parse_tile_list(revealed_tiles_json.as_deref())?
+        parse_tile_list(revealed_tiles_json.as_deref())
+            .map_err(|err| from_sql_error_at("colonies", &id, "revealedTiles", err))?
             .into_iter()
             .collect()
     } else {
@@ -933,15 +947,15 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
         scale: parse_village_scale(row.get::<_, Option<String>>("foundingScale")?.as_deref())?,
         owner_player_id: row.get("ownerPlayerId")?,
         known_village_ids: known_village_ids_json
-            .map(|raw| serde_json::from_str(&raw).map_err(from_sql_json))
+            .map(|raw| parse_json_at(&raw, "colonies", &id, "knownVillageIds"))
             .transpose()?
             .unwrap_or_default(),
         village_trade_offers: village_trade_offers_json
-            .map(|raw| serde_json::from_str(&raw).map_err(from_sql_json))
+            .map(|raw| parse_json_at(&raw, "colonies", &id, "villageTradeOffers"))
             .transpose()?
             .unwrap_or_default(),
         village_trade_caravans: village_trade_caravans_json
-            .map(|raw| serde_json::from_str(&raw).map_err(from_sql_json))
+            .map(|raw| parse_json_at(&raw, "colonies", &id, "villageTradeCaravans"))
             .transpose()?
             .unwrap_or_default(),
         // A complete world tick consumes shrine-delivery provenance before the
@@ -950,7 +964,7 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
         pending_scout_delivery_tiles: BTreeSet::new(),
         leader_id: row.get("leaderId")?,
         status: parse_colony_status(&row.get::<_, String>("status")?)?,
-        resources: serde_json::from_str::<Resources>(&resources_json).map_err(from_sql_json)?,
+        resources: parse_json_at::<Resources>(&resources_json, "colonies", &id, "resources")?,
         cats: load_cats(conn, &id)?,
         jobs: load_jobs(conn, &id)?,
         buildings: load_buildings(conn, &id)?,
@@ -960,8 +974,10 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
         elections: load_elections(conn, &id)?,
         votes: load_votes(conn, &id)?,
         raiders: load_raiders(conn, &id)?,
-        upgrade_levels: parse_upgrade_levels(upgrade_levels_json.as_deref())?,
-        upgrade_tree: parse_upgrade_tree(upgrade_tree_json.as_deref())?,
+        upgrade_levels: parse_upgrade_levels(upgrade_levels_json.as_deref())
+            .map_err(|err| from_sql_error_at("colonies", &id, "upgradeLevels", err))?,
+        upgrade_tree: parse_upgrade_tree(upgrade_tree_json.as_deref())
+            .map_err(|err| from_sql_error_at("colonies", &id, "upgradeTree", err))?,
         recipe_entitlement_rules_version: row
             .get::<_, Option<i64>>("recipeEntitlementRulesVersion")?
             .and_then(|version| u32::try_from(version).ok())
@@ -981,48 +997,54 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
         // there and keeps the single-colony game byte-identical.
         anchor,
         claimed_tiles,
-        agricultural_tiles: parse_tile_list(agricultural_tiles_json.as_deref())?
+        agricultural_tiles: parse_tile_list(agricultural_tiles_json.as_deref())
+            .map_err(|err| from_sql_error_at("colonies", &id, "agriculturalTiles", err))?
             .into_iter()
             .collect(),
         revealed_tiles,
-        provisional_tiles: parse_provisional_tiles(provisional_tiles_json.as_deref())?,
+        provisional_tiles: parse_provisional_tiles(provisional_tiles_json.as_deref())
+            .map_err(|err| from_sql_error_at("colonies", &id, "provisionalTiles", err))?,
         officers: officers_json
             .map(|raw| {
-                serde_json::from_str::<BTreeMap<OfficerRole, String>>(&raw).map_err(from_sql_json)
+                parse_json_at::<BTreeMap<OfficerRole, String>>(&raw, "colonies", &id, "officers")
             })
             .transpose()?
             .unwrap_or_default(),
         stockpiles: stockpiles_json
-            .map(|raw| serde_json::from_str::<Vec<Stockpile>>(&raw).map_err(from_sql_json))
+            .map(|raw| parse_json_at::<Vec<Stockpile>>(&raw, "colonies", &id, "stockpiles"))
             .transpose()?
             .unwrap_or_default(),
         farms: farms_json
-            .map(|raw| serde_json::from_str::<Vec<FarmPlot>>(&raw).map_err(from_sql_json))
+            .map(|raw| parse_json_at::<Vec<FarmPlot>>(&raw, "colonies", &id, "farms"))
             .transpose()?
             .unwrap_or_default(),
         gather_spots: gather_spots_json
-            .map(|raw| serde_json::from_str::<Vec<GatherSpot>>(&raw).map_err(from_sql_json))
+            .map(|raw| parse_json_at::<Vec<GatherSpot>>(&raw, "colonies", &id, "gatherSpots"))
             .transpose()?
             .unwrap_or_default(),
         fish_habitats: fish_habitats_json
             .map(|raw| {
-                serde_json::from_str::<Vec<(i32, i32, FishPopulation)>>(&raw)
-                    .map(|entries| {
-                        entries
-                            .into_iter()
-                            .map(|(x, y, population)| (TilePos { x, y }, population))
-                            .collect()
-                    })
-                    .map_err(from_sql_json)
+                parse_json_at::<Vec<(i32, i32, FishPopulation)>>(
+                    &raw,
+                    "colonies",
+                    &id,
+                    "fishHabitats",
+                )
+                .map(|entries| {
+                    entries
+                        .into_iter()
+                        .map(|(x, y, population)| (TilePos { x, y }, population))
+                        .collect()
+                })
             })
             .transpose()?
             .unwrap_or_default(),
         transport: transport_state_json
-            .map(|raw| serde_json::from_str(&raw).map_err(from_sql_json))
+            .map(|raw| parse_json_at(&raw, "colonies", &id, "transportState"))
             .transpose()?
             .unwrap_or_default(),
         stock_ledger: stock_ledger_json
-            .map(|raw| serde_json::from_str::<StockLedger>(&raw).map_err(from_sql_json))
+            .map(|raw| parse_json_at::<StockLedger>(&raw, "colonies", &id, "stockLedger"))
             .transpose()?
             .unwrap_or_default(),
         // P19 slice 2 (persistence audit fix): trade-craft cycles credit real
@@ -1031,7 +1053,7 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
         // trinkets/clothing on every restart was silent state loss, not a deferred
         // slice.
         items: items_json
-            .map(|raw| serde_json::from_str::<ItemStore>(&raw).map_err(from_sql_json))
+            .map(|raw| parse_json_at::<ItemStore>(&raw, "colonies", &id, "items"))
             .transpose()?
             .unwrap_or_default(),
         // Bench trade-craft cycle timers: persisted alongside `items` for the same
@@ -1062,7 +1084,7 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
         // visit; missing legacy columns default to no in-flight visit/count zero.
         coin: row.get::<_, Option<f64>>("coin")?.unwrap_or(0.0),
         trader: trader_json
-            .map(|raw| serde_json::from_str(&raw).map_err(from_sql_json))
+            .map(|raw| parse_json_at(&raw, "colonies", &id, "trader"))
             .transpose()?,
         trader_visit_count: row
             .get::<_, Option<i64>>("traderVisitCount")?
@@ -1070,7 +1092,7 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
             .max(0) as u64,
         last_trader_departed_at: row.get("lastTraderDepartedAt")?,
         migration_state: migration_state_json
-            .map(|raw| serde_json::from_str::<MigrationState>(&raw).map_err(from_sql_json))
+            .map(|raw| parse_json_at::<MigrationState>(&raw, "colonies", &id, "migrationState"))
             .transpose()?
             .unwrap_or_default(),
         migration_departures: row
@@ -1148,7 +1170,7 @@ fn runtime_id_from_storage(colony_id: &str, stored_id: String) -> String {
 fn save_cat(conn: &Connection, colony_id: &str, cat: &Cat) -> rusqlite::Result<()> {
     let current_task = cat.current_task.map(TaskType::as_str);
     let specialization = cat.specialization.map(CatSpecialization::as_str);
-    conn.execute(
+    conn.prepare_cached(
         "INSERT INTO cats (
             id, colonyId, name, parentIds, birthTime, deathTime, stats, needs,
             currentTask, position, destination, carrying, activity, isPregnant,
@@ -1158,45 +1180,45 @@ fn save_cat(conn: &Connection, colony_id: &str, cat: &Cat) -> rusqlite::Result<(
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
             ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24
         )",
-        params![
-            scoped_storage_id(colony_id, &cat.id),
-            colony_id,
-            cat.name,
-            serde_json::to_string(&cat.parent_ids).map_err(to_sql_json)?,
-            cat.birth_time,
-            cat.death_time,
-            serde_json::to_string(&cat.stats).map_err(to_sql_json)?,
-            serde_json::to_string(&cat.needs).map_err(to_sql_json)?,
-            current_task,
-            serde_json::to_string(&cat.position).map_err(to_sql_json)?,
-            cat.destination
-                .as_ref()
-                .map(serde_json::to_string)
-                .transpose()
-                .map_err(to_sql_json)?,
-            cat.carrying
-                .as_ref()
-                .map(serde_json::to_string)
-                .transpose()
-                .map_err(to_sql_json)?,
-            activity_str(cat.activity),
-            cat.is_pregnant,
-            cat.pregnancy_due_time,
-            cat.age_hours,
-            cat.pregnancy_due_age_hours,
-            cat.pregnancy_mate_id,
-            cat.sprite_params
-                .as_ref()
-                .map(serde_json::to_string)
-                .transpose()
-                .map_err(to_sql_json)?,
-            specialization,
-            serde_json::to_string(&cat.role_xp).map_err(to_sql_json)?,
-            serde_json::to_string(&cat.skills).map_err(to_sql_json)?,
-            cat.boosted,
-            serde_json::to_string(&cat.preferred_labors).map_err(to_sql_json)?,
-        ],
-    )?;
+    )?
+    .execute(params![
+        scoped_storage_id(colony_id, &cat.id),
+        colony_id,
+        cat.name,
+        serde_json::to_string(&cat.parent_ids).map_err(to_sql_json)?,
+        cat.birth_time,
+        cat.death_time,
+        serde_json::to_string(&cat.stats).map_err(to_sql_json)?,
+        serde_json::to_string(&cat.needs).map_err(to_sql_json)?,
+        current_task,
+        serde_json::to_string(&cat.position).map_err(to_sql_json)?,
+        cat.destination
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(to_sql_json)?,
+        cat.carrying
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(to_sql_json)?,
+        activity_str(cat.activity),
+        cat.is_pregnant,
+        cat.pregnancy_due_time,
+        cat.age_hours,
+        cat.pregnancy_due_age_hours,
+        cat.pregnancy_mate_id,
+        cat.sprite_params
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(to_sql_json)?,
+        specialization,
+        serde_json::to_string(&cat.role_xp).map_err(to_sql_json)?,
+        serde_json::to_string(&cat.skills).map_err(to_sql_json)?,
+        cat.boosted,
+        serde_json::to_string(&cat.preferred_labors).map_err(to_sql_json)?,
+    ])?;
     Ok(())
 }
 
@@ -1209,6 +1231,7 @@ fn load_cats(conn: &Connection, colony_id: &str) -> rusqlite::Result<Vec<Cat>> {
          FROM cats WHERE colonyId = ?1 ORDER BY rowid",
     )?;
     let rows = stmt.query_map([colony_id], |row| {
+        let stored_id: String = row.get("id")?;
         let parent_ids_json: String = row.get("parentIds")?;
         let stats_json: String = row.get("stats")?;
         let needs_json: String = row.get("needs")?;
@@ -1217,28 +1240,33 @@ fn load_cats(conn: &Connection, colony_id: &str) -> rusqlite::Result<Vec<Cat>> {
         let skills_json: Option<String> = row.get("skills")?;
         let preferred_labors_json: Option<String> = row.get("preferredLabors")?;
         Ok(Cat {
-            id: runtime_id_from_storage(colony_id, row.get("id")?),
+            id: runtime_id_from_storage(colony_id, stored_id.clone()),
             colony_id: colony_id.to_owned(),
             name: row.get("name")?,
-            parent_ids: serde_json::from_str(&parent_ids_json).map_err(from_sql_json)?,
+            parent_ids: parse_json_at(&parent_ids_json, "cats", &stored_id, "parentIds")?,
             birth_time: row.get("birthTime")?,
             death_time: row.get("deathTime")?,
-            stats: serde_json::from_str(&stats_json).map_err(from_sql_json)?,
-            needs: serde_json::from_str(&needs_json).map_err(from_sql_json)?,
+            stats: parse_json_at(&stats_json, "cats", &stored_id, "stats")?,
+            needs: parse_json_at(&needs_json, "cats", &stored_id, "needs")?,
             current_task: row
                 .get::<_, Option<String>>("currentTask")?
                 .map(|value| {
-                    serde_json::from_value::<TaskType>(Value::String(value)).map_err(from_sql_json)
+                    parse_json_value_at::<TaskType>(
+                        Value::String(value),
+                        "cats",
+                        &stored_id,
+                        "currentTask",
+                    )
                 })
                 .transpose()?,
-            position: serde_json::from_str::<Position>(&position_json).map_err(from_sql_json)?,
+            position: parse_json_at::<Position>(&position_json, "cats", &stored_id, "position")?,
             destination: row
                 .get::<_, Option<String>>("destination")?
-                .map(|value| serde_json::from_str::<Position>(&value).map_err(from_sql_json))
+                .map(|value| parse_json_at::<Position>(&value, "cats", &stored_id, "destination"))
                 .transpose()?,
             carrying: row
                 .get::<_, Option<String>>("carrying")?
-                .map(|value| serde_json::from_str::<Carrying>(&value).map_err(from_sql_json))
+                .map(|value| parse_json_at::<Carrying>(&value, "cats", &stored_id, "carrying"))
                 .transpose()?,
             activity: parse_activity(&row.get::<_, String>("activity")?)?,
             is_pregnant: row.get("isPregnant")?,
@@ -1248,28 +1276,34 @@ fn load_cats(conn: &Connection, colony_id: &str) -> rusqlite::Result<Vec<Cat>> {
             pregnancy_mate_id: row.get("pregnancyMateId")?,
             sprite_params: row
                 .get::<_, Option<String>>("spriteParams")?
-                .map(|value| serde_json::from_str(&value).map_err(from_sql_json))
+                .map(|value| parse_json_at(&value, "cats", &stored_id, "spriteParams"))
                 .transpose()?,
             specialization: row
                 .get::<_, Option<String>>("specialization")?
                 .map(|value| {
-                    serde_json::from_value::<CatSpecialization>(Value::String(value))
-                        .map_err(from_sql_json)
+                    parse_json_value_at::<CatSpecialization>(
+                        Value::String(value),
+                        "cats",
+                        &stored_id,
+                        "specialization",
+                    )
                 })
                 .transpose()?,
             role_xp: role_xp_json
-                .map(|raw| serde_json::from_str::<RoleXp>(&raw).map_err(from_sql_json))
+                .map(|raw| parse_json_at::<RoleXp>(&raw, "cats", &stored_id, "roleXp"))
                 .transpose()?
                 .unwrap_or_default(),
             skills: skills_json
                 .map(|raw| {
-                    serde_json::from_str::<BTreeMap<Labor, f64>>(&raw).map_err(from_sql_json)
+                    parse_json_at::<BTreeMap<Labor, f64>>(&raw, "cats", &stored_id, "skills")
                 })
                 .transpose()?
                 .unwrap_or_default(),
             boosted: row.get("boosted")?,
             preferred_labors: preferred_labors_json
-                .map(|raw| serde_json::from_str::<BTreeSet<Labor>>(&raw).map_err(from_sql_json))
+                .map(|raw| {
+                    parse_json_at::<BTreeSet<Labor>>(&raw, "cats", &stored_id, "preferredLabors")
+                })
                 .transpose()?
                 .unwrap_or_default(),
         })
@@ -1278,7 +1312,7 @@ fn load_cats(conn: &Connection, colony_id: &str) -> rusqlite::Result<Vec<Cat>> {
 }
 
 fn save_job(conn: &Connection, colony_id: &str, job: &JobRuntime) -> rusqlite::Result<()> {
-    conn.execute(
+    conn.prepare_cached(
         "INSERT INTO jobs (
             id, colonyId, kind, status, requestedByType, requestedByPlayerId,
             assignedCatId, baseDurationSec, speedMultiplier, yieldMultiplier,
@@ -1286,24 +1320,24 @@ fn save_job(conn: &Connection, colony_id: &str, job: &JobRuntime) -> rusqlite::R
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15
         )",
-        params![
-            scoped_storage_id(colony_id, &job.id),
-            colony_id,
-            job.kind.as_str(),
-            job.status.as_str(),
-            job_requester_str(job.requested_by),
-            job.assigned_cat,
-            job.duration_ms as f64 / 1000.0,
-            job.speed,
-            job.yield_amount,
-            i64::from(job.click_count),
-            job.created_at,
-            job.started_at,
-            job.ends_at,
-            job.completed_at,
-            job_metadata_json(&job.metadata).to_string(),
-        ],
-    )?;
+    )?
+    .execute(params![
+        scoped_storage_id(colony_id, &job.id),
+        colony_id,
+        job.kind.as_str(),
+        job.status.as_str(),
+        job_requester_str(job.requested_by),
+        job.assigned_cat,
+        job.duration_ms as f64 / 1000.0,
+        job.speed,
+        job.yield_amount,
+        i64::from(job.click_count),
+        job.created_at,
+        job.started_at,
+        job.ends_at,
+        job.completed_at,
+        job_metadata_json(&job.metadata).to_string(),
+    ])?;
     Ok(())
 }
 
@@ -1315,10 +1349,11 @@ fn load_jobs(conn: &Connection, colony_id: &str) -> rusqlite::Result<Vec<JobRunt
          FROM jobs WHERE colonyId = ?1 ORDER BY rowid",
     )?;
     let rows = stmt.query_map([colony_id], |row| {
+        let stored_id: String = row.get("id")?;
         let duration_sec: f64 = row.get("baseDurationSec")?;
         let click_count: f64 = row.get("clickTimeReducedSec")?;
         Ok(JobRuntime {
-            id: runtime_id_from_storage(colony_id, row.get("id")?),
+            id: runtime_id_from_storage(colony_id, stored_id.clone()),
             kind: parse_wire_enum::<JobKind>(&row.get::<_, String>("kind")?)?,
             status: parse_wire_enum::<JobStatus>(&row.get::<_, String>("status")?)?,
             requested_by: parse_job_requester(&row.get::<_, String>("requestedByType")?),
@@ -1331,7 +1366,8 @@ fn load_jobs(conn: &Connection, colony_id: &str) -> rusqlite::Result<Vec<JobRunt
             started_at: row.get("startedAt")?,
             ends_at: row.get("endsAt")?,
             completed_at: row.get("completedAt")?,
-            metadata: parse_job_metadata(row.get::<_, Option<String>>("metadata")?)?,
+            metadata: parse_job_metadata(row.get::<_, Option<String>>("metadata")?)
+                .map_err(|err| from_sql_error_at("jobs", &stored_id, "metadata", err))?,
         })
     })?;
     rows.collect()
@@ -1345,7 +1381,7 @@ fn save_building(
     let automated_officer_role = building
         .automated_by
         .map(|role| serde_json::to_string(&role).expect("officer role serializes"));
-    conn.execute(
+    conn.prepare_cached(
         "INSERT INTO buildings (
             id, colonyId, type, level, position, constructionProgress,
             productionProgress, isComplete, assignedCatId, automatedOfficerRole,
@@ -1353,28 +1389,28 @@ fn save_building(
             physicalRefinerQueueInitialized, physicalStationRulesVersion,
             constructionCargo
         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 1, 1, 5, ?14)",
-        params![
-            scoped_storage_id(colony_id, &building.id),
-            colony_id,
-            building.building_type.as_str(),
-            i64::from(building.level),
-            tile_pos_json(&building.position).to_string(),
-            f64::from(building.construction_progress),
-            building.production_progress,
-            building.is_complete,
-            building.assigned_cat,
-            automated_officer_role,
-            serde_json::to_string(&building.additional_work_slots).map_err(to_sql_json)?,
-            serde_json::to_string(&building.production_queue).map_err(to_sql_json)?,
-            building.production_paused,
-            building
-                .construction_cargo
-                .as_ref()
-                .map(serde_json::to_string)
-                .transpose()
-                .map_err(to_sql_json)?,
-        ],
-    )?;
+    )?
+    .execute(params![
+        scoped_storage_id(colony_id, &building.id),
+        colony_id,
+        building.building_type.as_str(),
+        i64::from(building.level),
+        tile_pos_json(&building.position).to_string(),
+        f64::from(building.construction_progress),
+        building.production_progress,
+        building.is_complete,
+        building.assigned_cat,
+        automated_officer_role,
+        serde_json::to_string(&building.additional_work_slots).map_err(to_sql_json)?,
+        serde_json::to_string(&building.production_queue).map_err(to_sql_json)?,
+        building.production_paused,
+        building
+            .construction_cargo
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(to_sql_json)?,
+    ])?;
     Ok(())
 }
 
@@ -1386,39 +1422,53 @@ fn load_buildings(conn: &Connection, colony_id: &str) -> rusqlite::Result<Vec<Bu
          FROM buildings WHERE colonyId = ?1 ORDER BY rowid",
     )?;
     let rows = stmt.query_map([colony_id], |row| {
+        let stored_id: String = row.get("id")?;
         let position_json: String = row.get("position")?;
         let progress: f64 = row.get("constructionProgress")?;
         let building_type = parse_wire_enum::<BuildingType>(&row.get::<_, String>("type")?)?;
         let production_queue = row
             .get::<_, Option<String>>("productionQueue")?
             .map(|raw| {
-                serde_json::from_str::<Vec<ProductionQueueEntry>>(&raw).map_err(from_sql_json)
+                parse_json_at::<Vec<ProductionQueueEntry>>(
+                    &raw,
+                    "buildings",
+                    &stored_id,
+                    "productionQueue",
+                )
             })
             .transpose()?
             .unwrap_or_else(|| default_production_queue(building_type));
         Ok(BuildingRuntime {
-            id: runtime_id_from_storage(colony_id, row.get("id")?),
+            id: runtime_id_from_storage(colony_id, stored_id.clone()),
             building_type,
             level: row.get("level")?,
-            position: parse_tile_pos_str(&position_json)?,
+            position: parse_tile_pos_str(&position_json)
+                .map_err(|err| from_sql_error_at("buildings", &stored_id, "position", err))?,
             is_complete: row.get("isComplete")?,
             construction_progress: progress.clamp(0.0, 100.0) as u8,
             production_progress: row.get("productionProgress")?,
             assigned_cat: row.get("assignedCatId")?,
             automated_by: row
                 .get::<_, Option<String>>("automatedOfficerRole")?
-                .map(|raw| serde_json::from_str::<OfficerRole>(&raw).map_err(from_sql_json))
+                .map(|raw| {
+                    parse_json_at::<OfficerRole>(
+                        &raw,
+                        "buildings",
+                        &stored_id,
+                        "automatedOfficerRole",
+                    )
+                })
                 .transpose()?,
             additional_work_slots: row
                 .get::<_, Option<String>>("additionalWorkSlots")?
-                .map(|raw| serde_json::from_str(&raw).map_err(from_sql_json))
+                .map(|raw| parse_json_at(&raw, "buildings", &stored_id, "additionalWorkSlots"))
                 .transpose()?
                 .unwrap_or_default(),
             production_queue,
             production_paused: row.get("productionPaused")?,
             construction_cargo: row
                 .get::<_, Option<String>>("constructionCargo")?
-                .map(|raw| serde_json::from_str(&raw).map_err(from_sql_json))
+                .map(|raw| parse_json_at(&raw, "buildings", &stored_id, "constructionCargo"))
                 .transpose()?,
         })
     })?;
@@ -1430,47 +1480,47 @@ fn save_world_tile(
     colony_id: &str,
     tile: &WorldTileRuntime,
 ) -> rusqlite::Result<()> {
-    conn.execute(
+    conn.prepare_cached(
         "INSERT INTO world_tiles (
             id, colonyId, x, y, type, resources, maxResources, dangerLevel,
             pathWear, lastDepleted, overlayFeature
         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-        params![
-            format!("{}:{}:{}", colony_id, tile.pos.x, tile.pos.y),
-            colony_id,
-            tile.pos.x,
-            tile.pos.y,
-            tile.tile_type.as_str(),
-            tile_resources_json(tile.resources).to_string(),
-            max_resources_json(tile.max_resources).to_string(),
-            tile.danger_level,
-            i64::from(tile.path_wear),
-            tile.last_depleted,
-            tile.overlay_feature,
-        ],
-    )?;
+    )?
+    .execute(params![
+        format!("{}:{}:{}", colony_id, tile.pos.x, tile.pos.y),
+        colony_id,
+        tile.pos.x,
+        tile.pos.y,
+        tile.tile_type.as_str(),
+        tile_resources_json(tile.resources).to_string(),
+        max_resources_json(tile.max_resources).to_string(),
+        tile.danger_level,
+        i64::from(tile.path_wear),
+        tile.last_depleted,
+        tile.overlay_feature,
+    ])?;
     Ok(())
 }
 
 fn save_shared_world_tile(conn: &Connection, tile: &WorldTileRuntime) -> rusqlite::Result<()> {
-    conn.execute(
+    conn.prepare_cached(
         "INSERT INTO shared_world_tiles (
             id, x, y, type, resources, maxResources, dangerLevel,
             pathWear, lastDepleted, overlayFeature
         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-        params![
-            format!("{}:{}", tile.pos.x, tile.pos.y),
-            tile.pos.x,
-            tile.pos.y,
-            tile.tile_type.as_str(),
-            tile_resources_json(tile.resources).to_string(),
-            max_resources_json(tile.max_resources).to_string(),
-            tile.danger_level,
-            i64::from(tile.path_wear),
-            tile.last_depleted,
-            tile.overlay_feature,
-        ],
-    )?;
+    )?
+    .execute(params![
+        format!("{}:{}", tile.pos.x, tile.pos.y),
+        tile.pos.x,
+        tile.pos.y,
+        tile.tile_type.as_str(),
+        tile_resources_json(tile.resources).to_string(),
+        max_resources_json(tile.max_resources).to_string(),
+        tile.danger_level,
+        i64::from(tile.path_wear),
+        tile.last_depleted,
+        tile.overlay_feature,
+    ])?;
     Ok(())
 }
 
@@ -1487,6 +1537,7 @@ fn load_shared_world_tiles(
             x: row.get("x")?,
             y: row.get("y")?,
         };
+        let row_id = format!("{}:{}", pos.x, pos.y);
         let resources_json: String = row.get("resources")?;
         let max_resources_json: String = row.get("maxResources")?;
         let path_wear: f64 = row.get("pathWear")?;
@@ -1495,8 +1546,12 @@ fn load_shared_world_tiles(
             WorldTileRuntime {
                 pos,
                 tile_type: parse_wire_enum::<TileType>(&row.get::<_, String>("type")?)?,
-                resources: parse_tile_resources(&resources_json)?,
-                max_resources: parse_max_resources(&max_resources_json)?,
+                resources: parse_tile_resources(&resources_json).map_err(|err| {
+                    from_sql_error_at("shared_world_tiles", &row_id, "resources", err)
+                })?,
+                max_resources: parse_max_resources(&max_resources_json).map_err(|err| {
+                    from_sql_error_at("shared_world_tiles", &row_id, "maxResources", err)
+                })?,
                 danger_level: row.get("dangerLevel")?,
                 path_wear: path_wear.max(0.0) as u32,
                 last_depleted: row.get("lastDepleted")?,
@@ -1521,6 +1576,7 @@ fn load_world_tiles(
             x: row.get("x")?,
             y: row.get("y")?,
         };
+        let row_id = format!("{colony_id}:{}:{}", pos.x, pos.y);
         let resources_json: String = row.get("resources")?;
         let max_resources_json: String = row.get("maxResources")?;
         let path_wear: f64 = row.get("pathWear")?;
@@ -1529,8 +1585,11 @@ fn load_world_tiles(
             WorldTileRuntime {
                 pos,
                 tile_type: parse_wire_enum::<TileType>(&row.get::<_, String>("type")?)?,
-                resources: parse_tile_resources(&resources_json)?,
-                max_resources: parse_max_resources(&max_resources_json)?,
+                resources: parse_tile_resources(&resources_json)
+                    .map_err(|err| from_sql_error_at("world_tiles", &row_id, "resources", err))?,
+                max_resources: parse_max_resources(&max_resources_json).map_err(|err| {
+                    from_sql_error_at("world_tiles", &row_id, "maxResources", err)
+                })?,
                 danger_level: row.get("dangerLevel")?,
                 path_wear: path_wear.max(0.0) as u32,
                 last_depleted: row.get("lastDepleted")?,
@@ -1742,13 +1801,19 @@ fn load_raiders(conn: &Connection, colony_id: &str) -> rusqlite::Result<Vec<Raid
          FROM raiders WHERE colonyId = ?1 ORDER BY rowid",
     )?;
     let rows = stmt.query_map([colony_id], |row| {
+        let stored_id: String = row.get("id")?;
         let position_json: String = row.get("position")?;
         let target_json: String = row.get("target")?;
         Ok(RaiderRuntime {
-            id: runtime_id_from_storage(colony_id, row.get("id")?),
+            id: runtime_id_from_storage(colony_id, stored_id.clone()),
             raid_id: row.get("raidId")?,
-            position: serde_json::from_str(&position_json).map_err(from_sql_json)?,
-            destination: Some(serde_json::from_str(&target_json).map_err(from_sql_json)?),
+            position: parse_json_at(&position_json, "raiders", &stored_id, "position")?,
+            destination: Some(parse_json_at(
+                &target_json,
+                "raiders",
+                &stored_id,
+                "target",
+            )?),
             attack: row.get("strength")?,
             defense: row.get("defense")?,
             health: row.get("hp")?,
@@ -2439,8 +2504,58 @@ fn to_sql_json(err: serde_json::Error) -> rusqlite::Error {
     rusqlite::Error::ToSqlConversionFailure(Box::new(err))
 }
 
+fn parse_json_at<T: DeserializeOwned>(
+    raw: &str,
+    table: &str,
+    row_id: &str,
+    column: &str,
+) -> rusqlite::Result<T> {
+    serde_json::from_str(raw).map_err(|err| from_sql_json_at(table, row_id, column, err))
+}
+
+fn parse_json_value_at<T: DeserializeOwned>(
+    value: Value,
+    table: &str,
+    row_id: &str,
+    column: &str,
+) -> rusqlite::Result<T> {
+    serde_json::from_value(value).map_err(|err| from_sql_json_at(table, row_id, column, err))
+}
+
 fn from_sql_json(err: serde_json::Error) -> rusqlite::Error {
     rusqlite::Error::FromSqlConversionFailure(0, Type::Text, Box::new(err))
+}
+
+fn from_sql_json_at(
+    table: &str,
+    row_id: &str,
+    column: &str,
+    err: serde_json::Error,
+) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(
+        0,
+        Type::Text,
+        Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("corrupt JSON in {table} row {row_id:?}, column {column}: {err}"),
+        )),
+    )
+}
+
+fn from_sql_error_at(
+    table: &str,
+    row_id: &str,
+    column: &str,
+    err: rusqlite::Error,
+) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(
+        0,
+        Type::Text,
+        Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("corrupt JSON in {table} row {row_id:?}, column {column}: {err}"),
+        )),
+    )
 }
 
 fn to_sql_io(err: std::io::Error) -> rusqlite::Error {
@@ -2462,6 +2577,196 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn corrupt_colony_resource_blob_reports_row_and_column() {
+        let conn = Connection::open_in_memory().expect("open sqlite");
+        init_schema(&conn).expect("init schema");
+        let mut world = new_world(20_260_716);
+        world.colonies.push(found_global_colony(
+            world.world_seed,
+            "corrupt-colony",
+            1_000_000,
+            42,
+        ));
+        save_world(&conn, &world).expect("save fixture");
+        conn.execute(
+            "UPDATE colonies SET resources = 'not-json' WHERE id = 'corrupt-colony'",
+            [],
+        )
+        .expect("corrupt resource blob");
+
+        let error = load_world(&conn).expect_err("corrupt JSON must fail closed");
+        let message = error.to_string();
+        assert!(message.contains("corrupt-colony"), "{message}");
+        assert!(message.contains("resources"), "{message}");
+    }
+
+    #[test]
+    fn every_loaded_json_column_reports_table_row_and_column_context() {
+        const JSON_COLUMNS: &[(&str, &[&str])] = &[
+            ("world", &["sharedFishHabitats"]),
+            (
+                "colonies",
+                &[
+                    "resources",
+                    "upgradeTree",
+                    "upgradeLevels",
+                    "claimedTiles",
+                    "agriculturalTiles",
+                    "revealedTiles",
+                    "provisionalTiles",
+                    "officers",
+                    "stockpiles",
+                    "farms",
+                    "gatherSpots",
+                    "stockLedger",
+                    "trader",
+                    "items",
+                    "migrationState",
+                    "knownVillageIds",
+                    "villageTradeOffers",
+                    "villageTradeCaravans",
+                    "fishHabitats",
+                    "transportState",
+                ],
+            ),
+            (
+                "cats",
+                &[
+                    "parentIds",
+                    "stats",
+                    "needs",
+                    "currentTask",
+                    "position",
+                    "destination",
+                    "carrying",
+                    "spriteParams",
+                    "specialization",
+                    "roleXp",
+                    "skills",
+                    "preferredLabors",
+                ],
+            ),
+            ("jobs", &["metadata"]),
+            (
+                "buildings",
+                &[
+                    "position",
+                    "automatedOfficerRole",
+                    "additionalWorkSlots",
+                    "productionQueue",
+                    "constructionCargo",
+                ],
+            ),
+            ("world_tiles", &["resources", "maxResources"]),
+            ("shared_world_tiles", &["resources", "maxResources"]),
+            ("raiders", &["position", "target"]),
+        ];
+
+        for &(table, columns) in JSON_COLUMNS {
+            for &column in columns {
+                let conn = Connection::open_in_memory().expect("open sqlite");
+                init_schema(&conn).expect("init schema");
+                let mut world = new_world(20_260_716);
+                let mut colony =
+                    found_global_colony(world.world_seed, "corrupt-colony", 1_000_000, 42);
+                colony.raiders.push(RaiderRuntime {
+                    id: "corrupt-raider".to_owned(),
+                    raid_id: "corrupt-raid".to_owned(),
+                    position: Position {
+                        map: MapType::World,
+                        x: 5.0,
+                        y: 6.0,
+                    },
+                    destination: Some(Position {
+                        map: MapType::World,
+                        x: 7.0,
+                        y: 8.0,
+                    }),
+                    attack: 4.0,
+                    defense: 3.0,
+                    health: 10.0,
+                });
+                world.colonies.push(colony);
+                save_world(&conn, &world).expect("save corruption fixture");
+                conn.execute(
+                    "INSERT INTO jobs (
+                        id, colonyId, kind, status, requestedByType, baseDurationSec,
+                        speedMultiplier, yieldMultiplier, clickTimeReducedSec, createdAt, metadata
+                     ) VALUES (
+                        'corrupt-job', 'corrupt-colony', 'supply_food', 'queued', 'player',
+                        1.0, 1.0, 1.0, 0.0, 1000000, '{}'
+                     )",
+                    [],
+                )
+                .expect("insert corruption job fixture");
+
+                let row_id = if table == "world" {
+                    "1".to_owned()
+                } else {
+                    conn.query_row(
+                        &format!("SELECT id FROM {table} ORDER BY rowid LIMIT 1"),
+                        [],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .unwrap_or_else(|err| panic!("fixture row for {table}.{column}: {err}"))
+                };
+                let changed = conn
+                    .execute(
+                        &format!(
+                            "UPDATE {table} SET {column} = 'not-json' \
+                             WHERE rowid = (SELECT MIN(rowid) FROM {table})"
+                        ),
+                        [],
+                    )
+                    .unwrap_or_else(|err| panic!("corrupt {table}.{column}: {err}"));
+                assert_eq!(changed, 1, "missing fixture row for {table}.{column}");
+
+                let error = match load_world(&conn) {
+                    Err(err) => err,
+                    Ok(_) => panic!("{table}.{column} corruption unexpectedly loaded"),
+                };
+                let message = error.to_string();
+                assert!(
+                    message.contains(table),
+                    "{table}.{column} omitted table context: {message}"
+                );
+                assert!(
+                    message.contains(&format!("{row_id:?}")),
+                    "{table}.{column} omitted row context {row_id:?}: {message}"
+                );
+                assert!(
+                    message.contains(column),
+                    "{table}.{column} omitted column context: {message}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn tile_resource_json_round_trip_covers_every_current_field() {
+        let resources = TileResources {
+            food: 1,
+            herbs: 2,
+            water: 3,
+            gem: 4,
+            clay: 5,
+            sand: 6,
+        };
+        let maximums = MaxResources { food: 7, herbs: 8 };
+
+        assert_eq!(
+            parse_tile_resources(&tile_resources_json(resources).to_string())
+                .expect("tile resource JSON"),
+            resources
+        );
+        assert_eq!(
+            parse_max_resources(&max_resources_json(maximums).to_string())
+                .expect("maximum resource JSON"),
+            maximums
+        );
+    }
 
     fn establish_persistence_campaign_core(colony: &mut ColonyRuntime) {
         for (index, (role, building_type, upgrade)) in [

@@ -7639,10 +7639,12 @@ fn phase_17_legacy_emergency_hunt(colony: &mut ColonyRuntime, gate: TickGate, po
 /// headroom covers dispatch plus the three physical source/deposit legs. A five-seed,
 /// 300-game-hour coarse campaign measured the old 6/cat trigger at 4.65/cat while a
 /// healthy fetch was still in flight, so the one-unit margin did not cover route latency.
-const WATER_FETCH_TRANSIT_RESERVE_PER_CAT: f64 = 1.0;
+const WATER_FETCH_TRANSIT_RESERVE_PER_CAT: f64 = 2.0;
 
 /// Water reserve that triggers a physical fetch preemption. Research and migration
-/// thresholds stay unchanged; only the labor-dispatch runway includes transit.
+/// thresholds stay unchanged; only the labor-dispatch runway includes transit. The
+/// extra two units per cat keep a mature, migration-grown village above the 5/cat
+/// prosperity floor while up to four physical fetchers are still on their route.
 fn water_fetch_preemption_reserve(population: usize) -> f64 {
     (population as f64 * (RESEARCH_COMFORT_WATER_PER_CAT + WATER_FETCH_TRANSIT_RESERVE_PER_CAT))
         .max(RESEARCH_COMFORT_FLOOR)
@@ -60120,8 +60122,8 @@ mod tests {
         );
         assert_eq!(
             reserve - STARTER_CAT_COUNT as f64 * crate::migration::DEFAULT_WATER_PER_CAT,
-            STARTER_CAT_COUNT as f64 * 2.0,
-            "dispatch owns two per-cat units of physical-route runway above prosperity"
+            STARTER_CAT_COUNT as f64 * 3.0,
+            "dispatch owns three per-cat units of physical-route runway above prosperity"
         );
         assert_eq!(desired_water_fetcher_count(STARTER_CAT_COUNT, reserve), 0);
         assert_eq!(

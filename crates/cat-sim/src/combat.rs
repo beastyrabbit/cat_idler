@@ -120,7 +120,7 @@ pub fn calculate_colony_defense(buildings: &[BuildingForDefense]) -> f64 {
 }
 
 fn d20_from_random(random: f64) -> f64 {
-    (random * 20.0).floor() + 1.0
+    ((random * 20.0).floor() + 1.0).clamp(1.0, 20.0)
 }
 
 fn js_max(left: f64, right: f64) -> f64 {
@@ -151,7 +151,8 @@ fn js_round(value: f64) -> f64 {
 mod tests {
     use super::{
         BuildingForDefense, CombatResult, CombatRolls, calculate_colony_defense,
-        calculate_combat_result, calculate_combat_result_with_rolls, get_clicks_needed,
+        calculate_combat_result, calculate_combat_result_with_rolls, d20_from_random,
+        get_clicks_needed,
     };
     use crate::types::BuildingType;
 
@@ -169,6 +170,15 @@ mod tests {
 
         assert!(result.won);
         assert_eq!(result.damage, 0.0);
+    }
+
+    #[test]
+    fn d20_roll_stays_in_range_at_closed_and_out_of_range_boundaries() {
+        assert_eq!(d20_from_random(-1.0), 1.0);
+        assert_eq!(d20_from_random(0.0), 1.0);
+        assert_eq!(d20_from_random(0.999_999), 20.0);
+        assert_eq!(d20_from_random(1.0), 20.0);
+        assert_eq!(d20_from_random(f64::INFINITY), 20.0);
     }
 
     #[test]

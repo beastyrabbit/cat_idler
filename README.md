@@ -81,7 +81,7 @@ Plus **cat-dev**, a small launcher bin (`cargo dev`) that builds and runs `cat-s
   production/hauling/storage, an upgrade tree with god-purchase and cat-research paths,
   threat/raids/combat, elections, zones, roads, terrain generation, and the newer DF-style
   item/material economy (crafting, traders, coin). One `world_tick(&mut WorldState, now)` call
-  runs ~40 ordered phases per colony per tick — the single source of truth, same discipline as
+  runs 53 ordered phases per colony per tick — the single source of truth, same discipline as
   the old TS `workerTick`. `#![forbid(unsafe_code)]`, no `rand` — all randomness goes through a
   ported seeded LCG (`rng.rs`) with forked chains for movement/life/raids so replay is
   deterministic. World state is multi-colony (`WorldState { colonies: Vec<ColonyRuntime> }`)
@@ -100,18 +100,19 @@ Plus **cat-dev**, a small launcher bin (`cargo dev`) that builds and runs `cat-s
   in-progress tick. The loop ticks the shared world once a second, saves to SQLite every 5 ticks (plus a
   graceful-shutdown save), and broadcasts the new snapshot. Persistence
   (`crates/cat-server/src/persistence.rs`) mirrors the old Drizzle schema in `rusqlite` tables
-  (`world`, `colonies`, `cats`, `jobs`, `buildings`, `world_tiles`, `events`, `zones`,
+  (`world`, `colonies`, `cats`, `jobs`, `buildings`, `world_tiles`, `shared_world_tiles`, `events`, `zones`,
   `elections`, `votes`, `raiders`) with additive migrations on open. Session identity is
-  HMAC-signed (`SESSION_HMAC_SECRET`, falls back to an insecure dev secret outside
-  `NODE_ENV=production`); actions are rate-limited (30 / 10s per session).
+  HMAC-signed (`SESSION_HMAC_SECRET`; the development fallback is loopback-only unless explicitly
+  opted in). Public binds require an Origin allowlist. Actions and connections are bounded per
+  authenticated session and effective client IP, including explicitly trusted reverse proxies.
 - **`cat-client`** — a Bevy 0.19 app (`cat_client::run()`) shared by native and wasm: connects
   over WebSocket via `ewebsock`, deserializes `WorldSnapshot` every frame, and renders the
   world **top-down** (a design pivot away from the archived game's isometric map — see
-  `docs/GAME_VISION.md`): terrain by biome, cats colored by specialization with carried-item
-  markers, label-free roofed homes and open craft stations, visible stockpiles/gather spots,
+  `docs/GAME_VISION.md`): terrain by biome, cats with shape-and-color specialization/officer
+  badges and carried-item markers, label-free roofed homes and open craft stations, visible stockpiles/gather spots,
   fog of war, roads, raiders, a DF-Steam-inspired HUD (resources, census, event log, trade,
   inspectors), and a full-page 487-study ("about 500") research ledger. All 487 studies are live
-  and purchasable; 104 physical recipes and every generated resource payload have authoritative
+  and purchasable; 108 physical recipes and every generated resource payload have authoritative
   runtime consumers.
 - **`cat-desktop`** / **`cat-web`** — thin binaries over `cat-client`. `cat-web` builds with
   Trunk, serves the selected assets, derives a same-origin WebSocket URL for deployment, and
@@ -152,10 +153,11 @@ BEVY_ASSET_ROOT=$PWD CAT_SERVER_URL=ws://127.0.0.1:8787/ws cargo run -p cat-desk
 PORT=8787                              # cat-server listen port (both binaries agree on this via cat-dev)
 BIND_ADDR=127.0.0.1                    # server bind IP; production image uses 0.0.0.0
 GAME_DB_PATH=data/cat.db               # SQLite file (created + migrated automatically)
-SESSION_HMAC_SECRET=...                # required in NODE_ENV=production; insecure dev default otherwise
+SESSION_HMAC_SECRET=...                # required for production and every public bind
 CAT_SERVER_WEB_DIST_DIR=...            # optional Trunk dist served by cat-server
 CAT_SERVER_PUBLIC_IMAGES_DIR=...       # optional image tree served at /public/images
-CAT_SERVER_ALLOWED_ORIGINS=...         # optional exact comma-separated WS Origin allowlist
+CAT_SERVER_ALLOWED_ORIGINS=...         # required exact WS Origin allowlist for public binds
+CAT_SERVER_TRUSTED_PROXY_IPS=...       # optional exact proxies allowed to supply one X-Forwarded-For IP
 CAT_SERVER_URL=ws://127.0.0.1:8787/ws  # cat-desktop/cat-web: which server to connect to
 BEVY_ASSET_ROOT=$PWD                   # cat-desktop: resolve public/images/... from the workspace root
 ```
@@ -197,7 +199,7 @@ the exact bar and rationale.
 ```
 cat_idler/
 ├── crates/
-│   ├── cat-sim/          # Pure deterministic simulation core (~40 modules, ~40-phase world_tick)
+│   ├── cat-sim/          # Pure deterministic simulation core (60+ modules, 53-phase world_tick)
 │   ├── cat-protocol/     # serde wire types: WorldSnapshot/ColonySnapshot + ClientAction
 │   ├── cat-server/       # tokio + axum WS server, rusqlite persistence, identity, rate-limit
 │   ├── cat-client/       # Bevy 0.19 renderer + UI (native + wasm)
@@ -243,7 +245,7 @@ include the responsive authoritative server, selected-village routing, a product
 image, bounded world streaming, label-free roofed homes/open stations, the full-page 487-study
 ("about 500") ledger, exterior farming/logging with distinct Mill/Sawmill production, the
 seven-role manual/officer split, physical local workshop logistics, exact road/rail/shipping
-  routes, all 104 physical recipes, all 487 live studies, and exhaustive guided coverage of every
+  routes, all 108 physical recipes, all 487 live studies, and exhaustive guided coverage of every
   public action. The global/personal village
 model and founding housing/migration lifecycle are verified. The accepted founding contract is
 15 adults in three five-bed Dens, slow

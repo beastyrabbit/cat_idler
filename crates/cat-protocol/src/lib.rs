@@ -7,6 +7,15 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+/// Increment whenever a wire change can make an older client reject a snapshot.
+/// Clients inspect this first field before decoding the nested world, so a schema
+/// mismatch produces an explicit update-required state instead of a frozen scene.
+pub const PROTOCOL_VERSION: u32 = 1;
+
+const fn current_protocol_version() -> u32 {
+    PROTOCOL_VERSION
+}
+
 fn is_false(value: &bool) -> bool {
     !*value
 }
@@ -18,6 +27,8 @@ const fn default_true() -> bool {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorldSnapshot {
+    #[serde(default = "current_protocol_version")]
+    pub protocol_version: u32,
     pub now: i64,
     pub world_seed: i64,
     pub colonies: Vec<ColonySnapshot>,
@@ -306,9 +317,11 @@ pub struct TraderSnapshot {
     /// Crafted-item stacks the colony currently holds and could sell to the trader
     /// (empty while `state != trading`, since selling is only valid then). Mirrors
     /// [`ItemStackSnapshot`]'s `kind`/`material`/`quality` string convention.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub buy_offers: Vec<TraderBuyOffer>,
     /// Resource manifest with stable prices and finite quantities in every phase.
     /// Actions remain valid only while `state == trading`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sell_offers: Vec<TraderSellOffer>,
 }
 
@@ -488,8 +501,8 @@ pub struct AccountingRoundSnapshot {
     pub phase: AccountingPhase,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_stockpile_id: Option<String>,
-    pub remaining_piles: usize,
-    pub unreachable_piles: usize,
+    pub remaining_piles: u32,
+    pub unreachable_piles: u32,
     pub dwell_elapsed_ms: i64,
     pub dwell_required_ms: i64,
 }
@@ -1501,14 +1514,14 @@ pub enum ProductionQueueEdit {
         repeat: bool,
     },
     Remove {
-        index: usize,
+        index: u32,
     },
     Move {
-        index: usize,
+        index: u32,
         direction: QueueMoveDirection,
     },
     SetRepeat {
-        index: usize,
+        index: u32,
         repeat: bool,
     },
     SetPaused {
@@ -2547,6 +2560,16 @@ mod tests {
             serde_json::from_value(encoded).expect("deserialize trader snapshot");
         assert_eq!(decoded, snapshot);
 
+        let legacy_trader = json!({
+            "id": "trader-legacy",
+            "position": { "x": 2, "y": 3 },
+            "state": "arriving"
+        });
+        let decoded: TraderSnapshot = serde_json::from_value(legacy_trader)
+            .expect("deserialize trader snapshot without additive offer fields");
+        assert!(decoded.buy_offers.is_empty());
+        assert!(decoded.sell_offers.is_empty());
+
         // `coin`/`trader` are additive: a pre-P19-slice-3 payload lacking both fields
         // must still deserialize, with `coin` defaulting to 0.0 and `trader` to `None`.
         let legacy_json = json!({
@@ -2661,6 +2684,12 @@ mod tests {
         let snapshot = sample_world_snapshot();
         let encoded = serde_json::to_value(&snapshot).expect("serialize snapshot");
 
+        assert_eq!(encoded["protocolVersion"], json!(PROTOCOL_VERSION));
+        assert!(
+            serde_json::to_string(&snapshot)
+                .expect("serialize snapshot text")
+                .starts_with(&format!("{{\"protocolVersion\":{PROTOCOL_VERSION},"))
+        );
         assert_eq!(encoded["worldSeed"], json!(123456));
         assert_eq!(encoded["onlineCount"], json!(2));
         assert_eq!(encoded["colonies"][0]["cats"][0]["ageHours"], json!(42.5));
@@ -2858,6 +2887,7 @@ mod tests {
         tally.insert("cat_1".to_string(), 2);
 
         WorldSnapshot {
+            protocol_version: PROTOCOL_VERSION,
             now: 1_700_000_000_000,
             world_seed: 123456,
             online_count: 2,

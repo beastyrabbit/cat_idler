@@ -44,11 +44,13 @@ codex, plus a Claude review for high-value slices) signs off.
 | P17 | Climate-driven biome generator (~26 biomes), mining, crop fertility, transport upgrades | done — climate generation, crop fertility, finite Gem/Clay/Sand deposits and physical extraction, ore/metal, exterior plots, finite fish habitats, cached fine-biome movement, and exact constructed/staffed Rail plus Shipping routes are live |
 | P18 | Visual polish: DF-Steam parchment UI, craft-station sprites | done — label-free building compositions, Adventure skin, research ledger, top-down palisades, staged walls, exterior agriculture, optimized-WASM interaction, unique tracked glyphs for all 32 resources, a four-store survival HUD, complete Stores menu, and category command dock pass the generalized framebuffer gate recorded in `docs/FIX_LOG.md` |
 | P19 | Item/material economy: crafting chains, traders, coin | done — the canonical source/station/taxonomy contract preserves stable IDs and open-top buildings; raw Stone/Bone/Gem/Clay/Sand sources, Fibre→Thread→Cloth, four canonical Mug materials, scaffold inputs, all 108 recipes across ten processor types, every generated recipe/resource family, exact finite goods, equipment, visiting/village traders, coin, weight, wear, breakage, and repair pass the generalized production campaign |
+| P20 | Comprehensive review hardening | done — all findings in `docs/reviews/` are dispositioned: hostile action/path bounds, finite wire projection and protocol versioning, network/session/origin limits, persistence diagnostics/readiness, transport status and onboarding, role cues, dependency policy, and documentation truth pass the consolidated gates recorded in `docs/FIX_LOG.md` |
 
-**Notes on P12–P19**: these phases were decomposed and executed after this board's card
+**Notes on P12–P20**: these phases were decomposed and executed after this board's card
 format fell out of active use for day-to-day tracking — the per-slice specs live in
 `docs/migration/specs/p12-idle-cat-forest.md` through `p19-items-materials-trade.md`, and
-the git log records what landed (commit subjects are tagged with phase/slice where applicable).
+P20's evidence and dispositions live in `docs/reviews/`. The git log records what landed (commit
+subjects are tagged with phase/slice where applicable).
 This table is a summary rollup, not a card-by-card log; see “P12–P19 — what actually landed”
 below for the historical feature list and
 `docs/IMPLEMENTATION_AUDIT.md` for the evidence-backed status and remaining acceptance matrix.

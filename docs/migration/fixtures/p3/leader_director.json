@@ -1218,18 +1218,13 @@
 				"slots": [
 					{
 						"goal": "scout",
-						"count": 5,
+						"count": 6,
 						"score": 0.3
 					},
 					{
 						"goal": "hunt",
-						"count": 3,
+						"count": 4,
 						"score": 0.0025000000000000577
-					},
-					{
-						"goal": "quarry",
-						"count": 2,
-						"score": 0
 					}
 				]
 			}

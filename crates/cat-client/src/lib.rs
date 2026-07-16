@@ -22,7 +22,9 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::sprite::Anchor;
 use bevy::sprite::{BorderRect, SliceScaleMode, TextureSlicer};
-use bevy::ui::{InteractionDisabled, RelativeCursorPosition, VisualBox, widget::NodeImageMode};
+use bevy::ui::{
+    InteractionDisabled, RelativeCursorPosition, Val2, VisualBox, widget::NodeImageMode,
+};
 #[cfg(not(target_arch = "wasm32"))]
 use bevy::window::CustomCursorImage;
 #[cfg(target_arch = "wasm32")]
@@ -32,12 +34,12 @@ use cat_protocol::{
     ActionResult, BuildingSnapshot, BuildingType, CarryingKind, CatActivity, CatHousingStatus,
     CatNeeds, CatSnapshot, ClientAction, ColonySnapshot, CropKind, EventSnapshot, FarmSnapshot,
     FarmStage, FootprintSize, GateSide, GatherSpotPurpose, ItemInstanceSnapshot, ItemLocation,
-    ItemStackSnapshot, JobKind, Labor, OfferingResource, OfficerRole, ProductionQueueEdit,
-    QueueMoveDirection, RaiderStatus, ResourceAmounts, ResourceCapacities, ResourceKind,
-    ResourceStackSnapshot, RoleXp, ScoutMission, ScoutResource, Specialization, StationCompartment,
-    StockpileSnapshot, TilePoint, TraderBuyOffer, TraderSellOffer, TraderSnapshot,
-    TraderVisitState, TransportMode, VillageKind, VillageScale, VillageTradeCaravanPhase,
-    WorldSnapshot, ZoneKind,
+    ItemStackSnapshot, JobKind, Labor, OfferingResource, OfficerRole, PROTOCOL_VERSION,
+    ProductionQueueEdit, QueueMoveDirection, RaiderStatus, ResourceAmounts, ResourceCapacities,
+    ResourceKind, ResourceStackSnapshot, RoleXp, ScoutMission, ScoutResource, Specialization,
+    StationCompartment, StockpileSnapshot, TilePoint, TraderBuyOffer, TraderSellOffer,
+    TraderSnapshot, TraderVisitState, TransportMode, VillageKind, VillageScale,
+    VillageTradeCaravanPhase, WorldSnapshot, ZoneKind,
 };
 use cat_sim::climate::{Biome, ResourceHint};
 use cat_sim::terrain_gen::{
@@ -135,6 +137,9 @@ const CAMERA_Z: f32 = 1000.0;
 const OFFICERS_SHORTCUT: KeyCode = KeyCode::KeyO;
 const ORDERS_SHORTCUT: KeyCode = KeyCode::KeyP;
 const CAMERA_RESET_SHORTCUT: KeyCode = KeyCode::KeyR;
+/// Human-readable actor attached to actions from this generic client surface.
+/// It identifies the controller, rather than inventing a cat name.
+const CLIENT_ACTOR_LABEL: &str = "Idle Cat Forest player";
 
 /// Flat top-down projection: tile `(x, y)` → world space. Y is negated so the
 /// grid reads top-down with north up.
@@ -501,6 +506,7 @@ enum ConnectionPhase {
     Connecting,
     Connected,
     WaitingToRetry,
+    Incompatible,
 }
 
 #[derive(Resource, Default)]
@@ -508,6 +514,19 @@ struct ConnectionState {
     phase: ConnectionPhase,
     retry_attempt: u32,
     retry_remaining_secs: f32,
+}
+
+/// First-run guidance and the shortcut reference share one deliberately compact
+/// overlay. It starts open, can be dismissed, and remains reachable with H/? .
+#[derive(Resource)]
+struct HelpUi {
+    visible: bool,
+}
+
+impl Default for HelpUi {
+    fn default() -> Self {
+        Self { visible: true }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -2415,6 +2434,19 @@ struct FogTile {
 struct ClientFeedbackPanel;
 #[derive(Component)]
 struct ClientFeedbackText;
+/// Persistent transport truth. Unlike a toast, this never expires while the
+/// displayed snapshot is stale or the socket is reconnecting.
+#[derive(Component)]
+struct ConnectionStatusPanel;
+#[derive(Component)]
+struct ConnectionStatusText;
+/// Dismissible first-run guide / keyboard reference.
+#[derive(Component)]
+struct HelpPanel;
+#[derive(Component)]
+struct HelpButton;
+#[derive(Component)]
+struct HelpDismissButton;
 /// Marker for a paved-road tile sprite.
 #[derive(Component)]
 struct RoadTile;
@@ -3172,7 +3204,7 @@ fn equipment_action(
     let item_id = state.item_id.clone()?;
     let identity = (
         session.session_id.clone(),
-        "Desktop Cat".to_owned(),
+        CLIENT_ACTOR_LABEL.to_owned(),
         session.sig.clone(),
         cat.id.clone(),
         item_id,
@@ -3646,6 +3678,7 @@ pub fn run() {
         .insert_resource(VillageSelection::default())
         .insert_resource(VillageTradeDraft::default())
         .insert_resource(ConnectionState::default())
+        .insert_resource(HelpUi::default())
         .insert_resource(ClientFeedback::default())
         .insert_resource(ClientAlerts::default())
         .insert_resource(OutgoingActions::default())
@@ -3752,7 +3785,11 @@ pub fn run() {
                         handle_village_trade_buttons,
                     ),
                     update_event_log,
-                    update_client_feedback,
+                    (
+                        update_client_feedback,
+                        update_connection_status,
+                        handle_help_overlay,
+                    ),
                     handle_buttons,
                     (
                         toggle_officers,
@@ -4515,6 +4552,30 @@ fn setup(
                 KitToggle::default(),
                 children![ui_text("Tree [U]", FS_BODY, UI_INK)],
             ));
+            bar.spawn((
+                ui_button(),
+                HelpButton,
+                children![ui_text("Help [?]", FS_BODY, UI_INK)],
+            ));
+            bar.spawn((
+                Node {
+                    height: Val::Px(25.0),
+                    min_width: Val::Px(74.0),
+                    padding: UiRect::horizontal(Val::Px(6.0)),
+                    align_items: AlignItems::Center,
+                    justify_content: JustifyContent::Center,
+                    flex_shrink: 0.0,
+                    ..default()
+                },
+                BackgroundColor(Color::srgb(0.18, 0.15, 0.11)),
+                BorderColor::all(UI_DIVIDER),
+                ConnectionStatusPanel,
+                children![(
+                    ui_text("CONNECTING", FS_SMALL, UI_TITLE_INK),
+                    TextLayout::no_wrap(),
+                    ConnectionStatusText,
+                )],
+            ));
             // Ticker: pushed to the right edge, clipped so it never overflows.
             bar.spawn((
                 Node {
@@ -4529,6 +4590,59 @@ fn setup(
                 TextLayout::no_wrap(),
                 AnnouncementTicker,
             ));
+        });
+
+    // First-run guidance is intentionally one small parchment card rather than
+    // a tutorial procession. It leaves the world visible, explains the first
+    // useful loop, and doubles as the complete shortcut reference thereafter.
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Percent(50.0),
+                top: Val::Percent(50.0),
+                width: Val::Px(560.0),
+                max_width: Val::Percent(88.0),
+                padding: UiRect::all(Val::Px(UI_PAD)),
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(UI_GAP),
+                ..default()
+            },
+            UiTransform::from_translation(Val2::percent(-50.0, -50.0)),
+            GlobalZIndex(120),
+            ui_panel_frame(),
+            HelpPanel,
+            WorldInputBlocker,
+        ))
+        .with_children(|panel| {
+            panel.spawn(ui_title_bar("Welcome to Idle Cat Forest"));
+            panel.spawn(ui_panel_body()).with_children(|body| {
+                body.spawn(ui_text(
+                    "Start here: keep Food and Water safe, gather nearby Wood, build housing, then send a scout. The leader keeps the colony moving while you shape its priorities.",
+                    FS_BODY,
+                    UI_INK,
+                ));
+                body.spawn(ui_text(
+                    "DOCK  Inspect cats/buildings · Gather resources · Build stations · Territory roads/zones · Scout the fog · Village trade/founding",
+                    FS_SMALL,
+                    UI_MUTED,
+                ));
+                body.spawn(ui_text(
+                    "PANELS  L Log · G Stores · C Census · U Research Tree · O Officers · P Orders · M Map",
+                    FS_SMALL,
+                    UI_MUTED,
+                ));
+                body.spawn(ui_text(
+                    "CAMERA  WASD/arrows pan · wheel zoom · R reset · H or ? help · Esc close",
+                    FS_SMALL,
+                    UI_MUTED,
+                ));
+                body.spawn((
+                    ui_button(),
+                    HelpDismissButton,
+                    children![ui_text("Begin exploring", FS_BODY, UI_INK)],
+                ));
+            });
         });
 
     // Shared-world village selector. It stays visible beside (not on top of)
@@ -5472,6 +5586,15 @@ fn poll_ws(world: &mut World) {
                         set_feedback(world, message, FeedbackLevel::Info);
                     }
                 }
+                Err(err) if err.starts_with("unsupported protocol version") => {
+                    let already_reported =
+                        world.resource::<ConnectionState>().phase == ConnectionPhase::Incompatible;
+                    world.resource_mut::<ConnectionState>().phase = ConnectionPhase::Incompatible;
+                    if !already_reported {
+                        push_client_alert(world, err.clone());
+                        set_feedback(world, err, FeedbackLevel::Error);
+                    }
+                }
                 Err(err) => warn!("bad ws message: {err}"),
             },
             WsEvent::Message(_) => {}
@@ -5497,28 +5620,112 @@ enum ServerPayload {
 }
 
 fn parse_server_message(text: &str) -> Result<ServerPayload, String> {
-    let value: serde_json::Value = serde_json::from_str(text).map_err(|err| err.to_string())?;
-    if value.get("colonies").is_some() {
-        return serde_json::from_value(value)
+    // The server owns these two top-level wire shapes. Peek at the stable field
+    // discriminator, then deserialize the (potentially huge) payload directly
+    // into its typed destination. This avoids allocating a full serde `Value`
+    // tree and walking every snapshot a second time on the render thread.
+    if top_level_json_value_start(text, "colonies").is_some() {
+        if let Some(version) = json_u32_field(text, "protocolVersion")
+            && version > PROTOCOL_VERSION
+        {
+            return Err(format!(
+                "unsupported protocol version {version}; this client supports {PROTOCOL_VERSION}. Update the client to resume live play."
+            ));
+        }
+        return serde_json::from_str(text)
             .map(ServerPayload::Snapshot)
             .map_err(|err| err.to_string());
     }
-    if value.get("ok").is_none() {
-        return Err("message was neither a snapshot nor an action result".to_string());
+    if top_level_json_value_start(text, "ok").is_none() {
+        return Err("message was neither a snapshot nor an action result".to_owned());
     }
-    let signed_session = match (
-        value.get("sessionId").and_then(|field| field.as_str()),
-        value.get("sig").and_then(|field| field.as_str()),
-    ) {
-        (Some(session_id), Some(sig)) => Some((session_id.to_string(), sig.to_string())),
-        _ => None,
-    };
-    serde_json::from_value::<ActionResult>(value)
-        .map(|result| ServerPayload::Action {
-            result,
-            signed_session,
-        })
-        .map_err(|err| err.to_string())
+    let result = serde_json::from_str::<ActionResult>(text).map_err(|err| err.to_string())?;
+    let signed_session = json_string_field(text, "sessionId").zip(json_string_field(text, "sig"));
+    Ok(ServerPayload::Action {
+        result,
+        signed_session,
+    })
+}
+
+fn json_u32_field(text: &str, field: &str) -> Option<u32> {
+    let start = top_level_json_value_start(text, field)?;
+    let rest = text.get(start..)?;
+    let digits = rest
+        .as_bytes()
+        .iter()
+        .take_while(|byte| byte.is_ascii_digit())
+        .count();
+    (digits > 0).then(|| rest[..digits].parse().ok()).flatten()
+}
+
+/// Extract one small optional string from the action envelope without building
+/// a DOM for the message. Signed-session tokens are the only extension fields
+/// not represented by [`ActionResult`].
+fn json_string_field(text: &str, field: &str) -> Option<String> {
+    let after_colon = text.get(top_level_json_value_start(text, field)?..)?;
+    if !after_colon.starts_with('"') {
+        return None;
+    }
+    let mut escaped = false;
+    let mut end = None;
+    for (index, byte) in after_colon.as_bytes().iter().copied().enumerate().skip(1) {
+        if escaped {
+            escaped = false;
+        } else if byte == b'\\' {
+            escaped = true;
+        } else if byte == b'"' {
+            end = Some(index + 1);
+            break;
+        }
+    }
+    let encoded = after_colon.get(..end?)?;
+    serde_json::from_str(encoded).ok()
+}
+
+/// Byte offset of one top-level JSON object's value. Keys nested in snapshot
+/// data or merely mentioned inside a message string cannot become a false wire
+/// discriminator. Protocol keys are ASCII and never escaped.
+fn top_level_json_value_start(text: &str, key: &str) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let mut depth = 0_u32;
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut string_start = 0;
+    for (index, byte) in bytes.iter().copied().enumerate() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+                if depth == 1 && text.get(string_start..index) == Some(key) {
+                    let mut cursor = index + 1;
+                    while bytes.get(cursor).is_some_and(u8::is_ascii_whitespace) {
+                        cursor += 1;
+                    }
+                    if bytes.get(cursor) == Some(&b':') {
+                        cursor += 1;
+                        while bytes.get(cursor).is_some_and(u8::is_ascii_whitespace) {
+                            cursor += 1;
+                        }
+                        return Some(cursor);
+                    }
+                }
+            }
+            continue;
+        }
+        match byte {
+            b'{' | b'[' => depth = depth.saturating_add(1),
+            b'}' | b']' => depth = depth.saturating_sub(1),
+            b'"' => {
+                in_string = true;
+                string_start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Keep the selected village at index zero because the existing render/UI
@@ -5674,7 +5881,7 @@ fn presence_action(session: &Session) -> ClientAction {
         } else {
             session.session_id.clone()
         },
-        nickname: "Desktop Cat".to_string(),
+        nickname: CLIENT_ACTOR_LABEL.to_owned(),
         sig: (!session.sig.is_empty()).then(|| session.sig.clone()),
     }
 }
@@ -7196,7 +7403,7 @@ fn build_remove_action(
     is_gather: bool,
 ) -> ClientAction {
     let session_id = session.session_id.clone();
-    let nickname = "Desktop Cat".to_owned();
+    let nickname = CLIENT_ACTOR_LABEL.to_owned();
     let sig = session.sig.clone();
     if let Some(plot_id) = farm_id {
         ClientAction::ClearFarm {
@@ -7456,7 +7663,7 @@ fn handle_governance_buttons(
     {
         outgoing.0.push(ClientAction::CastVote {
             session_id: session.session_id.clone(),
-            nickname: "Desktop Cat".to_owned(),
+            nickname: CLIENT_ACTOR_LABEL.to_owned(),
             sig: session.sig.clone(),
             election_id: election.id.clone(),
             cat_id: candidate.id.clone(),
@@ -7469,7 +7676,7 @@ fn handle_governance_buttons(
     {
         outgoing.0.push(ClientAction::RequestVoteKick {
             session_id: session.session_id.clone(),
-            nickname: "Desktop Cat".to_owned(),
+            nickname: CLIENT_ACTOR_LABEL.to_owned(),
             sig: session.sig.clone(),
         });
     }
@@ -7488,7 +7695,7 @@ fn build_order_action(
     }
     let session_id = session.session_id.clone();
     let sig = session.sig.clone();
-    let nickname = "Desktop Cat".to_owned();
+    let nickname = CLIENT_ACTOR_LABEL.to_owned();
     let request = |kind| ClientAction::RequestJob {
         session_id: session_id.clone(),
         nickname: nickname.clone(),
@@ -7634,7 +7841,7 @@ fn handle_appoint_buttons(
         {
             outgoing.0.push(ClientAction::AssignOfficer {
                 session_id: session.session_id.clone(),
-                nickname: "Desktop Cat".to_string(),
+                nickname: CLIENT_ACTOR_LABEL.to_owned(),
                 sig: session.sig.clone(),
                 role: appoint.0,
                 cat_id: cat,
@@ -7676,7 +7883,7 @@ fn handle_boost_button(
             let current = selected_cat(&latest, &selection).is_some_and(|c| c.boosted);
             outgoing.0.push(ClientAction::BoostCat {
                 session_id: session.session_id.clone(),
-                nickname: "Desktop Cat".to_string(),
+                nickname: CLIENT_ACTOR_LABEL.to_owned(),
                 sig: session.sig.clone(),
                 cat_id,
                 boosted: !current,
@@ -7912,7 +8119,7 @@ fn labor_preference_action(
 ) -> Option<ClientAction> {
     session.ready.then(|| ClientAction::SetCatLaborPreference {
         session_id: session.session_id.clone(),
-        nickname: "Desktop Cat".to_owned(),
+        nickname: CLIENT_ACTOR_LABEL.to_owned(),
         sig: session.sig.clone(),
         cat_id: cat.id.clone(),
         labor,
@@ -8104,18 +8311,20 @@ fn station_queue_action_for_worker_selected(
             repeat: true,
         },
         StationQueueButton::MoveUp => ProductionQueueEdit::Move {
-            index: selected,
+            index: u32::try_from(selected).ok()?,
             direction: QueueMoveDirection::Up,
         },
         StationQueueButton::MoveDown => ProductionQueueEdit::Move {
-            index: selected,
+            index: u32::try_from(selected).ok()?,
             direction: QueueMoveDirection::Down,
         },
-        StationQueueButton::Remove => ProductionQueueEdit::Remove { index: selected },
+        StationQueueButton::Remove => ProductionQueueEdit::Remove {
+            index: u32::try_from(selected).ok()?,
+        },
         StationQueueButton::ToggleRepeat => {
             let entry = queue.get(selected)?;
             ProductionQueueEdit::SetRepeat {
-                index: selected,
+                index: u32::try_from(selected).ok()?,
                 repeat: !entry.repeat,
             }
         }
@@ -8127,7 +8336,7 @@ fn station_queue_action_for_worker_selected(
     Some(if let Some(slot) = slot {
         ClientAction::EditProductionWorkSlot {
             session_id: session.session_id.clone(),
-            nickname: "Desktop Cat".to_owned(),
+            nickname: CLIENT_ACTOR_LABEL.to_owned(),
             sig: session.sig.clone(),
             building_id: building.id.clone(),
             cat_id: slot.cat_id.clone(),
@@ -8136,7 +8345,7 @@ fn station_queue_action_for_worker_selected(
     } else {
         ClientAction::EditProductionQueue {
             session_id: session.session_id.clone(),
-            nickname: "Desktop Cat".to_owned(),
+            nickname: CLIENT_ACTOR_LABEL.to_owned(),
             sig: session.sig.clone(),
             building_id: building.id.clone(),
             edit,
@@ -8174,7 +8383,7 @@ fn handle_vacate_buttons(
         if *interaction == Interaction::Pressed && session.ready {
             outgoing.0.push(ClientAction::UnassignOfficer {
                 session_id: session.session_id.clone(),
-                nickname: "Desktop Cat".to_string(),
+                nickname: CLIENT_ACTOR_LABEL.to_owned(),
                 sig: session.sig.clone(),
                 role: vacate.0,
             });
@@ -8338,6 +8547,24 @@ fn sync_cats(
                     ..default()
                 },
             );
+            let (glyph, color) = specialization_map_cue(spec);
+            spawn_cat_role_cue(
+                &mut commands,
+                &cat.id,
+                Vec3::new(-CAT_SIZE.x * 0.31, CAT_SIZE.y * 0.70, 0.72),
+                glyph,
+                color,
+            );
+        }
+        if let Some(role) = officer_role_for_cat(colony, &cat.id) {
+            let (glyph, color) = officer_map_cue(role);
+            spawn_cat_role_cue(
+                &mut commands,
+                &cat.id,
+                Vec3::new(CAT_SIZE.x * 0.31, CAT_SIZE.y * 0.70, 0.74),
+                glyph,
+                color,
+            );
         }
         if let Some(carrying) = &cat.carrying {
             let sprite = Sprite {
@@ -8378,6 +8605,62 @@ fn spawn_cat_overlay(commands: &mut Commands, id: &str, offset: Vec3, sprite: Sp
             offset,
         },
     ));
+}
+
+fn spawn_cat_role_cue(
+    commands: &mut Commands,
+    id: &str,
+    offset: Vec3,
+    glyph: &'static str,
+    color: Color,
+) {
+    spawn_cat_overlay(
+        commands,
+        id,
+        offset,
+        Sprite::from_color(color, Vec2::splat(TILE * 0.55)),
+    );
+    commands.spawn((
+        Text2d::new(glyph),
+        TextFont {
+            font_size: FontSize::Px(6.0),
+            ..default()
+        },
+        TextColor(Color::WHITE),
+        Transform::from_translation(offset + Vec3::new(0.0, -0.4, 0.02)),
+        CatOverlay,
+        FollowCat {
+            id: id.to_owned(),
+            offset: offset + Vec3::new(0.0, -0.4, 0.02),
+        },
+    ));
+}
+
+fn specialization_map_cue(spec: Specialization) -> (&'static str, Color) {
+    match spec {
+        Specialization::Hunter => ("H", Color::srgb(0.19, 0.55, 0.28)),
+        Specialization::Architect => ("A", Color::srgb(0.78, 0.43, 0.16)),
+        Specialization::Ritualist => ("R", Color::srgb(0.48, 0.28, 0.68)),
+        Specialization::Warrior => ("W", Color::srgb(0.72, 0.20, 0.17)),
+    }
+}
+
+fn officer_map_cue(role: OfficerRole) -> (&'static str, Color) {
+    match role {
+        OfficerRole::Steward => ("S", Color::srgb(0.18, 0.52, 0.52)),
+        OfficerRole::Accountant => ("$", Color::srgb(0.74, 0.58, 0.16)),
+        OfficerRole::Forester => ("F", Color::srgb(0.20, 0.49, 0.24)),
+        OfficerRole::Farmer => ("G", Color::srgb(0.45, 0.60, 0.19)),
+        OfficerRole::Captain => ("C", Color::srgb(0.67, 0.18, 0.18)),
+        OfficerRole::Loremaster => ("L", Color::srgb(0.22, 0.39, 0.68)),
+        OfficerRole::ClothLeader => ("T", Color::srgb(0.66, 0.30, 0.55)),
+    }
+}
+
+fn officer_role_for_cat(colony: &ColonySnapshot, cat_id: &str) -> Option<OfficerRole> {
+    ALL_OFFICER_ROLES
+        .into_iter()
+        .find(|role| colony.officers.get(role).is_some_and(|id| id == cat_id))
 }
 
 /// Reconcile persistent raider bodies (same glide treatment as cats).
@@ -9559,7 +9842,7 @@ fn zone_paint(
         outgoing.0.push(match kind {
             PaintKind::Avoid | PaintKind::Gather => ClientAction::CreateZone {
                 session_id: session.session_id.clone(),
-                nickname: "Desktop Cat".to_string(),
+                nickname: CLIENT_ACTOR_LABEL.to_owned(),
                 sig: session.sig.clone(),
                 kind: if kind == PaintKind::Avoid {
                     ZoneKind::Avoid
@@ -9572,7 +9855,7 @@ fn zone_paint(
             },
             PaintKind::Stockpile => ClientAction::DesignateStockpile {
                 session_id: session.session_id.clone(),
-                nickname: "Desktop Cat".to_string(),
+                nickname: CLIENT_ACTOR_LABEL.to_owned(),
                 sig: session.sig.clone(),
                 a,
                 b,
@@ -9580,7 +9863,7 @@ fn zone_paint(
             },
             PaintKind::Farm => ClientAction::DesignateFarm {
                 session_id: session.session_id.clone(),
-                nickname: "Desktop Cat".to_string(),
+                nickname: CLIENT_ACTOR_LABEL.to_owned(),
                 sig: session.sig.clone(),
                 a,
                 b,
@@ -9588,7 +9871,7 @@ fn zone_paint(
             },
             PaintKind::GatherSpot => ClientAction::DesignateGatherSpot {
                 session_id: session.session_id.clone(),
-                nickname: "Desktop Cat".to_string(),
+                nickname: CLIENT_ACTOR_LABEL.to_owned(),
                 sig: session.sig.clone(),
                 a,
                 b,
@@ -9596,13 +9879,13 @@ fn zone_paint(
             },
             PaintKind::FishingSpot => ClientAction::DesignateFishingSpot {
                 session_id: session.session_id.clone(),
-                nickname: "Desktop Cat".to_string(),
+                nickname: CLIENT_ACTOR_LABEL.to_owned(),
                 sig: session.sig.clone(),
                 at: a,
             },
             PaintKind::Road => ClientAction::BuildRoad {
                 session_id: session.session_id.clone(),
-                nickname: "Desktop Cat".to_string(),
+                nickname: CLIENT_ACTOR_LABEL.to_owned(),
                 sig: session.sig.clone(),
                 a,
                 b,
@@ -9664,7 +9947,7 @@ fn build_exact_building_action(
 ) -> ClientAction {
     ClientAction::PlanBuilding {
         session_id: session.session_id.clone(),
-        nickname: "Desktop Cat".to_owned(),
+        nickname: CLIENT_ACTOR_LABEL.to_owned(),
         sig: session.sig.clone(),
         building_type,
         site: Some(site),
@@ -10462,7 +10745,7 @@ fn village_trade_proposal_action(
 ) -> Option<ClientAction> {
     session.ready.then(|| ClientAction::OfferVillageTrade {
         session_id: session.session_id.clone(),
-        nickname: "Desktop Cat".to_owned(),
+        nickname: CLIENT_ACTOR_LABEL.to_owned(),
         sig: session.sig.clone(),
         target_colony_id: target.to_owned(),
         offered_kind: draft.offered_kind,
@@ -10476,14 +10759,14 @@ fn village_trade_reply_action(offer_id: &str, accept: bool, session: &Session) -
     if accept {
         ClientAction::AcceptVillageTrade {
             session_id: session.session_id.clone(),
-            nickname: "Desktop Cat".to_owned(),
+            nickname: CLIENT_ACTOR_LABEL.to_owned(),
             sig: session.sig.clone(),
             offer_id: offer_id.to_owned(),
         }
     } else {
         ClientAction::CancelVillageTrade {
             session_id: session.session_id.clone(),
-            nickname: "Desktop Cat".to_owned(),
+            nickname: CLIENT_ACTOR_LABEL.to_owned(),
             sig: session.sig.clone(),
             offer_id: offer_id.to_owned(),
         }
@@ -10881,7 +11164,7 @@ fn handle_goods_repair_buttons(
         };
         outgoing.0.push(ClientAction::RepairItem {
             session_id: session.session_id.clone(),
-            nickname: "Desktop Cat".to_string(),
+            nickname: CLIENT_ACTOR_LABEL.to_owned(),
             sig: session.sig.clone(),
             item_id: item_id.to_string(),
         });
@@ -11055,7 +11338,7 @@ fn handle_trade_buttons(
             if count > 0 {
                 outgoing.0.push(ClientAction::SellGoods {
                     session_id: session.session_id.clone(),
-                    nickname: "Desktop Cat".to_string(),
+                    nickname: CLIENT_ACTOR_LABEL.to_owned(),
                     sig: session.sig.clone(),
                     kind: offer.kind.clone(),
                     material: offer.material.clone(),
@@ -11077,7 +11360,7 @@ fn handle_trade_buttons(
         {
             outgoing.0.push(ClientAction::BuyResource {
                 session_id: session.session_id.clone(),
-                nickname: "Desktop Cat".to_string(),
+                nickname: CLIENT_ACTOR_LABEL.to_owned(),
                 sig: session.sig.clone(),
                 resource: offer.resource,
                 amount: 1.0,
@@ -11384,6 +11667,101 @@ fn update_client_feedback(
     }
 }
 
+fn connection_status_label(state: &ConnectionState, has_snapshot: bool) -> (String, bool) {
+    match state.phase {
+        ConnectionPhase::Connected => ("LIVE".to_owned(), false),
+        ConnectionPhase::WaitingToRetry => (
+            format!(
+                "{}RETRY {:.0}s · #{}",
+                if has_snapshot { "STALE · " } else { "" },
+                state.retry_remaining_secs.ceil(),
+                state.retry_attempt
+            ),
+            has_snapshot,
+        ),
+        ConnectionPhase::Connecting if has_snapshot => ("STALE · CONNECTING".to_owned(), true),
+        ConnectionPhase::Connecting => ("CONNECTING".to_owned(), false),
+        ConnectionPhase::Disconnected if has_snapshot => ("STALE · OFFLINE".to_owned(), true),
+        ConnectionPhase::Disconnected => ("OFFLINE".to_owned(), false),
+        ConnectionPhase::Incompatible if has_snapshot => {
+            ("STALE · UPDATE REQUIRED".to_owned(), true)
+        }
+        ConnectionPhase::Incompatible => ("UPDATE REQUIRED".to_owned(), false),
+    }
+}
+
+/// Keep transport truth visible for the entire disconnect/backoff window. The
+/// last snapshot remains useful for inspection, but is explicitly branded
+/// STALE so frozen values can never masquerade as a live colony.
+fn update_connection_status(
+    state: Res<ConnectionState>,
+    latest: Res<LatestSnapshot>,
+    mut panel: Query<(&mut BackgroundColor, &mut BorderColor), With<ConnectionStatusPanel>>,
+    mut label: Query<&mut Text, With<ConnectionStatusText>>,
+) {
+    let (Ok((mut background, mut border)), Ok(mut text)) = (panel.single_mut(), label.single_mut())
+    else {
+        return;
+    };
+    let (status, stale) = connection_status_label(&state, latest.0.is_some());
+    text.0 = status;
+    if state.phase == ConnectionPhase::Connected {
+        *background = BackgroundColor(Color::srgb(0.12, 0.25, 0.16));
+        *border = BorderColor::all(UI_POSITIVE);
+    } else if stale {
+        *background = BackgroundColor(Color::srgb(0.31, 0.16, 0.11));
+        *border = BorderColor::all(UI_WARNING);
+    } else {
+        *background = BackgroundColor(Color::srgb(0.18, 0.15, 0.11));
+        *border = BorderColor::all(UI_DIVIDER);
+    }
+}
+
+fn help_toggle_requested(h: bool, slash: bool, shift: bool) -> bool {
+    h || (slash && shift)
+}
+
+fn handle_help_overlay(
+    keys: Res<ButtonInput<KeyCode>>,
+    tree: Res<UpgradeTreeUi>,
+    mut ui: ResMut<HelpUi>,
+    open: Query<&Interaction, (Changed<Interaction>, With<HelpButton>)>,
+    dismiss: Query<&Interaction, (Changed<Interaction>, With<HelpDismissButton>)>,
+    mut panel: Query<&mut Node, With<HelpPanel>>,
+) {
+    if tree.visible {
+        ui.visible = false;
+        if let Ok(mut node) = panel.single_mut() {
+            node.display = Display::None;
+        }
+        return;
+    }
+    let clicked_open = open
+        .iter()
+        .any(|interaction| *interaction == Interaction::Pressed);
+    let clicked_dismiss = dismiss
+        .iter()
+        .any(|interaction| *interaction == Interaction::Pressed);
+    let shortcut = help_toggle_requested(
+        keys.just_pressed(KeyCode::KeyH),
+        keys.just_pressed(KeyCode::Slash),
+        keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight),
+    );
+    if clicked_open || shortcut {
+        ui.visible = !ui.visible;
+    }
+    if clicked_dismiss || (ui.visible && keys.just_pressed(KeyCode::Escape)) {
+        ui.visible = false;
+    }
+    if let Ok(mut node) = panel.single_mut() {
+        node.display = if ui.visible {
+            Display::Flex
+        } else {
+            Display::None
+        };
+    }
+}
+
 fn update_event_log(
     latest: Res<LatestSnapshot>,
     alerts: Res<ClientAlerts>,
@@ -11481,7 +11859,7 @@ fn build_action(action: ButtonAction, session: &Session) -> Option<ClientAction>
             };
             return Some(ClientAction::DispatchScout {
                 session_id: session.session_id.clone(),
-                nickname: "Desktop Cat".to_string(),
+                nickname: CLIENT_ACTOR_LABEL.to_owned(),
                 sig: session.sig.clone(),
                 mission,
             });
@@ -11496,7 +11874,7 @@ fn build_action(action: ButtonAction, session: &Session) -> Option<ClientAction>
     };
     Some(ClientAction::RequestJob {
         session_id: session.session_id.clone(),
-        nickname: "Desktop Cat".to_string(),
+        nickname: CLIENT_ACTOR_LABEL.to_owned(),
         sig: session.sig.clone(),
         kind,
     })
@@ -12645,117 +13023,117 @@ mod tests {
         let expected = [
             ClientAction::RequestJob {
                 session_id: "session-1".to_owned(),
-                nickname: "Desktop Cat".to_owned(),
+                nickname: CLIENT_ACTOR_LABEL.to_owned(),
                 sig: "signed".to_owned(),
                 kind: JobKind::HuntExpedition,
             },
             ClientAction::RequestJob {
                 session_id: "session-1".to_owned(),
-                nickname: "Desktop Cat".to_owned(),
+                nickname: CLIENT_ACTOR_LABEL.to_owned(),
                 sig: "signed".to_owned(),
                 kind: JobKind::Fish,
             },
             ClientAction::RequestJob {
                 session_id: "session-1".to_owned(),
-                nickname: "Desktop Cat".to_owned(),
+                nickname: CLIENT_ACTOR_LABEL.to_owned(),
                 sig: "signed".to_owned(),
                 kind: JobKind::FetchWater,
             },
             ClientAction::RequestJob {
                 session_id: "session-1".to_owned(),
-                nickname: "Desktop Cat".to_owned(),
+                nickname: CLIENT_ACTOR_LABEL.to_owned(),
                 sig: "signed".to_owned(),
                 kind: JobKind::Quarry,
             },
             ClientAction::RequestJob {
                 session_id: "session-1".to_owned(),
-                nickname: "Desktop Cat".to_owned(),
+                nickname: CLIENT_ACTOR_LABEL.to_owned(),
                 sig: "signed".to_owned(),
                 kind: JobKind::GatherLogs,
             },
             ClientAction::RequestJob {
                 session_id: "session-1".to_owned(),
-                nickname: "Desktop Cat".to_owned(),
+                nickname: CLIENT_ACTOR_LABEL.to_owned(),
                 sig: "signed".to_owned(),
                 kind: JobKind::ReplantTree,
             },
             ClientAction::RequestJob {
                 session_id: "session-1".to_owned(),
-                nickname: "Desktop Cat".to_owned(),
+                nickname: CLIENT_ACTOR_LABEL.to_owned(),
                 sig: "signed".to_owned(),
                 kind: JobKind::ForageFibre,
             },
             ClientAction::RequestJob {
                 session_id: "session-1".to_owned(),
-                nickname: "Desktop Cat".to_owned(),
+                nickname: CLIENT_ACTOR_LABEL.to_owned(),
                 sig: "signed".to_owned(),
                 kind: JobKind::ExpandVillage,
             },
             ClientAction::RequestJob {
                 session_id: "session-1".to_owned(),
-                nickname: "Desktop Cat".to_owned(),
+                nickname: CLIENT_ACTOR_LABEL.to_owned(),
                 sig: "signed".to_owned(),
                 kind: JobKind::Ritual,
             },
             ClientAction::OfferTithe {
                 session_id: "session-1".to_owned(),
-                nickname: "Desktop Cat".to_owned(),
+                nickname: CLIENT_ACTOR_LABEL.to_owned(),
                 sig: "signed".to_owned(),
             },
             ClientAction::OfferResource {
                 session_id: "session-1".to_owned(),
-                nickname: "Desktop Cat".to_owned(),
+                nickname: CLIENT_ACTOR_LABEL.to_owned(),
                 sig: "signed".to_owned(),
                 resource: OfferingResource::Food,
             },
             ClientAction::OfferResource {
                 session_id: "session-1".to_owned(),
-                nickname: "Desktop Cat".to_owned(),
+                nickname: CLIENT_ACTOR_LABEL.to_owned(),
                 sig: "signed".to_owned(),
                 resource: OfferingResource::Herbs,
             },
             ClientAction::OfferMaterials {
                 session_id: "session-1".to_owned(),
-                nickname: "Desktop Cat".to_owned(),
+                nickname: CLIENT_ACTOR_LABEL.to_owned(),
                 sig: "signed".to_owned(),
             },
             ClientAction::HaulGatherSpot {
                 session_id: "session-1".to_owned(),
-                nickname: "Desktop Cat".to_owned(),
+                nickname: CLIENT_ACTOR_LABEL.to_owned(),
                 sig: "signed".to_owned(),
                 stockpile_id: "gather-1".to_owned(),
                 cat_id: Some("cat-1".to_owned()),
             },
             ClientAction::PlanBuilding {
                 session_id: "session-1".to_owned(),
-                nickname: "Desktop Cat".to_owned(),
+                nickname: CLIENT_ACTOR_LABEL.to_owned(),
                 sig: "signed".to_owned(),
                 building_type: BuildingType::Sawmill,
                 site: None,
             },
             ClientAction::AssignWorker {
                 session_id: "session-1".to_owned(),
-                nickname: "Desktop Cat".to_owned(),
+                nickname: CLIENT_ACTOR_LABEL.to_owned(),
                 sig: "signed".to_owned(),
                 cat_id: "cat-1".to_owned(),
                 building_id: Some("mill-1".to_owned()),
             },
             ClientAction::AssignWorker {
                 session_id: "session-1".to_owned(),
-                nickname: "Desktop Cat".to_owned(),
+                nickname: CLIENT_ACTOR_LABEL.to_owned(),
                 sig: "signed".to_owned(),
                 cat_id: "cat-1".to_owned(),
                 building_id: None,
             },
             ClientAction::TrainWarrior {
                 session_id: "session-1".to_owned(),
-                nickname: "Desktop Cat".to_owned(),
+                nickname: CLIENT_ACTOR_LABEL.to_owned(),
                 sig: "signed".to_owned(),
                 cat_id: Some("cat-1".to_owned()),
             },
             ClientAction::DefendRaid {
                 session_id: "session-1".to_owned(),
-                nickname: "Desktop Cat".to_owned(),
+                nickname: CLIENT_ACTOR_LABEL.to_owned(),
                 sig: "signed".to_owned(),
             },
         ];
@@ -12867,7 +13245,7 @@ mod tests {
             ),
             ClientAction::PlanBuilding {
                 session_id: "builder-session".to_owned(),
-                nickname: "Desktop Cat".to_owned(),
+                nickname: CLIENT_ACTOR_LABEL.to_owned(),
                 sig: "signed".to_owned(),
                 building_type: BuildingType::Mill,
                 site: Some(TilePoint { x: -4, y: 9 }),
@@ -13193,7 +13571,7 @@ mod tests {
                 build_action(button, &session),
                 Some(ClientAction::DispatchScout {
                     session_id: "scout-session".to_owned(),
-                    nickname: "Desktop Cat".to_owned(),
+                    nickname: CLIENT_ACTOR_LABEL.to_owned(),
                     sig: "signed".to_owned(),
                     mission,
                 })
@@ -13507,6 +13885,7 @@ mod tests {
             })
             .collect();
         WorldSnapshot {
+            protocol_version: cat_protocol::PROTOCOL_VERSION,
             now: 1,
             world_seed: 7,
             colonies,
@@ -13547,7 +13926,7 @@ mod tests {
             presence_action(&session),
             ClientAction::Presence {
                 session_id: "stable-player-session".to_owned(),
-                nickname: "Desktop Cat".to_owned(),
+                nickname: CLIENT_ACTOR_LABEL.to_owned(),
                 sig: Some("signed".to_owned()),
             }
         );
@@ -13555,7 +13934,7 @@ mod tests {
             presence_action(&Session::default()),
             ClientAction::Presence {
                 session_id: "desktop".to_owned(),
-                nickname: "Desktop Cat".to_owned(),
+                nickname: CLIENT_ACTOR_LABEL.to_owned(),
                 sig: None,
             }
         );
@@ -13688,7 +14067,7 @@ mod tests {
             village_trade_proposal_action("reed-rest", &draft, &session),
             Some(ClientAction::OfferVillageTrade {
                 session_id: "trade-session".to_owned(),
-                nickname: "Desktop Cat".to_owned(),
+                nickname: CLIENT_ACTOR_LABEL.to_owned(),
                 sig: "signed".to_owned(),
                 target_colony_id: "reed-rest".to_owned(),
                 offered_kind: ResourceKind::Water,
@@ -13701,7 +14080,7 @@ mod tests {
             village_trade_reply_action("offer-1", true, &session),
             ClientAction::AcceptVillageTrade {
                 session_id: "trade-session".to_owned(),
-                nickname: "Desktop Cat".to_owned(),
+                nickname: CLIENT_ACTOR_LABEL.to_owned(),
                 sig: "signed".to_owned(),
                 offer_id: "offer-1".to_owned(),
             }
@@ -14250,7 +14629,7 @@ mod tests {
             labor_preference_action(&session, &cat, Labor::Process),
             Some(ClientAction::SetCatLaborPreference {
                 session_id: "labor-session".to_owned(),
-                nickname: "Desktop Cat".to_owned(),
+                nickname: CLIENT_ACTOR_LABEL.to_owned(),
                 sig: "signed".to_owned(),
                 cat_id: "worker-7".to_owned(),
                 labor: Labor::Process,
@@ -14511,6 +14890,80 @@ mod tests {
     }
 
     #[test]
+    fn persistent_connection_copy_marks_only_retained_snapshots_stale() {
+        let waiting = ConnectionState {
+            phase: ConnectionPhase::WaitingToRetry,
+            retry_attempt: 4,
+            retry_remaining_secs: 12.1,
+        };
+        assert_eq!(
+            connection_status_label(&waiting, true),
+            ("STALE · RETRY 13s · #4".to_owned(), true)
+        );
+        assert_eq!(
+            connection_status_label(&waiting, false),
+            ("RETRY 13s · #4".to_owned(), false)
+        );
+        let live = ConnectionState {
+            phase: ConnectionPhase::Connected,
+            ..default()
+        };
+        assert_eq!(
+            connection_status_label(&live, true),
+            ("LIVE".to_owned(), false)
+        );
+        let incompatible = ConnectionState {
+            phase: ConnectionPhase::Incompatible,
+            ..default()
+        };
+        assert_eq!(
+            connection_status_label(&incompatible, true),
+            ("STALE · UPDATE REQUIRED".to_owned(), true)
+        );
+    }
+
+    #[test]
+    fn help_is_reachable_by_h_or_shift_question_mark_only() {
+        assert!(help_toggle_requested(true, false, false));
+        assert!(help_toggle_requested(false, true, true));
+        assert!(!help_toggle_requested(false, true, false));
+        assert!(!help_toggle_requested(false, false, true));
+    }
+
+    #[test]
+    fn every_specialization_and_officer_has_a_distinct_shape_and_color_cue() {
+        let specialization_glyphs = [
+            Specialization::Hunter,
+            Specialization::Architect,
+            Specialization::Ritualist,
+            Specialization::Warrior,
+        ]
+        .map(specialization_map_cue)
+        .map(|(glyph, _)| glyph)
+        .into_iter()
+        .collect::<HashSet<_>>();
+        assert_eq!(specialization_glyphs.len(), 4);
+
+        let officer_cues = ALL_OFFICER_ROLES.map(officer_map_cue);
+        assert_eq!(
+            officer_cues
+                .iter()
+                .map(|(glyph, _)| *glyph)
+                .collect::<HashSet<_>>()
+                .len(),
+            ALL_OFFICER_ROLES.len()
+        );
+        assert_eq!(
+            officer_cues
+                .iter()
+                .map(|(_, color)| format!("{:?}", color.to_srgba()))
+                .collect::<HashSet<_>>()
+                .len(),
+            ALL_OFFICER_ROLES.len()
+        );
+    }
+
+    #[test]
     fn action_result_parser_preserves_failure_and_signed_presence() {
         let failed = parse_server_message(r#"{"ok":false,"message":"Not enough food."}"#)
             .expect("valid action result");
@@ -14541,6 +14994,26 @@ mod tests {
             signed_session,
             Some(("session-1".to_string(), "signed-token".to_string()))
         );
+        assert!(parse_server_message(r#"{"message":"missing discriminator"}"#).is_err());
+        let future = format!(
+            "{{\"protocolVersion\":{},\"colonies\":[]}}",
+            PROTOCOL_VERSION + 1
+        );
+        let error = parse_server_message(&future).expect_err("newer wire version must fail loud");
+        assert!(error.contains("Update the client"), "{error}");
+        let misleading = parse_server_message(
+            r#"{"ok":false,"message":"the words \"colonies\" and \"sessionId\" are not keys"}"#,
+        )
+        .expect("message strings cannot masquerade as snapshot/session fields");
+        let ServerPayload::Action {
+            result,
+            signed_session,
+        } = misleading
+        else {
+            panic!("expected action result");
+        };
+        assert!(!result.ok);
+        assert!(signed_session.is_none());
     }
 
     #[test]
