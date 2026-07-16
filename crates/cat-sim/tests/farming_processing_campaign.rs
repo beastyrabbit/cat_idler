@@ -8,7 +8,8 @@ use cat_sim::{
     entities::{MapType, Position, Resources},
     stockpiles::{ResourceKind, Stockpile},
     terrain_gen::{
-        DecorationRole, WORLD_TERRAIN_OPTIONS, derive_biome_decoration, generate_terrain_chunk,
+        DecorationRole, WORLD_TERRAIN_OPTIONS, generate_terrain_chunk,
+        resolved_biome_decorations_for_chunks,
     },
     types::{BuildingType, JobKind, JobStatus, TileType},
     upgrade_tree,
@@ -388,18 +389,17 @@ fn generated_sites(seed: u32, colony: &ColonyRuntime) -> (TilePos, TilePos, Tile
                 if chunk_x.abs().max(chunk_y.abs()) != radius {
                     continue;
                 }
+                let decorations = resolved_biome_decorations_for_chunks(
+                    i64::from(seed),
+                    &std::collections::BTreeSet::from([(chunk_x, chunk_y)]),
+                );
                 for tile in
                     generate_terrain_chunk(chunk_x, chunk_y, i64::from(seed), WORLD_TERRAIN_OPTIONS)
                 {
                     if forest.is_none()
                         && tile.x.abs().max(tile.y.abs()) > 16
                         && matches!(
-                            derive_biome_decoration(
-                                tile.x,
-                                tile.y,
-                                i64::from(seed),
-                                tile.climate_biome,
-                            ),
+                            decorations.get(&(tile.x, tile.y)),
                             Some(DecorationRole::Tree { .. })
                         )
                     {

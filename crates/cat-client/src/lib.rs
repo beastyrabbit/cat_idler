@@ -42,13 +42,13 @@ use cat_protocol::{
 use cat_sim::climate::{Biome, ResourceHint};
 use cat_sim::terrain_gen::{
     DecorationRole, RockSize, TERRAIN_CHUNK_SIZE, TREE_FOOTPRINT_HEIGHT, TREE_FOOTPRINT_WIDTH,
-    TerrainTile, WORLD_TERRAIN_OPTIONS, decoration_footprint, derive_biome_decoration,
-    generate_terrain_chunk, tile_climate_biome,
+    TerrainTile, WORLD_TERRAIN_OPTIONS, decoration_footprint, generate_terrain_chunk,
+    rendered_decoration, resolved_biome_decorations_for_chunks, tile_climate_biome,
 };
 use cat_sim::village_layout::VILLAGE_ANCHOR;
 use cat_sim::world_gen::tile_to_chunk;
 use ewebsock::{WsEvent, WsMessage, WsReceiver, WsSender};
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 #[cfg(all(not(target_arch = "wasm32"), unix))]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 #[cfg(not(target_arch = "wasm32"))]
@@ -962,6 +962,8 @@ struct ChunkKey {
 struct WorldRender {
     world_seed: Option<i64>,
     loaded_chunks: HashSet<ChunkKey>,
+    climate_biomes: BTreeMap<(i32, i32), Biome>,
+    decorations: BTreeMap<(i32, i32), DecorationRole>,
 }
 
 /// Pixel-art terrain + nature texture handles, loaded once at startup.
@@ -5754,6 +5756,8 @@ fn spawn_terrain(
             commands.entity(entity).despawn();
         }
         render.loaded_chunks.clear();
+        render.climate_biomes.clear();
+        render.decorations.clear();
         render.world_seed = Some(seed);
     }
 
@@ -5772,6 +5776,12 @@ fn spawn_terrain(
         render
             .loaded_chunks
             .retain(|chunk| !expired.contains(chunk));
+        render
+            .climate_biomes
+            .retain(|&(x, y), _| !expired.contains(&chunk_for_tile(x, y)));
+        render
+            .decorations
+            .retain(|&(x, y), _| !expired.contains(&chunk_for_tile(x, y)));
     }
 
     let desired = chunks_around(center, TERRAIN_CHUNK_RADIUS);
@@ -5781,6 +5791,17 @@ fn spawn_terrain(
     }
 
     let (tiles, water) = terrain_for_chunks(seed, &needed);
+    let resolved_decorations = terrain_decorations_for_chunks(seed, &needed);
+    render.climate_biomes.extend(
+        tiles
+            .iter()
+            .map(|tile| ((tile.x, tile.y), tile.climate_biome)),
+    );
+    render.decorations.extend(
+        resolved_decorations
+            .iter()
+            .map(|(&position, &decoration)| (position, decoration)),
+    );
     // Water coordinates (river overlay OR a water climate biome), so shore tiles
     // (a non-water orthogonal neighbour) can use the water_edge variant.
     for tile in &tiles {
@@ -5828,11 +5849,9 @@ fn spawn_terrain(
         // Per-biome decoration density: forests dense with trees, plains open,
         // desert/tundra bare — driven by the biome's density table rather than
         // the coarse BiomeRole `decoration` field.
-        let decoration = if surface != TerrainSurface::Natural {
-            None
-        } else {
-            derive_biome_decoration(tile.x, tile.y, seed, tile.climate_biome)
-        };
+        let decoration = (surface == TerrainSurface::Natural)
+            .then(|| resolved_decorations.get(&(tile.x, tile.y)).copied())
+            .flatten();
         match decoration {
             Some(DecorationRole::Tree { .. }) => {
                 // Tree species follows the biome (conifer/broadleaf/stump), not a
@@ -6128,6 +6147,22 @@ fn terrain_for_chunks(
         }
     }
     (tiles, water)
+}
+
+/// Client adapter for the simulation-owned resolved decoration authority.
+/// Keeping this conversion in one place makes streamed batches and exact-tile
+/// simulation queries share the same cross-chunk footprint answer.
+fn terrain_decorations_for_chunks(
+    seed: i64,
+    requested: &HashSet<ChunkKey>,
+) -> BTreeMap<(i32, i32), DecorationRole> {
+    resolved_biome_decorations_for_chunks(
+        seed,
+        &requested
+            .iter()
+            .map(|chunk| (chunk.x, chunk.y))
+            .collect::<BTreeSet<_>>(),
+    )
 }
 
 /// A river tile with at least one non-water orthogonal neighbour is a shore.
@@ -9017,16 +9052,23 @@ fn cursor_world(
 /// Small hover tooltip (P15 "small" tier): on mouse-hover over any world entity,
 /// show a compact panel of its key live state near the cursor. Separate from the
 /// right-click big inspector panels, which stay.
+#[derive(SystemParam)]
+struct TooltipUi<'w, 's> {
+    panel: Query<'w, 's, &'static mut Node, With<TooltipPanel>>,
+    text: Query<'w, 's, &'static mut Text, With<TooltipText>>,
+}
+
 fn hover_tooltip(
     windows: Query<&Window>,
     camera: Query<(&Camera, &GlobalTransform), With<WorldCamera>>,
     ui: Query<&Interaction, With<Button>>,
     ui_roots: UiRootQuery,
     latest: Res<LatestSnapshot>,
-    mut panel: Query<&mut Node, With<TooltipPanel>>,
-    mut text: Query<&mut Text, With<TooltipText>>,
+    terrain: Res<WorldRender>,
+    mut tooltip: TooltipUi,
 ) {
-    let (Ok(mut node), Ok(mut text)) = (panel.single_mut(), text.single_mut()) else {
+    let (Ok(mut node), Ok(mut text)) = (tooltip.panel.single_mut(), tooltip.text.single_mut())
+    else {
         return;
     };
     let cursor = windows.single().ok().and_then(|w| w.cursor_position());
@@ -9046,7 +9088,10 @@ fn hover_tooltip(
         .and_then(|(cursor, world)| {
             let snapshot = latest.0.as_ref()?;
             let colony = snapshot.colonies.first()?;
-            Some((cursor, hover_text(colony, snapshot.world_seed, world)?))
+            Some((
+                cursor,
+                hover_text(colony, snapshot.world_seed, world, &terrain)?,
+            ))
         });
     match hovered {
         Some((cursor, tip)) => {
@@ -9066,7 +9111,12 @@ fn world_tooltip_allowed(over_button: bool, over_ui: bool, has_cursor: bool) -> 
 /// The tooltip text for whatever sits under `world` — cats first, then buildings,
 /// then stockpiles, and finally the terrain tile itself (biome + resource), so a
 /// hover always reads something.
-fn hover_text(colony: &ColonySnapshot, world_seed: i64, world: Vec2) -> Option<String> {
+fn hover_text(
+    colony: &ColonySnapshot,
+    world_seed: i64,
+    world: Vec2,
+    terrain: &WorldRender,
+) -> Option<String> {
     let cats: Vec<(String, Vec2)> = colony
         .cats
         .iter()
@@ -9105,14 +9155,21 @@ fn hover_text(colony: &ColonySnapshot, world_seed: i64, world: Vec2) -> Option<S
         return Some(stockpile_tooltip(pile));
     }
 
-    Some(tile_tooltip(world_seed, tile.0, tile.1))
+    Some(terrain.climate_biomes.get(&tile).copied().map_or_else(
+        || tile_tooltip(world_seed, tile.0, tile.1),
+        |biome| tile_tooltip_for(biome, terrain.decorations.get(&tile).copied()),
+    ))
 }
 
 /// Hover text for a bare terrain tile: its climate biome and what it offers.
 fn tile_tooltip(world_seed: i64, x: i32, y: i32) -> String {
     let biome = tile_climate_biome(world_seed as u32, x, y);
+    tile_tooltip_for(biome, rendered_decoration(world_seed as u32, x, y))
+}
+
+fn tile_tooltip_for(biome: Biome, decoration: Option<DecorationRole>) -> String {
     let props = biome.properties();
-    let feature = match derive_biome_decoration(x, y, world_seed, biome) {
+    let feature = match decoration {
         Some(DecorationRole::Tree { .. }) => "trees".to_string(),
         Some(DecorationRole::Rock { .. }) => "rocks".to_string(),
         None => resource_hint_label(props.resource).to_string(),
@@ -14246,6 +14303,33 @@ mod tests {
     }
 
     #[test]
+    fn streamed_decorations_match_exact_sim_queries_across_chunk_seams() {
+        let seed = 7;
+        let requested = HashSet::from([
+            ChunkKey { x: -3, y: -6 },
+            ChunkKey { x: -2, y: -6 },
+            ChunkKey { x: -1, y: -1 },
+            ChunkKey { x: 0, y: -1 },
+        ]);
+        let streamed = terrain_decorations_for_chunks(seed, &requested);
+        let sim_chunks = requested
+            .iter()
+            .map(|chunk| (chunk.x, chunk.y))
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            streamed,
+            resolved_biome_decorations_for_chunks(seed, &sim_chunks)
+        );
+        for (x, y) in [(-25, -61), (-24, -60), (-1, -1), (0, -1)] {
+            assert_eq!(
+                streamed.get(&(x, y)).copied(),
+                rendered_decoration(seed as u32, x, y),
+                "client/simulation decoration mismatch at ({x}, {y})"
+            );
+        }
+    }
+
+    #[test]
     fn fog_lookup_and_three_tier_state() {
         let revealed = revealed_lookup(&[
             TilePoint { x: 6, y: 6 },
@@ -16538,12 +16622,13 @@ mod tests {
         let colony = &snap.colonies[0];
         // The cat sits on tile (1,2); its world position is where the cursor picks it.
         let at_cat = grid_to_world(1, 2);
-        let tip = hover_text(colony, snap.world_seed, at_cat).expect("cat tooltip");
+        let terrain = WorldRender::default();
+        let tip = hover_text(colony, snap.world_seed, at_cat, &terrain).expect("cat tooltip");
         assert!(tip.contains("Milo"));
         assert!(tip.contains("hunger 80"));
         // Empty ground still yields a tile tooltip (biome + resource), never None.
-        let tile_tip =
-            hover_text(colony, snap.world_seed, Vec2::new(9000.0, 9000.0)).expect("tile tooltip");
+        let tile_tip = hover_text(colony, snap.world_seed, Vec2::new(9000.0, 9000.0), &terrain)
+            .expect("tile tooltip");
         assert!(!tile_tip.is_empty());
     }
 

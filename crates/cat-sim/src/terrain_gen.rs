@@ -1,6 +1,6 @@
 //! Terrain fields and abstract roles ported from `lib/game/terrainGen.ts`.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use ryu_js::Buffer;
 
@@ -585,9 +585,10 @@ pub fn generate_terrain_chunk(
 
 /// Whether the deterministic terrain generator places a tree decoration on the
 /// world tile `(x, y)` for `world_seed`. Mirrors exactly what the client renders
-/// from `generate_terrain_chunk(.., WORLD_TERRAIN_OPTIONS)`, so the simulation and
-/// the renderer agree on where trees stand. Trees are otherwise client-only, so
-/// this is how the sim "sees" them for placement/occupancy (buildings avoid trees).
+/// from [`resolved_biome_decorations_for_chunks`], so the simulation and renderer
+/// agree on where non-overlapping trees stand. Batch consumers should use the
+/// chunk resolver or [`crate::world_tick::DecorationCache`]; this exact-tile
+/// convenience query intentionally rebuilds one bounded halo.
 #[must_use]
 pub fn tile_has_tree(world_seed: u32, x: i32, y: i32) -> bool {
     matches!(
@@ -597,23 +598,113 @@ pub fn tile_has_tree(world_seed: u32, x: i32, y: i32) -> bool {
 }
 
 /// Decoration the maintained client renders at an exact world tile. Unlike the
-/// legacy coarse `TerrainTile::decoration`, this uses the climate biome density
-/// table and is therefore the authoritative source for visual/physical props.
+/// legacy coarse `TerrainTile::decoration`, this returns the resolved climate
+/// candidate after footprint/water conflicts. Batch consumers should prefer
+/// [`resolved_biome_decorations_for_chunks`].
 #[must_use]
 pub fn rendered_decoration(world_seed: u32, x: i32, y: i32) -> Option<DecorationRole> {
     let chunk_x = floor_div(x, TERRAIN_CHUNK_SIZE);
     let chunk_y = floor_div(y, TERRAIN_CHUNK_SIZE);
-    generate_terrain_chunk(
-        chunk_x,
-        chunk_y,
+    resolved_biome_decorations_for_chunks(
         i64::from(world_seed),
-        WORLD_TERRAIN_OPTIONS,
+        &BTreeSet::from([(chunk_x, chunk_y)]),
     )
-    .into_iter()
-    .find(|tile| tile.x == x && tile.y == y)
-    .and_then(|tile| {
-        derive_biome_decoration(tile.x, tile.y, i64::from(world_seed), tile.climate_biome)
-    })
+    .remove(&(x, y))
+}
+
+/// Resolve the authoritative climate decorations whose anchors belong to the
+/// requested terrain chunks.
+///
+/// Raw biome rolls are independent at every tile, but a rendered tree owns a
+/// 2x3 footprint. This bounded resolver samples the requested chunks plus one
+/// chunk of padding, removes candidates touching water, and lets the stable
+/// lowest-priority candidate win every overlapping footprint cell. The halo is
+/// wider than the largest footprint, so the answer is identical whether chunks
+/// are requested alone, in a batch, or in any order.
+#[must_use]
+pub fn resolved_biome_decorations_for_chunks(
+    seed: i64,
+    requested_chunks: &BTreeSet<(i32, i32)>,
+) -> BTreeMap<(i32, i32), DecorationRole> {
+    if requested_chunks.is_empty() {
+        return BTreeMap::new();
+    }
+
+    let generation_chunks = requested_chunks
+        .iter()
+        .flat_map(|&(chunk_x, chunk_y)| {
+            (-1..=1).flat_map(move |dy| {
+                (-1..=1).map(move |dx| (chunk_x.saturating_add(dx), chunk_y.saturating_add(dy)))
+            })
+        })
+        .collect::<BTreeSet<_>>();
+    let terrain = generation_chunks
+        .into_iter()
+        .flat_map(|(chunk_x, chunk_y)| {
+            generate_terrain_chunk(chunk_x, chunk_y, seed, WORLD_TERRAIN_OPTIONS)
+        })
+        .map(|tile| ((tile.x, tile.y), tile))
+        .collect::<BTreeMap<_, _>>();
+
+    let candidates = terrain
+        .values()
+        .filter_map(|tile| {
+            let role = derive_biome_decoration(tile.x, tile.y, seed, tile.climate_biome)?;
+            decoration_footprint(tile.x, tile.y, role)
+                .iter()
+                .all(|cell| {
+                    terrain
+                        .get(&(cell.x, cell.y))
+                        .is_some_and(decoration_ground_is_dry)
+                })
+                .then_some(((tile.x, tile.y), role))
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    let mut occupants = BTreeMap::<(i32, i32), Vec<(i32, i32)>>::new();
+    for (&anchor, &role) in &candidates {
+        for cell in decoration_footprint(anchor.0, anchor.1, role) {
+            occupants.entry((cell.x, cell.y)).or_default().push(anchor);
+        }
+    }
+
+    candidates
+        .into_iter()
+        .filter(|(anchor, role)| {
+            requested_chunks.contains(&(
+                anchor.0.div_euclid(TERRAIN_CHUNK_SIZE),
+                anchor.1.div_euclid(TERRAIN_CHUNK_SIZE),
+            )) && decoration_footprint(anchor.0, anchor.1, *role)
+                .iter()
+                .flat_map(|cell| occupants.get(&(cell.x, cell.y)).into_iter().flatten())
+                .all(|other| {
+                    *other == *anchor
+                        || decoration_resolution_priority(seed, *anchor)
+                            < decoration_resolution_priority(seed, *other)
+                })
+        })
+        .collect()
+}
+
+fn decoration_ground_is_dry(tile: &TerrainTile) -> bool {
+    tile.river.is_none()
+        && !matches!(
+            tile.climate_biome,
+            Biome::Ocean | Biome::Lake | Biome::River | Biome::Ice
+        )
+}
+
+fn decoration_resolution_priority(seed: i64, anchor: (i32, i32)) -> (u32, i32, i32) {
+    (
+        hash_seed(&[
+            HashValue::Int(seed),
+            HashValue::Text("decor-resolve"),
+            HashValue::Int(i64::from(anchor.0)),
+            HashValue::Int(i64::from(anchor.1)),
+        ]),
+        anchor.1,
+        anchor.0,
+    )
 }
 
 /// Fine-grid cells occupied by one rendered decoration anchored at `(x, y)`.
@@ -926,13 +1017,13 @@ pub fn derive_decoration(x: i32, y: i32, seed: i64, biome: BiomeRole) -> Option<
     decoration_from_density(x, y, seed, tree_density, rock_density)
 }
 
-/// P17 density-driven decoration sampler keyed on the climate [`Biome`] instead
+/// P17 density-driven raw decoration candidate keyed on the climate [`Biome`] instead
 /// of the coarse [`BiomeRole`]. Uses the *identical* deterministic roll code as
 /// [`derive_decoration`] — only the density thresholds come from the biome's
 /// property table — so forests emit far more trees than plains for the same
 /// area. Non-breaking: `generate_terrain_chunk`'s `decoration` field still uses
-/// the [`BiomeRole`] path; this is what the client will consume to fix the
-/// uniform-tree look.
+/// the [`BiomeRole`] path. Renderers and physical simulation must resolve these
+/// raw candidates through [`resolved_biome_decorations_for_chunks`].
 #[must_use]
 pub fn derive_biome_decoration(x: i32, y: i32, seed: i64, biome: Biome) -> Option<DecorationRole> {
     let (tree_density, rock_density) = biome.decoration_density();
@@ -2222,25 +2313,20 @@ mod tests {
 
     #[test]
     fn tile_has_tree_matches_the_climate_driven_client_decoration() {
-        // `tile_has_tree` must agree, tile-for-tile, with the maintained client's
-        // climate-density decoration pass across chunk boundaries.
+        // `tile_has_tree` must agree, tile-for-tile, with the resolved decoration
+        // authority consumed by the maintained client across chunk boundaries.
         let seed = 123u32;
         for chunk_x in -1..=1 {
             for chunk_y in -1..=1 {
-                let chunk = generate_terrain_chunk(
-                    chunk_x,
-                    chunk_y,
+                let resolved = resolved_biome_decorations_for_chunks(
                     i64::from(seed),
-                    WORLD_TERRAIN_OPTIONS,
+                    &BTreeSet::from([(chunk_x, chunk_y)]),
                 );
-                for terrain_tile in chunk {
+                for terrain_tile in
+                    generate_terrain_chunk(chunk_x, chunk_y, i64::from(seed), WORLD_TERRAIN_OPTIONS)
+                {
                     let expected = matches!(
-                        derive_biome_decoration(
-                            terrain_tile.x,
-                            terrain_tile.y,
-                            i64::from(seed),
-                            terrain_tile.climate_biome,
-                        ),
+                        resolved.get(&(terrain_tile.x, terrain_tile.y)),
                         Some(DecorationRole::Tree { .. })
                     );
                     assert_eq!(
@@ -2253,6 +2339,90 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn resolved_decorations_remove_the_reported_seed_seven_collisions() {
+        let seed = 7;
+        let adjacent =
+            resolved_biome_decorations_for_chunks(seed, &BTreeSet::from([(-3, -6), (-2, -6)]));
+        let first = adjacent.get(&(-29, -62)).copied();
+        let second = adjacent.get(&(-28, -62)).copied();
+        assert!(
+            first.is_none() || second.is_none(),
+            "the overlapping raw anchors must not both survive: {first:?} {second:?}"
+        );
+
+        let river_crossing = resolved_biome_decorations_for_chunks(
+            seed,
+            &BTreeSet::from([(
+                (-189i32).div_euclid(TERRAIN_CHUNK_SIZE),
+                (-256i32).div_euclid(TERRAIN_CHUNK_SIZE),
+            )]),
+        );
+        assert!(
+            !river_crossing.contains_key(&(-189, -256)),
+            "the reported raw tree anchor crosses generated river water"
+        );
+    }
+
+    #[test]
+    fn resolved_decorations_never_overlap_or_occupy_generated_water() {
+        for seed in [0, 7, 42, 123, 2_024, u32::MAX] {
+            let chunks = (-3..=3)
+                .flat_map(|chunk_y| (-3..=3).map(move |chunk_x| (chunk_x, chunk_y)))
+                .chain([(-16, -22), (-1, -1), (-1, 0), (0, -1)])
+                .collect::<BTreeSet<_>>();
+            let resolved = resolved_biome_decorations_for_chunks(i64::from(seed), &chunks);
+            let generated = chunks
+                .iter()
+                .flat_map(|&(chunk_x, chunk_y)| {
+                    (-1..=1)
+                        .flat_map(move |dy| (-1..=1).map(move |dx| (chunk_x + dx, chunk_y + dy)))
+                })
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .flat_map(|(chunk_x, chunk_y)| {
+                    generate_terrain_chunk(chunk_x, chunk_y, i64::from(seed), WORLD_TERRAIN_OPTIONS)
+                })
+                .map(|tile| ((tile.x, tile.y), tile))
+                .collect::<BTreeMap<_, _>>();
+            let mut occupied = BTreeSet::new();
+            for (&anchor, &decoration) in &resolved {
+                for cell in decoration_footprint(anchor.0, anchor.1, decoration) {
+                    assert!(
+                        occupied.insert((cell.x, cell.y)),
+                        "seed {seed} decorations overlap at {cell:?}"
+                    );
+                    let terrain = generated.get(&(cell.x, cell.y)).unwrap_or_else(|| {
+                        panic!("requested scan omitted footprint cell {cell:?}")
+                    });
+                    assert!(
+                        decoration_ground_is_dry(terrain),
+                        "seed {seed} decoration at {anchor:?} occupies water {cell:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn resolved_decorations_are_chunk_order_independent_at_negative_boundaries() {
+        let seed = 7;
+        let chunks = BTreeSet::from([(-3, -6), (-2, -6), (-1, -1), (-1, 0), (0, -1), (0, 0)]);
+        let batched = resolved_biome_decorations_for_chunks(seed, &chunks);
+        let individually = chunks
+            .iter()
+            .flat_map(|&chunk| {
+                resolved_biome_decorations_for_chunks(seed, &BTreeSet::from([chunk]))
+            })
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(batched, individually);
+        assert_eq!(
+            batched,
+            resolved_biome_decorations_for_chunks(seed, &chunks),
+            "repeat resolution must be deterministic"
+        );
     }
 
     #[test]

@@ -1214,10 +1214,15 @@ impl DecorationCache {
     }
 
     fn ensure_chunks(&mut self, world_seed: u32, chunks: &BTreeSet<(i32, i32)>) {
-        for &(chunk_x, chunk_y) in chunks {
-            self.chunks
-                .entry((world_seed, chunk_x, chunk_y))
-                .or_insert_with(|| decoration_anchors_for_chunk(world_seed, chunk_x, chunk_y));
+        let missing = chunks
+            .iter()
+            .copied()
+            .filter(|&(chunk_x, chunk_y)| {
+                !self.chunks.contains_key(&(world_seed, chunk_x, chunk_y))
+            })
+            .collect::<BTreeSet<_>>();
+        for ((chunk_x, chunk_y), anchors) in decoration_anchors_for_chunks(world_seed, &missing) {
+            self.chunks.insert((world_seed, chunk_x, chunk_y), anchors);
         }
     }
 
@@ -1234,31 +1239,55 @@ impl DecorationCache {
 }
 
 fn decoration_anchors_for_chunk(world_seed: u32, chunk_x: i32, chunk_y: i32) -> DecorationAnchors {
-    let mut out = DecorationAnchors::default();
-    for terrain in crate::terrain_gen::generate_terrain_chunk(
-        chunk_x,
-        chunk_y,
-        i64::from(world_seed),
-        crate::terrain_gen::WORLD_TERRAIN_OPTIONS,
-    ) {
-        let pos = TilePos {
-            x: terrain.x,
-            y: terrain.y,
-        };
-        out.climate_biomes.insert(pos, terrain.climate_biome);
-        match crate::terrain_gen::derive_biome_decoration(
-            terrain.x,
-            terrain.y,
+    decoration_anchors_for_chunks(world_seed, &BTreeSet::from([(chunk_x, chunk_y)]))
+        .remove(&(chunk_x, chunk_y))
+        .expect("requested decoration chunk is always generated")
+}
+
+fn decoration_anchors_for_chunks(
+    world_seed: u32,
+    chunks: &BTreeSet<(i32, i32)>,
+) -> BTreeMap<(i32, i32), DecorationAnchors> {
+    let mut out = chunks
+        .iter()
+        .map(|&chunk| (chunk, DecorationAnchors::default()))
+        .collect::<BTreeMap<_, _>>();
+    for &(chunk_x, chunk_y) in chunks {
+        let anchors = out
+            .get_mut(&(chunk_x, chunk_y))
+            .expect("requested chunk was initialized");
+        for terrain in crate::terrain_gen::generate_terrain_chunk(
+            chunk_x,
+            chunk_y,
             i64::from(world_seed),
-            terrain.climate_biome,
+            crate::terrain_gen::WORLD_TERRAIN_OPTIONS,
         ) {
-            Some(crate::terrain_gen::DecorationRole::Tree { .. }) => {
-                out.trees.insert(pos);
+            anchors.climate_biomes.insert(
+                TilePos {
+                    x: terrain.x,
+                    y: terrain.y,
+                },
+                terrain.climate_biome,
+            );
+        }
+    }
+    for ((x, y), decoration) in
+        crate::terrain_gen::resolved_biome_decorations_for_chunks(i64::from(world_seed), chunks)
+    {
+        let chunk = (
+            x.div_euclid(crate::terrain_gen::TERRAIN_CHUNK_SIZE),
+            y.div_euclid(crate::terrain_gen::TERRAIN_CHUNK_SIZE),
+        );
+        let anchors = out
+            .get_mut(&chunk)
+            .expect("resolver returns only requested decoration anchors");
+        match decoration {
+            crate::terrain_gen::DecorationRole::Tree { .. } => {
+                anchors.trees.insert(TilePos { x, y });
             }
-            Some(crate::terrain_gen::DecorationRole::Rock { .. }) => {
-                out.rocks.insert(pos);
+            crate::terrain_gen::DecorationRole::Rock { .. } => {
+                anchors.rocks.insert(TilePos { x, y });
             }
-            None => {}
         }
     }
     out
@@ -1400,6 +1429,14 @@ impl SpatialOccupancyContext {
             x: gate.x,
             y: gate.y,
         });
+        let decoration_chunks = colony
+            .decoration_cache
+            .chunks
+            .iter()
+            .filter_map(|(&(seed, chunk_x, chunk_y), anchors)| {
+                (seed == world_seed).then_some(((chunk_x, chunk_y), anchors.clone()))
+            })
+            .collect();
 
         Self {
             world_seed,
@@ -1419,7 +1456,7 @@ impl SpatialOccupancyContext {
             mapped_tiles,
             shrine_tiles,
             gate,
-            decoration_chunks: RefCell::new(BTreeMap::new()),
+            decoration_chunks: RefCell::new(decoration_chunks),
             farm_fertility_chunks: RefCell::new(BTreeMap::new()),
         }
     }
@@ -19516,34 +19553,37 @@ fn generated_tree_targets(
     world_seed: u32,
     chunks: impl IntoIterator<Item = (i32, i32)>,
 ) -> HashSet<TilePos> {
-    let mut targets = HashSet::new();
+    crate::terrain_gen::resolved_biome_decorations_for_chunks(
+        i64::from(world_seed),
+        &chunks.into_iter().collect(),
+    )
+    .into_iter()
+    .filter_map(|((x, y), decoration)| {
+        matches!(decoration, crate::terrain_gen::DecorationRole::Tree { .. })
+            .then_some(TilePos { x, y })
+    })
+    .collect()
+}
+
+fn generated_tree_targets_cached(
+    colony: &ColonyRuntime,
+    world_seed: u32,
+    chunks: impl IntoIterator<Item = (i32, i32)>,
+) -> HashSet<TilePos> {
+    let mut generated = HashSet::new();
+    let mut missing_chunks = BTreeSet::new();
     for (chunk_x, chunk_y) in chunks {
-        targets.extend(
-            crate::terrain_gen::generate_terrain_chunk(
-                chunk_x,
-                chunk_y,
-                i64::from(world_seed),
-                crate::terrain_gen::WORLD_TERRAIN_OPTIONS,
-            )
-            .into_iter()
-            .filter(|tile| {
-                matches!(
-                    crate::terrain_gen::derive_biome_decoration(
-                        tile.x,
-                        tile.y,
-                        i64::from(world_seed),
-                        tile.climate_biome,
-                    ),
-                    Some(crate::terrain_gen::DecorationRole::Tree { .. })
-                )
-            })
-            .map(|tile| TilePos {
-                x: tile.x,
-                y: tile.y,
-            }),
-        );
+        if let Some(anchors) = colony
+            .decoration_cache
+            .anchors(world_seed, chunk_x, chunk_y)
+        {
+            generated.extend(anchors.trees.iter().copied());
+        } else {
+            missing_chunks.insert((chunk_x, chunk_y));
+        }
     }
-    targets
+    generated.extend(generated_tree_targets(world_seed, missing_chunks));
+    generated
 }
 
 fn scout_target_order(origin: TilePos, target: TilePos) -> (i32, i32, i32, i32) {
@@ -19580,11 +19620,20 @@ fn scout_tile_matches_resource(
     tile: &WorldTileRuntime,
     world_seed: u32,
     resource: ScoutResource,
+    decoration_cache: &DecorationCache,
 ) -> bool {
     match resource {
-        ScoutResource::Wood => {
-            crate::terrain_gen::tile_has_tree(world_seed, tile.pos.x, tile.pos.y)
-        }
+        ScoutResource::Wood => decoration_cache
+            .anchors(
+                world_seed,
+                tile.pos
+                    .x
+                    .div_euclid(crate::terrain_gen::TERRAIN_CHUNK_SIZE),
+                tile.pos
+                    .y
+                    .div_euclid(crate::terrain_gen::TERRAIN_CHUNK_SIZE),
+            )
+            .is_some_and(|anchors| anchors.trees.contains(&tile.pos)),
         ScoutResource::Food => tile.resources.food > 0 || tile.resources.herbs > 0,
         ScoutResource::Water => tile_has_water(Some(tile)),
         // Coarse mountain/cave sites are the stable, already-materialised source used
@@ -20203,6 +20252,18 @@ fn advance_scout_search(
         .get(cat_id)
         .cloned()
         .unwrap_or_default();
+    let observed_chunks = observed
+        .iter()
+        .map(|pos| {
+            (
+                pos.x.div_euclid(crate::terrain_gen::TERRAIN_CHUNK_SIZE),
+                pos.y.div_euclid(crate::terrain_gen::TERRAIN_CHUNK_SIZE),
+            )
+        })
+        .collect::<BTreeSet<_>>();
+    colony
+        .decoration_cache
+        .ensure_chunks(world_seed, &observed_chunks);
     let discovered_target = match mission {
         ScoutMission::Explore => None,
         ScoutMission::Resource(resource) => {
@@ -20218,7 +20279,14 @@ fn advance_scout_search(
                     colony
                         .world_tiles
                         .get(pos)
-                        .filter(|tile| scout_tile_matches_resource(tile, world_seed, resource))
+                        .filter(|tile| {
+                            scout_tile_matches_resource(
+                                tile,
+                                world_seed,
+                                resource,
+                                &colony.decoration_cache,
+                            )
+                        })
                         .map(|_| *pos)
                 })
                 .collect::<Vec<_>>();
@@ -21020,7 +21088,7 @@ fn logging_sites_near_village(colony: &ColonyRuntime, world_seed: u32) -> Vec<Wo
     if candidates.is_empty() {
         return Vec::new();
     }
-    let generated_trees = generated_tree_targets(world_seed, chunks);
+    let generated_trees = generated_tree_targets_cached(colony, world_seed, chunks);
     let mut sites = candidates
         .into_iter()
         .filter(|site| generated_trees.contains(site))
@@ -21112,16 +21180,17 @@ fn tree_footprint_tiles(site: TilePos) -> Vec<TilePos> {
         .collect()
 }
 
-fn generated_tree_exists_at(world_seed: u32, site: TilePos) -> bool {
+fn generated_tree_exists_at(colony: &ColonyRuntime, world_seed: u32, site: TilePos) -> bool {
     let chunk = tile_to_chunk(site.x, site.y);
-    generated_tree_targets(world_seed, [(chunk.chunk_x, chunk.chunk_y)]).contains(&site)
+    generated_tree_targets_cached(colony, world_seed, [(chunk.chunk_x, chunk.chunk_y)])
+        .contains(&site)
 }
 
 /// The physical footprint a mature tree would occupy must remain wilderness.
 /// A blocked sapling is retained and retried, so a temporary building/farm/road
 /// never deletes planted ecological state.
 fn tree_regrowth_site_is_clear(colony: &ColonyRuntime, site: TilePos, world_seed: u32) -> bool {
-    if !generated_tree_exists_at(world_seed, site) {
+    if !generated_tree_exists_at(colony, world_seed, site) {
         return false;
     }
     let occupancy = SpatialOccupancyContext::new(colony, world_seed);
@@ -21156,7 +21225,7 @@ fn is_eligible_replant_stump(colony: &ColonyRuntime, site: TilePos, world_seed: 
         .get(&site)
         .is_some_and(|tile| tile.overlay_feature.as_deref() == Some("stump"))
         && !active_logging_sites(colony).contains(&site)
-        && generated_tree_exists_at(world_seed, site)
+        && generated_tree_exists_at(colony, world_seed, site)
         && tree_regrowth_site_is_clear(colony, site, world_seed)
 }
 
@@ -21190,19 +21259,7 @@ fn replant_sites_near_village(colony: &ColonyRuntime, world_seed: u32) -> Vec<Wo
     // Movement keeps the same decoration chunks warm. Reuse that authoritative
     // cache so a colony with many synthetic cleared-ground stump markers does not
     // regenerate its whole terrain map on every officer decision.
-    let mut generated = HashSet::new();
-    let mut missing_chunks = BTreeSet::new();
-    for &(chunk_x, chunk_y) in &chunks {
-        if let Some(anchors) = colony
-            .decoration_cache
-            .anchors(world_seed, chunk_x, chunk_y)
-        {
-            generated.extend(anchors.trees.iter().copied());
-        } else {
-            missing_chunks.insert((chunk_x, chunk_y));
-        }
-    }
-    generated.extend(generated_tree_targets(world_seed, missing_chunks));
+    let generated = generated_tree_targets_cached(colony, world_seed, chunks);
     if !candidates.iter().any(|site| generated.contains(site)) {
         return Vec::new();
     }
@@ -39385,27 +39442,14 @@ mod tests {
         let site = (-8..=8)
             .flat_map(|chunk_y| (-8..=8).map(move |chunk_x| (chunk_x, chunk_y)))
             .find_map(|(chunk_x, chunk_y)| {
-                crate::terrain_gen::generate_terrain_chunk(
-                    chunk_x,
-                    chunk_y,
+                crate::terrain_gen::resolved_biome_decorations_for_chunks(
                     i64::from(seed),
-                    crate::terrain_gen::WORLD_TERRAIN_OPTIONS,
+                    &BTreeSet::from([(chunk_x, chunk_y)]),
                 )
                 .into_iter()
-                .find(|tile| {
-                    matches!(
-                        crate::terrain_gen::derive_biome_decoration(
-                            tile.x,
-                            tile.y,
-                            i64::from(seed),
-                            tile.climate_biome,
-                        ),
-                        Some(crate::terrain_gen::DecorationRole::Tree { .. })
-                    )
-                })
-                .map(|tile| TilePos {
-                    x: tile.x,
-                    y: tile.y,
+                .find_map(|((x, y), decoration)| {
+                    matches!(decoration, crate::terrain_gen::DecorationRole::Tree { .. })
+                        .then_some(TilePos { x, y })
                 })
             })
             .expect("bounded terrain contains a tree");
@@ -39680,26 +39724,16 @@ mod tests {
     #[test]
     fn first_logging_trip_depletes_the_tree_and_death_or_cancel_cannot_retarget_it() {
         let seed = 0_u32;
-        let generated = crate::terrain_gen::generate_terrain_chunk(
-            0,
-            0,
+        let generated = crate::terrain_gen::resolved_biome_decorations_for_chunks(
             i64::from(seed),
-            crate::terrain_gen::WORLD_TERRAIN_OPTIONS,
+            &BTreeSet::from([(0, 0)]),
         );
         let site = generated
             .iter()
-            .find(|tile| {
-                matches!(
-                    crate::terrain_gen::derive_biome_decoration(
-                        tile.x,
-                        tile.y,
-                        i64::from(seed),
-                        tile.climate_biome,
-                    ),
-                    Some(crate::terrain_gen::DecorationRole::Tree { .. })
-                )
+            .find_map(|(&(x, y), &decoration)| {
+                matches!(decoration, crate::terrain_gen::DecorationRole::Tree { .. })
+                    .then_some(pos(x, y))
             })
-            .map(|tile| pos(tile.x, tile.y))
             .expect("deterministic chunk contains a tree");
         let anchor = pos(site.x + VILLAGE_START_RADIUS + 2, site.y);
         let mut cat = adult_idle_cat("logger", "colony-1");
@@ -39861,31 +39895,19 @@ mod tests {
         let (seed, anchor, interior, exterior) = (0_u32..10)
             .find_map(|seed| {
                 let mut wood_trees = Vec::new();
-                for chunk_y in -2..=2 {
-                    for chunk_x in -2..=2 {
-                        wood_trees.extend(
-                            crate::terrain_gen::generate_terrain_chunk(
-                                chunk_x,
-                                chunk_y,
-                                i64::from(seed),
-                                crate::terrain_gen::WORLD_TERRAIN_OPTIONS,
-                            )
-                            .into_iter()
-                            .filter(|tile| {
-                                matches!(
-                                    crate::terrain_gen::derive_biome_decoration(
-                                        tile.x,
-                                        tile.y,
-                                        i64::from(seed),
-                                        tile.climate_biome,
-                                    ),
-                                    Some(crate::terrain_gen::DecorationRole::Tree { .. })
-                                )
-                            })
-                            .map(|tile| pos(tile.x, tile.y)),
-                        );
-                    }
-                }
+                wood_trees.extend(
+                    crate::terrain_gen::resolved_biome_decorations_for_chunks(
+                        i64::from(seed),
+                        &(-2..=2)
+                            .flat_map(|chunk_y| (-2..=2).map(move |chunk_x| (chunk_x, chunk_y)))
+                            .collect(),
+                    )
+                    .into_iter()
+                    .filter_map(|((x, y), decoration)| {
+                        matches!(decoration, crate::terrain_gen::DecorationRole::Tree { .. })
+                            .then_some(pos(x, y))
+                    }),
+                );
                 wood_trees.iter().find_map(|&anchor| {
                     let exterior = wood_trees
                         .iter()
@@ -53974,6 +53996,44 @@ mod tests {
         assert!(pathfinding::SoftObstacleField::is_soft_obstacle(
             &movement, rock.0.x, rock.0.y
         ));
+    }
+
+    #[test]
+    fn decoration_cache_batches_match_single_chunks_and_render_authority() {
+        let seed = 7;
+        let chunks = BTreeSet::from([(-3, -6), (-2, -6), (-1, -1), (0, -1)]);
+        let batched = decoration_anchors_for_chunks(seed, &chunks);
+        let singles = chunks
+            .iter()
+            .map(|&(chunk_x, chunk_y)| {
+                (
+                    (chunk_x, chunk_y),
+                    decoration_anchors_for_chunk(seed, chunk_x, chunk_y),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(batched, singles);
+
+        let resolved =
+            crate::terrain_gen::resolved_biome_decorations_for_chunks(i64::from(seed), &chunks);
+        for (&chunk, anchors) in &batched {
+            for (&(x, y), decoration) in resolved.iter().filter(|((x, y), _)| {
+                (
+                    x.div_euclid(crate::terrain_gen::TERRAIN_CHUNK_SIZE),
+                    y.div_euclid(crate::terrain_gen::TERRAIN_CHUNK_SIZE),
+                ) == chunk
+            }) {
+                let present = match decoration {
+                    crate::terrain_gen::DecorationRole::Tree { .. } => {
+                        anchors.trees.contains(&TilePos { x, y })
+                    }
+                    crate::terrain_gen::DecorationRole::Rock { .. } => {
+                        anchors.rocks.contains(&TilePos { x, y })
+                    }
+                };
+                assert!(present, "cache omitted resolved decoration at ({x}, {y})");
+            }
+        }
     }
 
     #[test]
