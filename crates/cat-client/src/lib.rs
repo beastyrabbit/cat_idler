@@ -666,6 +666,13 @@ struct GoodsUi {
     visible: bool,
 }
 
+/// The one command family expanded in the bottom dock. The dock opens on
+/// Inspect so a fresh session leaves the map almost entirely unobstructed.
+#[derive(Resource, Default)]
+struct CommandDock {
+    category: DockCategory,
+}
+
 /// Number of item-stack lines the goods panel shows (most valuable first).
 const GOODS_LINES: usize = 12;
 
@@ -810,7 +817,7 @@ impl AcceptChoice {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 enum ToolMode {
     #[default]
     Inspect,
@@ -822,6 +829,82 @@ enum ToolMode {
     FishingSpot,
     Road,
     Building,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+enum DockCategory {
+    #[default]
+    Inspect,
+    Gather,
+    Build,
+    Territory,
+    Scout,
+    Village,
+}
+
+impl DockCategory {
+    const ALL: [Self; 6] = [
+        Self::Inspect,
+        Self::Gather,
+        Self::Build,
+        Self::Territory,
+        Self::Scout,
+        Self::Village,
+    ];
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Inspect => "Inspect",
+            Self::Gather => "Gather",
+            Self::Build => "Build",
+            Self::Territory => "Territory",
+            Self::Scout => "Scout",
+            Self::Village => "Village",
+        }
+    }
+
+    const fn tools(self) -> &'static [ToolMode] {
+        match self {
+            Self::Inspect => &[ToolMode::Inspect],
+            Self::Gather => &[
+                ToolMode::GatherZone,
+                ToolMode::GatherSpot,
+                ToolMode::FishingSpot,
+                ToolMode::Farm,
+            ],
+            Self::Build => &[ToolMode::Building, ToolMode::Stockpile, ToolMode::Road],
+            Self::Territory => &[ToolMode::AvoidZone],
+            Self::Scout | Self::Village => &[],
+        }
+    }
+
+    const fn actions(self) -> &'static [ButtonAction] {
+        match self {
+            Self::Gather => &[
+                ButtonAction::SupplyFood,
+                ButtonAction::SupplyWater,
+                ButtonAction::PlanHunt,
+            ],
+            Self::Scout => &[
+                ButtonAction::ScoutWood,
+                ButtonAction::ScoutFood,
+                ButtonAction::ScoutWater,
+                ButtonAction::ScoutStone,
+                ButtonAction::Explore,
+            ],
+            Self::Village => &[ButtonAction::FoundVillage],
+            Self::Inspect | Self::Build | Self::Territory => &[],
+        }
+    }
+
+    const fn default_tool(self) -> ToolMode {
+        match self {
+            Self::Gather => ToolMode::GatherZone,
+            Self::Build => ToolMode::Building,
+            Self::Territory => ToolMode::AvoidZone,
+            Self::Inspect | Self::Scout | Self::Village => ToolMode::Inspect,
+        }
+    }
 }
 
 /// What a click-drag paints — a steering zone or a stockpile designation.
@@ -1317,26 +1400,33 @@ const UI_BTN_H: f32 = 30.0;
 const MINIMAP_PANEL_WIDTH: f32 = 168.0 + 2.0 * UI_GAP + 2.0 * UI_BORDER_W;
 const BUILDING_INSPECTOR_WIDTH: f32 = 300.0;
 const RIGHT_PANEL_MARGIN: f32 = 10.0;
-/// Wide windows fit the toolbar in three button lines (one wrapped tool row and
-/// two action lines), including row gaps, frame padding, and screen margin.
-const WIDE_BOTTOM_BAR_FOOTPRINT: f32 = 3.0 * UI_BTN_H + 4.0 * UI_GAP + 2.0 * UI_BORDER_W + 10.0;
-/// At the supported 1024px floor both toolbar groups wrap, producing four
-/// button lines. Corner overlays must clear the real footprint, not the wide
-/// approximation, or they cover the first row of controls.
-const NARROW_BOTTOM_BAR_FOOTPRINT: f32 = 4.0 * UI_BTN_H + 5.0 * UI_GAP + 2.0 * UI_BORDER_W + 10.0;
+/// Category row plus one compact submenu. The default Inspect category uses
+/// only the first row; this maximum keeps corner overlays clear when a menu is
+/// expanded, including one wrapped submenu line at the 1024px floor.
+const WIDE_BOTTOM_BAR_FOOTPRINT: f32 = UI_BTN_H + 22.0 + 3.0 * UI_GAP + 2.0 * UI_BORDER_W + 10.0;
+const NARROW_BOTTOM_BAR_FOOTPRINT: f32 =
+    UI_BTN_H + 2.0 * 22.0 + 4.0 * UI_GAP + 2.0 * UI_BORDER_W + 10.0;
+const COLLAPSED_BOTTOM_BAR_FOOTPRINT: f32 = UI_BTN_H + 2.0 * UI_GAP + 2.0 * UI_BORDER_W + 10.0;
 const NARROW_LAYOUT_MAX_WIDTH: f32 = 1100.0;
-const BOTTOM_OVERLAY_CLEARANCE: f32 = WIDE_BOTTOM_BAR_FOOTPRINT + UI_GAP;
-/// Sixteen two-column resource rows remain readable at this compact height and
-/// leave room for Dispatches above the narrow wrapped toolbar.
+const BOTTOM_OVERLAY_CLEARANCE: f32 = COLLAPSED_BOTTOM_BAR_FOOTPRINT + UI_GAP;
+/// Only survival-critical stores remain pinned to the world view. The complete
+/// maintained inventory is available from Stores [G].
 const HUD_RESOURCE_PILL_HEIGHT: f32 = 19.0;
 #[cfg(test)]
 const HUD_RESOURCE_COLUMNS: usize = 2;
-const HUD_RESOURCE_CELL_WIDTH: f32 = 190.0;
-const HUD_PANEL_WIDTH: f32 = 430.0;
+const HUD_RESOURCE_CELL_WIDTH: f32 = 145.0;
+const HUD_PANEL_WIDTH: f32 = 330.0;
+
+const SURVIVAL_HUD_RESOURCES: [HudRes; 4] = [
+    HudRes::Food,
+    HudRes::Water,
+    HudRes::Materials,
+    HudRes::Medicine,
+];
 
 #[cfg(test)]
 fn hud_resource_grid_rows() -> usize {
-    HUD_RESOURCES.len().div_ceil(HUD_RESOURCE_COLUMNS)
+    SURVIVAL_HUD_RESOURCES.len().div_ceil(HUD_RESOURCE_COLUMNS)
 }
 
 #[cfg(test)]
@@ -3211,6 +3301,42 @@ struct ActionButton(ButtonAction);
 #[derive(Component, Clone, Copy)]
 struct ToolButton(ToolMode);
 
+/// Top-level command-family button in the compact dock.
+#[derive(Component, Clone, Copy)]
+struct DockCategoryButton(DockCategory);
+
+/// A lazily shown row containing one command family's controls.
+#[derive(Component, Clone, Copy)]
+struct DockSubmenu(DockCategory);
+
+/// A picker which is meaningful only for its active map tool.
+#[derive(Component, Clone, Copy)]
+struct ToolContextControl(ToolMode);
+
+#[derive(Component)]
+struct OrdersDockButton;
+
+#[derive(Component)]
+struct OfficersDockButton;
+
+#[derive(SystemParam)]
+struct CommandDockQueries<'w, 's> {
+    submenus: Query<'w, 's, (&'static DockSubmenu, &'static mut Node), Without<ToolContextControl>>,
+    contexts: Query<'w, 's, (&'static ToolContextControl, &'static mut Node), Without<DockSubmenu>>,
+    order_buttons: Query<
+        'w,
+        's,
+        &'static mut KitToggle,
+        (With<OrdersDockButton>, Without<OfficersDockButton>),
+    >,
+    officer_buttons: Query<
+        'w,
+        's,
+        &'static mut KitToggle,
+        (With<OfficersDockButton>, Without<OrdersDockButton>),
+    >,
+}
+
 /// The stockpile accept-type picker button.
 #[derive(Component)]
 struct AcceptButton;
@@ -3310,7 +3436,7 @@ fn world_pointer_input_allowed(
     !research_visible && !over_world_input_blocker && has_cursor
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 enum ButtonAction {
     SupplyFood,
     SupplyWater,
@@ -3528,7 +3654,7 @@ pub fn run() {
         .insert_resource(LaborPreferenceUi::default())
         .insert_resource(EquipmentUi::default())
         .insert_resource(StationQueueUi::default())
-        .insert_resource(OfficersUi { visible: true })
+        .insert_resource(OfficersUi::default())
         .insert_resource(OrdersUi::default())
         .insert_resource(GovernanceUi::default())
         .insert_resource(AnnouncementsUi::default())
@@ -3541,6 +3667,7 @@ pub fn run() {
         .insert_resource(RaiderBodies::default())
         .insert_resource(VillageCaravanBodies::default())
         .insert_resource(Tools::default())
+        .insert_resource(CommandDock::default())
         .insert_resource(AdventureCursorState::default())
         // Match the unloaded world to full fog so zooming out never exposes a
         // hard rectangle around the bounded chunk cache.
@@ -3597,6 +3724,8 @@ pub fn run() {
                     update_inspector,
                     (
                         handle_tool_buttons,
+                        handle_dock_categories,
+                        update_command_dock.after(handle_dock_categories),
                         handle_accept_button,
                         handle_farm_crop_button,
                         handle_gather_kind_button,
@@ -4100,27 +4229,6 @@ fn setup(
         WorldCamera,
     ));
 
-    // A deliberate walnut rail backs the fixed right-hand inspector/minimap
-    // lane. At the supported 1024px width the revealed world may end before
-    // this reserved UI column; without a backing surface that unused camera
-    // area reads as an accidental black rectangle whenever no inspector is
-    // open. Spawn it before the interactive panels so they naturally layer on
-    // top, and let the bottom toolbar cover its lower edge.
-    commands.spawn((
-        Node {
-            position_type: PositionType::Absolute,
-            right: Val::Px(0.0),
-            top: Val::Px(50.0),
-            bottom: Val::Px(BOTTOM_OVERLAY_CLEARANCE),
-            width: Val::Px(204.0),
-            border: UiRect::left(Val::Px(4.0)),
-            ..default()
-        },
-        GlobalZIndex(-100),
-        BackgroundColor(UI_HEADER),
-        BorderColor::all(UI_BUTTON_BROWN),
-    ));
-
     // Transport and rejected-action feedback must not disappear into the log.
     // Keep a compact banner above the world; it is hidden until feedback exists.
     commands
@@ -4150,8 +4258,9 @@ fn setup(
             ));
         });
 
-    // HUD dashboard (top-left): a kit panel with a "Colony" title bar, a status
-    // header, a two-column resource grid and a jobs/ledger footer.
+    // Compact always-on colony card. Only the four stores which can turn into
+    // an immediate survival crisis stay pinned over the map; the complete
+    // ledger lives in Stores [G].
     commands
         .spawn((
             Node {
@@ -4167,9 +4276,7 @@ fn setup(
             panel.spawn(ui_panel_body()).with_children(|body| {
                 // Status header (name / leader / pop / threat).
                 body.spawn((ui_text("connecting…", FS_SECTION, UI_INK), HudHeaderText));
-                // Resource readout: a tinted glyph + value per resource in
-                // TWO columns (a wrapping row of fixed-width cells) so every
-                // maintained resource remains named without widening the panel.
+                // Two short rows: no exhaustive inventory wall on the map.
                 body.spawn(Node {
                     width: Val::Percent(100.0),
                     flex_direction: FlexDirection::Row,
@@ -4180,7 +4287,7 @@ fn setup(
                     ..default()
                 })
                 .with_children(|grid| {
-                    for kind in HUD_RESOURCES {
+                    for kind in SURVIVAL_HUD_RESOURCES {
                         grid.spawn((
                             Node {
                                 width: Val::Px(HUD_RESOURCE_CELL_WIDTH),
@@ -4383,7 +4490,7 @@ fn setup(
                 GoodsButton,
                 TabKind::Goods,
                 KitToggle::default(),
-                children![ui_text("Goods [G]", FS_BODY, UI_INK)],
+                children![ui_text("Stores [G]", FS_BODY, UI_INK)],
             ));
             bar.spawn((
                 ui_button(),
@@ -4514,7 +4621,7 @@ fn setup(
     // 500 cards and dependency connectors are spawned once and updated in place.
     research_ui::spawn_research_ui(&mut commands);
 
-    // Goods / inventory panel (centre, shares the slot with announcements — the
+    // Stores / inventory panel (centre, shares the slot with announcements — the
     // two are mutually exclusive), hidden until toggled.
     commands
         .spawn((
@@ -4529,7 +4636,7 @@ fn setup(
             WorldInputBlocker,
         ))
         .with_children(|panel| {
-            panel.spawn(ui_title_bar("Goods"));
+            panel.spawn(ui_title_bar("Stores & Inventory"));
             panel.spawn(ui_panel_body()).with_children(|body| {
                 // Treasury total.
                 body.spawn((ui_text("", FS_SECTION, UI_ACCENT), GoodsTreasury));
@@ -5061,10 +5168,9 @@ fn spawn_orders_panel(commands: &mut Commands) {
         });
 }
 
-/// The bottom command bar: tool modes + the stockpile accept-picker on the top
-/// row, and the player action buttons below — all inside ONE framed strip so the
-/// controls read as a single designed toolbar. Kit buttons; the active tool
-/// stays lit via its [`KitToggle`].
+/// Compact bottom dock. Six stable categories stay visible; exactly one short
+/// submenu is expanded. Inspect has no submenu at all, leaving the largest
+/// possible world view on startup.
 fn bottom_bar_panel_node() -> Node {
     Node {
         width: Val::Percent(96.0),
@@ -5104,69 +5210,115 @@ fn spawn_bottom_bar(commands: &mut Commands) {
             center
                 .spawn((bottom_bar_panel_node(), ui_panel_frame(), WorldInputBlocker))
                 .with_children(|bar| {
-                    // Tool-mode row + accept picker.
+                    // Stable category dock.
                     bar.spawn(bottom_bar_row_node()).with_children(|row| {
-                        for mode in [
-                            ToolMode::Inspect,
-                            ToolMode::AvoidZone,
-                            ToolMode::GatherZone,
-                            ToolMode::Stockpile,
-                            ToolMode::Farm,
-                            ToolMode::GatherSpot,
-                            ToolMode::FishingSpot,
-                            ToolMode::Road,
-                            ToolMode::Building,
-                        ] {
+                        for category in DockCategory::ALL {
                             row.spawn((
                                 ui_button(),
-                                ToolButton(mode),
+                                DockCategoryButton(category),
                                 KitToggle::default(),
-                                children![ui_text(mode.label(), FS_BODY, UI_INK)],
-                            ));
-                        }
-                        row.spawn((
-                            ui_button(),
-                            AcceptButton,
-                            children![(
-                                ui_text("Accepts: General", FS_BODY, UI_INK),
-                                AcceptButtonText,
-                            )],
-                        ));
-                        row.spawn((
-                            ui_button(),
-                            CycleFarmCrop,
-                            children![(ui_text("Crop: grain", FS_BODY, UI_INK), FarmCropText)],
-                        ));
-                        row.spawn((
-                            ui_button(),
-                            CycleGatherKind,
-                            children![(
-                                ui_text("Gather: materials", FS_BODY, UI_INK),
-                                GatherKindText
-                            )],
-                        ));
-                    });
-                    // Player action row.
-                    bar.spawn(bottom_bar_row_node()).with_children(|row| {
-                        for action in [
-                            ButtonAction::SupplyFood,
-                            ButtonAction::SupplyWater,
-                            ButtonAction::PlanHunt,
-                            ButtonAction::ScoutWood,
-                            ButtonAction::ScoutFood,
-                            ButtonAction::ScoutWater,
-                            ButtonAction::ScoutStone,
-                            ButtonAction::Explore,
-                            ButtonAction::FoundVillage,
-                        ] {
-                            row.spawn((
-                                ui_button(),
-                                ActionButton(action),
-                                KitDisabled { disabled: true },
-                                children![ui_text(action.label(), FS_BODY, UI_INK)],
+                                children![ui_text(category.label(), FS_BODY, UI_INK)],
                             ));
                         }
                     });
+
+                    // Spawn every family once and switch only its Display. This
+                    // keeps signed action buttons stable for availability and
+                    // hotkey systems while avoiding a rebuild on each click.
+                    for category in DockCategory::ALL {
+                        if category == DockCategory::Inspect {
+                            continue;
+                        }
+                        bar.spawn((
+                            Node {
+                                display: Display::None,
+                                ..bottom_bar_row_node()
+                            },
+                            DockSubmenu(category),
+                        ))
+                        .with_children(|row| {
+                            for &mode in category.tools() {
+                                row.spawn((
+                                    ui_button_small(),
+                                    ToolButton(mode),
+                                    KitToggle::default(),
+                                    children![ui_text(mode.label(), FS_SMALL, UI_INK)],
+                                ));
+                            }
+                            for &action in category.actions() {
+                                row.spawn((
+                                    ui_button_small(),
+                                    ActionButton(action),
+                                    KitDisabled { disabled: true },
+                                    children![ui_text(action.label(), FS_SMALL, UI_INK)],
+                                ));
+                            }
+
+                            if category == DockCategory::Build {
+                                row.spawn((
+                                    Node {
+                                        display: Display::None,
+                                        ..default()
+                                    },
+                                    ToolContextControl(ToolMode::Stockpile),
+                                    children![(
+                                        ui_button_small(),
+                                        AcceptButton,
+                                        children![(
+                                            ui_text("Accepts: General", FS_SMALL, UI_INK),
+                                            AcceptButtonText,
+                                        )],
+                                    )],
+                                ));
+                            }
+                            if category == DockCategory::Gather {
+                                row.spawn((
+                                    Node {
+                                        display: Display::None,
+                                        ..default()
+                                    },
+                                    ToolContextControl(ToolMode::Farm),
+                                    children![(
+                                        ui_button_small(),
+                                        CycleFarmCrop,
+                                        children![(
+                                            ui_text("Crop: grain", FS_SMALL, UI_INK),
+                                            FarmCropText
+                                        )],
+                                    )],
+                                ));
+                                row.spawn((
+                                    Node {
+                                        display: Display::None,
+                                        ..default()
+                                    },
+                                    ToolContextControl(ToolMode::GatherSpot),
+                                    children![(
+                                        ui_button_small(),
+                                        CycleGatherKind,
+                                        children![(
+                                            ui_text("Gather: materials", FS_SMALL, UI_INK),
+                                            GatherKindText
+                                        )],
+                                    )],
+                                ));
+                            }
+                            if category == DockCategory::Village {
+                                row.spawn((
+                                    ui_button_small(),
+                                    OrdersDockButton,
+                                    KitToggle::default(),
+                                    children![ui_text("Manual orders [P]", FS_SMALL, UI_INK)],
+                                ));
+                                row.spawn((
+                                    ui_button_small(),
+                                    OfficersDockButton,
+                                    KitToggle::default(),
+                                    children![ui_text("Officers [O]", FS_SMALL, UI_INK)],
+                                ));
+                            }
+                        });
+                    }
                 });
         });
 }
@@ -7031,11 +7183,15 @@ fn build_remove_action(
 /// Toggle the officers panel with the `O` key.
 fn toggle_officers(
     keys: Res<ButtonInput<KeyCode>>,
+    buttons: Query<&Interaction, (Changed<Interaction>, With<OfficersDockButton>)>,
     tree: Res<UpgradeTreeUi>,
     mut ui: ResMut<OfficersUi>,
     mut orders: ResMut<OrdersUi>,
 ) {
-    if keys.just_pressed(OFFICERS_SHORTCUT) && !tree.visible {
+    let clicked = buttons
+        .iter()
+        .any(|interaction| *interaction == Interaction::Pressed);
+    if (keys.just_pressed(OFFICERS_SHORTCUT) || clicked) && !tree.visible {
         ui.visible = !ui.visible;
         if ui.visible {
             orders.visible = false;
@@ -7045,11 +7201,15 @@ fn toggle_officers(
 
 fn toggle_orders(
     keys: Res<ButtonInput<KeyCode>>,
+    buttons: Query<&Interaction, (Changed<Interaction>, With<OrdersDockButton>)>,
     tree: Res<UpgradeTreeUi>,
     mut ui: ResMut<OrdersUi>,
     mut officers: ResMut<OfficersUi>,
 ) {
-    if keys.just_pressed(ORDERS_SHORTCUT) && !tree.visible {
+    let clicked = buttons
+        .iter()
+        .any(|interaction| *interaction == Interaction::Pressed);
+    if (keys.just_pressed(ORDERS_SHORTCUT) || clicked) && !tree.visible {
         ui.visible = !ui.visible;
         if ui.visible {
             officers.visible = false;
@@ -7105,8 +7265,10 @@ fn update_orders_panel(
     }
 }
 
-fn bottom_overlay_clearance(window_width: f32) -> f32 {
-    let footprint = if window_width <= NARROW_LAYOUT_MAX_WIDTH {
+fn bottom_overlay_clearance(window_width: f32, category: DockCategory) -> f32 {
+    let footprint = if category == DockCategory::Inspect {
+        COLLAPSED_BOTTOM_BAR_FOOTPRINT
+    } else if window_width <= NARROW_LAYOUT_MAX_WIDTH {
         NARROW_BOTTOM_BAR_FOOTPRINT
     } else {
         WIDE_BOTTOM_BAR_FOOTPRINT
@@ -7125,6 +7287,7 @@ fn dispatches_display(window_width: f32, orders_visible: bool) -> Display {
 fn update_bottom_overlays(
     windows: Query<&Window, With<PrimaryWindow>>,
     orders: Res<OrdersUi>,
+    dock: Res<CommandDock>,
     mut dispatches: Query<&mut Node, (With<DispatchesPanel>, Without<MinimapPanel>)>,
     mut minimap: Query<&mut Node, (With<MinimapPanel>, Without<DispatchesPanel>)>,
 ) {
@@ -7132,7 +7295,7 @@ fn update_bottom_overlays(
         return;
     };
     let width = window.width();
-    let clearance = bottom_overlay_clearance(width);
+    let clearance = bottom_overlay_clearance(width, dock.category);
     if let Ok(mut node) = dispatches.single_mut() {
         node.bottom = Val::Px(clearance);
         // The compact always-on HUD already carries the newest announcement.
@@ -9127,6 +9290,63 @@ fn handle_tool_buttons(
     }
 }
 
+/// Select a command family and move to its least surprising map tool. Opening
+/// Scout or Village returns to Inspect so a stale paint drag can never leak
+/// through a menu click.
+fn handle_dock_categories(
+    mut dock: ResMut<CommandDock>,
+    mut tools: ResMut<Tools>,
+    mut buttons: Query<(&Interaction, &DockCategoryButton, &mut KitToggle)>,
+) {
+    for (interaction, button, mut toggle) in &mut buttons {
+        if *interaction == Interaction::Pressed && dock.category != button.0 {
+            dock.category = button.0;
+            tools.mode = button.0.default_tool();
+            tools.drag = None;
+        }
+        toggle.active = dock.category == button.0;
+    }
+}
+
+fn dock_submenu_visible(active: DockCategory, submenu: DockCategory) -> bool {
+    active != DockCategory::Inspect && active == submenu
+}
+
+fn tool_context_visible(active: ToolMode, context: ToolMode) -> bool {
+    active == context
+}
+
+/// Show one family row and only the picker which applies to the current tool.
+/// Also mirrors panel state onto the two Village menu toggles.
+fn update_command_dock(
+    dock: Res<CommandDock>,
+    tools: Res<Tools>,
+    orders: Res<OrdersUi>,
+    officers: Res<OfficersUi>,
+    mut queries: CommandDockQueries,
+) {
+    for (submenu, mut node) in &mut queries.submenus {
+        node.display = if dock_submenu_visible(dock.category, submenu.0) {
+            Display::Flex
+        } else {
+            Display::None
+        };
+    }
+    for (context, mut node) in &mut queries.contexts {
+        node.display = if tool_context_visible(tools.mode, context.0) {
+            Display::Flex
+        } else {
+            Display::None
+        };
+    }
+    for mut toggle in &mut queries.order_buttons {
+        toggle.active = orders.visible;
+    }
+    for mut toggle in &mut queries.officer_buttons {
+        toggle.active = officers.visible;
+    }
+}
+
 /// Cycle the stockpile accept-type when its picker is clicked, and keep the
 /// button label in sync with the current choice.
 fn handle_accept_button(
@@ -10223,35 +10443,13 @@ fn dashboard_header_text(colony: &ColonySnapshot, online: u32, compact: bool) ->
         .leader
         .as_ref()
         .map_or_else(|| "none".to_string(), |l| l.name.clone());
-    if compact {
-        let name = compact_hud_label(&colony.name, 20);
-        let leader = compact_hud_label(&leader, 16);
-        return format!(
-            "Colony: {name} [{status:?}]\n\
-             Leader: {leader} · online {online} · Lv {lvl}\n\
-             Pop {pop}/{cap_house} · housed {housed} · wait {probationary} · out {unhoused}\n\
-             Threat {threat:?} {pressure:.0} · warriors {warriors} · left {departures}",
-            status = colony.status,
-            pop = colony.housing.population,
-            housed = colony.housing.housed,
-            cap_house = colony.housing.capacity,
-            lvl = colony.housing.village_level,
-            probationary = colony.housing.probationary,
-            unhoused = colony.housing.unhoused,
-            departures = colony.housing.departures,
-            threat = colony.threat.band,
-            pressure = colony.threat.pressure,
-            warriors = colony.threat.warriors,
-        );
-    }
+    let name = compact_hud_label(&colony.name, if compact { 20 } else { 28 });
+    let leader = compact_hud_label(&leader, if compact { 16 } else { 22 });
     format!(
-        "online {online}\n\
-         Colony: {name}  [{status:?}]\n\
-         Leader: {leader}\n\
-         Pop {pop}  Beds {housed}/{cap_house}  Village Lv {lvl}\n\
-         Awaiting homes {probationary}  Unhoused {unhoused}  Left {departures}\n\
-         Threat: {threat:?} ({pressure:.0})  warriors {warriors}",
-        name = colony.name,
+        "Colony: {name} [{status:?}]\n\
+         Leader: {leader} · online {online} · Lv {lvl}\n\
+         Pop {pop}/{cap_house} · housed {housed} · wait {probationary} · out {unhoused}\n\
+         Threat {threat:?} {pressure:.0} · warriors {warriors} · left {departures}",
         status = colony.status,
         pop = colony.housing.population,
         housed = colony.housing.housed,
@@ -10273,39 +10471,29 @@ fn dashboard_footer_text(colony: &ColonySnapshot, compact: bool) -> String {
         .iter()
         .filter(|j| matches!(j.status, cat_protocol::JobStatus::Active))
         .count();
-    if compact {
-        let physical = physical_goods_total(&colony.items);
-        let trade_ready = trade_ready_stored_pristine_value(&colony.items)
-            .map_or_else(|| "?".to_owned(), |value| format!("{value}g"));
-        let ledger = colony.stock_ledger.as_ref().map_or_else(
-            || "Ledger unavailable".to_owned(),
-            |ledger| {
-                let r = &ledger.reported;
-                let accuracy = if ledger.accurate { "exact" } else { "stale ~" };
-                format!(
-                    "Ledger {accuracy} F{:.0} W{:.0} M{:.0} R{:.0}",
-                    r.food, r.water, r.materials, r.refined
-                )
-            },
-        );
-        return format!(
-            "Jobs {active_jobs}/{} · goods {physical}g · trade-ready {trade_ready}\n{ledger}",
-            colony.jobs.len()
-        );
-    }
+    let _ = compact;
+    let physical = physical_goods_total(&colony.items);
+    let trade_ready = trade_ready_stored_pristine_value(&colony.items)
+        .map_or_else(|| "?".to_owned(), |value| format!("{value}g"));
+    let ledger = colony.stock_ledger.as_ref().map_or_else(
+        || "stores not counted".to_owned(),
+        |ledger| {
+            if ledger.accurate {
+                "stores exact".to_owned()
+            } else {
+                "stores stale ~".to_owned()
+            }
+        },
+    );
     format!(
-        "Active jobs: {active_jobs}   Total jobs: {jobs}\n{treasury}{ledger}",
-        jobs = colony.jobs.len(),
-        treasury = hud_goods_value_line(&colony.items),
-        ledger = colony
-            .stock_ledger
-            .as_ref()
-            .map_or_else(String::new, |l| format!("\n\n{}", ledger_hud_text(l))),
+        "Jobs {active_jobs}/{} · goods {physical}g · ready {trade_ready}\n{ledger} · details in Stores [G]",
+        colony.jobs.len()
     )
 }
 
 /// Always-visible HUD line that distinguishes all reported physical wealth from
 /// the exact pristine subset currently stored and trade-ready.
+#[cfg(test)]
 fn hud_goods_value_line(items: &[ItemStackSnapshot]) -> String {
     let physical = physical_goods_total(items);
     let trade_ready = trade_ready_stored_pristine_value(items)
@@ -10315,7 +10503,8 @@ fn hud_goods_value_line(items: &[ItemStackSnapshot]) -> String {
 
 /// Compact HUD summary of the Accountant's reported stock ledger. Reports become exact
 /// only after physical pile counts; until then they are marked stale with a `~` prefix.
-fn ledger_hud_text(ledger: &StockLedgerSnapshot) -> String {
+#[cfg(test)]
+fn ledger_hud_text(ledger: &cat_protocol::StockLedgerSnapshot) -> String {
     let r = &ledger.reported;
     let totals = if ledger.accurate {
         format!(
@@ -10364,45 +10553,29 @@ fn accounting_round_text(round: &cat_protocol::AccountingRoundSnapshot) -> Strin
     }
 }
 
-/// Reachable Goods-panel summary, grouped by production chain. The same names
-/// used by the HUD and inspectors make every maintained store identifiable.
+/// Reachable Stores-panel summary. It is generated from the protocol's
+/// canonical resource inventory, so adding a new kind cannot silently leave it
+/// stranded outside the UI. Four entries per line keeps the ledger scannable
+/// without turning the world HUD back into an inventory dashboard.
 fn production_stores_text(resources: &ResourceAmounts) -> String {
-    format!(
-        "Provisions: food {:.0} · fish {:.0} · water {:.0}\n\
-         Crops: herbs {:.0} · catnip {:.0} · grain {:.0} · flour {:.0}\n\
-         Timber: logs {:.0} · lumber {:.0} · planks {:.0}\n\
-         Stonework: materials {:.0} · blocks {:.0} · refined {:.0}\n\
-         Earthworks: gem {:.0} · clay {:.0} · sand {:.0}\n\
-         Textiles: fibre {:.0} · hide {:.0} · cloth {:.0} · leather {:.0}\n\
-         Smithing: ore {:.0} · metal {:.0} · tools {:.0}\n\
-         Arms: weapons {:.0} · armor {:.0} · blessings {:.1}",
-        resources.food,
-        resources.fish,
-        resources.water,
-        resources.herbs,
-        resources.catnip,
-        resources.grain,
-        resources.flour,
-        resources.logs,
-        resources.lumber,
-        resources.planks,
-        resources.materials,
-        resources.blocks,
-        resources.refined,
-        resources.gem,
-        resources.clay,
-        resources.sand,
-        resources.fibre,
-        resources.hide,
-        resources.cloth,
-        resources.leather,
-        resources.ore,
-        resources.metal,
-        resources.tools,
-        resources.weapons,
-        resources.armor,
-        resources.blessings,
-    )
+    ResourceKind::ALL
+        .chunks(4)
+        .map(|kinds| {
+            kinds
+                .iter()
+                .map(|&kind| {
+                    let amount = resource_amount(kind, resources);
+                    if kind == ResourceKind::Blessings {
+                        format!("{} {amount:.1}", resource_kind_name(kind))
+                    } else {
+                        format!("{} {amount:.0}", resource_kind_name(kind))
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" · ")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Toggle the announcements panel via the `L` key or the Log HUD button (closes
@@ -11566,39 +11739,7 @@ fn officer_holder_name(colony: &ColonySnapshot, role: OfficerRole) -> Option<&st
         .map(|c| c.name.as_str())
 }
 
-const MAINTAINED_RESOURCE_KINDS: [ResourceKind; 31] = [
-    ResourceKind::Food,
-    ResourceKind::Fish,
-    ResourceKind::Water,
-    ResourceKind::Herbs,
-    ResourceKind::Catnip,
-    ResourceKind::Grain,
-    ResourceKind::Flour,
-    ResourceKind::Preserves,
-    ResourceKind::Medicine,
-    ResourceKind::Brew,
-    ResourceKind::Materials,
-    ResourceKind::Stone,
-    ResourceKind::Refined,
-    ResourceKind::Planks,
-    ResourceKind::Blocks,
-    ResourceKind::Tools,
-    ResourceKind::Logs,
-    ResourceKind::Lumber,
-    ResourceKind::Fibre,
-    ResourceKind::Hide,
-    ResourceKind::Bone,
-    ResourceKind::Cloth,
-    ResourceKind::Leather,
-    ResourceKind::Ore,
-    ResourceKind::Gem,
-    ResourceKind::Clay,
-    ResourceKind::Sand,
-    ResourceKind::Metal,
-    ResourceKind::Weapons,
-    ResourceKind::Armor,
-    ResourceKind::Blessings,
-];
+const MAINTAINED_RESOURCE_KINDS: &[ResourceKind] = ResourceKind::ALL;
 
 fn resource_amount(kind: ResourceKind, resources: &ResourceAmounts) -> f64 {
     match kind {
@@ -11638,7 +11779,8 @@ fn resource_amount(kind: ResourceKind, resources: &ResourceAmounts) -> f64 {
 
 fn resource_contents_summary(resources: &ResourceAmounts) -> String {
     let entries = MAINTAINED_RESOURCE_KINDS
-        .into_iter()
+        .iter()
+        .copied()
         .filter_map(|kind| {
             let amount = resource_amount(kind, resources);
             (amount > 0.0).then(|| format!("{} {:.1}", resource_kind_name(kind), amount))
@@ -11654,7 +11796,8 @@ fn resource_contents_summary(resources: &ResourceAmounts) -> String {
 /// Sum of the storable goods held in a stockpile (blessings excluded).
 fn resource_total(c: &ResourceAmounts) -> f64 {
     MAINTAINED_RESOURCE_KINDS
-        .into_iter()
+        .iter()
+        .copied()
         .filter(|kind| *kind != ResourceKind::Blessings)
         .map(|kind| resource_amount(kind, c))
         .sum()
@@ -11663,7 +11806,8 @@ fn resource_total(c: &ResourceAmounts) -> f64 {
 /// The single largest storable resource in a pile, or `None` when it's empty.
 fn dominant_resource(c: &ResourceAmounts) -> Option<ResourceKind> {
     MAINTAINED_RESOURCE_KINDS
-        .into_iter()
+        .iter()
+        .copied()
         .filter(|kind| *kind != ResourceKind::Blessings)
         .map(|kind| (kind, resource_amount(kind, c)))
         .filter(|(_, amount)| *amount > 0.0)
@@ -12988,7 +13132,7 @@ mod tests {
     }
 
     #[test]
-    fn bottom_toolbar_rows_wrap_inside_a_viewport_bounded_panel() {
+    fn compact_command_dock_fits_supported_viewports() {
         let panel = bottom_bar_panel_node();
         assert_eq!(panel.width, Val::Percent(96.0));
         assert_eq!(panel.max_width, Val::Px(1180.0));
@@ -12998,18 +13142,30 @@ mod tests {
         assert_eq!(row.flex_wrap, FlexWrap::Wrap);
         assert_eq!(row.justify_content, JustifyContent::Center);
         assert_eq!(row.row_gap, Val::Px(UI_GAP));
-        assert_eq!(WIDE_BOTTOM_BAR_FOOTPRINT, 129.0);
-        assert_eq!(NARROW_BOTTOM_BAR_FOOTPRINT, 165.0);
-        assert_eq!(BOTTOM_OVERLAY_CLEARANCE, 135.0);
-        assert_eq!(bottom_overlay_clearance(1024.0), 171.0);
-        assert_eq!(bottom_overlay_clearance(1280.0), 135.0);
+        assert_eq!(COLLAPSED_BOTTOM_BAR_FOOTPRINT, 57.0);
+        assert_eq!(WIDE_BOTTOM_BAR_FOOTPRINT, 85.0);
+        assert_eq!(NARROW_BOTTOM_BAR_FOOTPRINT, 113.0);
+        assert_eq!(BOTTOM_OVERLAY_CLEARANCE, 63.0);
+        assert_eq!(
+            bottom_overlay_clearance(1024.0, DockCategory::Inspect),
+            63.0
+        );
+        assert_eq!(
+            bottom_overlay_clearance(1280.0, DockCategory::Inspect),
+            63.0
+        );
+        assert_eq!(
+            bottom_overlay_clearance(1024.0, DockCategory::Gather),
+            119.0
+        );
+        assert_eq!(bottom_overlay_clearance(1280.0, DockCategory::Gather), 91.0);
         assert!(dashboard_layout_is_compact(1024.0));
         assert!(!dashboard_layout_is_compact(1280.0));
         assert_eq!(dispatches_display(1024.0, false), Display::None);
         assert_eq!(dispatches_display(1280.0, false), Display::Flex);
         assert_eq!(dispatches_display(1280.0, true), Display::None);
-        assert_eq!(hud_resource_grid_rows(), 16);
-        assert_eq!(hud_resource_grid_height(), 349.0);
+        assert_eq!(hud_resource_grid_rows(), 2);
+        assert_eq!(hud_resource_grid_height(), 41.0);
         let grid_width = HUD_RESOURCE_COLUMNS as f32 * HUD_RESOURCE_CELL_WIDTH
             + (HUD_RESOURCE_COLUMNS - 1) as f32 * UI_GAP
             + 2.0 * UI_PAD
@@ -13017,7 +13173,193 @@ mod tests {
         assert!(grid_width <= HUD_PANEL_WIDTH);
         const { assert!(HUD_PANEL_WIDTH < 1024.0 && HUD_PANEL_WIDTH < 1280.0) };
         const { assert!(NARROW_BOTTOM_BAR_FOOTPRINT > WIDE_BOTTOM_BAR_FOOTPRINT) };
+        const { assert!(SURVIVAL_HUD_RESOURCES.len() <= 6) };
         const { assert!(HUD_RESOURCE_PILL_HEIGHT <= 20.0) };
+    }
+
+    #[test]
+    fn command_categories_cover_each_world_tool_and_quick_action_once() {
+        let tools = DockCategory::ALL
+            .into_iter()
+            .flat_map(DockCategory::tools)
+            .copied()
+            .collect::<Vec<_>>();
+        let expected_tools = [
+            ToolMode::Inspect,
+            ToolMode::AvoidZone,
+            ToolMode::GatherZone,
+            ToolMode::Stockpile,
+            ToolMode::Farm,
+            ToolMode::GatherSpot,
+            ToolMode::FishingSpot,
+            ToolMode::Road,
+            ToolMode::Building,
+        ];
+        assert_eq!(tools.len(), expected_tools.len());
+        assert_eq!(
+            tools.iter().copied().collect::<HashSet<_>>().len(),
+            tools.len()
+        );
+        assert_eq!(
+            tools.iter().copied().collect::<HashSet<_>>(),
+            expected_tools.into_iter().collect::<HashSet<_>>()
+        );
+
+        let actions = DockCategory::ALL
+            .into_iter()
+            .flat_map(DockCategory::actions)
+            .copied()
+            .collect::<Vec<_>>();
+        let expected_actions = [
+            ButtonAction::SupplyFood,
+            ButtonAction::SupplyWater,
+            ButtonAction::PlanHunt,
+            ButtonAction::ScoutWood,
+            ButtonAction::ScoutFood,
+            ButtonAction::ScoutWater,
+            ButtonAction::ScoutStone,
+            ButtonAction::Explore,
+            ButtonAction::FoundVillage,
+        ];
+        assert_eq!(actions.len(), expected_actions.len());
+        assert_eq!(
+            actions.iter().copied().collect::<HashSet<_>>().len(),
+            actions.len()
+        );
+        assert_eq!(
+            actions.iter().copied().collect::<HashSet<_>>(),
+            expected_actions.into_iter().collect::<HashSet<_>>()
+        );
+    }
+
+    #[test]
+    fn command_dock_context_is_tool_specific_and_inspect_is_collapsed() {
+        assert!(!dock_submenu_visible(
+            DockCategory::Inspect,
+            DockCategory::Gather
+        ));
+        assert!(dock_submenu_visible(
+            DockCategory::Gather,
+            DockCategory::Gather
+        ));
+        assert!(!dock_submenu_visible(
+            DockCategory::Build,
+            DockCategory::Gather
+        ));
+
+        assert!(tool_context_visible(
+            ToolMode::Stockpile,
+            ToolMode::Stockpile
+        ));
+        assert!(tool_context_visible(ToolMode::Farm, ToolMode::Farm));
+        assert!(tool_context_visible(
+            ToolMode::GatherSpot,
+            ToolMode::GatherSpot
+        ));
+        assert!(!tool_context_visible(
+            ToolMode::FishingSpot,
+            ToolMode::GatherSpot
+        ));
+        assert!(!tool_context_visible(ToolMode::Building, ToolMode::Farm));
+    }
+
+    #[test]
+    fn command_dock_ecs_switches_one_menu_context_and_panel_toggle() {
+        let mut app = App::new();
+        app.insert_resource(CommandDock::default())
+            .insert_resource(Tools::default())
+            .insert_resource(OrdersUi::default())
+            .insert_resource(OfficersUi::default())
+            .add_systems(Update, update_command_dock);
+
+        let gather_menu = app
+            .world_mut()
+            .spawn((Node::default(), DockSubmenu(DockCategory::Gather)))
+            .id();
+        let build_menu = app
+            .world_mut()
+            .spawn((Node::default(), DockSubmenu(DockCategory::Build)))
+            .id();
+        let stockpile_context = app
+            .world_mut()
+            .spawn((Node::default(), ToolContextControl(ToolMode::Stockpile)))
+            .id();
+        let farm_context = app
+            .world_mut()
+            .spawn((Node::default(), ToolContextControl(ToolMode::Farm)))
+            .id();
+        let orders = app
+            .world_mut()
+            .spawn((
+                KitToggle::default(),
+                OrdersDockButton,
+                Button,
+                Interaction::None,
+            ))
+            .id();
+        let officers = app
+            .world_mut()
+            .spawn((
+                KitToggle::default(),
+                OfficersDockButton,
+                Button,
+                Interaction::None,
+            ))
+            .id();
+
+        app.update();
+        assert_eq!(
+            app.world().get::<Node>(gather_menu).unwrap().display,
+            Display::None
+        );
+        assert_eq!(
+            app.world().get::<Node>(build_menu).unwrap().display,
+            Display::None
+        );
+
+        app.world_mut().resource_mut::<CommandDock>().category = DockCategory::Build;
+        app.world_mut().resource_mut::<Tools>().mode = ToolMode::Stockpile;
+        app.world_mut().resource_mut::<OrdersUi>().visible = true;
+        app.update();
+
+        assert_eq!(
+            app.world().get::<Node>(build_menu).unwrap().display,
+            Display::Flex
+        );
+        assert_eq!(
+            app.world().get::<Node>(gather_menu).unwrap().display,
+            Display::None
+        );
+        assert_eq!(
+            app.world().get::<Node>(stockpile_context).unwrap().display,
+            Display::Flex
+        );
+        assert_eq!(
+            app.world().get::<Node>(farm_context).unwrap().display,
+            Display::None
+        );
+        assert!(app.world().get::<KitToggle>(orders).unwrap().active);
+        assert!(!app.world().get::<KitToggle>(officers).unwrap().active);
+    }
+
+    #[test]
+    fn permanent_hud_is_survival_only_while_stores_cover_protocol_inventory() {
+        assert_eq!(SURVIVAL_HUD_RESOURCES.len(), 4);
+        assert!(SURVIVAL_HUD_RESOURCES.len() < HUD_RESOURCES.len());
+        let stores = production_stores_text(&ResourceAmounts::default());
+        for &kind in ResourceKind::ALL {
+            assert!(
+                stores.contains(resource_kind_name(kind)),
+                "Stores omitted {kind:?}: {stores}"
+            );
+        }
+        assert_eq!(
+            stores.split('·').count(),
+            ResourceKind::ALL
+                .len()
+                .saturating_sub(stores.lines().count())
+                + 1
+        );
     }
 
     #[test]
@@ -16245,7 +16587,8 @@ mod tests {
         assert!(!footer.contains("\n\n"));
         assert!(footer.contains("Jobs"));
         assert!(footer.contains("goods"));
-        assert!(footer.contains("Ledger"));
+        assert!(footer.contains("stores"));
+        assert!(footer.contains("Stores [G]"));
         assert_eq!(compact_hud_label("123456789", 6), "1234..");
     }
 
@@ -16284,7 +16627,7 @@ mod tests {
             metal: 6.0,
             blessings: 0.0,
         };
-        let exact = ledger_hud_text(&StockLedgerSnapshot {
+        let exact = ledger_hud_text(&cat_protocol::StockLedgerSnapshot {
             reported,
             last_counted: 0,
             accurate: true,
@@ -16312,7 +16655,7 @@ mod tests {
             );
         }
 
-        let stale = ledger_hud_text(&StockLedgerSnapshot {
+        let stale = ledger_hud_text(&cat_protocol::StockLedgerSnapshot {
             reported,
             last_counted: 0,
             accurate: false,
