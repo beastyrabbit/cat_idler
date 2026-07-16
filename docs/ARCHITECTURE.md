@@ -115,8 +115,8 @@ that's the fastest way to find the ported behavior's original spec and tests.
 The core migration is complete, including ore/metal extraction and staffed Research Hut and
 School buildings. Verified post-cutover slices include atomic placement/reservations, exterior
 farm/logging production with physical processors, label-free open stations, selected-village routing,
-the complete purchasable and persistent 500-study catalog/client ledger, and a responsive
-blocking-pool server tick. The catalog claim does not imply complete gameplay payload coverage;
+the complete persistent 487-study ("about 500") catalog/client ledger with supported purchases,
+and a responsive blocking-pool server tick. The catalog claim does not imply complete gameplay payload coverage;
 the remaining work is
 maintained product behavior rather than migration:
 
@@ -285,7 +285,7 @@ stations, stockpiles/gather spots, raiders, crop stages, and zone overlays. The 
 resources with caps, colony census, event log, trade, officers, village selection, authoritative
 election countdown/open-election controls, and
 cat/building inspectors. Its full-page research screen renders and purchases the complete
-500-study catalog with filter/search/pan/zoom.
+487-study ("about 500") catalog with filter/search/pan/zoom.
 The maintained P18 Adventure 9-patch/button/progress/minimap/cursor foundation is implemented and
 native-framebuffer verified at 1024×768, 1280×800, and 1920×1080. New menus still require the same
 responsive native and WASM interaction checks before they are called complete.

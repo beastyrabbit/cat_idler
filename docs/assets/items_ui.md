@@ -42,9 +42,9 @@ no semantic names, so mapping is manual.
 
 The tracked semantic-art mapping contains one unique PNG for every maintained HUD row. Most live
 under `game/icons/`:
-`armor`, `blessings`, `blocks`, `bone`, `catnip`, `cloth`, `fish`, `flour`, `food`,
-`grain`, `herbs`, `hide`, `leather`, `logs`, `lumber`, `materials`, `metal`, `ore`, `planks`,
-`refined`, `stone`, `tools`, `water`, and `weapons`. `goods` remains a separate fallback for
+`armor`, `blessings`, `blocks`, `bone`, `catnip`, `clay`, `cloth`, `fish`, `flour`, `food`,
+`gem`, `grain`, `herbs`, `hide`, `leather`, `logs`, `lumber`, `materials`, `metal`, `ore`, `planks`,
+`refined`, `sand`, `stone`, `tools`, `water`, and `weapons`. `goods` remains a separate fallback for
 finite crafted-item kinds that do not yet have their own glyph. The Goods panel also exposes
 each finite item's physical weight, condition range, damaged/broken counts, and a repair action
 when a valid staffed workshop and matching visible material are available.
@@ -96,8 +96,8 @@ blessings currency chip only.
 Every physical cargo overlay reuses the exact tracked semantic resource PNG named above rather
 than a second carry-only vocabulary. This covers Food, Fish, Water, Materials, Stone, Refined,
 Blessings, Logs, Lumber, Planks, Blocks, Tools, Weapons, Armor, Catnip, Grain, Flour, Herbs, Fibre,
-Hide, Bone, Cloth, Leather, Ore, and Metal. Fibre deliberately uses the tracked public-pack haystack prop as
-its raw-plant bundle while Cloth keeps its finished-textile icon; both therefore remain distinct
+Hide, Bone, Cloth, Leather, Ore, Metal, Gem, Clay, and Sand. Fibre deliberately uses the tracked
+public-pack haystack prop as its raw-plant bundle while Cloth keeps its finished-textile icon; both therefore remain distinct
 from the Flour pouch. Their existing resource tints remain legible at the on-map overlay size, while icon shape
 is authoritative: Lumber and Planks, for example, keep separate symbols. The runtime has no
 colored-square, terrain, farm, or furniture fallback for cargo.

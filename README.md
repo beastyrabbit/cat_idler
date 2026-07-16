@@ -27,12 +27,11 @@ workers, and priorities; assigning leadership roles progressively hands those ca
 to the colony. You also found villages, paint zones, vote, and spend a slow tech tree while the
 cats continue living their own lives.
 
-A **utility-AI leader director** currently keeps almost every cat employed across a shared labor budget
-(hunting, hauling, building, research, defense, farming…), so the colony reads as intentional
-rather than random: cats walk every tile to get where they're going, lineages form through
-breeding, roads wear in from traffic, stockpiles fill and empty, and raid pressure builds with
-your success. The maintained direction makes each officer automate one category and leaves
-vacant categories manual; that split is not complete yet. See
+A **utility-AI leader director** keeps a fresh village alive with bounded hunting, water, and
+scouting work, while seven officer roles automate their own specialist categories. Vacant
+specialist categories stay manual, so appointing officers visibly hands work back to the colony.
+Cats walk every tile to get where they're going, lineages form through breeding, roads wear in
+from traffic, stockpiles fill and empty, and raid pressure builds with your success. See
 [`docs/GAME_VISION.md`](docs/GAME_VISION.md) for the full design pillars
 (manual → role-automation, visible workplaces, production chains) and
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for how the Rust workspace implements it.
@@ -110,8 +109,8 @@ Plus **cat-dev**, a small launcher bin (`cargo dev`) that builds and runs `cat-s
   `docs/GAME_VISION.md`): terrain by biome, cats colored by specialization with carried-item
   markers, label-free roofed homes and open craft stations, visible stockpiles/gather spots,
   fog of war, roads, raiders, a DF-Steam-inspired HUD (resources, census, event log, trade,
-  inspectors), and a full-page 500-study research ledger. Generated studies are intentionally
-  marked read-only until their runtime effects are integrated.
+  inspectors), and a full-page 487-study ("about 500") research ledger. Unsupported generated
+  studies are intentionally marked read-only until their runtime effects are integrated.
 - **`cat-desktop`** / **`cat-web`** — thin binaries over `cat-client`. `cat-web` builds with
   Trunk, serves the selected assets, derives a same-origin WebSocket URL for deployment, and
   has been exercised end-to-end in Chromium. The production `Dockerfile` serves the optimized
@@ -239,12 +238,13 @@ port — they no longer describe how to build, run, or test this project.
 
 Pre-release, with the web→Rust/Bevy migration and P11 cutover complete. Verified product slices
 include the responsive authoritative server, selected-village routing, a production browser
-image, bounded world streaming, label-free roofed homes/open stations, the full-page 500-study
-ledger, and exterior farming/logging with distinct Mill/Sawmill production. Those foundations
-do not mean every P12–P19 design promise is complete: manual/officer ownership, physical local
-workshop logistics, generated-study effects, exact roads/transport, recipe breadth, and exhaustive
-guided play remain. The global/personal village model and founding housing/migration lifecycle
-are verified. The accepted founding contract is 15 adults in three five-bed Dens, slow
+image, bounded world streaming, label-free roofed homes/open stations, the full-page 487-study
+("about 500") ledger, exterior farming/logging with distinct Mill/Sawmill production, the
+seven-role manual/officer split, physical local workshop logistics, exact road/rail/shipping
+routes, and exhaustive guided coverage of every public action. Remaining product work is tracked
+in the maintained audit rather than inferred from old phase labels. The global/personal village
+model and founding housing/migration lifecycle are verified. The accepted founding contract is
+15 adults in three five-bed Dens, slow
 reserved-bed pregnancy, prosperity migration with 36 game-hours to house each arrival,
 deterministic reset, physical emergency water hauling, and 240/288-game-hour ordinary versus
 leader/healer old-age thresholds.

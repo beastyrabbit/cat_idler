@@ -26,7 +26,7 @@ The client loads four `32x32` role hats and follows the interpolated body with t
 | Ritualist | `public/images/cats/hat-ritualist.png` |
 | Warrior | `public/images/cats/hat-warrior.png` |
 
-Carried resources use a small semantic glyph above the interpolated body. All twenty-one physical
+Carried resources use a small semantic glyph above the interpolated body. All twenty-eight physical
 `CarryingKind` values reuse their exact tracked HUD resource PNG and tint; there is no generic
 colored-square or world-prop fallback. An exhaustive identity/file test and the inspected exact
 1024×768 client-owned cargo fixture verify the maintained contract. Player-priority cats receive
