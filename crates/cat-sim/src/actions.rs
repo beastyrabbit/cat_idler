@@ -14,8 +14,8 @@ use crate::{
     housing::{self, HousingBuilding},
     idle_engine, idle_rules,
     items::{
-        Item, ItemKind, ItemLocation, ItemStore, Material, StationCompartment, item_weight_grams,
-        item_workshop_id,
+        Item, ItemInstance, ItemKind, ItemLocation, ItemStore, Material, StationCompartment,
+        item_weight_grams, item_workshop_id,
     },
     leader_director::{
         OFFERING_MATERIALS_AMOUNT, OFFERING_MATERIALS_RESERVE, TITHE_FOOD_AMOUNT,
@@ -38,7 +38,8 @@ use crate::{
     world_tick::{
         ColonyRuntime, ConstructionPhase, ElectionKind, ElectionRuntime, EventKind, EventLog,
         JobMetadata, JobRequester, JobRuntime, RaiderRuntime, ScoutMission, ScoutResource, TilePos,
-        TradeDirection, VillageKind, VillageScale, VillageTradeOffer, VoteRuntime, WorldState,
+        TradeDirection, VillageKind, VillageScale, VillageTradeCaravan, VillageTradeCaravanPhase,
+        VillageTradeCargoSource, VillageTradeOffer, VillageTradePosition, VoteRuntime, WorldState,
         ZoneRuntime, election_schedule_timing, ensure_farm_gather_spot_at,
         ensure_shared_spatial_authority, farm_designation_route_is_reachable, farm_gather_spot_id,
         farm_rect_touches_claim_boundary, farm_route_is_reachable, found_colony_at,
@@ -357,6 +358,12 @@ pub fn build_snapshot(world: &WorldState, now_ms: i64, online_count: u32) -> pro
             .iter()
             .flat_map(|colony| colony.village_trade_offers.values())
             .map(village_trade_offer_snapshot)
+            .collect(),
+        village_trade_caravans: world
+            .colonies
+            .iter()
+            .flat_map(|colony| colony.village_trade_caravans.values())
+            .map(village_trade_caravan_snapshot)
             .collect(),
     }
 }
@@ -2229,13 +2236,21 @@ fn deduct_visible_resource(
     kind: stockpiles::ResourceKind,
     amount: f64,
 ) -> bool {
+    deduct_visible_resource_with_manifest(colony, kind, amount).is_some()
+}
+
+fn deduct_visible_resource_with_manifest(
+    colony: &mut ColonyRuntime,
+    kind: stockpiles::ResourceKind,
+    amount: f64,
+) -> Option<Vec<VillageTradeCargoSource>> {
     if amount <= 0.0 {
-        return true;
+        return Some(Vec::new());
     }
     if crate::world_tick::construction_spendable_resource(colony, kind) + f64::EPSILON < amount
         || visible_resource_amount(colony, kind) + f64::EPSILON < amount
     {
-        return false;
+        return None;
     }
     let mut indices = colony
         .stockpiles
@@ -2246,6 +2261,7 @@ fn deduct_visible_resource(
         .collect::<Vec<_>>();
     indices.sort_by(|left, right| left.0.cmp(&right.0));
     let mut remaining = amount;
+    let mut manifest = Vec::new();
     for (_, index) in indices {
         let available = (stockpiles::resource_amount(&colony.stockpiles[index].contents, kind)
             - crate::world_tick::construction_reserved_from_pile(
@@ -2256,13 +2272,19 @@ fn deduct_visible_resource(
         .max(0.0);
         let taken = available.min(remaining);
         stockpiles::add_resource(&mut colony.stockpiles[index].contents, kind, -taken);
+        if taken > 0.0 {
+            manifest.push(VillageTradeCargoSource {
+                stockpile_id: colony.stockpiles[index].id.clone(),
+                amount: taken,
+            });
+        }
         remaining -= taken;
         if remaining <= f64::EPSILON {
             break;
         }
     }
     stockpiles::add_resource(&mut colony.resources, kind, -amount);
-    true
+    Some(manifest)
 }
 
 /// Signed, finite repair at the item's existing production workshop. The station must
@@ -2801,6 +2823,12 @@ fn is_finite_equipment_resource(kind: stockpiles::ResourceKind) -> bool {
     )
 }
 
+fn finite_equipment_count(amount: f64) -> Option<usize> {
+    let rounded = amount.round();
+    ((amount - rounded).abs() <= f64::EPSILON && rounded >= 1.0 && rounded <= usize::MAX as f64)
+        .then_some(rounded as usize)
+}
+
 fn offer_village_trade(
     world: &mut WorldState,
     target_colony_id: &str,
@@ -2848,8 +2876,17 @@ fn offer_village_trade(
     }
     let offered_kind = proto_to_sim_resource_kind(offered_kind);
     let requested_kind = proto_to_sim_resource_kind(requested_kind);
-    if is_finite_equipment_resource(offered_kind) || is_finite_equipment_resource(requested_kind) {
-        return fail("Finite equipment must be traded as an exact item.");
+    if offered_kind == stockpiles::ResourceKind::Blessings
+        || requested_kind == stockpiles::ResourceKind::Blessings
+    {
+        return fail("Blessings are not physical caravan cargo.");
+    }
+    if (is_finite_equipment_resource(offered_kind)
+        && finite_equipment_count(offered_amount).is_none())
+        || (is_finite_equipment_resource(requested_kind)
+            && finite_equipment_count(requested_amount).is_none())
+    {
+        return fail("Finite equipment trades use whole physical units.");
     }
     if crate::world_tick::construction_spendable_resource(source, offered_kind) + f64::EPSILON
         < offered_amount
@@ -2954,40 +2991,156 @@ fn accept_village_trade(
         return fail("A receiving village lacks storage for this trade.");
     }
 
-    let Some(source_plan) =
-        trade_deposit_plan(source, offer.requested_kind, offer.requested_amount)
-    else {
+    if trade_deposit_plan(source, offer.requested_kind, offer.requested_amount).is_none()
+        || trade_deposit_plan(target, offer.offered_kind, offer.offered_amount).is_none()
+    {
         return fail("A receiving village lacks storage for this trade.");
-    };
-    let Some(target_plan) = trade_deposit_plan(target, offer.offered_kind, offer.offered_amount)
+    }
+    let Some((offered_sources, mut offered_items)) =
+        load_village_trade_cargo(source, offer.offered_kind, offer.offered_amount, &offer.id)
     else {
-        return fail("A receiving village lacks storage for this trade.");
+        return fail("The offering village no longer has the exact physical cargo.");
     };
-    let source_removed = deduct_visible_resource(source, offer.offered_kind, offer.offered_amount);
-    let target_removed =
-        deduct_visible_resource(target, offer.requested_kind, offer.requested_amount);
-    debug_assert!(
-        source_removed && target_removed,
-        "preflighted physical trade debits"
-    );
-    store_trade_incoming(
-        source,
+    let Some((requested_sources, mut requested_items)) = load_village_trade_cargo(
+        target,
         offer.requested_kind,
         offer.requested_amount,
-        &source_plan,
-    );
-    store_trade_incoming(
-        target,
-        offer.offered_kind,
-        offer.offered_amount,
-        &target_plan,
-    );
+        &offer.id,
+    ) else {
+        restore_trade_escrow(
+            source,
+            offer.offered_kind,
+            offer.offered_amount,
+            offered_items,
+        );
+        reconcile_colony_stockpiles(source);
+        return fail("This village no longer has the exact requested cargo.");
+    };
+    qualify_trade_item_ids(&source.id, &mut offered_items);
+    qualify_trade_item_ids(&target.id, &mut requested_items);
+    let source_shrine = VillageTradePosition {
+        x: f64::from(source.anchor.x + 1),
+        y: f64::from(source.anchor.y + 1),
+    };
+    let caravan = VillageTradeCaravan {
+        id: offer.id.clone(),
+        actor_id: format!("caravan-{}", offer.id),
+        from_colony_id: offer.from_colony_id.clone(),
+        to_colony_id: offer.to_colony_id.clone(),
+        offered_kind: offer.offered_kind,
+        offered_amount: offer.offered_amount,
+        requested_kind: offer.requested_kind,
+        requested_amount: offer.requested_amount,
+        offered_sources,
+        requested_sources,
+        offered_items,
+        requested_items,
+        outbound_route: vec![VillageTradePosition {
+            x: f64::from(target.anchor.x + 1),
+            y: f64::from(target.anchor.y + 1),
+        }],
+        return_route: vec![source_shrine],
+        next_waypoint: 0,
+        phase: VillageTradeCaravanPhase::Outbound,
+        position: source_shrine,
+        accepted_at: ctx.now_ms,
+        last_advanced_at: ctx.now_ms,
+    };
     source.village_trade_offers.remove(offer_id);
+    source
+        .village_trade_caravans
+        .insert(caravan.id.clone(), caravan);
     source.last_player_activity_at = Some(ctx.now_ms);
     target.last_player_activity_at = Some(ctx.now_ms);
     reconcile_colony_stockpiles(source);
     reconcile_colony_stockpiles(target);
     ok()
+}
+
+fn finite_item_kind_for_resource(kind: stockpiles::ResourceKind) -> Option<ItemKind> {
+    match kind {
+        stockpiles::ResourceKind::Tools => Some(ItemKind::Tool),
+        stockpiles::ResourceKind::Weapons => Some(ItemKind::Weapon),
+        stockpiles::ResourceKind::Armor => Some(ItemKind::Armor),
+        _ => None,
+    }
+}
+
+fn globally_qualified_trade_item_id(colony_id: &str, item_id: &str) -> String {
+    if item_id.starts_with("world-item:") {
+        item_id.to_owned()
+    } else {
+        // Length-prefixing makes the mapping injective even when village ids contain
+        // punctuation. Once qualified, later caravans retain the same identity.
+        format!("world-item:{}:{colony_id}:{item_id}", colony_id.len())
+    }
+}
+
+fn qualify_trade_item_ids(colony_id: &str, items: &mut [ItemInstance]) {
+    for instance in items {
+        instance.id = globally_qualified_trade_item_id(colony_id, &instance.id);
+    }
+}
+
+fn stored_item_source_pile(colony: &ColonyRuntime, location: &ItemLocation) -> Option<String> {
+    let id = match location {
+        ItemLocation::LegacyTreasury => stockpiles::GENERAL_STOREHOUSE_ID,
+        ItemLocation::Stockpile { stockpile_id } => stockpile_id,
+        _ => return None,
+    };
+    colony
+        .stockpiles
+        .iter()
+        .any(|pile| !pile.is_station_local() && pile.id == id)
+        .then(|| id.to_owned())
+}
+
+fn load_village_trade_cargo(
+    colony: &mut ColonyRuntime,
+    kind: stockpiles::ResourceKind,
+    amount: f64,
+    caravan_id: &str,
+) -> Option<(Vec<VillageTradeCargoSource>, Vec<ItemInstance>)> {
+    let Some(item_kind) = finite_item_kind_for_resource(kind) else {
+        return deduct_visible_resource_with_manifest(colony, kind, amount)
+            .map(|sources| (sources, Vec::new()));
+    };
+    let count = finite_equipment_count(amount)?;
+    let selected = colony
+        .items
+        .instances()
+        .filter(|instance| {
+            instance.item.kind == item_kind
+                && instance.credited
+                && instance.active_job_id.is_none()
+                && stored_item_source_pile(colony, &instance.location).is_some()
+        })
+        .map(|instance| instance.id.clone())
+        .take(count)
+        .collect::<Vec<_>>();
+    if selected.len() != count {
+        return None;
+    }
+    let mut by_source = BTreeMap::<String, f64>::new();
+    for id in &selected {
+        let instance = colony.items.instance(id)?;
+        let source = stored_item_source_pile(colony, &instance.location)?;
+        *by_source.entry(source).or_default() += 1.0;
+    }
+    let mut items = colony.items.take_exact(&selected)?;
+    for instance in &mut items {
+        instance.location = ItemLocation::Caravan {
+            caravan_id: caravan_id.to_owned(),
+        };
+    }
+    let sources = by_source
+        .into_iter()
+        .map(|(stockpile_id, amount)| VillageTradeCargoSource {
+            stockpile_id,
+            amount,
+        })
+        .collect();
+    Some((sources, items))
 }
 
 fn store_trade_incoming(
@@ -3000,6 +3153,36 @@ fn store_trade_incoming(
     for &(index, stored) in plan {
         stockpiles::add_resource(&mut colony.stockpiles[index].contents, kind, stored);
     }
+}
+
+fn deliver_trade_cargo(
+    colony: &mut ColonyRuntime,
+    kind: stockpiles::ResourceKind,
+    amount: f64,
+    plan: &[(usize, f64)],
+    mut items: Vec<ItemInstance>,
+) {
+    if items.is_empty() {
+        store_trade_incoming(colony, kind, amount, plan);
+        return;
+    }
+    let mut next = 0;
+    for &(index, stored) in plan {
+        let count = finite_equipment_count(stored).expect("finite cargo has unit storage plan");
+        let stockpile_id = colony.stockpiles[index].id.clone();
+        for instance in &mut items[next..next + count] {
+            instance.location = ItemLocation::Stockpile {
+                stockpile_id: stockpile_id.clone(),
+            };
+            instance.credited = true;
+        }
+        next += count;
+    }
+    assert_eq!(next, items.len(), "storage plan covers exact cargo");
+    colony
+        .items
+        .insert_exact(items)
+        .expect("preflighted world-global item identities");
 }
 
 fn trade_deposit_plan(
@@ -3123,17 +3306,377 @@ fn cancel_village_trade(
     offer_id: &str,
     ctx: &ActionCtx,
 ) -> proto::ActionResult {
-    let Some(source) = world.colonies.iter_mut().find(|colony| {
+    if let Some(source) = world.colonies.iter_mut().find(|colony| {
         colony.id == ctx.colony_id && colony.village_trade_offers.contains_key(offer_id)
-    }) else {
+    }) {
+        if !can_control_village(source, &ctx.player_id) {
+            return fail("Trade offer is not available.");
+        }
+        source.village_trade_offers.remove(offer_id);
+        source.last_player_activity_at = Some(ctx.now_ms);
+        return ok();
+    }
+
+    let Some(caravan) = world
+        .colonies
+        .iter()
+        .find_map(|colony| colony.village_trade_caravans.get(offer_id).cloned())
+    else {
         return fail("Trade offer is not available.");
     };
-    if !can_control_village(source, &ctx.player_id) {
+    let Some(controlled) = world
+        .colonies
+        .iter()
+        .find(|colony| colony.id == ctx.colony_id)
+    else {
+        return fail("Trade offer is not available.");
+    };
+    if (controlled.id != caravan.from_colony_id && controlled.id != caravan.to_colony_id)
+        || !can_control_village(controlled, &ctx.player_id)
+    {
         return fail("Trade offer is not available.");
     }
-    source.village_trade_offers.remove(offer_id);
-    source.last_player_activity_at = Some(ctx.now_ms);
+    cancel_active_village_trade(world, &caravan, ctx.now_ms);
     ok()
+}
+
+const VILLAGE_TRADE_CARAVAN_SPEED_TILES_PER_SEC: f64 = 0.8;
+
+/// Advance accepted trades as explicit actors in shared-world coordinates.
+/// Deliberately does not touch either colony's reveal/contact sets: a trade may
+/// only use an already-mutual contact and can never scout on the player's behalf.
+pub fn advance_village_trade_caravans(world: &mut WorldState, now_ms: i64) {
+    let ids = world
+        .colonies
+        .iter()
+        .flat_map(|colony| colony.village_trade_caravans.keys().cloned())
+        .collect::<Vec<_>>();
+    for id in ids {
+        advance_village_trade_caravan(world, &id, now_ms);
+    }
+}
+
+/// Replace a freshly loaded caravan's direct route with authoritative shared-world
+/// waypoints (for example the shared-spatial passability planner's A* result).
+/// The final point must be the target shrine; the return leg is the exact reverse,
+/// so restart and changed terrain cannot silently teleport or reroute active cargo.
+pub fn assign_village_trade_route(
+    world: &mut WorldState,
+    id: &str,
+    outbound_route: Vec<VillageTradePosition>,
+) -> bool {
+    if outbound_route.is_empty()
+        || outbound_route
+            .iter()
+            .any(|point| !point.x.is_finite() || !point.y.is_finite())
+    {
+        return false;
+    }
+    let Some((source_index, caravan)) =
+        world
+            .colonies
+            .iter()
+            .enumerate()
+            .find_map(|(index, colony)| {
+                colony
+                    .village_trade_caravans
+                    .get(id)
+                    .cloned()
+                    .map(|caravan| (index, caravan))
+            })
+    else {
+        return false;
+    };
+    if caravan.phase != VillageTradeCaravanPhase::Outbound || caravan.next_waypoint != 0 {
+        return false;
+    }
+    let Some(target) = world
+        .colonies
+        .iter()
+        .find(|colony| colony.id == caravan.to_colony_id)
+    else {
+        return false;
+    };
+    let target_shrine = VillageTradePosition {
+        x: f64::from(target.anchor.x + 1),
+        y: f64::from(target.anchor.y + 1),
+    };
+    if outbound_route.last().copied() != Some(target_shrine) {
+        return false;
+    }
+    let source_shrine = VillageTradePosition {
+        x: f64::from(world.colonies[source_index].anchor.x + 1),
+        y: f64::from(world.colonies[source_index].anchor.y + 1),
+    };
+    let mut full_route = Vec::with_capacity(outbound_route.len() + 1);
+    full_route.push(source_shrine);
+    full_route.extend(outbound_route.iter().copied());
+    let return_route = full_route.into_iter().rev().skip(1).collect();
+    let caravan = world.colonies[source_index]
+        .village_trade_caravans
+        .get_mut(id)
+        .expect("looked up caravan remains");
+    caravan.outbound_route = outbound_route;
+    caravan.return_route = return_route;
+    true
+}
+
+fn advance_village_trade_caravan(world: &mut WorldState, id: &str, now_ms: i64) {
+    let Some((source_index, mut caravan)) =
+        world
+            .colonies
+            .iter()
+            .enumerate()
+            .find_map(|(index, colony)| {
+                colony
+                    .village_trade_caravans
+                    .get(id)
+                    .cloned()
+                    .map(|caravan| (index, caravan))
+            })
+    else {
+        return;
+    };
+    let Some(target_index) = world
+        .colonies
+        .iter()
+        .position(|colony| colony.id == caravan.to_colony_id)
+    else {
+        return;
+    };
+    if world.colonies[source_index].id != caravan.from_colony_id {
+        return;
+    }
+
+    // Additive-save migration for caravans written before durable waypoint
+    // geometry existed. Preserve their current position and phase, but never
+    // treat an empty legacy route as instant arrival.
+    if caravan.outbound_route.is_empty() {
+        caravan.outbound_route.push(VillageTradePosition {
+            x: f64::from(world.colonies[target_index].anchor.x + 1),
+            y: f64::from(world.colonies[target_index].anchor.y + 1),
+        });
+    }
+    if caravan.return_route.is_empty() {
+        caravan.return_route.push(VillageTradePosition {
+            x: f64::from(world.colonies[source_index].anchor.x + 1),
+            y: f64::from(world.colonies[source_index].anchor.y + 1),
+        });
+    }
+
+    let elapsed_sec = (now_ms.saturating_sub(caravan.last_advanced_at).max(0) as f64) / 1_000.0;
+    caravan.last_advanced_at = now_ms.max(caravan.last_advanced_at);
+    let mut movement_budget = elapsed_sec * VILLAGE_TRADE_CARAVAN_SPEED_TILES_PER_SEC;
+    for _ in 0..4 {
+        match caravan.phase {
+            VillageTradeCaravanPhase::Outbound => {
+                let (arrived, remaining) = advance_trade_route(
+                    &mut caravan.position,
+                    &caravan.outbound_route,
+                    &mut caravan.next_waypoint,
+                    movement_budget,
+                );
+                movement_budget = remaining;
+                if !arrived {
+                    break;
+                }
+                caravan.phase = VillageTradeCaravanPhase::WaitingAtTarget;
+                caravan.next_waypoint = 0;
+            }
+            VillageTradeCaravanPhase::WaitingAtTarget => {
+                if trade_deposit_plan(
+                    &world.colonies[target_index],
+                    caravan.offered_kind,
+                    caravan.offered_amount,
+                )
+                .is_none()
+                {
+                    break;
+                }
+                if !world.colonies[target_index]
+                    .items
+                    .can_insert_exact(&caravan.offered_items)
+                {
+                    break;
+                }
+                caravan.phase = VillageTradeCaravanPhase::Returning;
+            }
+            VillageTradeCaravanPhase::Returning => {
+                let (arrived, remaining) = advance_trade_route(
+                    &mut caravan.position,
+                    &caravan.return_route,
+                    &mut caravan.next_waypoint,
+                    movement_budget,
+                );
+                movement_budget = remaining;
+                if !arrived {
+                    break;
+                }
+                caravan.phase = VillageTradeCaravanPhase::WaitingAtSource;
+                caravan.next_waypoint = 0;
+            }
+            VillageTradeCaravanPhase::WaitingAtSource => {
+                let (source, target) =
+                    two_colonies_mut(&mut world.colonies, source_index, target_index);
+                let source_plan =
+                    trade_deposit_plan(source, caravan.requested_kind, caravan.requested_amount);
+                let target_plan =
+                    trade_deposit_plan(target, caravan.offered_kind, caravan.offered_amount);
+                if let (Some(source_plan), Some(target_plan)) = (source_plan, target_plan)
+                    && source.items.can_insert_exact(&caravan.requested_items)
+                    && target.items.can_insert_exact(&caravan.offered_items)
+                {
+                    deliver_trade_cargo(
+                        source,
+                        caravan.requested_kind,
+                        caravan.requested_amount,
+                        &source_plan,
+                        caravan.requested_items.clone(),
+                    );
+                    deliver_trade_cargo(
+                        target,
+                        caravan.offered_kind,
+                        caravan.offered_amount,
+                        &target_plan,
+                        caravan.offered_items.clone(),
+                    );
+                    source.village_trade_caravans.remove(id);
+                    reconcile_colony_stockpiles(source);
+                    reconcile_colony_stockpiles(target);
+                    return;
+                }
+                break;
+            }
+        }
+    }
+    world.colonies[source_index]
+        .village_trade_caravans
+        .insert(id.to_owned(), caravan);
+}
+
+fn advance_trade_route(
+    position: &mut VillageTradePosition,
+    route: &[VillageTradePosition],
+    next_waypoint: &mut usize,
+    mut budget: f64,
+) -> (bool, f64) {
+    while let Some(destination) = route.get(*next_waypoint).copied() {
+        let (arrived, remaining) = advance_trade_position(position, destination, budget);
+        budget = remaining;
+        if !arrived {
+            return (false, 0.0);
+        }
+        *next_waypoint += 1;
+    }
+    (true, budget)
+}
+
+fn advance_trade_position(
+    position: &mut VillageTradePosition,
+    destination: VillageTradePosition,
+    budget: f64,
+) -> (bool, f64) {
+    let dx = destination.x - position.x;
+    let dy = destination.y - position.y;
+    let distance = dx.hypot(dy);
+    if distance <= budget + 1e-9 {
+        *position = destination;
+        return (true, (budget - distance).max(0.0));
+    }
+    if distance > f64::EPSILON && budget > 0.0 {
+        position.x += dx / distance * budget;
+        position.y += dy / distance * budget;
+    }
+    (false, 0.0)
+}
+
+fn cancel_active_village_trade(world: &mut WorldState, caravan: &VillageTradeCaravan, now_ms: i64) {
+    let Some(source_index) = world
+        .colonies
+        .iter()
+        .position(|colony| colony.id == caravan.from_colony_id)
+    else {
+        return;
+    };
+    let Some(target_index) = world
+        .colonies
+        .iter()
+        .position(|colony| colony.id == caravan.to_colony_id)
+    else {
+        return;
+    };
+    let (source, target) = two_colonies_mut(&mut world.colonies, source_index, target_index);
+    restore_trade_escrow(
+        source,
+        caravan.offered_kind,
+        caravan.offered_amount,
+        caravan.offered_items.clone(),
+    );
+    restore_trade_escrow(
+        target,
+        caravan.requested_kind,
+        caravan.requested_amount,
+        caravan.requested_items.clone(),
+    );
+    source.village_trade_caravans.remove(&caravan.id);
+    source.last_player_activity_at = Some(now_ms);
+    target.last_player_activity_at = Some(now_ms);
+    reconcile_colony_stockpiles(source);
+    reconcile_colony_stockpiles(target);
+}
+
+fn restore_trade_escrow(
+    colony: &mut ColonyRuntime,
+    kind: stockpiles::ResourceKind,
+    amount: f64,
+    items: Vec<ItemInstance>,
+) {
+    if let Some(plan) = trade_deposit_plan(colony, kind, amount) {
+        deliver_trade_cargo(colony, kind, amount, &plan, items);
+        return;
+    }
+    // Capacity may have been removed while the actor was away. The shrine pile is
+    // the physical recovery boundary; overflow is preferable to destroying cargo.
+    let fallback = colony
+        .stockpiles
+        .iter()
+        .filter(|pile| !pile.is_station_local() && pile.accepts.contains(&kind))
+        .min_by(|left, right| left.id.cmp(&right.id))
+        .or_else(|| {
+            colony
+                .stockpiles
+                .iter()
+                .filter(|pile| !pile.is_station_local())
+                .min_by(|left, right| left.id.cmp(&right.id))
+        })
+        .map(|pile| pile.id.clone());
+    if items.is_empty() {
+        stockpiles::add_resource(&mut colony.resources, kind, amount);
+        if let Some(pile) = colony
+            .stockpiles
+            .iter_mut()
+            .find(|pile| Some(pile.id.as_str()) == fallback.as_deref())
+        {
+            stockpiles::add_resource(&mut pile.contents, kind, amount);
+        }
+    } else {
+        let restored = items
+            .into_iter()
+            .map(|mut instance| {
+                instance.location = fallback
+                    .as_ref()
+                    .map(|stockpile_id| ItemLocation::Stockpile {
+                        stockpile_id: stockpile_id.clone(),
+                    })
+                    .unwrap_or(ItemLocation::LegacyTreasury);
+                instance
+            })
+            .collect();
+        colony
+            .items
+            .insert_exact(restored)
+            .expect("cancelled globally-qualified cargo cannot collide at its origin");
+    }
 }
 
 fn two_colonies_mut(
@@ -3629,6 +4172,9 @@ fn sim_to_proto_item_location(location: &ItemLocation) -> proto::ItemLocation {
         },
         ItemLocation::Trader { trader_id } => proto::ItemLocation::Trader {
             trader_id: trader_id.clone(),
+        },
+        ItemLocation::Caravan { caravan_id } => proto::ItemLocation::Caravan {
+            caravan_id: caravan_id.clone(),
         },
     }
 }
@@ -5151,6 +5697,60 @@ fn village_trade_offer_snapshot(offer: &VillageTradeOffer) -> proto::VillageTrad
         requested_kind: sim_to_proto_resource_kind(offer.requested_kind),
         requested_amount: offer.requested_amount,
         created_at: offer.created_at,
+    }
+}
+
+fn village_trade_caravan_snapshot(
+    caravan: &VillageTradeCaravan,
+) -> proto::VillageTradeCaravanSnapshot {
+    proto::VillageTradeCaravanSnapshot {
+        id: caravan.id.clone(),
+        actor_id: caravan.actor_id.clone(),
+        from_colony_id: caravan.from_colony_id.clone(),
+        to_colony_id: caravan.to_colony_id.clone(),
+        offered_kind: sim_to_proto_resource_kind(caravan.offered_kind),
+        offered_amount: caravan.offered_amount,
+        requested_kind: sim_to_proto_resource_kind(caravan.requested_kind),
+        requested_amount: caravan.requested_amount,
+        offered_item_ids: caravan
+            .offered_items
+            .iter()
+            .map(|instance| instance.id.clone())
+            .collect(),
+        requested_item_ids: caravan
+            .requested_items
+            .iter()
+            .map(|instance| instance.id.clone())
+            .collect(),
+        phase: match caravan.phase {
+            VillageTradeCaravanPhase::Outbound => proto::VillageTradeCaravanPhase::Outbound,
+            VillageTradeCaravanPhase::WaitingAtTarget => {
+                proto::VillageTradeCaravanPhase::WaitingAtTarget
+            }
+            VillageTradeCaravanPhase::Returning => proto::VillageTradeCaravanPhase::Returning,
+            VillageTradeCaravanPhase::WaitingAtSource => {
+                proto::VillageTradeCaravanPhase::WaitingAtSource
+            }
+        },
+        position: proto::WorldPoint {
+            x: caravan.position.x,
+            y: caravan.position.y,
+        },
+        route: match caravan.phase {
+            VillageTradeCaravanPhase::Outbound | VillageTradeCaravanPhase::WaitingAtTarget => {
+                &caravan.outbound_route
+            }
+            VillageTradeCaravanPhase::Returning | VillageTradeCaravanPhase::WaitingAtSource => {
+                &caravan.return_route
+            }
+        }
+        .iter()
+        .map(|point| proto::WorldPoint {
+            x: point.x,
+            y: point.y,
+        })
+        .collect(),
+        accepted_at: caravan.accepted_at,
     }
 }
 
@@ -6686,7 +7286,13 @@ mod tests {
     #[test]
     fn discovered_villages_exchange_resources_only_after_target_acceptance() {
         let mut world = world_with_one_colony();
-        let mut personal = found_colony(world.world_seed, "personal", 1_000_000, 55);
+        let mut personal = found_colony_at(
+            world.world_seed,
+            "personal",
+            1_000_000,
+            55,
+            TilePos { x: 106, y: 6 },
+        );
         personal.kind = VillageKind::Personal;
         personal.owner_player_id = Some("player_2".to_owned());
         world.colonies[0]
@@ -6740,13 +7346,354 @@ mod tests {
 
         assert!(accepted.ok, "{accepted:?}");
         assert_eq!(world.colonies[0].resources.food, 90.0);
+        assert_eq!(world.colonies[0].resources.materials, before.0.materials);
+        assert_eq!(world.colonies[1].resources.food, before.1.food);
+        assert_eq!(world.colonies[1].resources.materials, 95.0);
+        assert!(world.colonies[0].village_trade_offers.is_empty());
+        let caravan = world.colonies[0]
+            .village_trade_caravans
+            .values()
+            .next()
+            .expect("accepted trade becomes physical actor");
+        assert_eq!(caravan.phase, VillageTradeCaravanPhase::Outbound);
+        assert_eq!(caravan.position.x, 7.0);
+        let mut routed = world.clone();
+        assert!(assign_village_trade_route(
+            &mut routed,
+            &caravan.id,
+            vec![
+                VillageTradePosition { x: 7.0, y: 20.0 },
+                VillageTradePosition { x: 107.0, y: 20.0 },
+                VillageTradePosition { x: 107.0, y: 7.0 },
+            ],
+        ));
+        advance_village_trade_caravans(&mut routed, 1_010_000);
+        let routed_actor = routed.colonies[0]
+            .village_trade_caravans
+            .values()
+            .next()
+            .expect("routed actor");
+        assert_eq!(routed_actor.position.x, 7.0);
+        assert!(routed_actor.position.y > 7.0);
+        assert_eq!(
+            routed_actor.return_route,
+            vec![
+                VillageTradePosition { x: 107.0, y: 20.0 },
+                VillageTradePosition { x: 7.0, y: 20.0 },
+                VillageTradePosition { x: 7.0, y: 7.0 },
+            ],
+            "shared-spatial waypoints are durable and reverse exactly"
+        );
+        let reveal_before = world
+            .colonies
+            .iter()
+            .map(|colony| {
+                (
+                    colony.revealed_tiles.clone(),
+                    colony.known_village_ids.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut blocked = world.clone();
+        for pile in &mut blocked.colonies[1].stockpiles {
+            pile.accepts.remove(&stockpiles::ResourceKind::Food);
+        }
+        advance_village_trade_caravans(&mut blocked, 1_200_000);
+        assert_eq!(
+            blocked.colonies[0]
+                .village_trade_caravans
+                .values()
+                .next()
+                .unwrap()
+                .phase,
+            VillageTradeCaravanPhase::WaitingAtTarget,
+            "removed receiving storage blocks at the physical target shrine"
+        );
+        assert_eq!(blocked.colonies[0].resources.food, 90.0);
+        assert_eq!(blocked.colonies[1].resources.food, before.1.food);
+        for pile in &mut blocked.colonies[1].stockpiles {
+            pile.accepts.insert(stockpiles::ResourceKind::Food);
+        }
+        advance_village_trade_caravans(&mut blocked, 1_200_000);
+        assert_eq!(
+            blocked.colonies[0]
+                .village_trade_caravans
+                .values()
+                .next()
+                .unwrap()
+                .phase,
+            VillageTradeCaravanPhase::Returning,
+            "reopening storage resumes without backdated travel"
+        );
+        let mut one_second = world.clone();
+        for now in (1_001_000..=1_250_000).step_by(1_000) {
+            advance_village_trade_caravans(&mut one_second, now);
+        }
+
+        advance_village_trade_caravans(&mut world, 1_125_000);
+        assert_eq!(
+            world.colonies[0]
+                .village_trade_caravans
+                .values()
+                .next()
+                .unwrap()
+                .phase,
+            VillageTradeCaravanPhase::Returning
+        );
+        advance_village_trade_caravans(&mut world, 1_250_000);
+
+        assert_eq!(
+            world
+                .colonies
+                .iter()
+                .map(|colony| {
+                    (
+                        &colony.resources,
+                        &colony.stockpiles,
+                        &colony.village_trade_caravans,
+                    )
+                })
+                .collect::<Vec<_>>(),
+            one_second
+                .colonies
+                .iter()
+                .map(|colony| {
+                    (
+                        &colony.resources,
+                        &colony.stockpiles,
+                        &colony.village_trade_caravans,
+                    )
+                })
+                .collect::<Vec<_>>(),
+            "caravan cargo and completion are cadence invariant"
+        );
+        assert_eq!(
+            world
+                .colonies
+                .iter()
+                .map(|colony| (
+                    colony.revealed_tiles.clone(),
+                    colony.known_village_ids.clone()
+                ))
+                .collect::<Vec<_>>(),
+            reveal_before,
+            "a known trade route cannot reveal fog or fabricate contacts"
+        );
+        assert!(world.colonies[0].village_trade_caravans.is_empty());
         assert_eq!(
             world.colonies[0].resources.materials,
             before.0.materials + 5.0
         );
         assert_eq!(world.colonies[1].resources.food, before.1.food + 10.0);
+        assert_eq!(world.colonies[0].resources.food, 90.0);
         assert_eq!(world.colonies[1].resources.materials, 95.0);
-        assert!(world.colonies[0].village_trade_offers.is_empty());
+    }
+
+    #[test]
+    fn cancelling_an_active_caravan_restores_both_finite_escrows() {
+        let mut world = world_with_one_colony();
+        let mut personal = found_colony_at(
+            world.world_seed,
+            "personal",
+            1_000_000,
+            55,
+            TilePos { x: 106, y: 6 },
+        );
+        personal.kind = VillageKind::Personal;
+        personal.owner_player_id = Some("owner".to_owned());
+        personal.known_village_ids.insert("c1".to_owned());
+        world.colonies[0]
+            .known_village_ids
+            .insert("personal".to_owned());
+        world.colonies.push(personal);
+        let before = world
+            .colonies
+            .iter()
+            .map(|colony| colony.resources.clone())
+            .collect::<Vec<_>>();
+        let offer = proto::ClientAction::OfferVillageTrade {
+            session_id: "sess_1".to_owned(),
+            nickname: "Global Cat".to_owned(),
+            sig: "signed".to_owned(),
+            target_colony_id: "personal".to_owned(),
+            offered_kind: proto::ResourceKind::Food,
+            offered_amount: 1.0,
+            requested_kind: proto::ResourceKind::Materials,
+            requested_amount: 1.0,
+        };
+        assert!(apply_action(&mut world, &offer, &ctx()).ok);
+        let id = world.colonies[0]
+            .village_trade_offers
+            .keys()
+            .next()
+            .unwrap()
+            .clone();
+        let mut owner = ctx();
+        owner.player_id = "owner".to_owned();
+        owner.colony_id = "personal".to_owned();
+        assert!(
+            apply_action(
+                &mut world,
+                &proto::ClientAction::AcceptVillageTrade {
+                    session_id: owner.session_id.clone(),
+                    nickname: "Owner".to_owned(),
+                    sig: "signed".to_owned(),
+                    offer_id: id.clone(),
+                },
+                &owner,
+            )
+            .ok
+        );
+        assert!(
+            apply_action(
+                &mut world,
+                &proto::ClientAction::CancelVillageTrade {
+                    session_id: owner.session_id.clone(),
+                    nickname: "Owner".to_owned(),
+                    sig: "signed".to_owned(),
+                    offer_id: id,
+                },
+                &owner,
+            )
+            .ok
+        );
+        assert_eq!(world.colonies[0].resources, before[0]);
+        assert_eq!(world.colonies[1].resources, before[1]);
+        assert!(world.colonies[0].village_trade_caravans.is_empty());
+    }
+
+    #[test]
+    fn exact_equipment_caravan_preserves_condition_and_qualifies_colliding_local_ids() {
+        let mut world = world_with_one_colony();
+        let mut personal = found_colony_at(
+            world.world_seed,
+            "personal",
+            1_000_000,
+            55,
+            TilePos { x: 106, y: 6 },
+        );
+        personal.kind = VillageKind::Personal;
+        personal.owner_player_id = Some("player_2".to_owned());
+        personal.known_village_ids.insert("c1".to_owned());
+        world.colonies[0]
+            .known_village_ids
+            .insert("personal".to_owned());
+        world.colonies.push(personal);
+        for colony in &mut world.colonies {
+            colony.items = ItemStore::default();
+        }
+        let source_local_id = world.colonies[0]
+            .items
+            .add_at(
+                Item::new(ItemKind::Tool, Material::Metal, 3),
+                1,
+                1.0,
+                ItemLocation::Stockpile {
+                    stockpile_id: stockpiles::GENERAL_STOREHOUSE_ID.to_owned(),
+                },
+                true,
+            )
+            .remove(0);
+        let target_local_id = world.colonies[1]
+            .items
+            .add_at(
+                Item::new(ItemKind::Weapon, Material::Wood, 1),
+                1,
+                1.0,
+                ItemLocation::Stockpile {
+                    stockpile_id: stockpiles::GENERAL_STOREHOUSE_ID.to_owned(),
+                },
+                true,
+            )
+            .remove(0);
+        assert_eq!(
+            source_local_id, target_local_id,
+            "legacy ids collide per colony"
+        );
+        world.colonies[1]
+            .items
+            .instance_mut(&target_local_id)
+            .expect("target weapon")
+            .durability -= 3;
+        let target_condition = world.colonies[1]
+            .items
+            .instance(&target_local_id)
+            .expect("target weapon")
+            .durability;
+        for colony in &mut world.colonies {
+            reconcile_colony_stockpiles(colony);
+        }
+
+        let offered = apply_action(
+            &mut world,
+            &proto::ClientAction::OfferVillageTrade {
+                session_id: "sess_1".to_owned(),
+                nickname: "Global Cat".to_owned(),
+                sig: "signed".to_owned(),
+                target_colony_id: "personal".to_owned(),
+                offered_kind: proto::ResourceKind::Tools,
+                offered_amount: 1.0,
+                requested_kind: proto::ResourceKind::Weapons,
+                requested_amount: 1.0,
+            },
+            &ctx(),
+        );
+        assert!(offered.ok, "{offered:?}");
+        let offer_id = world.colonies[0]
+            .village_trade_offers
+            .keys()
+            .next()
+            .expect("offer")
+            .clone();
+        let mut target_ctx = ctx();
+        target_ctx.player_id = "player_2".to_owned();
+        target_ctx.colony_id = "personal".to_owned();
+        let accepted = apply_action(
+            &mut world,
+            &proto::ClientAction::AcceptVillageTrade {
+                session_id: target_ctx.session_id.clone(),
+                nickname: "Personal Cat".to_owned(),
+                sig: "signed".to_owned(),
+                offer_id,
+            },
+            &target_ctx,
+        );
+        assert!(accepted.ok, "{accepted:?}");
+        let caravan = world.colonies[0]
+            .village_trade_caravans
+            .values()
+            .next()
+            .expect("loaded exact caravan");
+        let tool_id = caravan.offered_items[0].id.clone();
+        let weapon_id = caravan.requested_items[0].id.clone();
+        assert_ne!(tool_id, weapon_id);
+        assert!(tool_id.starts_with("world-item:2:c1:"));
+        assert!(weapon_id.starts_with("world-item:8:personal:"));
+        assert_eq!(caravan.requested_items[0].durability, target_condition);
+        assert_eq!(world.colonies[0].resources.tools, 0.0);
+        assert_eq!(world.colonies[1].resources.weapons, 0.0);
+
+        advance_village_trade_caravans(&mut world, 1_250_000);
+        assert!(world.colonies[0].village_trade_caravans.is_empty());
+        assert_eq!(
+            world.colonies[0]
+                .items
+                .instance(&weapon_id)
+                .expect("received exact weapon")
+                .durability,
+            target_condition
+        );
+        assert_eq!(
+            world.colonies[1]
+                .items
+                .instance(&tool_id)
+                .expect("received exact tool")
+                .item
+                .kind,
+            ItemKind::Tool
+        );
+        assert_eq!(world.colonies[0].resources.weapons, 1.0);
+        assert_eq!(world.colonies[1].resources.tools, 1.0);
     }
 
     #[test]
@@ -7091,6 +8038,7 @@ mod tests {
             accepted.ok,
             "researched local granary capacity must be honored"
         );
+        advance_village_trade_caravans(&mut world, owner.now_ms + 1);
         assert_eq!(world.colonies[1].resources.food, before.food + 19.0);
         assert_eq!(
             world.colonies[1]

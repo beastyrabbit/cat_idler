@@ -28,7 +28,9 @@ use crate::{
     },
     idle_engine,
     idle_rules::{self, consumption_for_tick},
-    items::{self, Item, ItemKind, ItemLocation, ItemStore, Material, StationCompartment},
+    items::{
+        self, Item, ItemInstance, ItemKind, ItemLocation, ItemStore, Material, StationCompartment,
+    },
     leader_ai::{LeaderDecision, LeaderHousing, LeaderResources, LeaderSnapshot},
     leader_director::{
         BASELINE_HUNT_MAX_SLOTS, BASELINE_SCOUT_MAX_SLOTS, BASELINE_WATER_MAX_SLOTS, CatBrief,
@@ -187,9 +189,9 @@ impl SharedSpatialState {
     }
 }
 
-/// One atomic barter proposal between villages that have met in the shared
-/// world. Resources are checked when the receiving village accepts; proposals
-/// do not reserve stock and therefore cannot strand survival supplies.
+/// One barter proposal between villages that have met in the shared world.
+/// Resources are checked when the receiving village accepts; an accepted offer
+/// becomes a durable physical caravan and is removed from this open-offer book.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VillageTradeOffer {
@@ -201,6 +203,70 @@ pub struct VillageTradeOffer {
     pub requested_kind: ResourceKind,
     pub requested_amount: f64,
     pub created_at: i64,
+}
+
+/// The visible, persisted leg of an accepted inter-village barter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VillageTradeCaravanPhase {
+    Outbound,
+    WaitingAtTarget,
+    Returning,
+    WaitingAtSource,
+}
+
+/// A wire-friendly world coordinate for the explicit caravan actor.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VillageTradePosition {
+    pub x: f64,
+    pub y: f64,
+}
+
+/// Exact source-pile debit captured when escrow is loaded.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VillageTradeCargoSource {
+    pub stockpile_id: String,
+    pub amount: f64,
+}
+
+/// Durable escrow and physical progress for one accepted village trade.
+///
+/// Both finite scalar manifests are removed from their exact source stock at
+/// acceptance. They therefore cannot be spent twice while the explicit actor is
+/// on the road, and restart never needs to reconstruct a reservation from totals.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VillageTradeCaravan {
+    pub id: String,
+    pub actor_id: String,
+    pub from_colony_id: ColonyId,
+    pub to_colony_id: ColonyId,
+    pub offered_kind: ResourceKind,
+    pub offered_amount: f64,
+    pub requested_kind: ResourceKind,
+    pub requested_amount: f64,
+    pub offered_sources: Vec<VillageTradeCargoSource>,
+    pub requested_sources: Vec<VillageTradeCargoSource>,
+    /// Exact identity-bearing equipment removed from the source ledger while in
+    /// transit. Scalar cargo leaves these manifests empty.
+    #[serde(default)]
+    pub offered_items: Vec<ItemInstance>,
+    #[serde(default)]
+    pub requested_items: Vec<ItemInstance>,
+    /// Durable route geometry. The current planner emits a direct route; the
+    /// representation accepts shared-spatial A* waypoints without a save change.
+    #[serde(default)]
+    pub outbound_route: Vec<VillageTradePosition>,
+    #[serde(default)]
+    pub return_route: Vec<VillageTradePosition>,
+    #[serde(default)]
+    pub next_waypoint: usize,
+    pub phase: VillageTradeCaravanPhase,
+    pub position: VillageTradePosition,
+    pub accepted_at: i64,
+    pub last_advanced_at: i64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -219,6 +285,8 @@ pub struct ColonyRuntime {
     /// Open barter proposals authored by this village. Keeping offers on their
     /// source colony makes ownership and persistence explicit.
     pub village_trade_offers: BTreeMap<String, VillageTradeOffer>,
+    /// Accepted trades whose finite escrow is physically crossing the shared map.
+    pub village_trade_caravans: BTreeMap<String, VillageTradeCaravan>,
     pub leader_id: Option<CatId>,
     pub status: ColonyStatus,
     pub resources: Resources,
@@ -2362,6 +2430,7 @@ impl Default for ColonyRuntime {
             owner_player_id: None,
             known_village_ids: BTreeSet::new(),
             village_trade_offers: BTreeMap::new(),
+            village_trade_caravans: BTreeMap::new(),
             leader_id: None,
             status: ColonyStatus::default(),
             resources: Resources::default(),
@@ -2658,7 +2727,8 @@ fn reconcile_finite_equipment_projections(colony: &mut ColonyRuntime) {
                 ItemLocation::Station { .. }
                 | ItemLocation::Carrier { .. }
                 | ItemLocation::Equipped { .. }
-                | ItemLocation::Trader { .. } => None,
+                | ItemLocation::Trader { .. }
+                | ItemLocation::Caravan { .. } => None,
             }?;
             Some((pile_id, resource))
         })
@@ -4371,6 +4441,7 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
 
     sync_all_colonies_from_shared(state);
     reconcile_village_discoveries(state);
+    crate::actions::advance_village_trade_caravans(state, now_ms);
 
     reports
 }

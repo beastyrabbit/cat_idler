@@ -134,6 +134,7 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             ownerPlayerId TEXT,
             knownVillageIds TEXT,
             villageTradeOffers TEXT,
+            villageTradeCaravans TEXT,
             fishHabitats TEXT
         );
 
@@ -337,6 +338,7 @@ fn migrate_add_missing_columns(conn: &Connection) -> rusqlite::Result<()> {
         ("colonies", "ownerPlayerId", "TEXT"),
         ("colonies", "knownVillageIds", "TEXT"),
         ("colonies", "villageTradeOffers", "TEXT"),
+        ("colonies", "villageTradeCaravans", "TEXT"),
         ("colonies", "lastLoremasterUnlockAt", "INTEGER"),
         ("colonies", "lastTitheAt", "INTEGER"),
         ("colonies", "lastOfferingAt", "INTEGER"),
@@ -700,7 +702,7 @@ pub fn load_world(conn: &Connection) -> rusqlite::Result<Option<WorldState>> {
                 testCriticalMsOverride, testRngSeed, officers, stockpiles, farms, gatherSpots,
                 stockLedger, coin, trader, lastTraderDepartedAt, traderVisitCount, items, woodCraftProgress, stoneCraftProgress,
                 clothierCraftProgress, tanneryCraftProgress, metalForgeProgress, anchorX, anchorY,
-                migrationState, migrationDepartures, knownVillageIds, villageTradeOffers, fishHabitats,
+                migrationState, migrationDepartures, knownVillageIds, villageTradeOffers, villageTradeCaravans, fishHabitats,
                 finiteEquipmentRulesVersion
          FROM colonies
          ORDER BY rowid",
@@ -766,13 +768,13 @@ fn save_colony(conn: &Connection, world_seed: u32, colony: &ColonyRuntime) -> ru
             traderVisitCount, items, woodCraftProgress,
             stoneCraftProgress, clothierCraftProgress, tanneryCraftProgress, metalForgeProgress,
             anchorX, anchorY, migrationState, migrationDepartures, isGlobal, ownerPlayerId,
-            knownVillageIds, villageTradeOffers, foundingScale, fishHabitats,
+            knownVillageIds, villageTradeOffers, villageTradeCaravans, foundingScale, fishHabitats,
             finiteEquipmentRulesVersion
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
             ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31,
             ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45, ?46, ?47,
-            ?48, ?49, ?50, ?51, ?52, ?53, ?54, ?55, ?56, ?57, ?58, ?59, ?60
+            ?48, ?49, ?50, ?51, ?52, ?53, ?54, ?55, ?56, ?57, ?58, ?59, ?60, ?61
         )",
         params![
             colony.id,
@@ -837,6 +839,7 @@ fn save_colony(conn: &Connection, world_seed: u32, colony: &ColonyRuntime) -> ru
             colony.owner_player_id,
             serde_json::to_string(&colony.known_village_ids).map_err(to_sql_json)?,
             serde_json::to_string(&colony.village_trade_offers).map_err(to_sql_json)?,
+            serde_json::to_string(&colony.village_trade_caravans).map_err(to_sql_json)?,
             village_scale_str(colony.scale),
             serde_json::to_string(
                 &colony
@@ -900,6 +903,7 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
     let migration_state_json: Option<String> = row.get("migrationState")?;
     let known_village_ids_json: Option<String> = row.get("knownVillageIds")?;
     let village_trade_offers_json: Option<String> = row.get("villageTradeOffers")?;
+    let village_trade_caravans_json: Option<String> = row.get("villageTradeCaravans")?;
     let fish_habitats_json: Option<String> = row.get("fishHabitats")?;
     let anchor = TilePos {
         x: row.get::<_, Option<i32>>("anchorX")?.unwrap_or(6),
@@ -929,6 +933,10 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
             .transpose()?
             .unwrap_or_default(),
         village_trade_offers: village_trade_offers_json
+            .map(|raw| serde_json::from_str(&raw).map_err(from_sql_json))
+            .transpose()?
+            .unwrap_or_default(),
+        village_trade_caravans: village_trade_caravans_json
             .map(|raw| serde_json::from_str(&raw).map_err(from_sql_json))
             .transpose()?
             .unwrap_or_default(),
@@ -4992,6 +5000,7 @@ mod tests {
             ("colonies", "ownerPlayerId"),
             ("colonies", "knownVillageIds"),
             ("colonies", "villageTradeOffers"),
+            ("colonies", "villageTradeCaravans"),
             ("colonies", "lastLoremasterUnlockAt"),
             ("colonies", "lastTitheAt"),
             ("colonies", "lastOfferingAt"),
@@ -5027,6 +5036,7 @@ mod tests {
             ("colonies", "ownerPlayerId"),
             ("colonies", "knownVillageIds"),
             ("colonies", "villageTradeOffers"),
+            ("colonies", "villageTradeCaravans"),
             ("colonies", "lastLoremasterUnlockAt"),
             ("colonies", "lastTitheAt"),
             ("colonies", "lastOfferingAt"),
@@ -6113,7 +6123,8 @@ mod tests {
         // Simulate a pre-P12/P16/multi-village row: additive JSON columns are NULL.
         conn.execute(
             "UPDATE colonies SET officers = NULL, stockpiles = NULL, gatherSpots = NULL,
-                stockLedger = NULL, knownVillageIds = NULL, villageTradeOffers = NULL",
+                stockLedger = NULL, knownVillageIds = NULL, villageTradeOffers = NULL,
+                villageTradeCaravans = NULL",
             [],
         )
         .expect("null columns");
@@ -6125,6 +6136,7 @@ mod tests {
         assert!(loaded.colonies[0].gather_spots.is_empty());
         assert!(loaded.colonies[0].known_village_ids.is_empty());
         assert!(loaded.colonies[0].village_trade_offers.is_empty());
+        assert!(loaded.colonies[0].village_trade_caravans.is_empty());
         // A NULL ledger loads as the default (empty reported totals, never counted).
         assert_eq!(
             loaded.colonies[0].stock_ledger,
@@ -6189,6 +6201,69 @@ mod tests {
                 created_at: 1_100_000,
             },
         );
+        world.colonies[0].village_trade_caravans.insert(
+            "trade-moving".to_owned(),
+            cat_sim::world_tick::VillageTradeCaravan {
+                id: "trade-moving".to_owned(),
+                actor_id: "caravan-trade-moving".to_owned(),
+                from_colony_id: "colony-1".to_owned(),
+                to_colony_id: "beta".to_owned(),
+                offered_kind: cat_sim::stockpiles::ResourceKind::Tools,
+                offered_amount: 1.0,
+                requested_kind: cat_sim::stockpiles::ResourceKind::Weapons,
+                requested_amount: 1.0,
+                offered_sources: vec![cat_sim::world_tick::VillageTradeCargoSource {
+                    stockpile_id: "stockpile-main".to_owned(),
+                    amount: 1.0,
+                }],
+                requested_sources: vec![cat_sim::world_tick::VillageTradeCargoSource {
+                    stockpile_id: "stockpile-main".to_owned(),
+                    amount: 1.0,
+                }],
+                offered_items: vec![cat_sim::items::ItemInstance {
+                    id: "world-item:8:colony-1:item-0000000000000001".to_owned(),
+                    item: cat_sim::items::Item::new(
+                        cat_sim::items::ItemKind::Tool,
+                        cat_sim::items::Material::Metal,
+                        2,
+                    ),
+                    durability: 17,
+                    max_durability: 20,
+                    location: cat_sim::items::ItemLocation::Caravan {
+                        caravan_id: "trade-moving".to_owned(),
+                    },
+                    credited: true,
+                    auto_issued: false,
+                    active_job_id: None,
+                }],
+                requested_items: vec![cat_sim::items::ItemInstance {
+                    id: "world-item:4:beta:item-0000000000000001".to_owned(),
+                    item: cat_sim::items::Item::new(
+                        cat_sim::items::ItemKind::Weapon,
+                        cat_sim::items::Material::Wood,
+                        1,
+                    ),
+                    durability: 8,
+                    max_durability: 10,
+                    location: cat_sim::items::ItemLocation::Caravan {
+                        caravan_id: "trade-moving".to_owned(),
+                    },
+                    credited: true,
+                    auto_issued: false,
+                    active_job_id: None,
+                }],
+                outbound_route: vec![cat_sim::world_tick::VillageTradePosition {
+                    x: 61.0,
+                    y: 67.0,
+                }],
+                return_route: vec![cat_sim::world_tick::VillageTradePosition { x: 7.0, y: 7.0 }],
+                next_waypoint: 0,
+                phase: cat_sim::world_tick::VillageTradeCaravanPhase::Returning,
+                position: cat_sim::world_tick::VillageTradePosition { x: 31.5, y: 16.0 },
+                accepted_at: 1_150_000,
+                last_advanced_at: 1_160_000,
+            },
+        );
         world.colonies.push(beta);
 
         save_world(&conn, &world).expect("save world");
@@ -6210,6 +6285,10 @@ mod tests {
         assert_eq!(
             zero.village_trade_offers,
             world.colonies[0].village_trade_offers
+        );
+        assert_eq!(
+            zero.village_trade_caravans,
+            world.colonies[0].village_trade_caravans
         );
     }
 

@@ -34,6 +34,9 @@ pub struct WorldSnapshot {
     /// this list to villages the authenticated player may control.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub village_trade_offers: Vec<VillageTradeOfferSnapshot>,
+    /// Accepted trades represented by their durable actor and finite escrow.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub village_trade_caravans: Vec<VillageTradeCaravanSnapshot>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -99,6 +102,46 @@ pub struct VillageTradeOfferSnapshot {
     pub requested_kind: ResourceKind,
     pub requested_amount: f64,
     pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VillageTradeCaravanPhase {
+    Outbound,
+    WaitingAtTarget,
+    Returning,
+    WaitingAtSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorldPoint {
+    pub x: f64,
+    pub y: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VillageTradeCaravanSnapshot {
+    pub id: String,
+    pub actor_id: String,
+    pub from_colony_id: String,
+    pub to_colony_id: String,
+    pub offered_kind: ResourceKind,
+    pub offered_amount: f64,
+    pub requested_kind: ResourceKind,
+    pub requested_amount: f64,
+    /// Stable world-global identities for finite equipment cargo. Scalar cargo
+    /// leaves the corresponding list empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub offered_item_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requested_item_ids: Vec<String>,
+    pub phase: VillageTradeCaravanPhase,
+    pub position: WorldPoint,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub route: Vec<WorldPoint>,
+    pub accepted_at: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -399,6 +442,9 @@ pub enum ItemLocation {
     },
     Trader {
         trader_id: String,
+    },
+    Caravan {
+        caravan_id: String,
     },
 }
 
@@ -2517,11 +2563,40 @@ mod tests {
     }
 
     #[test]
+    fn village_trade_caravan_snapshot_round_trips_truthful_progress() {
+        let caravan = VillageTradeCaravanSnapshot {
+            id: "trade-1".to_owned(),
+            actor_id: "caravan-trade-1".to_owned(),
+            from_colony_id: "commons".to_owned(),
+            to_colony_id: "moss".to_owned(),
+            offered_kind: ResourceKind::Food,
+            offered_amount: 10.0,
+            requested_kind: ResourceKind::Materials,
+            requested_amount: 4.0,
+            offered_item_ids: vec!["world-item:7:commons:item-1".to_owned()],
+            requested_item_ids: Vec::new(),
+            phase: VillageTradeCaravanPhase::Returning,
+            position: WorldPoint { x: 42.5, y: -8.25 },
+            route: vec![WorldPoint { x: 0.0, y: 0.0 }],
+            accepted_at: 1_700_000_000_000,
+        };
+        let encoded = serde_json::to_value(&caravan).expect("serialize caravan");
+        assert_eq!(encoded["phase"], "returning");
+        assert_eq!(encoded["position"]["x"], 42.5);
+        assert_eq!(
+            serde_json::from_value::<VillageTradeCaravanSnapshot>(encoded)
+                .expect("deserialize caravan"),
+            caravan
+        );
+    }
+
+    #[test]
     fn legacy_world_snapshot_defaults_secure_village_metadata() {
         let mut value = serde_json::to_value(sample_world_snapshot()).expect("snapshot value");
         let object = value.as_object_mut().expect("world object");
         object.remove("selectedColonyId");
         object.remove("knownVillages");
+        object.remove("villageTradeCaravans");
         let colony = object
             .get_mut("colonies")
             .and_then(serde_json::Value::as_array_mut)
@@ -2638,6 +2713,7 @@ mod tests {
             selected_colony_id: Some("colony_1".to_owned()),
             known_villages: Vec::new(),
             village_trade_offers: Vec::new(),
+            village_trade_caravans: Vec::new(),
             colonies: vec![ColonySnapshot {
                 id: "colony_1".to_string(),
                 name: "Global Colony".to_string(),

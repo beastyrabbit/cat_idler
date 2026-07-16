@@ -7,7 +7,7 @@
 //! store. Workshops create real units, truthful work wears functional equipment,
 //! broken units remain physical, and staffed workshops can repair them.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use std::ops::Deref;
 
@@ -420,6 +420,11 @@ pub enum ItemLocation {
     Trader {
         trader_id: String,
     },
+    /// Loaded into an inter-village caravan. The instance is serialized inside
+    /// the caravan escrow rather than either colony's item ledger while moving.
+    Caravan {
+        caravan_id: String,
+    },
 }
 
 const fn default_credited() -> bool {
@@ -750,6 +755,56 @@ impl ItemStore {
     #[must_use]
     pub fn instance_mut(&mut self, id: &str) -> Option<&mut ItemInstance> {
         self.instances.get_mut(id)
+    }
+
+    /// Atomically remove exact identities from this ledger without changing
+    /// their condition. Callers validate physical eligibility before loading;
+    /// duplicate or missing ids leave the store untouched.
+    pub fn take_exact(&mut self, ids: &[String]) -> Option<Vec<ItemInstance>> {
+        let unique = ids.iter().collect::<BTreeSet<_>>();
+        if unique.len() != ids.len() || ids.iter().any(|id| !self.instances.contains_key(id)) {
+            return None;
+        }
+        let instances = ids
+            .iter()
+            .map(|id| self.instances.remove(id).expect("preflighted exact item"))
+            .collect::<Vec<_>>();
+        self.rebuild_stacks();
+        Some(instances)
+    }
+
+    /// Atomically insert transferred identities. A collision is rejected before
+    /// any mutation, which makes a corrupt/legacy caravan safe to retry.
+    pub fn insert_exact(&mut self, instances: Vec<ItemInstance>) -> Result<(), Vec<ItemInstance>> {
+        let unique = instances
+            .iter()
+            .map(|instance| instance.id.as_str())
+            .collect::<BTreeSet<_>>();
+        if unique.len() != instances.len()
+            || instances
+                .iter()
+                .any(|instance| self.instances.contains_key(&instance.id))
+        {
+            return Err(instances);
+        }
+        for instance in instances {
+            self.next_serial = self.next_serial.max(serial_from_id(&instance.id));
+            self.instances.insert(instance.id.clone(), instance);
+        }
+        self.rebuild_stacks();
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn can_insert_exact(&self, instances: &[ItemInstance]) -> bool {
+        let unique = instances
+            .iter()
+            .map(|instance| instance.id.as_str())
+            .collect::<BTreeSet<_>>();
+        unique.len() == instances.len()
+            && instances
+                .iter()
+                .all(|instance| !self.instances.contains_key(&instance.id))
     }
 
     /// Move an existing identity without reconstructing it or changing condition.

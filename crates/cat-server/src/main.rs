@@ -653,6 +653,11 @@ fn project_snapshot(
             && (controlled_ids.contains(&offer.from_colony_id)
                 || controlled_ids.contains(&offer.to_colony_id))
     });
+    snapshot.village_trade_caravans.retain(|caravan| {
+        identity.is_some()
+            && (controlled_ids.contains(&caravan.from_colony_id)
+                || controlled_ids.contains(&caravan.to_colony_id))
+    });
 
     snapshot.selected_colony_id.clone_from(&selected);
     if let Some(selected_id) = selected.as_deref()
@@ -5188,7 +5193,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn two_signed_players_found_discover_and_atomically_trade_between_villages() {
+    async fn two_signed_players_found_discover_and_physically_trade_between_villages() {
         let state = build_state(1_000_000);
         let first_identity =
             signed_session("first-player".to_owned(), state.session_secret.as_str());
@@ -5403,7 +5408,30 @@ mod tests {
         .await;
         assert!(accepted.result.ok, "{accepted:?}");
 
-        let world = state.world.lock().await;
+        let mut world = state.world.lock().await;
+        let first_before_arrival = world
+            .colonies
+            .iter()
+            .find(|colony| colony.id == first_id)
+            .expect("first colony");
+        let second_before_arrival = world
+            .colonies
+            .iter()
+            .find(|colony| colony.id == second_id)
+            .expect("second colony");
+        assert_eq!(first_before_arrival.resources.food, 68.0);
+        assert_eq!(second_before_arrival.resources.materials, 73.0);
+        assert!(first_before_arrival.resources.materials < 67.0);
+        assert!(second_before_arrival.resources.food < 62.0);
+        assert_eq!(first_before_arrival.village_trade_caravans.len(), 1);
+        let accepted_at = first_before_arrival
+            .village_trade_caravans
+            .values()
+            .next()
+            .expect("physical caravan")
+            .accepted_at;
+
+        cat_sim::actions::advance_village_trade_caravans(&mut world, accepted_at + 86_400_000);
         let first_colony = world
             .colonies
             .iter()

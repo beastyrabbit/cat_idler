@@ -222,12 +222,18 @@ so a correct scout route cannot conceal a missing founding dispatch.
    traffic roads, wear, depletion/regrowth, and Fish populations now have one deterministic
    world-scoped authority; colony maps are compatibility/view caches, while committed/provisional
    fog and learned contact remain private. Legacy saves migrate conservatively and SQLite persists
-   the whole shared ledger transactionally. Next, turn summary contact and atomic scalar barter
-   into physical meeting, item trade, and routes. Deterministic
+   the whole shared ledger transactionally. Accepted barter now
+   creates a persisted explicit actor with exact source-pile or exact-item escrow,
+   shrine-to-shrine travel, return-before-credit, signed cancellation, no fog leakage, and
+   truthful client progress. Tool/Weapon/Armor units retain condition and gain collision-free
+   world-qualified identities on first inter-village loading.
+   Deterministic
    knowledge-blind scout search is verified; preserve its physical-observation and shrine-return
    contracts as shared-world depth grows. The physical finite NPC trader is a local proof of the
-   route, inventory, and restart rules, but player villages still need real inter-village caravans,
-   meeting cats, finite item exchange, and shared-world routes instead of atomic scalar barter.
+   route, inventory, and restart rules. Caravan routes are durable waypoint lists with an explicit
+   pre-departure assignment API, ready for the shared-spatial planner. The remaining player-village
+   depth is integrating obstacle-aware shared routes and encounters once world-scoped passability
+   replaces duplicated colony terrain.
 3. **Close remaining world-system gaps.** Baseline Leader hunt/water/scout survival, optimized
    browser and signed-native shrine-return fog, staged closed-perimeter growth, integrated
    Accounting Tent, and persisted outside-wall agriculture are verified. Fine-biome factors now

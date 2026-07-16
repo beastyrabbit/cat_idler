@@ -10,7 +10,6 @@ and any changed Bevy visuals have been verified.
 | Finding | Required correction | State |
 | --- | --- | --- |
 | Research recipe/resource breadth remains incomplete | Thirteen maintained runtime recipe IDs now have data-owned station descriptors and exact catalog ownership metadata: ten are research-gated and three are founding baselines. All thirteen execute through physical queues. The explicit Grain→Flour, Flour→Food, and Metal→exact Tool routes are live. The other 91 generated recipe IDs and all 64 generated resource IDs have no authoritative consumer, are visibly marked `FUTURE`, and cannot spend points. Continue only from the evidence boundary in `RECIPE_RESOURCE_MATRIX.md`. | in progress |
-| Inter-village trade is nonphysical | Contact summaries and atomic scalar barter exist, but cats do not meet, carry items, form caravans, or travel trade routes. Preserve knowledge-blind scouting and shrine-return discovery while adding physical exchange. | queued |
 | Fine-biome resources and transport are incomplete | Bone has a finite hunt source, and Gem/Clay/Sand now have distinct finite fine-biome deposits, physical quarry cargo, depletion, storage/trade/persistence/wire/HUD identities, and zero-stock village interiors. Their downstream crafting variants remain incomplete. Rail and Shipping remain separate transport work: blueprint ownership alone must never alter ordinary walking. | in progress |
 
 ## Verified fixes
@@ -86,6 +85,30 @@ gates cover founding, physical roads, logging/regrowth, fishing, deterministic m
 and signed action breadth. The final gates execute 1,284 simulation tests (plus one intentional
 skip) and 99 server tests, with strict Clippy and formatting clean. No renderer or protocol shape
 changed, so framebuffer recapture was not required for this authority-only slice.
+## 2026-07-16 — Inter-village barter uses physical caravans and exact equipment
+
+**Problem:** Accepting a village offer atomically swapped aggregate resources despite villages
+being far apart. No actor, travel time, restart state, source-pile provenance, storage wait, or
+in-transit conservation existed.
+
+**Fix:** Acceptance now debits exact deterministic source piles into a durable two-sided escrow and
+creates an explicit caravan actor at the source shrine. It travels shared-world coordinates to the
+known target shrine and home again at a deterministic rate. Final credit waits for both physical
+receiving plans; removed capacity leaves the actor waiting rather than deleting cargo. Either
+controlling village may cancel, restoring both manifests to their origins, including a conserved
+shrine overflow recovery when storage was removed. The actor never changes fog or contact state.
+
+**Player visibility and evidence:** Snapshots expose phase, world position, actor identity, both
+finite manifests, and acceptance time without exposing foreign inventory. The selector shows live
+progress/cancel control and the map renders a blue-packed walking cat. Cadence, cancellation,
+storage, no-fog-leak, signed projection, SQLite migration/restart, protocol compatibility, client,
+and own-framebuffer evidence cover the caravan slice. Tool/Weapon/Armor cargo is removed as exact
+instances, retains material, quality, condition, and credit state, and gains an injective
+length-qualified world identity before leaving its origin. Thus two villages' legacy `item-...`
+serials cannot collide after ownership changes. SQLite mid-route restart round-trips the exact
+instances, and the client exposes exact manifest counts. Durable waypoint lists can be replaced by
+the shared-spatial planner before departure; direct shrine waypoints remain the default until that
+world-scoped passability integration lands.
 
 ## 2026-07-15 — Authored roads require physical supplies, travel, and labor
 

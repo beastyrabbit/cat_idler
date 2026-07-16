@@ -36,7 +36,7 @@ use cat_protocol::{
     RaiderStatus, ResourceAmounts, ResourceCapacities, ResourceKind, ResourceStackSnapshot, RoleXp,
     ScoutMission, ScoutResource, Specialization, StationCompartment, StockLedgerSnapshot,
     StockpileSnapshot, TilePoint, TraderBuyOffer, TraderSellOffer, TraderSnapshot,
-    TraderVisitState, VillageKind, VillageScale, WorldSnapshot, ZoneKind,
+    TraderVisitState, VillageKind, VillageScale, VillageTradeCaravanPhase, WorldSnapshot, ZoneKind,
 };
 use cat_sim::climate::{Biome, ResourceHint};
 use cat_sim::terrain_gen::{
@@ -1889,6 +1889,9 @@ struct RaiderBody;
 /// `ColonySnapshot.trader` is Some.
 #[derive(Component)]
 struct TraderBody;
+/// One accepted inter-village trade actor, keyed by its durable caravan id.
+#[derive(Component)]
+struct VillageCaravanBody;
 /// The world-space (x, y) a body is gliding toward (its current target tile).
 #[derive(Component)]
 struct MoveTarget(Vec2);
@@ -1916,6 +1919,9 @@ struct CatBodies(HashMap<String, Entity>);
 /// Live raider body entities keyed by raider id.
 #[derive(Resource, Default)]
 struct RaiderBodies(HashMap<String, Entity>);
+/// Live inter-village caravan bodies keyed by durable trade id.
+#[derive(Resource, Default)]
+struct VillageCaravanBodies(HashMap<String, Entity>);
 /// Marker for the cat-inspector panel node (shown only when a cat is selected).
 #[derive(Component)]
 struct InspectorPanel;
@@ -2733,6 +2739,7 @@ fn item_location_label(location: &ItemLocation, colony: &ColonySnapshot) -> Stri
         ItemLocation::Carrier { cat_id } => format!("carried by {}", cat_label(cat_id)),
         ItemLocation::Equipped { cat_id } => format!("equipped by {}", cat_label(cat_id)),
         ItemLocation::Trader { trader_id } => format!("trader wagon {trader_id}"),
+        ItemLocation::Caravan { caravan_id } => format!("village caravan {caravan_id}"),
     }
 }
 
@@ -3453,6 +3460,7 @@ pub fn run() {
         .insert_resource(MinimapUi::default())
         .insert_resource(CatBodies::default())
         .insert_resource(RaiderBodies::default())
+        .insert_resource(VillageCaravanBodies::default())
         .insert_resource(Tools::default())
         .insert_resource(AdventureCursorState::default())
         // Match the unloaded world to full fog so zooming out never exposes a
@@ -3486,9 +3494,9 @@ pub fn run() {
                     render_stockpiles,
                     sync_cats,
                     sync_raiders,
-                    sync_trader,
+                    (sync_trader, sync_village_trade_caravans),
                     move_bodies,
-                    lift_trader_above_fog.after(move_bodies),
+                    (lift_trader_above_fog, lift_village_caravans_above_fog).after(move_bodies),
                     follow_overlays,
                     animate_sprites,
                     hover_tooltip,
@@ -7791,6 +7799,10 @@ fn body_base(x: i32, y: i32) -> Vec2 {
     Vec2::new(p.x, p.y - TILE * 0.5)
 }
 
+fn body_base_exact(x: f64, y: f64) -> Vec2 {
+    Vec2::new(x as f32 * TILE, -(y as f32) * TILE - TILE * 0.5)
+}
+
 /// Reconcile persistent cat bodies with the snapshot: update each living cat's
 /// glide target + facing (spawning new cats, despawning gone/dead ones), then
 /// rebuild the follow-along overlays (hat / carried item / selection ring).
@@ -8060,11 +8072,93 @@ fn sync_trader(
     }
 }
 
+/// Reconcile the durable player-village caravan actors. They use the same cat
+/// walk sheet as residents, with a blue trade pack so the route is readable at
+/// normal zoom and cannot be confused with the gold visiting merchant.
+fn sync_village_trade_caravans(
+    mut commands: Commands,
+    latest: Res<LatestSnapshot>,
+    sheets: Option<Res<SpriteSheets>>,
+    mut bodies: ResMut<VillageCaravanBodies>,
+    mut body_q: Query<(&Transform, &mut MoveTarget, &mut AnimSprite), With<VillageCaravanBody>>,
+) {
+    if !latest.is_changed() {
+        return;
+    }
+    let (Some(world), Some(sheets)) = (latest.0.as_ref(), sheets) else {
+        return;
+    };
+    let depth_origin = world
+        .colonies
+        .first()
+        .map_or(0.0, |colony| ysort_origin(colony.anchor));
+    let mut live = HashSet::new();
+    for caravan in &world.village_trade_caravans {
+        live.insert(caravan.id.clone());
+        let target = body_base_exact(caravan.position.x, caravan.position.y);
+        if let Some(entity) = bodies.0.get(&caravan.id).copied()
+            && let Ok((transform, mut move_target, mut anim)) = body_q.get_mut(entity)
+        {
+            if let Some(group) = facing_from_delta(target - transform.translation.truncate()) {
+                anim.group = group;
+            }
+            move_target.0 = target;
+            continue;
+        }
+        let group = if caravan.phase == VillageTradeCaravanPhase::Returning {
+            2
+        } else {
+            6
+        };
+        let entity = commands
+            .spawn((
+                Sprite {
+                    image: sheets.cat.clone(),
+                    texture_atlas: Some(TextureAtlas {
+                        layout: sheets.layout.clone(),
+                        index: atlas_index(group, 0),
+                    }),
+                    custom_size: Some(CAT_SIZE),
+                    color: Color::srgb(0.62, 0.82, 1.0),
+                    ..default()
+                },
+                Anchor::BOTTOM_CENTER,
+                Transform::from_xyz(target.x, target.y, ysort_z(target.y, depth_origin)),
+                VillageCaravanBody,
+                MoveTarget(target),
+                AnimSprite {
+                    group,
+                    moving: false,
+                },
+                children![(
+                    Sprite::from_color(Color::srgb(0.24, 0.48, 0.72), Vec2::splat(TILE * 0.55)),
+                    Transform::from_xyz(TILE * 0.3, CAT_SIZE.y * 0.5, 0.6),
+                )],
+            ))
+            .id();
+        bodies.0.insert(caravan.id.clone(), entity);
+    }
+    bodies.0.retain(|id, entity| {
+        if live.contains(id) {
+            true
+        } else {
+            commands.entity(*entity).despawn();
+            false
+        }
+    });
+}
+
 /// Lift the trader body above the fog layer so the approaching merchant stays
 /// visible while it walks in across still-fogged ground (run after `move_bodies`,
 /// which otherwise y-sorts it back below the fog).
 fn lift_trader_above_fog(mut trader: Query<&mut Transform, With<TraderBody>>) {
     for mut transform in &mut trader {
+        transform.translation.z = Z_FOG + 5.0;
+    }
+}
+
+fn lift_village_caravans_above_fog(mut caravans: Query<&mut Transform, With<VillageCaravanBody>>) {
+    for mut transform in &mut caravans {
         transform.translation.z = Z_FOG + 5.0;
     }
 }
@@ -9318,7 +9412,7 @@ fn is_discovered_trade_target(
             .any(|village| village.id == target_id)
 }
 
-const VILLAGE_TRADE_KINDS: [ResourceKind; 25] = [
+const VILLAGE_TRADE_KINDS: [ResourceKind; 27] = [
     ResourceKind::Food,
     ResourceKind::Fish,
     ResourceKind::Water,
@@ -9329,10 +9423,10 @@ const VILLAGE_TRADE_KINDS: [ResourceKind; 25] = [
     ResourceKind::Materials,
     ResourceKind::Stone,
     ResourceKind::Refined,
-    ResourceKind::Weapons,
-    ResourceKind::Armor,
     ResourceKind::Logs,
     ResourceKind::Lumber,
+    ResourceKind::Planks,
+    ResourceKind::Blocks,
     ResourceKind::Fibre,
     ResourceKind::Hide,
     ResourceKind::Bone,
@@ -9343,7 +9437,9 @@ const VILLAGE_TRADE_KINDS: [ResourceKind; 25] = [
     ResourceKind::Clay,
     ResourceKind::Sand,
     ResourceKind::Metal,
-    ResourceKind::Blessings,
+    ResourceKind::Tools,
+    ResourceKind::Weapons,
+    ResourceKind::Armor,
 ];
 const VILLAGE_TRADE_AMOUNTS: [f64; 6] = [1.0, 5.0, 10.0, 25.0, 50.0, 100.0];
 
@@ -9449,6 +9545,15 @@ fn village_trade_target_label(name: &str, draft: &VillageTradeDraft) -> String {
     )
 }
 
+fn village_trade_caravan_phase_label(phase: VillageTradeCaravanPhase) -> &'static str {
+    match phase {
+        VillageTradeCaravanPhase::Outbound => "outbound",
+        VillageTradeCaravanPhase::WaitingAtTarget => "unloading at target shrine",
+        VillageTradeCaravanPhase::Returning => "returning",
+        VillageTradeCaravanPhase::WaitingAtSource => "unloading at home shrine",
+    }
+}
+
 fn update_village_selector(
     mut commands: Commands,
     latest: Res<LatestSnapshot>,
@@ -9492,6 +9597,12 @@ fn update_village_selector(
             offer.offered_amount,
             offer.requested_kind,
             offer.requested_amount,
+        )
+    }));
+    signature.extend(snapshot.village_trade_caravans.iter().map(|caravan| {
+        format!(
+            "caravan|{}|{:?}|{:.2}|{:.2}",
+            caravan.id, caravan.phase, caravan.position.x, caravan.position.y
         )
     }));
     signature.push(format!("draft|{trade_draft:?}"));
@@ -9687,6 +9798,54 @@ fn update_village_selector(
                     } else {
                         entity.insert(CancelVillageTradeButton(offer.id.clone()));
                     }
+                }
+                for caravan in snapshot.village_trade_caravans.iter().filter(|caravan| {
+                    caravan.from_colony_id == selected_id || caravan.to_colony_id == selected_id
+                }) {
+                    let exact = if caravan.offered_item_ids.is_empty()
+                        && caravan.requested_item_ids.is_empty()
+                    {
+                        String::new()
+                    } else {
+                        format!(
+                            " · exact {}/{}",
+                            caravan.offered_item_ids.len(),
+                            caravan.requested_item_ids.len()
+                        )
+                    };
+                    let label = format!(
+                        "Caravan: {} · {:.0} {} ↔ {:.0} {}{}\nworld {:.1},{:.1}",
+                        village_trade_caravan_phase_label(caravan.phase),
+                        caravan.offered_amount,
+                        trade_resource_short_label(caravan.offered_kind),
+                        caravan.requested_amount,
+                        trade_resource_short_label(caravan.requested_kind),
+                        exact,
+                        caravan.position.x,
+                        caravan.position.y,
+                    );
+                    row.spawn((
+                        Button,
+                        Node {
+                            width: Val::Px(260.0),
+                            height: Val::Px(48.0),
+                            padding: UiRect::axes(Val::Px(UI_GAP), Val::Px(UI_GAP_TIGHT)),
+                            justify_content: JustifyContent::Center,
+                            align_items: AlignItems::Center,
+                            border: UiRect::all(Val::Px(1.0)),
+                            border_radius: BorderRadius::all(Val::Px(UI_RADIUS - 2.0)),
+                            ..default()
+                        },
+                        BackgroundColor(UI_BUTTON_GREY),
+                        BorderColor::all(Color::NONE),
+                        ImageNode::default(),
+                        KitButton,
+                        CancelVillageTradeButton(caravan.id.clone()),
+                        children![(
+                            ui_text(label, FS_SMALL, UI_INK),
+                            TextLayout::justify(Justify::Center),
+                        )],
+                    ));
                 }
             }
         });
@@ -12616,6 +12775,7 @@ mod tests {
             selected_colony_id: order.first().map(|id| (*id).to_owned()),
             known_villages: Vec::new(),
             village_trade_offers: Vec::new(),
+            village_trade_caravans: Vec::new(),
         }
     }
 
@@ -12827,6 +12987,30 @@ mod tests {
         assert_eq!(draft.requested_kind, ResourceKind::Stone);
         assert_eq!(draft.requested_amount, 10.0);
         assert_ne!(draft.offered_kind, draft.requested_kind);
+        assert!(VILLAGE_TRADE_KINDS.contains(&ResourceKind::Tools));
+        assert!(VILLAGE_TRADE_KINDS.contains(&ResourceKind::Weapons));
+        assert!(VILLAGE_TRADE_KINDS.contains(&ResourceKind::Armor));
+        assert!(!VILLAGE_TRADE_KINDS.contains(&ResourceKind::Blessings));
+    }
+
+    #[test]
+    fn village_trade_caravan_phases_have_truthful_player_labels() {
+        assert_eq!(
+            village_trade_caravan_phase_label(VillageTradeCaravanPhase::Outbound),
+            "outbound"
+        );
+        assert_eq!(
+            village_trade_caravan_phase_label(VillageTradeCaravanPhase::WaitingAtTarget),
+            "unloading at target shrine"
+        );
+        assert_eq!(
+            village_trade_caravan_phase_label(VillageTradeCaravanPhase::Returning),
+            "returning"
+        );
+        assert_eq!(
+            village_trade_caravan_phase_label(VillageTradeCaravanPhase::WaitingAtSource),
+            "unloading at home shrine"
+        );
     }
 
     #[test]

@@ -801,6 +801,7 @@ These cards record runtime work; reconciling the specs did not complete them.
 | P19.C5 — physical finite visiting trader | done | The merchant follows ordinary obstacle-aware A* exterior→gate→shrine→same-exterior travel, trades only after physical arrival, and owns finite deterministic resource stock, purse, wagon capacity, and exact item-unit cargo. Depletion, sold-out denial, blocked-route reopen observation, expansion rehoming, persistence/restart, signed guided actions, exact one-second/minute/hour/coarse transition times, and a passive 60h full visit pass are verified. The fixed-height panel exposes every craft offer through six-row pagination and uses only Accountant reports for storage guidance. The accepted client-owned 1024×768 logical framebuffer `/tmp/trader-physical-1024.png` shows the merchant at the shrine, page 2/2, finite quantities, and Food sold out without clipping or private exact-headroom leakage; 1,153 simulation and 80 server tests plus strict touched-crate Clippy pass. |
 | P19.C6 — sourced recipe/resource breadth | done (first sourced slice) | The evidence boundary in `docs/RECIPE_RESOURCE_MATRIX.md` maps every catalog promise to a source, station, output, and entitlement. Mill grinding and baking are separate physical selected recipes (`grain_to_flour`, `flour_to_food`), and Smithy adds `smithy_tool`, producing one exact metal Tool from two Metal. The catalog exposes unsupported promises as disabled FUTURE content; tests pin 13 live runtime recipes and exactly 91 recipe plus 64 resource future payloads. Rules-v7 migrates old combined Mill queues without losing authored state. Signed farm→Mill and Ore→Smelter→Smithy→metal-Tool campaigns, passive one-/five-minute Captain twins, HMAC/SQLite restart, protocol/UI tests, and client-owned research-ledger framebuffer verify the slice. Further breadth remains open and must not become purchasable until its physical source/station contract exists. |
 | P19.C7 — fine-biome raw source ecology | done (source boundary) | Mountains own finite Gem, wet/badlands biomes finite Clay, and beach/desert finite Sand. Exact physical quarry cargo drains persisted deposits on pickup, exhausts special-only sites, survives save/wire/storage/trade/HUD projection, and is erased from village interiors. Generic Quarry protects the founding Stone chain. Downstream item/recipe variants remain open. |
+| P19.C8 — physical village caravans | done | Accepted village barter debits deterministic source piles or exact Tool/Weapon/Armor instances into persisted two-sided escrow and creates a visible explicit actor that crosses world coordinates shrine-to-shrine and returns before atomic credit. Finite units retain material, quality, condition, and credit state while an injective origin-qualified identity prevents colony-local serial collisions. Full storage waits, signed cancellation restores both origins, exact-item SQLite restart, conservation/cadence/no-fog-leak, protocol/client phase, world position, route, and manifest counts are covered. Durable waypoint routes accept shared-spatial planner output. |
 
 #### Physical-consistency enhancement outside P19 completion
 
@@ -816,10 +817,12 @@ These cards record runtime work; reconciling the specs did not complete them.
   owner-only personal sites; restart-persistent secure socket routing; explicit returned-scout
   discovery provenance; summary-only foreign contact; configurable signed direct barter capped at
   32 open source offers; transactional whole-world persistence; and storage-scoped child ids for
-  simultaneous villages. Personal villages remain exact 15-cat/three-Den foundings. Villages share
-  one authoritative mutable terrain/ecology ledger: roads, wear, depletion, regrowth, and Fish
-  populations propagate at overlapping coordinates while fog and contact stay private.
-  Meeting/trade remain summary/scalar operations rather than physical encounters or caravans.
+  simultaneous villages. Accepted offers now become persisted visible shrine-to-shrine caravans
+  with exact pile or identity-bearing equipment escrow. Personal villages remain exact
+  15-cat/three-Den foundings. Villages share one authoritative mutable terrain/ecology ledger:
+  roads, wear, depletion, regrowth, and Fish populations propagate at overlapping coordinates
+  while fog and contact stay private. Installing shared obstacle-aware caravan waypoints and
+  deeper meeting/encounter behavior remains open.
 - **Top-down building interiors**: cutaway (no-roof) interiors, then a second slice adding
   textured floors + furnace/altar props (`546d852`, `4b6a375`).
 - **Life-sim breeding wired into the tick loop** — population is a loop, not a fixed roster
