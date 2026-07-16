@@ -7985,7 +7985,10 @@ fn phase_17c_founding_wood_scout(colony: &mut ColonyRuntime, gate: TickGate) {
 
 /// Phase 18: assemble the leader snapshot: workforce, housing/storage pressure,
 /// jobs, staffing gaps, warriors, threat, and starvation flags.
-fn phase_18_leader_snapshot_assembly(colony: &mut ColonyRuntime, gate: TickGate) -> LeaderSnapshot {
+fn phase_18_leader_snapshot_assembly(
+    colony: &mut ColonyRuntime,
+    _gate: TickGate,
+) -> LeaderSnapshot {
     let caps = storage_caps(colony);
     let alive = active_resident_cats(colony).collect::<Vec<_>>();
     let active_jobs = active_or_queued_jobs(colony);
@@ -8056,9 +8059,12 @@ fn phase_18_leader_snapshot_assembly(colony: &mut ColonyRuntime, gate: TickGate)
         .collect::<Vec<_>>();
     let storage_buildings = storage_buildings(colony);
     let population = alive.len() as u32;
-    let food_drain = consumption_for_tick(
+    // The director projects a fixed four-game-hour survival runway. Feed it hourly
+    // rates, never the current caller's tick-sized drain: otherwise a live 1-second
+    // server plans only seconds ahead while a catch-up tick sees minutes ahead.
+    let hourly_drain = consumption_for_tick(
         population as f64,
-        gate.elapsed_sec as f64 * normalize_resource_decay_multiplier(colony),
+        3_600.0 * normalize_resource_decay_multiplier(colony),
         idle_engine_upgrade_levels(&colony.upgrade_levels),
     );
     let current_threat_band = match threat_band(colony.threat_pressure) {
@@ -8084,14 +8090,14 @@ fn phase_18_leader_snapshot_assembly(colony: &mut ColonyRuntime, gate: TickGate)
             refined: colony.resources.refined,
         },
         food_capacity: caps.food,
-        food_drain_per_tick: Some(food_drain.food_use),
+        food_drain_per_hour: Some(hourly_drain.food_use),
         materials: colony.resources.materials,
         materials_capacity: caps.materials,
         stone: colony.resources.stone,
         stone_capacity: caps.stone,
         water: colony.resources.water,
         water_capacity: caps.water,
-        water_drain_per_tick: Some(food_drain.water_use),
+        water_drain_per_hour: Some(hourly_drain.water_use),
         housing: LeaderHousing {
             capacity: (crate::housing::housing_capacity(
                 &housing_buildings,
@@ -32577,6 +32583,55 @@ mod tests {
             .push("den_insulation".to_owned());
         let snapshot = phase_18_leader_snapshot_assembly(&mut colony, production_gate(1, 1_000));
         assert_eq!(snapshot.housing.committed, 18);
+    }
+
+    #[test]
+    fn leader_survival_projection_is_wall_clock_cadence_independent() {
+        let mut one_second = found_colony(555, "one-second", 0, 555);
+        one_second.resources.food = 45.0;
+        one_second.resources.water = 105.0;
+        let mut five_minutes = one_second.clone();
+
+        let one_second_snapshot =
+            phase_18_leader_snapshot_assembly(&mut one_second, production_gate(1, 1_000));
+        let five_minute_snapshot = phase_18_leader_snapshot_assembly(
+            &mut five_minutes,
+            production_gate(5 * 60, 5 * 60_000),
+        );
+
+        assert_eq!(
+            one_second_snapshot.food_drain_per_hour, five_minute_snapshot.food_drain_per_hour,
+            "leader food urgency must describe a fixed real-time horizon, not the caller's tick"
+        );
+        assert_eq!(one_second_snapshot.food_drain_per_hour, Some(15.0));
+        assert_eq!(
+            one_second_snapshot.water_drain_per_hour, five_minute_snapshot.water_drain_per_hour,
+            "leader water urgency must describe a fixed real-time horizon, not the caller's tick"
+        );
+        assert_eq!(one_second_snapshot.water_drain_per_hour, Some(18.0));
+        let urgency = |snapshot: &LeaderSnapshot| {
+            crate::leader_director::survival_score(
+                snapshot.resources.food / snapshot.food_capacity,
+                snapshot.resources.food,
+                snapshot.food_drain_per_hour.unwrap_or(0.0),
+            )
+        };
+        assert_eq!(
+            urgency(&one_second_snapshot),
+            urgency(&five_minute_snapshot)
+        );
+        assert!(
+            urgency(&one_second_snapshot)
+                > crate::leader_director::deficit_curve(
+                    one_second_snapshot.resources.food / one_second_snapshot.food_capacity
+                ),
+            "a larder with only three hours of runway must become urgent inside the four-hour horizon"
+        );
+        assert_eq!(
+            automated_plan(&one_second_snapshot),
+            automated_plan(&five_minute_snapshot),
+            "otherwise-identical colonies must receive the same unattended labor plan"
+        );
     }
 
     #[test]

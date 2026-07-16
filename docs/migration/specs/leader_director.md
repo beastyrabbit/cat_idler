@@ -58,12 +58,12 @@ pub struct LeaderSnapshot {
     pub employed_cats: u32,
     pub resources: LeaderResources,
     pub food_capacity: f64,
-    pub food_drain_per_tick: Option<f64>,
+    pub food_drain_per_hour: Option<f64>,
     pub materials: f64,
     pub materials_capacity: f64,
     pub water: f64,
     pub water_capacity: f64,
-    pub water_drain_per_tick: Option<f64>,
+    pub water_drain_per_hour: Option<f64>,
     pub housing: LeaderHousing,
     pub active_hunts: u32,
     pub active_quarries: u32,
@@ -109,13 +109,17 @@ Wire names are the TS literals: `cancel_hunts`, `fetch_water`, `build_den`,
 `assign_workshop`, etc. `ThreatBand` wire names are `calm`, `rising`, and
 `imminent`.
 
+Drain rates are resource units per game-hour. Deserialization continues to accept
+the legacy `food_drain_per_tick` and `water_drain_per_tick` keys as aliases so
+persisted snapshots and older clients remain compatible.
+
 `LeaderSnapshot` optional defaults:
 
 | field | omitted means |
 | --- | --- |
 | `workforce` | use `population` |
-| `food_drain_per_tick` | `0` |
-| `water_drain_per_tick` | `0` |
+| `food_drain_per_hour` | `0` |
+| `water_drain_per_hour` | `0` |
 | `research_huts_needing_workers` | `0` |
 | `smithies_needing_workers` | `0` |
 | `has_barracks` | `false` |
@@ -138,7 +142,7 @@ Wire names are the TS literals: `cancel_hunts`, `fetch_water`, `build_den`,
 ```rust
 pub const EMPLOYMENT_TARGET_RATIO: f64 = 0.7;
 pub const IDLE_EMPLOYMENT_FLOOR: f64 = 0.8;
-pub const PROJECTION_HORIZON_TICKS: f64 = 6.0;
+pub const PROJECTION_HORIZON_HOURS: f64 = 4.0;
 pub const HUNT_CANCEL_RATIO: f64 = 1.1;
 pub const STORAGE_RATIO: f64 = 0.9;
 pub const DEN_PRESSURE_THRESHOLD: f64 = 0.8;
@@ -169,12 +173,12 @@ pub fn target_warriors(snapshot: &LeaderSnapshot) -> u32;
 
 pub fn clamp01(x: f64) -> f64;
 pub fn deficit_curve(ratio: f64) -> f64;
-pub fn projection_curve(amount: f64, drain_per_tick: f64, horizon_ticks: f64) -> f64;
+pub fn projection_curve(amount: f64, drain_per_hour: f64, horizon_hours: f64) -> f64;
 pub fn pressure_curve(pressure: f64, center: f64, steepness: f64) -> f64;
 pub fn surplus_curve(ratio: f64, threshold: f64) -> f64;
 pub fn combine_or(a: f64, b: f64) -> f64;
 pub fn projection_gate(fill_ratio: f64) -> f64;
-pub fn survival_score(fill_ratio: f64, amount: f64, drain_per_tick: f64) -> f64;
+pub fn survival_score(fill_ratio: f64, amount: f64, drain_per_hour: f64) -> f64;
 
 pub enum LaborGoalKind {
     Hunt,
@@ -278,7 +282,7 @@ result shape is parity-critical and should be unit-tested in-module if exposed a
 | --- | ---: | --- |
 | `EMPLOYMENT_TARGET_RATIO` | `0.7` | Used to size the core hunt budget. |
 | `IDLE_EMPLOYMENT_FLOOR` | `0.8` | Near-zero idle fill target. |
-| `PROJECTION_HORIZON_TICKS` | `6` | Default projection horizon. |
+| `PROJECTION_HORIZON_HOURS` | `4` | Default projection horizon in game-hours. |
 | `HUNT_CANCEL_RATIO` | `1.1` | Strict `foodR > 1.1` cancellation threshold. |
 | `STORAGE_RATIO` | `0.9` | Strict `foodR > 0.9` build-storage threshold. |
 | `DEN_PRESSURE_THRESHOLD` | `0.8` | Inclusive `pressure >= 0.8` build-den threshold. |
@@ -310,10 +314,10 @@ TS NaN behavior if possible: comparisons with NaN are false, so NaN returns NaN.
 1. `r = clamp01(ratio)`.
 2. Return `(1 - r) * (1 - r)`.
 
-`projection_curve(amount, drain_per_tick, horizon_ticks = 6)`:
-1. If `drain_per_tick <= 0` or `horizon_ticks <= 0`, return `0`.
-2. `ticks_to_empty = max(0, amount) / max(EPS, drain_per_tick)`.
-3. Return `clamp01(1 - ticks_to_empty / horizon_ticks)`.
+`projection_curve(amount, drain_per_hour, horizon_hours = 4)`:
+1. If `drain_per_hour <= 0` or `horizon_hours <= 0`, return `0`.
+2. `hours_to_empty = max(0, amount) / max(EPS, drain_per_hour)`.
+3. Return `clamp01(1 - hours_to_empty / horizon_hours)`.
 
 `pressure_curve(pressure, center = 0.8, steepness = 10)` returns:
 
@@ -336,12 +340,12 @@ clamp01(1 - (1 - clamp01(a)) * (1 - clamp01(b)))
 clamp01((PROJECTION_GATE_RATIO - fill_ratio) / PROJECTION_GATE_RATIO)
 ```
 
-`survival_score(fill_ratio, amount, drain_per_tick)` returns:
+`survival_score(fill_ratio, amount, drain_per_hour)` returns:
 
 ```text
 combine_or(
   deficit_curve(fill_ratio),
-  projection_curve(amount, drain_per_tick, PROJECTION_HORIZON_TICKS)
+  projection_curve(amount, drain_per_hour, PROJECTION_HORIZON_HOURS)
     * projection_gate(fill_ratio)
 )
 ```
@@ -369,8 +373,8 @@ core_budget = floor(workforce_of(snapshot) * EMPLOYMENT_TARGET_RATIO)
 foodR = ratio(resources.food, food_capacity)
 waterR = ratio(water, water_capacity)
 materialsR = ratio(materials, materials_capacity)
-foodScore = survival_score(foodR, resources.food, food_drain_per_tick.unwrap_or(0))
-waterScore = survival_score(waterR, water, water_drain_per_tick.unwrap_or(0))
+foodScore = survival_score(foodR, resources.food, food_drain_per_hour.unwrap_or(0))
+waterScore = survival_score(waterR, water, water_drain_per_hour.unwrap_or(0))
 materialsScore = deficit_curve(materialsR)
 comfortable = foodR >= 0.5 && waterR >= 0.5
 warriorGap = target_warriors(snapshot) - warrior_count.unwrap_or(0)
@@ -630,6 +634,11 @@ Unless stated otherwise, use this default snapshot:
 ```
 
 ### Response Curve Vectors
+
+The historical TS helper names and expected values below remain unchanged parity
+evidence and use the legacy six-tick horizon. They do not describe the maintained
+default: current drain arguments are resource units per game-hour, and the current
+projection horizon is four game-hours.
 
 | expression | expected |
 | --- | ---: |

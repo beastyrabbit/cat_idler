@@ -42,9 +42,13 @@ pub struct LeaderSnapshot {
     pub employed_cats: u32,
     pub resources: LeaderResources,
     pub food_capacity: f64,
-    /// Net food drained this tick; omitted means no projected scarcity.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub food_drain_per_tick: Option<f64>,
+    /// Net food drained per game-hour; omitted means no projected scarcity.
+    #[serde(
+        default,
+        alias = "foodDrainPerTick",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub food_drain_per_hour: Option<f64>,
     /// Stable generic Supplies in store and the cap they are clamped to.
     pub materials: f64,
     pub materials_capacity: f64,
@@ -57,9 +61,13 @@ pub struct LeaderSnapshot {
     /// Water in store and the cap it is clamped to.
     pub water: f64,
     pub water_capacity: f64,
-    /// Net water drained this tick; omitted means no projected scarcity.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub water_drain_per_tick: Option<f64>,
+    /// Net water drained per game-hour; omitted means no projected scarcity.
+    #[serde(
+        default,
+        alias = "waterDrainPerTick",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub water_drain_per_hour: Option<f64>,
     pub housing: LeaderHousing,
     /// `hunt_expedition` jobs in flight (active or queued).
     pub active_hunts: u32,
@@ -182,14 +190,14 @@ mod tests {
                 refined: 6.0,
             },
             food_capacity: 400.0,
-            food_drain_per_tick: Some(3.25),
+            food_drain_per_hour: Some(3.25),
             materials: 42.5,
             materials_capacity: 100.0,
             stone: 17.0,
             stone_capacity: 100.0,
             water: 88.75,
             water_capacity: 200.0,
-            water_drain_per_tick: Some(2.5),
+            water_drain_per_hour: Some(2.5),
             housing: LeaderHousing {
                 capacity: 28,
                 committed: 4,
@@ -232,14 +240,14 @@ mod tests {
                 "employedCats": 12,
                 "resources": { "food": 175.25, "refined": 6.0 },
                 "foodCapacity": 400.0,
-                "foodDrainPerTick": 3.25,
+                "foodDrainPerHour": 3.25,
                 "materials": 42.5,
                 "materialsCapacity": 100.0,
                 "stone": 17.0,
                 "stoneCapacity": 100.0,
                 "water": 88.75,
                 "waterCapacity": 200.0,
-                "waterDrainPerTick": 2.5,
+                "waterDrainPerHour": 2.5,
                 "housing": { "capacity": 28, "committed": 4 },
                 "activeHunts": 1,
                 "activeQuarries": 2,
@@ -275,8 +283,8 @@ mod tests {
         let object = value.as_object_mut().expect("snapshot is an object");
         for key in [
             "workforce",
-            "foodDrainPerTick",
-            "waterDrainPerTick",
+            "foodDrainPerHour",
+            "waterDrainPerHour",
             "researchHutsNeedingWorkers",
             "smithiesNeedingWorkers",
             "hasBarracks",
@@ -295,8 +303,8 @@ mod tests {
             serde_json::from_value(value).expect("deserializes without optional fields");
 
         assert_eq!(snapshot.workforce, None);
-        assert_eq!(snapshot.food_drain_per_tick, None);
-        assert_eq!(snapshot.water_drain_per_tick, None);
+        assert_eq!(snapshot.food_drain_per_hour, None);
+        assert_eq!(snapshot.water_drain_per_hour, None);
         assert_eq!(snapshot.research_huts_needing_workers, None);
         assert_eq!(snapshot.smithies_needing_workers, None);
         assert_eq!(snapshot.has_barracks, None);
@@ -307,6 +315,25 @@ mod tests {
         assert_eq!(snapshot.starving, None);
         assert_eq!(snapshot.stone, 0.0);
         assert_eq!(snapshot.stone_capacity, 0.0);
+    }
+
+    #[test]
+    fn legacy_tick_named_drain_fields_remain_read_compatible() {
+        let mut value = serde_json::to_value(full_snapshot()).expect("serializes snapshot");
+        let object = value.as_object_mut().expect("snapshot is an object");
+        let food = object
+            .remove("foodDrainPerHour")
+            .expect("hourly food drain exists");
+        let water = object
+            .remove("waterDrainPerHour")
+            .expect("hourly water drain exists");
+        object.insert("foodDrainPerTick".to_owned(), food);
+        object.insert("waterDrainPerTick".to_owned(), water);
+
+        let snapshot: LeaderSnapshot =
+            serde_json::from_value(value).expect("legacy drain names deserialize");
+        assert_eq!(snapshot.food_drain_per_hour, Some(3.25));
+        assert_eq!(snapshot.water_drain_per_hour, Some(2.5));
     }
 
     #[test]

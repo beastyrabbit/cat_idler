@@ -23,7 +23,11 @@ pub const EMPLOYMENT_TARGET_RATIO: f64 = 0.7;
 /// Hunt while food_r < 1. This deliberately diverges from the legacy TS floor (0.8); the
 /// p3 director fixture was updated to the new deterministic counts to match.
 pub const IDLE_EMPLOYMENT_FLOOR: f64 = 0.95;
-pub const PROJECTION_HORIZON_TICKS: f64 = 6.0;
+/// Fixed real-time runway considered by survival labor planning. Expressing this in
+/// game-hours keeps identical colony state equally urgent at live and catch-up cadences.
+/// Four hours matches one finite personal meal and gives physical source trips time to
+/// arrive without turning a comfortable established colony into permanent crisis labor.
+pub const PROJECTION_HORIZON_HOURS: f64 = 4.0;
 pub const HUNT_CANCEL_RATIO: f64 = 1.1;
 pub const STORAGE_RATIO: f64 = 0.9;
 pub const DEN_PRESSURE_THRESHOLD: f64 = 0.8;
@@ -148,13 +152,13 @@ pub fn deficit_curve(ratio: f64) -> f64 {
 }
 
 #[must_use]
-pub fn projection_curve(amount: f64, drain_per_tick: f64, horizon_ticks: f64) -> f64 {
-    if drain_per_tick <= 0.0 || horizon_ticks <= 0.0 {
+pub fn projection_curve(amount: f64, drain_per_hour: f64, horizon_hours: f64) -> f64 {
+    if drain_per_hour <= 0.0 || horizon_hours <= 0.0 {
         return 0.0;
     }
 
-    let ticks_to_empty = amount.max(0.0) / drain_per_tick.max(EPS);
-    clamp01(1.0 - ticks_to_empty / horizon_ticks)
+    let hours_to_empty = amount.max(0.0) / drain_per_hour.max(EPS);
+    clamp01(1.0 - hours_to_empty / horizon_hours)
 }
 
 #[must_use]
@@ -182,10 +186,19 @@ pub fn projection_gate(fill_ratio: f64) -> f64 {
 }
 
 #[must_use]
-pub fn survival_score(fill_ratio: f64, amount: f64, drain_per_tick: f64) -> f64 {
+pub fn survival_score(fill_ratio: f64, amount: f64, drain_per_hour: f64) -> f64 {
+    survival_score_for_horizon(fill_ratio, amount, drain_per_hour, PROJECTION_HORIZON_HOURS)
+}
+
+fn survival_score_for_horizon(
+    fill_ratio: f64,
+    amount: f64,
+    drain_per_interval: f64,
+    horizon_intervals: f64,
+) -> f64 {
     combine_or(
         deficit_curve(fill_ratio),
-        projection_curve(amount, drain_per_tick, PROJECTION_HORIZON_TICKS)
+        projection_curve(amount, drain_per_interval, horizon_intervals)
             * projection_gate(fill_ratio),
     )
 }
@@ -799,12 +812,12 @@ fn labor_goals(snapshot: &LeaderSnapshot) -> Vec<LaborGoal> {
     let food_score = survival_score(
         food_r,
         snapshot.resources.food,
-        snapshot.food_drain_per_tick.unwrap_or(0.0),
+        snapshot.food_drain_per_hour.unwrap_or(0.0),
     );
     let water_score = survival_score(
         water_r,
         snapshot.water,
-        snapshot.water_drain_per_tick.unwrap_or(0.0),
+        snapshot.water_drain_per_hour.unwrap_or(0.0),
     );
     let stone_score = deficit_curve(stone_r);
     let comfortable = is_research_comfortable(snapshot);
@@ -961,6 +974,7 @@ mod tests {
     use crate::leader_ai::{LeaderHousing, LeaderResources};
 
     const EPSILON: f64 = 1e-12;
+    const LEGACY_PROJECTION_HORIZON_TICKS: f64 = 6.0;
 
     #[derive(Debug, Deserialize)]
     struct Fixture {
@@ -1162,22 +1176,32 @@ mod tests {
                 "deficitCurve(0)" => deficit_curve(0.0),
                 "deficitCurve(0.5)" => deficit_curve(0.5),
                 "deficitCurve(0.25)" => deficit_curve(0.25),
-                "projectionCurve(100, 0)" => projection_curve(100.0, 0.0, PROJECTION_HORIZON_TICKS),
+                "projectionCurve(100, 0)" => {
+                    projection_curve(100.0, 0.0, LEGACY_PROJECTION_HORIZON_TICKS)
+                }
                 "projectionCurve(100, -5)" => {
-                    projection_curve(100.0, -5.0, PROJECTION_HORIZON_TICKS)
+                    projection_curve(100.0, -5.0, LEGACY_PROJECTION_HORIZON_TICKS)
                 }
-                "projectionCurve(10, 10)" => projection_curve(10.0, 10.0, PROJECTION_HORIZON_TICKS),
+                "projectionCurve(10, 10)" => {
+                    projection_curve(10.0, 10.0, LEGACY_PROJECTION_HORIZON_TICKS)
+                }
                 "projectionCurve(600, 10)" => {
-                    projection_curve(600.0, 10.0, PROJECTION_HORIZON_TICKS)
+                    projection_curve(600.0, 10.0, LEGACY_PROJECTION_HORIZON_TICKS)
                 }
-                "projectionCurve(-5, 10)" => projection_curve(-5.0, 10.0, PROJECTION_HORIZON_TICKS),
+                "projectionCurve(-5, 10)" => {
+                    projection_curve(-5.0, 10.0, LEGACY_PROJECTION_HORIZON_TICKS)
+                }
                 "projectionCurve(10, 10, 0)" => projection_curve(10.0, 10.0, 0.0),
                 "projectionGate(1)" => projection_gate(1.0),
                 "projectionGate(0.9)" => projection_gate(0.9),
                 "projectionGate(0)" => projection_gate(0.0),
                 "projectionGate(0.45)" => projection_gate(0.45),
-                "survivalScore(1, 200, 9999)" => survival_score(1.0, 200.0, 9999.0),
-                "survivalScore(0.3, 60, 40)" => survival_score(0.3, 60.0, 40.0),
+                "survivalScore(1, 200, 9999)" => {
+                    survival_score_for_horizon(1.0, 200.0, 9999.0, LEGACY_PROJECTION_HORIZON_TICKS)
+                }
+                "survivalScore(0.3, 60, 40)" => {
+                    survival_score_for_horizon(0.3, 60.0, 40.0, LEGACY_PROJECTION_HORIZON_TICKS)
+                }
                 "pressureCurve(0.8)" => pressure_curve(0.8, DEN_PRESSURE_THRESHOLD, 10.0),
                 "pressureCurve(0.4)" => pressure_curve(0.4, DEN_PRESSURE_THRESHOLD, 10.0),
                 "pressureCurve(1.2)" => pressure_curve(1.2, DEN_PRESSURE_THRESHOLD, 10.0),
@@ -1194,6 +1218,13 @@ mod tests {
 
             assert_float_eq(actual, case.value, &case.expression);
         }
+    }
+
+    #[test]
+    fn maintained_projection_scores_two_hours_as_half_of_four_hour_runway() {
+        let actual = projection_curve(20.0, 10.0, PROJECTION_HORIZON_HOURS);
+
+        assert_float_eq(actual, 0.5, "two hours remaining in four-hour horizon");
     }
 
     #[test]
@@ -1744,7 +1775,7 @@ mod tests {
         let mut snapshot = healthy_snapshot(20, 0);
         snapshot.starving = Some(true);
         snapshot.resources.food = 0.0;
-        snapshot.food_drain_per_tick = Some(10.0);
+        snapshot.food_drain_per_hour = Some(10.0);
         snapshot.has_frontier = true;
         snapshot.has_quarry_site = true;
         snapshot.workshops_needing_workers = 3;
@@ -1913,14 +1944,14 @@ mod tests {
                 refined: 0.0,
             },
             food_capacity: 200.0,
-            food_drain_per_tick: Some(0.5),
+            food_drain_per_hour: Some(0.5),
             materials: 40.0,
             materials_capacity: 100.0,
             stone: 0.0,
             stone_capacity: 100.0,
             water: 150.0,
             water_capacity: 200.0,
-            water_drain_per_tick: Some(0.3),
+            water_drain_per_hour: Some(0.3),
             housing: LeaderHousing {
                 capacity: 15,
                 committed: 0,
@@ -1997,7 +2028,7 @@ mod tests {
         // a survival crisis) still hard-vetoes AssignWorkshop outright.
         let mut starving = founding_fifteen_cat_snapshot();
         starving.resources.food = 0.0;
-        starving.food_drain_per_tick = Some(10.0);
+        starving.food_drain_per_hour = Some(10.0);
         starving.starving = Some(true);
         assert_eq!(
             assign_workshop_slot_count(&starving),
@@ -2010,9 +2041,9 @@ mod tests {
         // capacity grounds — hunt/water win every idle cat before workshop gets a turn.
         let mut crisis = founding_fifteen_cat_snapshot();
         crisis.resources.food = 0.0;
-        crisis.food_drain_per_tick = Some(10.0);
+        crisis.food_drain_per_hour = Some(10.0);
         crisis.water = 0.0;
-        crisis.water_drain_per_tick = Some(10.0);
+        crisis.water_drain_per_hour = Some(10.0);
         assert_eq!(
             assign_workshop_slot_count(&crisis),
             0,
