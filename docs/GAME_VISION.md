@@ -102,9 +102,10 @@ shrink and that the player designates. The **Accountant** physically visits and 
 unvisited or unreachable piles remain visibly stale.
 
 ### Buildings & upgrade tree
-- **Role-buildings** and **workshops** are gated behind the **upgrade tree** and cost
+- **Role-buildings** and later workshops are gated behind the **upgrade tree** and cost
   **escalating resources**, so expansion is the long-game economy: build → unlock a role →
-  automate → free paws → build the next thing.
+  automate → free paws → build the next thing. Wood Cutter, Stone Prep, Woodworking, and
+  Research Hut are explicit founding-placement exceptions that establish the first physical chains.
 - Research uses a full-page dependency tree with about **500 data-driven nodes**: at least
   one third building-related unlocks and one third recipes/new resources, with the rest
   covering movement, labor, storage, defense, and similar upgrades. A player may buy any

@@ -127,12 +127,11 @@ maintained product behavior rather than migration:
   Signed client paths cover basic farm/gather/road designation, staffing,
   military, ritual, shrine, and production orders. Exact coordinate building placement,
   selectable farm/gather variants, election/vote-kick controls, designation removal, durable
-  per-cat typed labor preferences, and the physical Mill/Sawmill/Workshop/Smelter editable
-  ordered/repeatable/pausable queues are live. The generic queue model is ready for other recipes
-  as their physical chains land. Automatic election timing is visible between election windows.
-- **Physical work and production breadth.** Founding now seeds a finite spatial storehouse and the
-  logs→Sawmill→lumber, grain→Mill→flour+food, Materials→Workshop→Refined, and
-  Ore→Smelter→Metal chains physically route staffed cats, reserved
+  per-cat typed labor preferences, and editable ordered/repeatable/pausable queues for all ten
+  physical processors are live. The same generic queue model owns each sourced recipe that moves
+  from the research ledger into runtime. Automatic election timing is visible between election windows.
+- **Physical work and production breadth.** Founding now seeds a finite spatial storehouse and all
+  ten maintained processors physically route staffed cats, reserved
   cargo, station-local input and output, and final stockpile delivery before aggregate credit.
   Their inspectors expose real queues and travel state. A staffed Accountant physically visits
   reachable piles, dwells to count them, and updates only those reports; blocked piles remain

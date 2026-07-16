@@ -3,7 +3,7 @@
 > **Living target spec.** Label-free roofed homes, distinct open stations, and the maintained
 > Adventure 9-patch/button/progress/minimap/cursor skin are native-framebuffer verified at
 > 1024×768, 1280×800, and 1920×1080. Optimized WASM visual interaction is also verified at those
-> supported bounds. A legal integrated Accounting Tent plus staged wall/agricultural native
+> supported bounds. A verified integrated Accounting Tent plus staged wall/agricultural native
 > sequence close the remaining world-composition gate in
 > [`docs/IMPLEMENTATION_AUDIT.md`](../../IMPLEMENTATION_AUDIT.md).
 
