@@ -175,6 +175,9 @@ define_wire_enum! {
         Patrol => "patrol",
         Teach => "teach",
         Rest => "rest",
+        Eat => "eat",
+        Drink => "drink",
+        Sleep => "sleep",
         Farm => "farm",
     }
 }
@@ -367,6 +370,9 @@ mod tests {
             (TaskType::Patrol, "patrol"),
             (TaskType::Teach, "teach"),
             (TaskType::Rest, "rest"),
+            (TaskType::Eat, "eat"),
+            (TaskType::Drink, "drink"),
+            (TaskType::Sleep, "sleep"),
             (TaskType::Farm, "farm"),
         ];
 

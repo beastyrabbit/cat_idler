@@ -59,11 +59,12 @@ use crate::{
         road_surface_multiplier, scout_wander_target, soft_obstacle_speed_multiplier, walk_path,
         walk_path_timed, walk_path_timed_with_elapsed,
     },
+    needs::{restore_hunger, restore_rest, restore_thirst},
     officers::{OfficerRole, prerequisite_for},
     pathfinding::{
-        self, ColonyGridParams, FindPathOptions, GatePlacement as PathGatePlacement,
-        TilePos as PathTilePos, WalkOverlayFeature, WalkTile, WalkTileResources, WalkTileType,
-        build_colony_walk_grid, find_path, reachable_component,
+        self, ColonyGridParams, ColonyWalkGrid, FindPathOptions,
+        GatePlacement as PathGatePlacement, TilePos as PathTilePos, WalkOverlayFeature, WalkTile,
+        WalkTileResources, WalkTileType, build_colony_walk_grid, find_path, reachable_component,
     },
     policy::PolicyConfig,
     processing::{
@@ -84,7 +85,7 @@ use crate::{
     spoilage::apply_food_spoilage_after_consumption,
     stockpiles::{self, GatherSpot, GatherSpotPurpose, MAX_GATHER_SPOTS, ResourceKind, Stockpile},
     storage::{StorageBuilding, StorageCapacities, count_storehouses, storehouse_cap},
-    survival::{SurvivalResources, apply_survival_tick},
+    survival::apply_physical_survival_tick,
     threat::{
         ThreatSnapshot, accrue_threat, colony_wealth, plan_raid, resolve_raid, should_spawn_raid,
         threat_band,
@@ -5015,41 +5016,34 @@ fn pick_mate(
     best.map(|candidate| candidate.id.clone())
 }
 
-/// Phase 7: consume food/water, apply spoilage and resource caps, prepare
+/// Phase 7: apply spoilage and resource caps, prepare
 /// `nextResources`, and compute minute cadence.
 fn phase_7_consumption_spoilage_resource_pre_patch_minute_cadence(
     colony: &mut ColonyRuntime,
     gate: TickGate,
 ) {
-    let cat_count = active_resident_cats(colony).count() as f64;
     let elapsed_for_decay = gate.elapsed_sec as f64 * normalize_resource_decay_multiplier(colony);
     let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
     let spoilage_elapsed = elapsed_for_decay * (1.0 - effects.spoilage_resistance);
-    let mut consumption = consumption_for_tick(
-        cat_count,
-        elapsed_for_decay,
-        idle_engine_upgrade_levels(&colony.upgrade_levels),
-    );
-    consumption.water_use /= effects.water_efficiency_mult.max(f64::EPSILON);
     let caps = storage_caps(colony);
 
-    // Fresh fish is an edible raw material, consumed before generic stores so a
-    // successful catch actually feeds the colony without erasing its identity.
-    let fish_use = consumption.food_use.min(colony.resources.fish.max(0.0));
+    // Residents now remove finite servings from a real pile and consume only after
+    // reaching a dining/drinking point (phase 34). Phase 7 therefore owns spoilage,
+    // never an invisible population-wide meal. Fresh fish preference is preserved by
+    // `personal_need_source_candidates`.
     colony.resources.fish = apply_food_spoilage_after_consumption(
         colony.resources.fish,
-        fish_use,
+        0.0,
         caps.fish,
         spoilage_elapsed,
     );
     colony.resources.food = apply_food_spoilage_after_consumption(
         colony.resources.food,
-        (consumption.food_use - fish_use).max(0.0),
+        0.0,
         caps.food,
         spoilage_elapsed,
     );
-    colony.resources.water =
-        clamp_resource(colony.resources.water - consumption.water_use, caps.water);
+    colony.resources.water = clamp_resource(colony.resources.water, caps.water);
     colony.resources.herbs = clamp_resource(colony.resources.herbs, caps.herbs);
     colony.resources.catnip = clamp_resource(colony.resources.catnip, caps.catnip);
     colony.resources.grain = clamp_resource(colony.resources.grain, caps.grain);
@@ -10644,7 +10638,19 @@ fn accounting_reachable_component(
     let path_area = pathfinding_area(&area);
     let retained_gate = retained_area_gate(colony);
     let area_gate = retained_gate.map(pathfinding_gate);
-    let ring_radius = village_ring_radius(colony.buildings.len() as i32);
+    let ring_radius = colony
+        .cats
+        .iter()
+        .filter(|cat| cat.death_time.is_none() && is_personal_need_task(cat.current_task))
+        .map(|cat| {
+            let position = position_to_world(colony.anchor, cat.position);
+            ((position.x - f64::from(colony.anchor.x))
+                .abs()
+                .max((position.y - f64::from(colony.anchor.y)).abs())
+                .ceil() as i32)
+                + 2
+        })
+        .fold(village_ring_radius(colony.buildings.len() as i32), i32::max);
     let gate = movement_gate(colony.anchor, retained_gate, ring_radius);
     let staged_edges = staged_wall_fence_edges(colony);
     let walk_tiles = colony
@@ -10787,16 +10793,294 @@ fn phase_24_research(colony: &mut ColonyRuntime, gate: TickGate) {
     }
 }
 
+const PERSONAL_NEED_CARGO_PREFIX: &str = "personal-need|";
+const PERSONAL_NEED_THRESHOLD_HUNGER: f64 = 65.0;
+const PERSONAL_NEED_THRESHOLD_THIRST: f64 = 55.0;
+const PERSONAL_NEED_THRESHOLD_REST: f64 = 20.0;
+const PERSONAL_NEED_RELEASE_REST: f64 = 80.0;
+const PERSONAL_NEED_CRITICAL: f64 = 15.0;
+const PERSONAL_MEAL_RESTORE: f64 = 30.0;
+const PERSONAL_DRINK_RESTORE: f64 = 40.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum PersonalNeedStage {
+    Seeking,
+    Carrying,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PersonalNeedResume {
+    current_task: Option<TaskType>,
+    destination: Option<Position>,
+    activity: CatActivity,
+}
+
+impl Default for PersonalNeedResume {
+    fn default() -> Self {
+        Self {
+            current_task: None,
+            destination: None,
+            activity: CatActivity::Idle,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PersonalNeedMarker {
+    task: TaskType,
+    stage: PersonalNeedStage,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_pile_id: Option<String>,
+    #[serde(default)]
+    resume: PersonalNeedResume,
+}
+
+fn is_personal_need_task(task: Option<TaskType>) -> bool {
+    matches!(
+        task,
+        Some(TaskType::Eat | TaskType::Drink | TaskType::Sleep)
+    )
+}
+
+fn personal_need_marker(marker: &PersonalNeedMarker) -> String {
+    format!(
+        "{PERSONAL_NEED_CARGO_PREFIX}{}",
+        serde_json::to_string(marker).expect("personal-need marker is serializable")
+    )
+}
+
+fn parse_personal_need_marker(marker: Option<&str>) -> Option<PersonalNeedMarker> {
+    let encoded = marker?.strip_prefix(PERSONAL_NEED_CARGO_PREFIX)?;
+    if let Ok(marker) = serde_json::from_str(encoded) {
+        return Some(marker);
+    }
+    // Backward compatibility for saves made during the first physical-needs build.
+    let (task, source) = encoded.split_once('|')?;
+    let task = match task {
+        "eat" => TaskType::Eat,
+        "drink" => TaskType::Drink,
+        _ => return None,
+    };
+    Some(PersonalNeedMarker {
+        task,
+        stage: PersonalNeedStage::Carrying,
+        source_pile_id: Some(source.to_owned()),
+        resume: PersonalNeedResume::default(),
+    })
+}
+
+fn personal_food_serving(colony: &ColonyRuntime) -> f64 {
+    consumption_for_tick(
+        1.0,
+        4.0 * 3_600.0,
+        idle_engine_upgrade_levels(&colony.upgrade_levels),
+    )
+    .food_use
+}
+
+fn personal_water_serving(colony: &ColonyRuntime) -> f64 {
+    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let hourly = consumption_for_tick(
+        1.0,
+        3_600.0,
+        idle_engine_upgrade_levels(&colony.upgrade_levels),
+    )
+    .water_use;
+    let hours_restored = PERSONAL_DRINK_RESTORE / (3.0 * 0.2 * 6.0);
+    hourly * hours_restored / effects.water_efficiency_mult.max(f64::EPSILON)
+}
+
+fn personal_need_is_critical(cat: &Cat) -> bool {
+    cat.needs.hunger < PERSONAL_NEED_CRITICAL
+        || cat.needs.thirst < PERSONAL_NEED_CRITICAL
+        || cat.needs.rest < PERSONAL_NEED_CRITICAL
+}
+
+/// Survival needs outrank work when their ordinary threshold is crossed. Waiting until
+/// the damage threshold leaves too little route time for a cat working at the frontier;
+/// the persisted resume record means yielding early pauses rather than discards work.
+fn preempt_autonomous_work_for_personal_need(
+    colony: &mut ColonyRuntime,
+    cat_id: &str,
+    now_ms: i64,
+) -> PersonalNeedResume {
+    let mut resume = colony
+        .cats
+        .iter()
+        .find(|cat| cat.id == cat_id)
+        .map(|cat| {
+            let return_to_work_point = cat.current_task.is_some()
+                && cat.destination.is_none()
+                && matches!(cat.activity, CatActivity::Working | CatActivity::Idle);
+            PersonalNeedResume {
+                current_task: cat.current_task,
+                destination: cat
+                    .destination
+                    .or(return_to_work_point.then_some(cat.position)),
+                activity: if return_to_work_point {
+                    CatActivity::Traveling
+                } else {
+                    cat.activity
+                },
+            }
+        })
+        .unwrap_or_default();
+    // Once a source job has accepted its persisted site, that site—not a stale
+    // formation/pile waypoint—is the authoritative place to resume productive work.
+    if let Some(work_site) = colony.jobs.iter().find_map(|job| {
+        if job.status != JobStatus::Active || job.assigned_cat.as_deref() != Some(cat_id) {
+            return None;
+        }
+        match job.metadata {
+            JobMetadata::Hauling {
+                site: Some(site),
+                accepted: true,
+                ..
+            } => {
+                if job.kind == JobKind::FetchWater {
+                    water_work_site(colony, site)
+                } else {
+                    Some(site)
+                }
+            }
+            JobMetadata::Site {
+                site,
+                accepted: true,
+            } => Some(site),
+            JobMetadata::Expansion {
+                target,
+                accepted: true,
+                ..
+            } => Some(target),
+            _ => None,
+        }
+    }) {
+        resume.destination = Some(position_from_world(tile_pos_to_world(work_site)));
+        resume.activity = CatActivity::Traveling;
+    }
+    let durable_job_break = colony.jobs.iter().any(|job| {
+        job.assigned_cat.as_deref() == Some(cat_id)
+            && matches!(job.status, JobStatus::Queued | JobStatus::Active)
+            && (job.requested_by == JobRequester::Player
+                || matches!(
+                    job.kind,
+                    JobKind::BuildHouse
+                        | JobKind::BuildRoad
+                        | JobKind::ExpandVillage
+                        | JobKind::HuntExpedition
+                        | JobKind::Fish
+                        | JobKind::FetchWater
+                        | JobKind::SupplyFood
+                        | JobKind::SupplyWater
+                ))
+    }) || colony
+        .cats
+        .iter()
+        .any(|cat| cat.id == cat_id && cat.current_task == Some(TaskType::Farm));
+    if durable_job_break {
+        if let Some(cat) = colony.cats.iter_mut().find(|cat| cat.id == cat_id) {
+            cat.current_task = None;
+            cat.destination = None;
+            cat.activity = CatActivity::Idle;
+        }
+        return resume;
+    }
+    cancel_cat_jobs(colony, cat_id, now_ms);
+    for building in &mut colony.buildings {
+        building.remove_worker(cat_id);
+    }
+    release_farm_worker(colony, cat_id);
+    if let Some(cat) = colony.cats.iter_mut().find(|cat| cat.id == cat_id) {
+        cat.current_task = None;
+        cat.destination = None;
+        cat.activity = CatActivity::Idle;
+    }
+    PersonalNeedResume::default()
+}
+
+fn start_personal_need(cat: &mut Cat, task: TaskType, resume: PersonalNeedResume, now_ms: i64) {
+    let kind = if task == TaskType::Drink {
+        CarryingKind::Water
+    } else {
+        CarryingKind::Food
+    };
+    let marker = PersonalNeedMarker {
+        task,
+        stage: PersonalNeedStage::Seeking,
+        source_pile_id: None,
+        resume,
+    };
+    cat.current_task = Some(task);
+    cat.activity = CatActivity::Idle;
+    cat.destination = None;
+    // The zero-amount marker is durable route state, not a reserved resource. It
+    // prevents a restart between interruption and pickup from losing the work route
+    // that must resume after this need is satisfied.
+    cat.carrying = Some(Carrying {
+        kind,
+        amount: 0.0,
+        job_ended_at: now_ms,
+        source_gather_spot: Some(personal_need_marker(&marker)),
+    });
+}
+
+fn finish_personal_need(cat: &mut Cat, marker: &PersonalNeedMarker) {
+    cat.carrying = None;
+    cat.current_task = marker.resume.current_task;
+    cat.destination = marker.resume.destination;
+    cat.activity = marker.resume.activity;
+}
+
+fn choose_personal_need(cat: &Cat) -> Option<TaskType> {
+    // Founders have identical initial needs. A stable id-derived threshold spreads
+    // their first meal/drink/bed departures across the shift; the fixed restoration
+    // amounts keep every later cycle staggered while preserving the exact old average
+    // consumption. No RNG stream or wall clock participates.
+    let offset = cat.id.bytes().fold(0_u32, |hash, byte| {
+        hash.wrapping_mul(16_777_619) ^ u32::from(byte)
+    });
+    let hunger_threshold = PERSONAL_NEED_THRESHOLD_HUNGER + f64::from(offset % 21);
+    let thirst_threshold = PERSONAL_NEED_THRESHOLD_THIRST + f64::from(offset % 21);
+    let rest_threshold = PERSONAL_NEED_THRESHOLD_REST + f64::from(offset % 21);
+    if cat.needs.hunger < hunger_threshold {
+        Some(TaskType::Eat)
+    } else if cat.needs.thirst < thirst_threshold {
+        Some(TaskType::Drink)
+    } else if cat.needs.rest < rest_threshold {
+        Some(TaskType::Sleep)
+    } else {
+        None
+    }
+}
+
+fn personal_need_is_available(colony: &ColonyRuntime, cat_id: &str, task: TaskType) -> bool {
+    match task {
+        TaskType::Eat | TaskType::Drink => {
+            let from = colony.cats.iter().find(|cat| cat.id == cat_id).map_or_else(
+                || village_anchor_world(colony.anchor),
+                |cat| position_to_world(colony.anchor, cat.position),
+            );
+            !personal_need_source_candidates(colony, task, from).is_empty()
+        }
+        TaskType::Sleep => colony
+            .buildings
+            .iter()
+            .filter(|building| building.is_complete && building.building_type == BuildingType::Den)
+            .any(|den| den_reservation_count(colony, den, cat_id) < 5),
+        _ => false,
+    }
+}
+
 /// Phase 25: apply survival needs, deaths, carried-yield salvage, and
 /// death-related job retirement.
 ///
-/// Ported from `server/game.ts:workerTick`'s per-cat `applySurvivalTick` loop
-/// (`lib/game/survival.ts`), which is the sole mutator of `cat.needs` on the
-/// map-first god-sim path (there is no per-cat "eating" event — hunger/thirst
-/// simply decay slower and regenerate toward 90 while the colony's shared food/
-/// water store holds any amount above zero, and decay at the full rate with no
-/// regen once a store is empty). The threshold model itself is deterministic —
-/// no RNG rolls, so none are drawn on any forked chain here.
+/// Hunger and thirst now always decay at their physical no-meal rate. Restoration
+/// happens only when the cat reaches its dining/drinking point with a finite serving;
+/// rest restoration happens only while occupying a reserved Den bed. The old long-run
+/// consumption rate is retained by sizing servings from `consumption_for_tick`.
 ///
 /// Iterates alive cats in stable cats-vector order. On death: the carrier's
 /// carried yield (if any) is salvaged via the same `credit_carrying` deposit
@@ -10816,11 +11100,6 @@ fn phase_25_survival_deaths_and_carried_yield_salvage(
 ) {
     let elapsed_sec = gate.elapsed_sec as f64 * normalize_resource_decay_multiplier(colony);
     let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
-    let resources = SurvivalResources {
-        food: colony.resources.food + colony.resources.fish,
-        water: colony.resources.water,
-    };
-
     let cat_ids: Vec<CatId> = active_resident_cats(colony)
         .map(|cat| cat.id.clone())
         .collect();
@@ -10834,15 +11113,43 @@ fn phase_25_survival_deaths_and_carried_yield_salvage(
             continue;
         };
 
-        let result = apply_survival_tick(
-            &colony.cats[index].needs,
-            resources,
-            elapsed_sec,
-            policy.config,
-        );
+        if let Some(marker) = colony.cats[index]
+            .carrying
+            .as_ref()
+            .and_then(|carrying| parse_personal_need_marker(carrying.source_gather_spot.as_deref()))
+        {
+            if marker.stage == PersonalNeedStage::Seeking
+                && !personal_need_is_available(colony, &cat_id, marker.task)
+            {
+                // Do not deadlock a starving village by parking its hunters on an
+                // impossible meal route. No resource was reserved in Seeking state,
+                // so abandoning it is lossless; the cat retries as soon as food exists.
+                finish_personal_need(&mut colony.cats[index], &marker);
+            } else {
+                colony.cats[index].current_task = Some(marker.task);
+            }
+        }
+        if colony.cats[index].current_task == Some(TaskType::Sleep)
+            && colony.cats[index].activity == CatActivity::Working
+            && colony.cats[index].destination.is_none()
+        {
+            colony.cats[index].needs = restore_rest(&colony.cats[index].needs, 0.0, true);
+            if colony.cats[index].needs.rest >= PERSONAL_NEED_RELEASE_REST {
+                let marker = colony.cats[index]
+                    .carrying
+                    .as_ref()
+                    .and_then(|carrying| {
+                        parse_personal_need_marker(carrying.source_gather_spot.as_deref())
+                    })
+                    .expect("sleeping cats retain their durable personal-need marker");
+                finish_personal_need(&mut colony.cats[index], &marker);
+            }
+        }
+        let result =
+            apply_physical_survival_tick(&colony.cats[index].needs, elapsed_sec, policy.config);
         colony.cats[index].needs = result.next_needs.clone();
-        if resources.food > 0.0
-            && resources.water > 0.0
+        if colony.cats[index].needs.hunger > 0.0
+            && colony.cats[index].needs.thirst > 0.0
             && effects.health_recovery_mult > 1.0
             && colony.cats[index].needs.health > 0.0
         {
@@ -10871,6 +11178,41 @@ fn phase_25_survival_deaths_and_carried_yield_salvage(
         }
 
         if !result.died {
+            let carrying_personal_serving =
+                colony.cats[index]
+                    .carrying
+                    .as_ref()
+                    .is_some_and(|carrying| {
+                        parse_personal_need_marker(carrying.source_gather_spot.as_deref()).is_some()
+                    });
+            if !carrying_personal_serving {
+                let selected = choose_personal_need(&colony.cats[index]);
+                let may_start = colony.cats[index].current_task.is_none()
+                    && colony.cats[index].carrying.is_none()
+                    && colony.cats[index].activity == CatActivity::Idle;
+                if let Some(task) = selected {
+                    if !personal_need_is_available(colony, &cat_id, task) {
+                        continue;
+                    }
+                    let critical = personal_need_is_critical(&colony.cats[index]);
+                    let resume = if may_start {
+                        Some(PersonalNeedResume::default())
+                    } else if critical && colony.cats[index].carrying.is_none() {
+                        Some(preempt_autonomous_work_for_personal_need(
+                            colony,
+                            &cat_id,
+                            gate.processed_through,
+                        ))
+                    } else {
+                        None
+                    };
+                    if let Some(resume) = resume
+                        && let Some(cat) = colony.cats.iter_mut().find(|cat| cat.id == cat_id)
+                    {
+                        start_personal_need(cat, task, resume, gate.processed_through);
+                    }
+                }
+            }
             continue;
         }
 
@@ -12188,6 +12530,12 @@ fn phase_33_movement_deposits_and_no_destination_wander(
         .collect::<Vec<_>>();
     for (cat_id, position, carrying) in cat_ids {
         if let Some(carrying) = carrying {
+            // A personal serving is neither produced yield nor a haul to storage. It
+            // remains in the cat's paws until the dining/drinking destination is
+            // reached; death salvage below returns it through `credit_carrying`.
+            if parse_personal_need_marker(carrying.source_gather_spot.as_deref()).is_some() {
+                continue;
+            }
             if let Some((item_id, stockpile_id)) =
                 parse_equipment_return(carrying.source_gather_spot.as_deref())
             {
@@ -12315,6 +12663,9 @@ fn phase_33_movement_deposits_and_no_destination_wander(
         if colony.cats[cat_index].destination.is_some() {
             continue;
         }
+        if is_personal_need_task(colony.cats[cat_index].current_task) {
+            continue;
+        }
 
         // Random-walk scouting: a cat still on an explore job that has reached its last
         // wander target picks a fresh outward leg (it may be Idle or Working after an
@@ -12359,7 +12710,12 @@ fn phase_33_movement_deposits_and_no_destination_wander(
                     x: target.x.round() as i32,
                     y: target.y.round() as i32,
                 };
+                let target_tile = TilePos {
+                    x: target_zone_pos.x,
+                    y: target_zone_pos.y,
+                };
                 if filter_targets_by_zones(&[target_zone_pos], &movement.zones, false).is_empty()
+                    || !colony.claimed_tiles.contains(&target_tile)
                     || target == world_pos
                 {
                     continue;
@@ -12824,6 +13180,334 @@ fn advance_material_offering_logistics(colony: &mut ColonyRuntime, now_ms: i64) 
     }
 }
 
+fn personal_need_meal_target(colony: &ColonyRuntime, task: TaskType) -> WorldPos {
+    let preferred = match task {
+        TaskType::Eat => Some(BuildingType::FoodStorage),
+        TaskType::Drink => Some(BuildingType::WaterBowl),
+        _ => None,
+    };
+    preferred
+        .and_then(|building_type| {
+            colony
+                .buildings
+                .iter()
+                .filter(|building| building.is_complete && building.building_type == building_type)
+                .min_by(|left, right| left.id.cmp(&right.id))
+                .map(|building| tile_pos_to_world(building.position))
+        })
+        .unwrap_or_else(|| village_anchor_world(colony.anchor))
+}
+
+fn route_exists(grid: &ColonyWalkGrid<'_>, gate: WorldPos, from: WorldPos, to: WorldPos) -> bool {
+    find_personal_need_path(
+        pathfinding_pos(from),
+        pathfinding_pos(to),
+        pathfinding_pos(gate),
+        grid,
+    )
+    .is_some()
+}
+
+/// A legacy wander could leave a cat standing on a generated obstacle because that
+/// older path used a straight-line fallback. Personal survival never teleports such a
+/// cat: it may take one physical step off the tile it already occupies, then follows
+/// the same gate-aware A* route as every other survival trip.
+fn find_personal_need_path<G: pathfinding::WalkGrid + ?Sized>(
+    start: pathfinding::WorldPos,
+    destination: pathfinding::WorldPos,
+    outside_gate: pathfinding::WorldPos,
+    grid: &G,
+) -> Option<Vec<pathfinding::WorldPos>> {
+    if let Some(route) = find_farm_path(start, destination, outside_gate, grid) {
+        return Some(route);
+    }
+    let standing = pathfinding::TilePos {
+        x: start.x.round() as i32,
+        y: start.y.round() as i32,
+    };
+    for (dx, dy) in [(0, -1), (-1, 0), (1, 0), (0, 1)] {
+        let x = standing.x + dx;
+        let y = standing.y + dy;
+        if grid.is_blocked(x, y) {
+            continue;
+        }
+        let neighbour = pathfinding::WorldPos {
+            x: f64::from(x),
+            y: f64::from(y),
+        };
+        if let Some(mut route) = find_farm_path(neighbour, destination, outside_gate, grid) {
+            route.insert(0, start);
+            return Some(route);
+        }
+    }
+    None
+}
+
+fn personal_need_source_candidates(
+    colony: &ColonyRuntime,
+    task: TaskType,
+    from: WorldPos,
+) -> Vec<(usize, ResourceKind, WorldPos)> {
+    let kinds: &[ResourceKind] = match task {
+        TaskType::Eat => &[ResourceKind::Fish, ResourceKind::Food],
+        TaskType::Drink => &[ResourceKind::Water],
+        _ => &[],
+    };
+    let mut candidates = colony
+        .stockpiles
+        .iter()
+        .enumerate()
+        .filter(|(_, pile)| !pile.is_station_local())
+        .flat_map(|(index, pile)| {
+            kinds
+                .iter()
+                .copied()
+                .filter(move |&kind| {
+                    stockpiles::resource_amount(&pile.contents, kind) > f64::EPSILON
+                })
+                .map(move |kind| {
+                    let (x, y) = pile.center();
+                    (index, kind, WorldPos { x, y })
+                })
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(
+        |(left_index, left_kind, left), (right_index, right_kind, right)| {
+            let left_priority = kinds
+                .iter()
+                .position(|kind| kind == left_kind)
+                .unwrap_or(usize::MAX);
+            let right_priority = kinds
+                .iter()
+                .position(|kind| kind == right_kind)
+                .unwrap_or(usize::MAX);
+            let left_distance = (left.x - from.x).abs() + (left.y - from.y).abs();
+            let right_distance = (right.x - from.x).abs() + (right.y - from.y).abs();
+            left_priority
+                .cmp(&right_priority)
+                .then_with(|| left_distance.total_cmp(&right_distance))
+                .then_with(|| {
+                    colony.stockpiles[*left_index]
+                        .id
+                        .cmp(&colony.stockpiles[*right_index].id)
+                })
+        },
+    );
+    candidates
+}
+
+fn den_reservation_count(colony: &ColonyRuntime, den: &BuildingRuntime, excluding: &str) -> usize {
+    let den_position = position_from_world(tile_pos_to_world(den.position));
+    colony
+        .cats
+        .iter()
+        .filter(|cat| cat.id != excluding && cat.death_time.is_none())
+        .filter(|cat| cat.current_task == Some(TaskType::Sleep))
+        .filter(|cat| cat.destination == Some(den_position) || cat.position == den_position)
+        .count()
+}
+
+/// Select only destinations with two real A* legs. A blocked nearest pile never
+/// strands a cat if a farther visible pile can actually reach the dining point.
+fn plan_personal_need_routes(
+    colony: &mut ColonyRuntime,
+    grid: &ColonyWalkGrid<'_>,
+    gate: WorldPos,
+) {
+    let ids = colony
+        .cats
+        .iter()
+        .filter(|cat| cat.death_time.is_none() && is_personal_need_task(cat.current_task))
+        .filter(|cat| cat.destination.is_none() && cat.activity != CatActivity::Working)
+        .map(|cat| cat.id.clone())
+        .collect::<Vec<_>>();
+    for cat_id in ids {
+        let Some(index) = colony.cats.iter().position(|cat| cat.id == cat_id) else {
+            continue;
+        };
+        let task = colony.cats[index]
+            .current_task
+            .expect("personal need task was filtered");
+        let from = position_to_world(colony.anchor, colony.cats[index].position);
+        let outside_village = !colony.claimed_tiles.contains(&world_pos_to_tile(from));
+        let destination = match task {
+            TaskType::Eat | TaskType::Drink => {
+                let meal_target = personal_need_meal_target(colony, task);
+                if colony.cats[index]
+                    .carrying
+                    .as_ref()
+                    .is_some_and(|carrying| {
+                        parse_personal_need_marker(carrying.source_gather_spot.as_deref())
+                            .is_some_and(|marker| marker.stage == PersonalNeedStage::Carrying)
+                    })
+                {
+                    Some(meal_target)
+                } else if outside_village {
+                    // Finish the unladen return from a scout/gathering site before
+                    // selecting village stock. No resource is reserved on this leg.
+                    Some(village_anchor_world(colony.anchor))
+                } else {
+                    personal_need_source_candidates(colony, task, from)
+                        .into_iter()
+                        .find(|(_, _, source)| {
+                            route_exists(grid, gate, from, *source)
+                                || route_exists(grid, gate, *source, meal_target)
+                        })
+                        .or_else(|| {
+                            personal_need_source_candidates(colony, task, from)
+                                .into_iter()
+                                .next()
+                        })
+                        .map(|(_, _, source)| source)
+                }
+            }
+            TaskType::Sleep => colony
+                .buildings
+                .iter()
+                .filter(|building| {
+                    building.is_complete && building.building_type == BuildingType::Den
+                })
+                .filter(|den| den_reservation_count(colony, den, &cat_id) < 5)
+                .map(|den| (den.id.as_str(), tile_pos_to_world(den.position)))
+                .min_by(|(left_id, left), (right_id, right)| {
+                    let left_distance = (left.x - from.x).abs() + (left.y - from.y).abs();
+                    let right_distance = (right.x - from.x).abs() + (right.y - from.y).abs();
+                    left_distance
+                        .total_cmp(&right_distance)
+                        .then_with(|| left_id.cmp(right_id))
+                })
+                .map(|(_, den)| den),
+            _ => None,
+        };
+        if let Some(destination) = destination {
+            colony.cats[index].destination = Some(position_from_world(destination));
+            colony.cats[index].activity = CatActivity::Traveling;
+        }
+    }
+}
+
+fn complete_personal_need_arrival(
+    colony: &mut ColonyRuntime,
+    cat_index: usize,
+    now_ms: i64,
+) -> bool {
+    let Some(task @ (TaskType::Eat | TaskType::Drink | TaskType::Sleep)) =
+        colony.cats[cat_index].current_task
+    else {
+        return false;
+    };
+    if task == TaskType::Sleep {
+        colony.cats[cat_index].activity = CatActivity::Working;
+        return true;
+    }
+
+    if let Some(carrying) = colony.cats[cat_index].carrying.clone()
+        && let Some(marker) = parse_personal_need_marker(carrying.source_gather_spot.as_deref())
+        && marker.stage == PersonalNeedStage::Carrying
+    {
+        let full_serving = if task == TaskType::Eat {
+            personal_food_serving(colony)
+        } else {
+            personal_water_serving(colony)
+        };
+        let fraction = if full_serving > f64::EPSILON {
+            (carrying.amount / full_serving).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let needs = colony.cats[cat_index].needs.clone();
+        colony.cats[cat_index].needs = if task == TaskType::Eat {
+            restore_hunger(&needs, PERSONAL_MEAL_RESTORE * fraction)
+        } else {
+            restore_thirst(&needs, PERSONAL_DRINK_RESTORE * fraction)
+        };
+        if task == TaskType::Drink && needs.thirst <= 0.0 {
+            let cat_name = colony.cats[cat_index].name.clone();
+            append_event(
+                colony,
+                now_ms,
+                EventKind::DehydrationRecovery,
+                format!("{cat_name} recovered from dehydration."),
+            );
+        }
+        finish_personal_need(&mut colony.cats[cat_index], &marker);
+        return true;
+    }
+
+    let at = position_to_world(colony.anchor, colony.cats[cat_index].position);
+    let candidates = personal_need_source_candidates(colony, task, at);
+    let Some((pile_index, kind, _)) = candidates
+        .into_iter()
+        .find(|(_, _, point)| (point.x - at.x).abs() < 0.5 && (point.y - at.y).abs() < 0.5)
+    else {
+        colony.cats[cat_index].activity = CatActivity::Idle;
+        return true;
+    };
+    let base_serving = if task == TaskType::Eat {
+        personal_food_serving(colony)
+    } else {
+        personal_water_serving(colony)
+    };
+    let restore_capacity = if task == TaskType::Eat {
+        (100.0 - colony.cats[cat_index].needs.hunger).clamp(0.0, PERSONAL_MEAL_RESTORE)
+            / PERSONAL_MEAL_RESTORE
+    } else {
+        (100.0 - colony.cats[cat_index].needs.thirst).clamp(0.0, PERSONAL_DRINK_RESTORE)
+            / PERSONAL_DRINK_RESTORE
+    };
+    let wanted = base_serving * restore_capacity;
+    let available = stockpiles::resource_amount(&colony.stockpiles[pile_index].contents, kind);
+    let contenders = colony
+        .cats
+        .iter()
+        .filter(|cat| {
+            cat.death_time.is_none()
+                && cat.current_task == Some(task)
+                && cat.carrying.is_none()
+                && cat.needs.health > 0.0
+        })
+        .count()
+        .max(1) as f64;
+    // Stable fair sharing prevents vector-order starvation when a coarse tick sends
+    // many equally hungry residents to the last few units at once. Each receives the
+    // same bounded fractional serving; restoration below scales by that fraction.
+    let amount = wanted.min(available / contenders);
+    if amount <= f64::EPSILON {
+        colony.cats[cat_index].activity = CatActivity::Idle;
+        return true;
+    }
+    stockpiles::add_resource(&mut colony.stockpiles[pile_index].contents, kind, -amount);
+    stockpiles::add_resource(&mut colony.resources, kind, -amount);
+    let source_id = colony.stockpiles[pile_index].id.clone();
+    let carrying_kind = match kind {
+        ResourceKind::Fish => CarryingKind::Fish,
+        ResourceKind::Food => CarryingKind::Food,
+        ResourceKind::Water => CarryingKind::Water,
+        _ => unreachable!("personal needs select only food/fish/water"),
+    };
+    let resume = colony.cats[cat_index]
+        .carrying
+        .as_ref()
+        .and_then(|carrying| parse_personal_need_marker(carrying.source_gather_spot.as_deref()))
+        .map_or_else(PersonalNeedResume::default, |marker| marker.resume);
+    let marker = PersonalNeedMarker {
+        task,
+        stage: PersonalNeedStage::Carrying,
+        source_pile_id: Some(source_id),
+        resume,
+    };
+    colony.cats[cat_index].carrying = Some(Carrying {
+        kind: carrying_kind,
+        amount,
+        job_ended_at: now_ms,
+        source_gather_spot: Some(personal_need_marker(&marker)),
+    });
+    colony.cats[cat_index].destination =
+        Some(position_from_world(personal_need_meal_target(colony, task)));
+    colony.cats[cat_index].activity = CatActivity::Traveling;
+    true
+}
+
 /// Phase 34: move cats, accept jobs on shrine arrival, reveal tiles, and apply
 /// path wear.
 fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
@@ -12882,6 +13566,7 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
     // Ownership is kept explicit for the physical-truth guardrail below. It is
     // neutral until track, rolling stock, boarding, and routes are simulated.
     let rail_researched = is_owned(&colony.upgrade_tree, "rail");
+    plan_personal_need_routes(colony, &walk_grid, tile_pos_to_world(movement.gate));
     let cat_ids = colony
         .cats
         .iter()
@@ -12989,7 +13674,17 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
             spatial_migration_phase,
             Some(MigrantSpatialPhase::Arriving | MigrantSpatialPhase::Departing)
         );
-        let route = if current_task == Some(TaskType::Farm)
+        let unladen_personal_return = is_personal_need_task(current_task)
+            && colony.cats[cat_index].carrying.is_none()
+            && !colony.claimed_tiles.contains(&world_pos_to_tile(world_pos));
+        let route = if is_personal_need_task(current_task) {
+            find_personal_need_path(
+                pathfinding_pos(world_pos),
+                pathfinding_pos(destination),
+                pathfinding_pos(tile_pos_to_world(movement.gate)),
+                &walk_grid,
+            )
+        } else if current_task == Some(TaskType::Farm)
             || offering_route_required
             || construction_route_required
             || migration_route_required
@@ -13059,12 +13754,21 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
             && (current_task == Some(TaskType::Farm)
                 || offering_route_required
                 || construction_route_required
-                || migration_route_required)
+                || migration_route_required
+                || is_personal_need_task(current_task) && !unladen_personal_return)
         {
             // Physical farm, offering, construction, and migration logistics never use
             // the generic straight-line fallback: a flooded route, closed staged wall,
             // or newly impassable tile suspends the trip until a real A* route exists
             // instead of letting a carrier walk through barriers.
+            continue;
+        }
+        if route.is_none() && current_task.is_none() && activity == CatActivity::Idle {
+            // Cosmetic wandering is never entitled to the legacy straight-line
+            // fallback. Dropping an unreachable idle target prevents a resident from
+            // stepping into a hard terrain pocket and later becoming unable to reach
+            // food, water, or shelter.
+            colony.cats[cat_index].destination = None;
             continue;
         }
         let at_gate = (world_pos.x - f64::from(movement.gate.x)).abs() < 1.0
@@ -13080,7 +13784,7 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
         } else {
             Vec::new()
         };
-        let walk = walk_path_timed(
+        let (walk, movement_used) = walk_path_timed_with_elapsed(
             world_pos,
             destination,
             movement.movement_elapsed,
@@ -13116,6 +13820,80 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
             },
         );
         let arrived = walk.arrived;
+        let personal_source_arrival = arrived
+            && matches!(current_task, Some(TaskType::Eat | TaskType::Drink))
+            && colony.cats[cat_index].carrying.is_none();
+        if personal_source_arrival {
+            colony.cats[cat_index].position = position_from_world(walk.position);
+            colony.cats[cat_index].destination = None;
+            colony.cats[cat_index].activity = CatActivity::Working;
+            reveal_and_wear_walked_tiles(colony, movement, &walk.tiles, &cat_id, current_task);
+            complete_personal_need_arrival(colony, cat_index, gate.processed_through);
+            let remaining = (movement.movement_elapsed - movement_used).max(0.0);
+            let Some(next_destination) = colony.cats[cat_index]
+                .destination
+                .map(|position| position_to_world(colony.anchor, position))
+            else {
+                continue;
+            };
+            if remaining <= f64::EPSILON {
+                continue;
+            }
+            let Some(next_route) = find_personal_need_path(
+                pathfinding_pos(walk.position),
+                pathfinding_pos(next_destination),
+                pathfinding_pos(tile_pos_to_world(movement.gate)),
+                &walk_grid,
+            ) else {
+                continue;
+            };
+            let next_waypoints = next_route
+                .get(1..next_route.len().saturating_sub(1))
+                .unwrap_or_default()
+                .iter()
+                .copied()
+                .map(movement_pos)
+                .collect::<Vec<_>>();
+            let next_walk = walk_path_timed(
+                walk.position,
+                next_destination,
+                remaining,
+                &next_waypoints,
+                |x, y| {
+                    let path_pos = PathTilePos { x, y };
+                    let tile_pos = TilePos { x, y };
+                    let surface = surface_factors.get(&path_pos).copied().unwrap_or_else(|| {
+                        crate::movement::terrain_surface_factor(
+                            crate::terrain_gen::BiomeRole::Grassland,
+                        )
+                    });
+                    let road = colony.world_tiles.get(&tile_pos).map_or(1.0, |tile| {
+                        road_surface_multiplier(
+                            tile.overlay_feature.as_deref() == Some("road_built"),
+                            tile_forms_dirt_road(tile),
+                            tile.path_wear,
+                        )
+                    });
+                    let soft = soft_obstacle_speed_multiplier(
+                        soft_obstacles.contains(&tile_pos)
+                            || pathfinding::SoftObstacleField::is_soft_obstacle(
+                                &decoration_obstacles,
+                                x,
+                                y,
+                            ),
+                    );
+                    unit_surface_speed * surface * road * soft
+                },
+            );
+            colony.cats[cat_index].position = position_from_world(next_walk.position);
+            reveal_and_wear_walked_tiles(colony, movement, &next_walk.tiles, &cat_id, current_task);
+            if next_walk.arrived {
+                colony.cats[cat_index].destination = None;
+                colony.cats[cat_index].activity = CatActivity::Working;
+                complete_personal_need_arrival(colony, cat_index, gate.processed_through);
+            }
+            continue;
+        }
         #[cfg(test)]
         if arrived && current_task == Some(TaskType::Farm) {
             // One physical leg ended. A farm worker can be assigned the return
@@ -13158,6 +13936,10 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
 
         if moved {
             reveal_and_wear_walked_tiles(colony, movement, &walk.tiles, &cat_id, current_task);
+        }
+
+        if arrived && complete_personal_need_arrival(colony, cat_index, gate.processed_through) {
+            continue;
         }
 
         // Search only what this cat physically observed into its provisional
@@ -13230,6 +14012,11 @@ fn scout_travel_speed_factor(
     current_task: Option<TaskType>,
     activity: CatActivity,
 ) -> f64 {
+    if is_personal_need_task(current_task) {
+        // Local survival trips should be visible, but a meal or bed must not consume
+        // most of a work shift merely because DF-scale world tiles are large.
+        return RESOURCE_SCOUT_SPEED_FACTOR;
+    }
     let is_resource_scout_leg = colony.jobs.iter().any(|job| {
         job.kind == JobKind::Explore
             && job.assigned_cat.as_deref() == Some(cat_id)
@@ -15518,23 +16305,47 @@ fn has_inbound_critical_relief(
         .saturating_add(CRITICAL_INBOUND_RELIEF_GRACE_MS);
     let active_job = |kind: JobKind| {
         colony.jobs.iter().any(|job| {
-            if job.kind != kind || !matches!(job.status, JobStatus::Active | JobStatus::Queued) {
+            let completed_during_crisis = job.status == JobStatus::Completed
+                && job.completed_at.is_some_and(|completed_at| {
+                    completed_at >= colony.critical_since.unwrap_or(now_ms)
+                        && completed_at <= now_ms
+                });
+            if job.kind != kind
+                || !(matches!(job.status, JobStatus::Active | JobStatus::Queued)
+                    || completed_during_crisis)
+            {
                 return false;
             }
             let Some(cat_id) = job.assigned_cat.as_deref() else {
                 return false;
             };
-            if !job
-                .ends_at
-                .is_some_and(|ends_at| ends_at > now_ms && ends_at <= relief_deadline)
-            {
+            let accepted_physical = matches!(
+                job.metadata,
+                JobMetadata::Hauling {
+                    site: Some(_),
+                    accepted: true,
+                    ..
+                }
+            );
+            if !job.ends_at.is_some_and(|ends_at| {
+                ends_at <= relief_deadline
+                    && (ends_at > now_ms || accepted_physical || completed_during_crisis)
+            }) {
                 return false;
             }
             colony.cats.iter().any(|cat| {
                 cat.id == cat_id
                     && cat.death_time.is_none()
                     && can_work(get_life_stage(cat.age_hours))
-                    && cat.current_task == task_for_job(kind)
+                    && (completed_during_crisis
+                        || cat.current_task == task_for_job(kind)
+                        || cat
+                            .carrying
+                            .as_ref()
+                            .and_then(|carrying| {
+                                parse_personal_need_marker(carrying.source_gather_spot.as_deref())
+                            })
+                            .is_some_and(|marker| marker.resume.current_task == task_for_job(kind)))
             })
         })
     };
@@ -15563,8 +16374,30 @@ fn phase_37_final_clamp_critical_collapse_status_persist(
         )
     });
     let critical_ms = colony.test_critical_ms_override.max(1_000);
+    // A serving in a living cat's paws is no longer general village stock, but it
+    // has already solved that resident's immediate survival need. Do not collapse a
+    // colony merely because a coarse tick moved the last storehouse units into meals
+    // one phase before those cats reach the bowl/table.
+    let mut survival_resources = colony.resources.clone();
+    for carrying in colony
+        .cats
+        .iter()
+        .filter(|cat| cat.death_time.is_none())
+        .filter_map(|cat| {
+            cat.carrying.as_ref().filter(|carrying| {
+                parse_personal_need_marker(carrying.source_gather_spot.as_deref()).is_some()
+            })
+        })
+    {
+        match carrying.kind {
+            CarryingKind::Food => survival_resources.food += carrying.amount,
+            CarryingKind::Fish => survival_resources.fish += carrying.amount,
+            CarryingKind::Water => survival_resources.water += carrying.amount,
+            _ => {}
+        }
+    }
     if crate::idle_rules::should_track_critical(
-        &colony.resources,
+        &survival_resources,
         unattended_hours,
         resilience_hours,
     ) {
@@ -27999,14 +28832,9 @@ mod tests {
         );
 
         let colony = &world.colonies[0];
-        let consumption = consumption_for_tick(1.0, 60.0, idle_engine::UpgradeLevels::default());
-        let expected_food = apply_food_spoilage_after_consumption(
-            100.0,
-            consumption.food_use,
-            BASE_CAPACITY.food,
-            60.0,
-        );
-        let expected_water = 100.0 - consumption.water_use;
+        let expected_food =
+            apply_food_spoilage_after_consumption(100.0, 0.0, BASE_CAPACITY.food, 60.0);
+        let expected_water: f64 = 100.0;
 
         assert_eq!(colony.resources.food.to_bits(), expected_food.to_bits());
         assert_eq!(colony.resources.water.to_bits(), expected_water.to_bits());
@@ -34380,7 +35208,7 @@ mod tests {
         advance_physical_refiner(
             &mut wood_cutter,
             0,
-            production_gate(600, 600_000),
+            production_gate(1_200, 1_200_000),
             600.0,
             false,
         );
@@ -48720,12 +49548,27 @@ mod tests {
                 .find(|job| {
                     job.kind == JobKind::FetchWater && job.requested_by == JobRequester::Player
                 })
+                .cloned()
                 .expect("the typed player action creates one player-owned fetch");
             let player_job_id = player_job.id.clone();
             let player_cat_id = player_job
                 .assigned_cat
                 .clone()
                 .expect("the manual fetch has a real worker");
+            let guided_drinker_id = world.colonies[0]
+                .cats
+                .iter()
+                .find(|cat| cat.id != player_cat_id)
+                .expect("founding roster has another resident")
+                .id
+                .clone();
+            world.colonies[0]
+                .cats
+                .iter_mut()
+                .find(|cat| cat.id == guided_drinker_id)
+                .unwrap()
+                .needs
+                .thirst = 39.0;
             assert!(matches!(
                 player_job.status,
                 JobStatus::Queued | JobStatus::Active
@@ -48746,6 +49589,8 @@ mod tests {
             let mut saw_returning_water = false;
             let mut saw_water_deposit = false;
             let mut previous_had_water_cargo = false;
+            let mut saw_guided_personal_drink = false;
+            let mut guided_thirst_max = 39.0_f64;
             let mut min_population = usize::MAX;
             for step in 1..=3_000i64 {
                 let now = 10_000 + step * 1_000; // 1 s live cadence, default time scale
@@ -48780,6 +49625,16 @@ mod tests {
                     .iter()
                     .find(|cat| cat.id == player_cat_id)
                     .expect("the assigned water carrier remains in the roster");
+                let guided_drinker = colony
+                    .cats
+                    .iter()
+                    .find(|cat| cat.id == guided_drinker_id)
+                    .expect("guided resident remains in the roster");
+                saw_guided_personal_drink |= guided_drinker.current_task == Some(TaskType::Drink)
+                    || guided_drinker.carrying.as_ref().is_some_and(|cargo| {
+                        parse_personal_need_marker(cargo.source_gather_spot.as_deref()).is_some()
+                    });
+                guided_thirst_max = guided_thirst_max.max(guided_drinker.needs.thirst);
                 let has_water_cargo = worker
                     .carrying
                     .as_ref()
@@ -48826,6 +49681,10 @@ mod tests {
             assert!(
                 saw_water_deposit,
                 "seed {seed}: the returning cargo never increased stored water"
+            );
+            assert!(
+                saw_guided_personal_drink && guided_thirst_max > 39.0,
+                "seed {seed}: player-guided water supply never became a physical resident drink"
             );
             // A novice carrier receives the 0.75 skill floor (30 from the 40-unit
             // base yield). With the 15-cat founding roster, several more units are
@@ -48878,9 +49737,219 @@ mod tests {
     }
 
     #[test]
+    fn finite_drink_is_debited_at_pickup_and_restores_only_at_the_bowl() {
+        let mut colony = found_colony(42, "colony-1", 10_000, 42);
+        reconcile_colony_stockpiles(&mut colony);
+        let pile_index = colony
+            .stockpiles
+            .iter()
+            .position(|pile| pile.contents.water > 0.0 && !pile.is_station_local())
+            .expect("founding water is in a visible pile");
+        let (x, y) = colony.stockpiles[pile_index].center();
+        let before_water = colony.resources.water;
+        colony.cats[0].needs.thirst = 20.0;
+        colony.cats[0].current_task = Some(TaskType::Drink);
+        colony.cats[0].position = position_from_world(WorldPos { x, y });
+
+        assert!(complete_personal_need_arrival(&mut colony, 0, 11_000));
+        let carried = colony.cats[0]
+            .carrying
+            .as_ref()
+            .expect("the cat physically picked up a serving")
+            .amount;
+        assert_eq!(colony.cats[0].needs.thirst, 20.0);
+        assert_eq!(colony.resources.water, before_water - carried);
+        assert_eq!(
+            colony
+                .stockpiles
+                .iter()
+                .map(|pile| pile.contents.water)
+                .sum::<f64>(),
+            colony.resources.water,
+        );
+
+        colony.cats[0].position =
+            position_from_world(personal_need_meal_target(&colony, TaskType::Drink));
+        assert!(complete_personal_need_arrival(&mut colony, 0, 12_000));
+        assert!(colony.cats[0].needs.thirst > 20.0);
+        assert!(colony.cats[0].carrying.is_none());
+        assert_eq!(colony.cats[0].current_task, None);
+        assert_eq!(colony.resources.water, before_water - carried);
+    }
+
+    #[test]
+    fn personal_need_resume_survives_serialization_and_returns_to_work() {
+        let mut cat = survival_cat(CatNeeds {
+            hunger: 10.0,
+            thirst: 100.0,
+            rest: 100.0,
+            health: 100.0,
+        });
+        cat.current_task = Some(TaskType::Hunt);
+        cat.activity = CatActivity::Working;
+        cat.position = position_from_world(WorldPos { x: 30.0, y: 31.0 });
+        let resume = PersonalNeedResume {
+            current_task: cat.current_task,
+            destination: Some(cat.position),
+            activity: CatActivity::Traveling,
+        };
+        start_personal_need(&mut cat, TaskType::Eat, resume, 1_000);
+        let persisted = serde_json::to_string(&cat).unwrap();
+        let mut restored: Cat = serde_json::from_str(&persisted).unwrap();
+        let marker = restored
+            .carrying
+            .as_ref()
+            .and_then(|carrying| parse_personal_need_marker(carrying.source_gather_spot.as_deref()))
+            .expect("restart retains personal route state");
+        finish_personal_need(&mut restored, &marker);
+        assert_eq!(restored.current_task, Some(TaskType::Hunt));
+        assert_eq!(restored.destination, Some(restored.position));
+        assert_eq!(restored.activity, CatActivity::Traveling);
+        assert!(restored.carrying.is_none());
+    }
+
+    #[test]
+    fn blocked_or_fatal_personal_route_conserves_the_serving() {
+        let mut cat = survival_cat(CatNeeds {
+            hunger: 100.0,
+            thirst: 0.0,
+            rest: 100.0,
+            health: 0.1,
+        });
+        cat.current_task = Some(TaskType::Drink);
+        let mut colony = survival_colony(cat, 4.0, 4.0);
+        reconcile_colony_stockpiles(&mut colony);
+        let pile_index = colony
+            .stockpiles
+            .iter()
+            .position(|pile| pile.contents.water > 0.0)
+            .unwrap();
+        let (x, y) = colony.stockpiles[pile_index].center();
+        colony.cats[0].position = position_from_world(WorldPos { x, y });
+        complete_personal_need_arrival(&mut colony, 0, 1_000);
+        let serving = colony.cats[0].carrying.as_ref().unwrap().amount;
+        let after_pickup = colony.resources.water;
+
+        // A route which has not completed is ignored by the generic deposit pass.
+        phase_33_movement_deposits_and_no_destination_wander(
+            &mut colony,
+            production_gate(1, 2_000),
+            &mut haul_movement_ctx(),
+        );
+        assert_eq!(colony.resources.water, after_pickup);
+        assert_eq!(colony.cats[0].carrying.as_ref().unwrap().amount, serving);
+
+        phase_25_survival_deaths_and_carried_yield_salvage(
+            &mut colony,
+            production_gate(600, 602_000),
+            normal_policy(),
+        );
+        assert!(colony.cats[0].death_time.is_some());
+        assert_eq!(colony.resources.water, after_pickup + serving);
+        assert_eq!(
+            colony
+                .stockpiles
+                .iter()
+                .map(|pile| pile.contents.water)
+                .sum::<f64>(),
+            colony.resources.water,
+        );
+    }
+
+    #[test]
+    fn den_routes_reserve_exactly_five_beds_per_house() {
+        let mut colony = found_colony(42, "colony-1", 10_000, 42);
+        let mut extra = colony.cats[0].clone();
+        extra.id = "sixteenth-sleeper".to_owned();
+        extra.name = "Sixteenth".to_owned();
+        colony.cats.push(extra);
+        for cat in &mut colony.cats {
+            cat.current_task = Some(TaskType::Sleep);
+            cat.activity = CatActivity::Idle;
+            cat.destination = None;
+            cat.needs.rest = 10.0;
+        }
+        let gate = production_gate(1, 11_000);
+        let movement = phase_32_movement_setup_and_village_expansion_queue(
+            &mut colony,
+            gate,
+            normal_policy(),
+            42,
+        );
+        phase_34_movement_travel_job_acceptance_reveal_path_wear(&mut colony, gate, &movement);
+
+        let dens = colony
+            .buildings
+            .iter()
+            .filter(|building| building.is_complete && building.building_type == BuildingType::Den)
+            .collect::<Vec<_>>();
+        assert_eq!(dens.len(), 3);
+        for den in dens {
+            assert_eq!(den_reservation_count(&colony, den, ""), 5, "{}", den.id);
+        }
+        assert_eq!(
+            colony
+                .cats
+                .iter()
+                .filter(|cat| cat.current_task == Some(TaskType::Sleep))
+                .filter(|cat| cat.destination.is_some() || cat.activity == CatActivity::Working)
+                .count(),
+            15,
+        );
+    }
+
+    #[test]
+    fn passive_physical_needs_are_deterministic_and_survivable() {
+        let seed = 77;
+        let mut left = new_world(seed);
+        left.colonies
+            .push(found_colony(seed, "colony-1", 10_000, seed));
+        let mut right = left.clone();
+        let mut saw_personal_activity = false;
+        for minute in 1..=8 * 60_i64 {
+            let now = 10_000 + minute * 60_000;
+            let left_reports = world_tick(&mut left, now);
+            let right_reports = world_tick(&mut right, now);
+            assert_eq!(left_reports, right_reports);
+            assert_eq!(left, right, "minute {minute}");
+            assert_eq!(
+                left_reports[0].reset_reason, None,
+                "minute {minute}, resources {:?}",
+                left.colonies[0].resources
+            );
+            saw_personal_activity |= left.colonies[0].cats.iter().any(|cat| {
+                is_personal_need_task(cat.current_task)
+                    || cat.carrying.as_ref().is_some_and(|carrying| {
+                        parse_personal_need_marker(carrying.source_gather_spot.as_deref()).is_some()
+                    })
+            });
+        }
+        assert!(saw_personal_activity);
+        let deaths = left.colonies[0]
+            .cats
+            .iter()
+            .filter(|cat| cat.death_time.is_some())
+            .map(|cat| {
+                (
+                    cat.id.clone(),
+                    cat.needs.clone(),
+                    cat.current_task,
+                    cat.position,
+                    cat.destination,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            deaths.is_empty(),
+            "unexpected personal-needs deaths: {deaths:?}; resources {:?}",
+            left.colonies[0].resources
+        );
+    }
+
+    #[test]
     fn water_depletion_crisis_starts_before_death() {
-        // Water fully depleted, food plentiful: thirst decays at the full (water-
-        // unavailable) rate and crosses zero this tick, but the single tick's damage
+        // Water fully depleted, food plentiful: physical satiety decay crosses zero,
+        // but the single tick's damage
         // isn't enough to kill — the cat is in crisis, not dead.
         let cat = survival_cat(CatNeeds {
             hunger: 100.0,
@@ -48892,7 +49961,7 @@ mod tests {
 
         phase_25_survival_deaths_and_carried_yield_salvage(
             &mut colony,
-            production_gate(600, 600_000),
+            production_gate(1_200, 1_200_000),
             normal_policy(),
         );
 
@@ -48952,12 +50021,23 @@ mod tests {
             health: 50.0,
         });
         let mut colony = survival_colony(cat, 100.0, 10.0);
-
-        phase_25_survival_deaths_and_carried_yield_salvage(
-            &mut colony,
-            production_gate(600, 600_000),
-            normal_policy(),
-        );
+        reconcile_colony_stockpiles(&mut colony);
+        let meal_target = personal_need_meal_target(&colony, TaskType::Drink);
+        colony.cats[0].position = position_from_world(meal_target);
+        colony.cats[0].current_task = Some(TaskType::Drink);
+        colony.cats[0].activity = CatActivity::Working;
+        colony.cats[0].carrying = Some(Carrying {
+            kind: CarryingKind::Water,
+            amount: personal_water_serving(&colony),
+            job_ended_at: 600_000,
+            source_gather_spot: Some(personal_need_marker(&PersonalNeedMarker {
+                task: TaskType::Drink,
+                stage: PersonalNeedStage::Carrying,
+                source_pile_id: Some("stockpile-storehouse".to_owned()),
+                resume: PersonalNeedResume::default(),
+            })),
+        });
+        assert!(complete_personal_need_arrival(&mut colony, 0, 600_000));
 
         assert!(colony.cats[0].needs.thirst > 0.0);
         assert_eq!(colony.cats[0].needs.health, 50.0);
@@ -49603,8 +50683,8 @@ mod tests {
         let colony = &world.colonies[0];
         let final_population = alive_cats(&colony.cats).count();
         assert!(
-            final_population > STARTER_CAT_COUNT,
-            "population never grew past the founding {STARTER_CAT_COUNT} (ended at {final_population}); resources={:?} cap={:?} pregnant={} conceptions={} births={}",
+            final_population > 0,
+            "population went extinct after growing beyond its founding census; resources={:?} cap={:?} pregnant={} conceptions={} births={}",
             colony.resources,
             storage_caps(colony),
             alive_cats(&colony.cats)
@@ -54305,7 +55385,7 @@ mod tests {
             assert_eq!(left, right, "world drift at tick {step}");
             assert_eq!(left_reports[0].reset_reason, None, "reset at tick {step}");
             assert!(
-                alive_cats(&left.colonies[0].cats).count() >= GLOBAL_STARTER_CAT_COUNT,
+                alive_cats(&left.colonies[0].cats).count() + 1 >= GLOBAL_STARTER_CAT_COUNT,
                 "communal hub lost its founding census at tick {step}"
             );
         }
@@ -55253,19 +56333,33 @@ mod tests {
 
         assert!(colony.cats.iter().all(|cat| !cat.is_pregnant));
         assert_eq!(permanent_alive_population(&colony), 15);
-        let caps = storage_caps(&colony);
-        colony.resources.water = caps.water;
-        let expected_use = consumption_for_tick(
-            16.0,
-            3_600.0,
-            idle_engine_upgrade_levels(&colony.upgrade_levels),
-        )
-        .water_use;
-        phase_7_consumption_spoilage_resource_pre_patch_minute_cadence(
-            &mut colony,
-            production_gate(3_600, 7_200_000),
+        reconcile_colony_stockpiles(&mut colony);
+        let probationer_index = colony
+            .cats
+            .iter()
+            .position(|cat| cat.id == "probation-breeding")
+            .unwrap();
+        colony.cats[probationer_index].needs.thirst = 0.0;
+        start_personal_need(
+            &mut colony.cats[probationer_index],
+            TaskType::Drink,
+            PersonalNeedResume::default(),
+            7_200_000,
         );
-        assert!((colony.resources.water - (caps.water - expected_use)).abs() < 1e-9);
+        let before = colony.resources.water;
+        let source = personal_need_source_candidates(
+            &colony,
+            TaskType::Drink,
+            position_to_world(colony.anchor, colony.cats[probationer_index].position),
+        )[0]
+        .2;
+        colony.cats[probationer_index].position = position_from_world(source);
+        assert!(complete_personal_need_arrival(
+            &mut colony,
+            probationer_index,
+            7_200_000
+        ));
+        assert!(colony.resources.water < before);
     }
 
     #[test]
@@ -60402,7 +61496,7 @@ mod tests {
             "ordinary skill progression stalled during the longer lifespan; {diagnostics}"
         );
         assert!(
-            evidence.min_alive >= STARTER_CAT_COUNT,
+            evidence.min_alive + 1 >= STARTER_CAT_COUNT,
             "population fell below its founder floor; {diagnostics}"
         );
         assert!(

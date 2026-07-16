@@ -86,7 +86,7 @@ pub const BUILDING_COSTS: [(BuildingType, u32); 25] = [
     (BuildingType::Sawmill, 25),
 ];
 
-pub const TASK_TO_SKILL: [(TaskType, &str); 14] = [
+pub const TASK_TO_SKILL: [(TaskType, &str); 17] = [
     (TaskType::Hunt, "hunting"),
     (TaskType::Fish, "hunting"),
     (TaskType::GatherHerbs, "medicine"),
@@ -100,6 +100,11 @@ pub const TASK_TO_SKILL: [(TaskType, &str); 14] = [
     (TaskType::Patrol, "attack"),
     (TaskType::Teach, "leadership"),
     (TaskType::Rest, "defense"),
+    // Physical personal activities reuse the closest legacy aptitude only for
+    // inspector completeness; they never award primary-stat task XP.
+    (TaskType::Eat, "hunting"),
+    (TaskType::Drink, "hunting"),
+    (TaskType::Sleep, "defense"),
     // Rust-only physical farm activity; continuous proficiency lives in Labor::Farm,
     // while this legacy primary-stat lookup uses building dexterity.
     (TaskType::Farm, "building"),
@@ -241,6 +246,9 @@ mod tests {
             (TaskType::Patrol, "attack"),
             (TaskType::Teach, "leadership"),
             (TaskType::Rest, "defense"),
+            (TaskType::Eat, "hunting"),
+            (TaskType::Drink, "hunting"),
+            (TaskType::Sleep, "defense"),
             (TaskType::Farm, "building"),
         ];
 

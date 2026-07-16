@@ -71,7 +71,7 @@ and guided play. The inspected client-owned 1090×2105 RGB framebuffer
 Stone Prep inspector, its independently cycled `Fired clay brick goods` add target, current queue,
 staffing, local stores, and controls without overlap or clipping. The temporary fixture/capture
 hook and isolated processes were removed. The catalog now pins 23 runtime recipes and 81 recipe/64
- resource future payloads.
+resource future payloads.
 
 ## 2026-07-15 — Finite fine-biome Gem, Clay, and Sand sources
 
@@ -151,6 +151,29 @@ Construction Basics `BUILDING` with `constructionSpeed add 0.03`; there is no bl
 clipping, or overlap. The capture-only hook was removed before final full sim/client gates, strict
 Clippy, and formatting. Final gates pass all 1,290 simulation tests (one intentional skip), all
 146 client tests, strict `cat-sim` and `cat-client` Clippy, formatting, and diff checks.
+
+## 2026-07-16 — Cats physically eat, drink, and sleep
+
+**Problem:** Hunger, thirst, and rest were scalar background regeneration. Food and water vanished
+from the colony ledger without a cat selecting a finite pile, walking, or consuming at a real
+destination, and Dens supplied abstract rest without bed occupancy.
+
+**Fix:** Eat, Drink, and Sleep are real deterministic tasks. A resident selects reachable revealed
+Food/Fish/Water stock, removes a bounded finite serving only at pickup, walks to Food Storage,
+Water Bowl, or the shrine fallback, and recovers only on arrival. Dens expose five reserved beds
+each and restore rest only while the cat is physically there. Blocked routes suspend conserved
+cargo; death returns a serving through finite storage. A durable marker in the persisted carrying
+record preserves interrupted task, destination, and activity across restart, then routes the cat
+back before work resumes. Empty stores release seekers so hunters and water carriers cannot
+deadlock the colony. Fed-state decay remains the established balance curve without passive
+restoration; serving sizes preserve the prior per-cat hourly Food/Water economy.
+
+**Evidence:** Pickup/debit/arrival, blocked/death conservation, exact five-bed reservations,
+serialization/resume, passive determinism/survival, live-second player-guided water, probationer
+consumption, dehydration edge events, long population, farm/Mill, communal, and five-seed
+300-game-hour campaigns cover the contract. This slice changes no client rendering; existing
+inspector task/carrying projection shows the new wire literals, so no framebuffer recapture was
+ required.
 
 ## 2026-07-15 — Palisades read as solid top-down fortress cells
 

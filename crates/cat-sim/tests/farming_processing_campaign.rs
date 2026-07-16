@@ -748,6 +748,10 @@ fn run_guided_campaign(seed: u32) -> WorldState {
     let mut campaign_at = START_MS;
     advance_at_player_cadence(&mut world, &mut campaign_at, 8 * 3_600);
     advance_at_player_cadence(&mut world, &mut campaign_at, 16 * 3_600);
+    // Physical meals and drinks can pause a manually staffed mill between its
+    // input and output legs; retain a bounded route runway instead of assuming
+    // the pre-needs teleport horizon.
+    advance_at_player_cadence(&mut world, &mut campaign_at, 4 * 3_600);
     advance_at_player_cadence(&mut world, &mut campaign_at, 600);
     let after_processing_ms = campaign_at;
 

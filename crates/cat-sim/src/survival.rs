@@ -57,6 +57,38 @@ pub fn apply_survival_tick(
     elapsed_sec: f64,
     config: impl Into<SurvivalConfig>,
 ) -> SurvivalTickResult {
+    apply_survival_tick_inner(needs, resources, elapsed_sec, config, true)
+}
+
+/// Apply the established fed-state decay and damage curve without granting any
+/// scalar restoration. Physical-route callers use this between finite meals and
+/// drinks: nourishment is represented by the slower decay curve, while actual
+/// recovery remains exclusive to arrival at the dining/drinking destination.
+#[must_use]
+pub fn apply_physical_survival_tick(
+    needs: impl Borrow<CatNeeds>,
+    elapsed_sec: f64,
+    config: impl Into<SurvivalConfig>,
+) -> SurvivalTickResult {
+    apply_survival_tick_inner(
+        needs,
+        SurvivalResources {
+            food: 1.0,
+            water: 1.0,
+        },
+        elapsed_sec,
+        config,
+        false,
+    )
+}
+
+fn apply_survival_tick_inner(
+    needs: impl Borrow<CatNeeds>,
+    resources: impl Borrow<SurvivalResources>,
+    elapsed_sec: f64,
+    config: impl Into<SurvivalConfig>,
+    passive_restore: bool,
+) -> SurvivalTickResult {
     let needs = needs.borrow();
     let resources = resources.borrow();
     let config = config.into();
@@ -86,11 +118,11 @@ pub fn apply_survival_tick(
         health: needs.health,
     };
 
-    if food_available && next_needs.hunger < 90.0 {
+    if passive_restore && food_available && next_needs.hunger < 90.0 {
         next_needs = restore_hunger(&next_needs, 5.0 * tick_units);
     }
 
-    if water_available && next_needs.thirst < 90.0 {
+    if passive_restore && water_available && next_needs.thirst < 90.0 {
         next_needs = restore_thirst(&next_needs, 8.0 * tick_units);
     }
 
