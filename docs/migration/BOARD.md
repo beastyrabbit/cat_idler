@@ -752,7 +752,7 @@ for exact commit hashes/messages, and the corresponding spec doc for the origina
   the research ledger's clipped edge-pan state is also inspected at the supported width bounds.
 - Persistent map-name plaques are removed. All 25 current protocol building variants have an
   explicit residential/open/infrastructure treatment. The prior 24 variants, Mill/Sawmill, and
-  crop stages are framebuffer-verified; a legal integrated Accounting Tent retains all three
+  crop stages are framebuffer-verified; an integrated Accounting Tent retains all three
   founding Dens and renders as a separate open ledger/desk station. The staged wall/agricultural
   sequence is accepted at native resolution.
 - The semantic resource-icon card is verified. All 25 HUD rows have unique labels, paths, tints,

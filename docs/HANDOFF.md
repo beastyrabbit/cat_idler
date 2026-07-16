@@ -31,7 +31,7 @@ Verified foundations include:
   removal, and restart conserve the bill; old funded scaffolds remain compatible. Its label-free
   inspector truth is accepted in a live 2048×1152 own-framebuffer, and the four touched crates pass
   their complete test and strict-Clippy gates. Label-free roofed homes and explicit open
-  compositions for all 25 current protocol building variants, including an integrated legal
+  compositions for all 25 current protocol building variants, including a fully integrated
   Accounting Tent that retains all three founding Dens; exterior crop/logging production with
   distinct roofless processing stations, persisted outside-wall agriculture, and an accepted
   before/during/after staged-wall cutover. Mill, Sawmill, Workshop, and Smelter now have complete
