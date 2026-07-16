@@ -4,7 +4,11 @@
 //! module describes recipe identity and resource domains only. Every maintained
 //! processor now follows a finite physical route through station-local stores.
 
-use crate::{stockpiles::ResourceKind, types::BuildingType};
+use crate::{
+    items::{ItemKind, Material},
+    stockpiles::ResourceKind,
+    types::BuildingType,
+};
 
 pub const SAWMILL_RECIPE_ID: &str = "logs_to_lumber";
 pub const GRAIN_TO_FLOUR_RECIPE_ID: &str = "grain_to_flour";
@@ -24,6 +28,24 @@ pub const HIDE_TO_LEATHER_RECIPE_ID: &str = "hide_to_leather";
 pub const SMITHY_WEAPON_RECIPE_ID: &str = "smithy_weapon";
 pub const SMITHY_ARMOR_RECIPE_ID: &str = "smithy_armor";
 pub const SMITHY_TOOL_RECIPE_ID: &str = "smithy_tool";
+pub const BONE_TOOL_RECIPE_ID: &str = "bone_tool";
+pub const BONE_TRINKET_RECIPE_ID: &str = "bone_trinket";
+pub const BONE_TOY_RECIPE_ID: &str = "bone_toy";
+pub const GEM_TRINKET_RECIPE_ID: &str = "gem_jewelry";
+pub const CLAY_MUG_RECIPE_ID: &str = "clay_mug";
+pub const CLAY_BOWL_RECIPE_ID: &str = "clay_bowl";
+pub const CLAY_BRICK_RECIPE_ID: &str = "clay_brick";
+pub const SAND_MUG_RECIPE_ID: &str = "sand_glass_mug";
+pub const SAND_BOWL_RECIPE_ID: &str = "sand_glass_bowl";
+pub const SAND_TRINKET_RECIPE_ID: &str = "sand_glass_trinket";
+
+/// Exact finite output identity for a material-variant station recipe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StationItemOutput {
+    pub kind: ItemKind,
+    pub material: Material,
+    pub quality: u8,
+}
 
 /// One stable queue recipe and the finite resource kinds it consumes and
 /// produces through station-local stores.
@@ -33,6 +55,9 @@ pub struct StationRecipeDescriptor {
     pub building_type: BuildingType,
     pub input_resources: &'static [ResourceKind],
     pub output_resources: &'static [ResourceKind],
+    /// Exact item emitted into the station-local finite ledger. Such recipes
+    /// deliberately have no fake scalar output resource.
+    pub output_item: Option<StationItemOutput>,
     /// Baseline recipe of a founding-placeable bench. Catalog studies may own
     /// later recipes without making this first survival chain unavailable.
     pub founding_available: bool,
@@ -50,15 +75,24 @@ const MILL_INPUTS: &[ResourceKind] = &[ResourceKind::Grain, ResourceKind::Flour]
 const MILL_OUTPUTS: &[ResourceKind] = &[ResourceKind::Food, ResourceKind::Flour];
 const SAWMILL_INPUTS: &[ResourceKind] = &[ResourceKind::Logs];
 const SAWMILL_OUTPUTS: &[ResourceKind] = &[ResourceKind::Lumber];
-const WORKSHOP_INPUTS: &[ResourceKind] = &[ResourceKind::Materials];
+const WORKSHOP_INPUTS: &[ResourceKind] = &[
+    ResourceKind::Materials,
+    ResourceKind::Gem,
+    ResourceKind::Sand,
+];
 const WORKSHOP_OUTPUTS: &[ResourceKind] = &[ResourceKind::Refined];
 const SMELTER_INPUTS: &[ResourceKind] = &[ResourceKind::Ore];
 const SMELTER_OUTPUTS: &[ResourceKind] = &[ResourceKind::Metal];
 const WOOD_CUTTER_INPUTS: &[ResourceKind] = &[ResourceKind::Logs];
 const WOOD_CUTTER_OUTPUTS: &[ResourceKind] = &[ResourceKind::Planks];
-const STONE_PREP_INPUTS: &[ResourceKind] = &[ResourceKind::Stone];
+const STONE_PREP_INPUTS: &[ResourceKind] =
+    &[ResourceKind::Stone, ResourceKind::Bone, ResourceKind::Clay];
 const STONE_PREP_OUTPUTS: &[ResourceKind] = &[ResourceKind::Blocks];
-const WOODWORKING_INPUTS: &[ResourceKind] = &[ResourceKind::Planks, ResourceKind::Blocks];
+const WOODWORKING_INPUTS: &[ResourceKind] = &[
+    ResourceKind::Planks,
+    ResourceKind::Blocks,
+    ResourceKind::Bone,
+];
 const WOODWORKING_OUTPUTS: &[ResourceKind] = &[ResourceKind::Tools];
 const CLOTHIER_INPUTS: &[ResourceKind] = &[ResourceKind::Fibre];
 const CLOTHIER_OUTPUTS: &[ResourceKind] = &[ResourceKind::Cloth];
@@ -77,6 +111,7 @@ const MILL_RECIPES: &[StationRecipeDescriptor] = &[
         building_type: BuildingType::Mill,
         input_resources: &[ResourceKind::Grain],
         output_resources: &[ResourceKind::Flour],
+        output_item: None,
         founding_available: false,
     },
     StationRecipeDescriptor {
@@ -84,6 +119,7 @@ const MILL_RECIPES: &[StationRecipeDescriptor] = &[
         building_type: BuildingType::Mill,
         input_resources: &[ResourceKind::Flour],
         output_resources: &[ResourceKind::Food],
+        output_item: None,
         founding_available: false,
     },
 ];
@@ -92,20 +128,73 @@ const SAWMILL_RECIPES: &[StationRecipeDescriptor] = &[StationRecipeDescriptor {
     building_type: BuildingType::Sawmill,
     input_resources: SAWMILL_INPUTS,
     output_resources: SAWMILL_OUTPUTS,
+    output_item: None,
     founding_available: false,
 }];
-const WORKSHOP_RECIPES: &[StationRecipeDescriptor] = &[StationRecipeDescriptor {
-    id: WORKSHOP_RECIPE_ID,
-    building_type: BuildingType::Workshop,
-    input_resources: WORKSHOP_INPUTS,
-    output_resources: WORKSHOP_OUTPUTS,
-    founding_available: false,
-}];
+const WORKSHOP_RECIPES: &[StationRecipeDescriptor] = &[
+    StationRecipeDescriptor {
+        id: WORKSHOP_RECIPE_ID,
+        building_type: BuildingType::Workshop,
+        input_resources: &[ResourceKind::Materials],
+        output_resources: WORKSHOP_OUTPUTS,
+        output_item: None,
+        founding_available: false,
+    },
+    StationRecipeDescriptor {
+        id: GEM_TRINKET_RECIPE_ID,
+        building_type: BuildingType::Workshop,
+        input_resources: &[ResourceKind::Gem],
+        output_resources: &[],
+        output_item: Some(StationItemOutput {
+            kind: ItemKind::Trinket,
+            material: Material::Gem,
+            quality: 2,
+        }),
+        founding_available: false,
+    },
+    StationRecipeDescriptor {
+        id: SAND_MUG_RECIPE_ID,
+        building_type: BuildingType::Workshop,
+        input_resources: &[ResourceKind::Sand],
+        output_resources: &[],
+        output_item: Some(StationItemOutput {
+            kind: ItemKind::Mug,
+            material: Material::Sand,
+            quality: 1,
+        }),
+        founding_available: false,
+    },
+    StationRecipeDescriptor {
+        id: SAND_BOWL_RECIPE_ID,
+        building_type: BuildingType::Workshop,
+        input_resources: &[ResourceKind::Sand],
+        output_resources: &[],
+        output_item: Some(StationItemOutput {
+            kind: ItemKind::Bowl,
+            material: Material::Sand,
+            quality: 1,
+        }),
+        founding_available: false,
+    },
+    StationRecipeDescriptor {
+        id: SAND_TRINKET_RECIPE_ID,
+        building_type: BuildingType::Workshop,
+        input_resources: &[ResourceKind::Sand],
+        output_resources: &[],
+        output_item: Some(StationItemOutput {
+            kind: ItemKind::Trinket,
+            material: Material::Sand,
+            quality: 2,
+        }),
+        founding_available: false,
+    },
+];
 const SMELTER_RECIPES: &[StationRecipeDescriptor] = &[StationRecipeDescriptor {
     id: SMELTER_RECIPE_ID,
     building_type: BuildingType::Smelter,
     input_resources: SMELTER_INPUTS,
     output_resources: SMELTER_OUTPUTS,
+    output_item: None,
     founding_available: false,
 }];
 const WOOD_CUTTER_RECIPES: &[StationRecipeDescriptor] = &[StationRecipeDescriptor {
@@ -113,27 +202,107 @@ const WOOD_CUTTER_RECIPES: &[StationRecipeDescriptor] = &[StationRecipeDescripto
     building_type: BuildingType::WoodCutter,
     input_resources: WOOD_CUTTER_INPUTS,
     output_resources: WOOD_CUTTER_OUTPUTS,
+    output_item: None,
     founding_available: true,
 }];
-const STONE_PREP_RECIPES: &[StationRecipeDescriptor] = &[StationRecipeDescriptor {
-    id: STONE_TO_BLOCKS_RECIPE_ID,
-    building_type: BuildingType::StonePrep,
-    input_resources: STONE_PREP_INPUTS,
-    output_resources: STONE_PREP_OUTPUTS,
-    founding_available: true,
-}];
-const WOODWORKING_RECIPES: &[StationRecipeDescriptor] = &[StationRecipeDescriptor {
-    id: PLANKS_AND_BLOCKS_TO_TOOLS_RECIPE_ID,
-    building_type: BuildingType::Woodworking,
-    input_resources: WOODWORKING_INPUTS,
-    output_resources: WOODWORKING_OUTPUTS,
-    founding_available: true,
-}];
+const STONE_PREP_RECIPES: &[StationRecipeDescriptor] = &[
+    StationRecipeDescriptor {
+        id: STONE_TO_BLOCKS_RECIPE_ID,
+        building_type: BuildingType::StonePrep,
+        input_resources: &[ResourceKind::Stone],
+        output_resources: STONE_PREP_OUTPUTS,
+        output_item: None,
+        founding_available: true,
+    },
+    StationRecipeDescriptor {
+        id: BONE_TRINKET_RECIPE_ID,
+        building_type: BuildingType::StonePrep,
+        input_resources: &[ResourceKind::Bone],
+        output_resources: &[],
+        output_item: Some(StationItemOutput {
+            kind: ItemKind::Trinket,
+            material: Material::Bone,
+            quality: 1,
+        }),
+        founding_available: false,
+    },
+    StationRecipeDescriptor {
+        id: BONE_TOY_RECIPE_ID,
+        building_type: BuildingType::StonePrep,
+        input_resources: &[ResourceKind::Bone],
+        output_resources: &[],
+        output_item: Some(StationItemOutput {
+            kind: ItemKind::Toy,
+            material: Material::Bone,
+            quality: 1,
+        }),
+        founding_available: false,
+    },
+    StationRecipeDescriptor {
+        id: CLAY_MUG_RECIPE_ID,
+        building_type: BuildingType::StonePrep,
+        input_resources: &[ResourceKind::Clay],
+        output_resources: &[],
+        output_item: Some(StationItemOutput {
+            kind: ItemKind::Mug,
+            material: Material::Clay,
+            quality: 1,
+        }),
+        founding_available: false,
+    },
+    StationRecipeDescriptor {
+        id: CLAY_BOWL_RECIPE_ID,
+        building_type: BuildingType::StonePrep,
+        input_resources: &[ResourceKind::Clay],
+        output_resources: &[],
+        output_item: Some(StationItemOutput {
+            kind: ItemKind::Bowl,
+            material: Material::Clay,
+            quality: 1,
+        }),
+        founding_available: false,
+    },
+    StationRecipeDescriptor {
+        id: CLAY_BRICK_RECIPE_ID,
+        building_type: BuildingType::StonePrep,
+        input_resources: &[ResourceKind::Clay],
+        output_resources: &[],
+        output_item: Some(StationItemOutput {
+            kind: ItemKind::Brick,
+            material: Material::Clay,
+            quality: 1,
+        }),
+        founding_available: false,
+    },
+];
+const WOODWORKING_RECIPES: &[StationRecipeDescriptor] = &[
+    StationRecipeDescriptor {
+        id: PLANKS_AND_BLOCKS_TO_TOOLS_RECIPE_ID,
+        building_type: BuildingType::Woodworking,
+        input_resources: &[ResourceKind::Planks, ResourceKind::Blocks],
+        output_resources: WOODWORKING_OUTPUTS,
+        output_item: None,
+        founding_available: true,
+    },
+    StationRecipeDescriptor {
+        id: BONE_TOOL_RECIPE_ID,
+        building_type: BuildingType::Woodworking,
+        input_resources: &[ResourceKind::Bone],
+        output_resources: &[],
+        output_item: Some(StationItemOutput {
+            kind: ItemKind::Tool,
+            material: Material::Bone,
+            quality: 1,
+        }),
+        founding_available: false,
+    },
+];
 const CLOTHIER_RECIPES: &[StationRecipeDescriptor] = &[StationRecipeDescriptor {
     id: FIBRE_TO_CLOTH_RECIPE_ID,
     building_type: BuildingType::Clothier,
     input_resources: CLOTHIER_INPUTS,
     output_resources: CLOTHIER_OUTPUTS,
+    output_item: None,
     founding_available: false,
 }];
 const TANNERY_RECIPES: &[StationRecipeDescriptor] = &[StationRecipeDescriptor {
@@ -141,6 +310,7 @@ const TANNERY_RECIPES: &[StationRecipeDescriptor] = &[StationRecipeDescriptor {
     building_type: BuildingType::Tannery,
     input_resources: TANNERY_INPUTS,
     output_resources: TANNERY_OUTPUTS,
+    output_item: None,
     founding_available: false,
 }];
 const SMITHY_RECIPES: &[StationRecipeDescriptor] = &[
@@ -149,6 +319,7 @@ const SMITHY_RECIPES: &[StationRecipeDescriptor] = &[
         building_type: BuildingType::Smithy,
         input_resources: SMITHY_INPUTS,
         output_resources: &[ResourceKind::Weapons],
+        output_item: None,
         founding_available: false,
     },
     StationRecipeDescriptor {
@@ -156,6 +327,7 @@ const SMITHY_RECIPES: &[StationRecipeDescriptor] = &[
         building_type: BuildingType::Smithy,
         input_resources: SMITHY_INPUTS,
         output_resources: &[ResourceKind::Tools],
+        output_item: None,
         founding_available: false,
     },
     StationRecipeDescriptor {
@@ -163,6 +335,7 @@ const SMITHY_RECIPES: &[StationRecipeDescriptor] = &[
         building_type: BuildingType::Smithy,
         input_resources: SMITHY_INPUTS,
         output_resources: &[ResourceKind::Armor],
+        output_item: None,
         founding_available: false,
     },
 ];
@@ -174,6 +347,18 @@ pub fn is_runtime_recipe_id(recipe_id: &str) -> bool {
         station_recipe_set(building_type)
             .is_some_and(|station| station.recipes.iter().any(|recipe| recipe.id == recipe_id))
     })
+}
+
+/// Resolve an exact finite material-variant output from the same descriptor
+/// registry used by queue entitlement and station controls.
+#[must_use]
+pub fn station_item_recipe(recipe_id: &str) -> Option<&'static StationRecipeDescriptor> {
+    BuildingType::ALL
+        .iter()
+        .copied()
+        .filter_map(station_recipe_set)
+        .flat_map(|station| station.recipes)
+        .find(|recipe| recipe.id == recipe_id && recipe.output_item.is_some())
 }
 
 /// The single data source for recipe IDs and station-local resource domains.
@@ -215,14 +400,25 @@ mod tests {
             ),
             (
                 BuildingType::StonePrep,
-                &[STONE_TO_BLOCKS_RECIPE_ID][..],
-                &[ResourceKind::Stone][..],
+                &[
+                    STONE_TO_BLOCKS_RECIPE_ID,
+                    BONE_TRINKET_RECIPE_ID,
+                    BONE_TOY_RECIPE_ID,
+                    CLAY_MUG_RECIPE_ID,
+                    CLAY_BOWL_RECIPE_ID,
+                    CLAY_BRICK_RECIPE_ID,
+                ][..],
+                &[ResourceKind::Stone, ResourceKind::Bone, ResourceKind::Clay][..],
                 &[ResourceKind::Blocks][..],
             ),
             (
                 BuildingType::Woodworking,
-                &[PLANKS_AND_BLOCKS_TO_TOOLS_RECIPE_ID][..],
-                &[ResourceKind::Planks, ResourceKind::Blocks][..],
+                &[PLANKS_AND_BLOCKS_TO_TOOLS_RECIPE_ID, BONE_TOOL_RECIPE_ID][..],
+                &[
+                    ResourceKind::Planks,
+                    ResourceKind::Blocks,
+                    ResourceKind::Bone,
+                ][..],
                 &[ResourceKind::Tools][..],
             ),
             (
@@ -269,7 +465,7 @@ mod tests {
             assert!(station.recipes.iter().all(|recipe| {
                 recipe.building_type == building
                     && !recipe.input_resources.is_empty()
-                    && !recipe.output_resources.is_empty()
+                    && (!recipe.output_resources.is_empty() || recipe.output_item.is_some())
             }));
         }
     }
@@ -298,7 +494,7 @@ mod tests {
                 assert!(ids.insert(recipe.id), "duplicate recipe id {}", recipe.id);
             }
         }
-        assert_eq!(ids.len(), 13);
+        assert_eq!(ids.len(), 23);
         assert!(station_recipe_set(BuildingType::Den).is_none());
     }
 
@@ -333,6 +529,94 @@ mod tests {
         assert_eq!(smithy.recipes[1].output_resources, &[ResourceKind::Tools]);
         assert!(mill.recipes.iter().all(|recipe| !recipe.founding_available));
         assert!(!smithy.recipes[1].founding_available);
+    }
+
+    #[test]
+    fn bone_gem_clay_and_sand_have_exhaustive_exact_item_routes() {
+        let expected = [
+            (
+                BONE_TOOL_RECIPE_ID,
+                BuildingType::Woodworking,
+                ResourceKind::Bone,
+                ItemKind::Tool,
+                Material::Bone,
+            ),
+            (
+                BONE_TRINKET_RECIPE_ID,
+                BuildingType::StonePrep,
+                ResourceKind::Bone,
+                ItemKind::Trinket,
+                Material::Bone,
+            ),
+            (
+                BONE_TOY_RECIPE_ID,
+                BuildingType::StonePrep,
+                ResourceKind::Bone,
+                ItemKind::Toy,
+                Material::Bone,
+            ),
+            (
+                GEM_TRINKET_RECIPE_ID,
+                BuildingType::Workshop,
+                ResourceKind::Gem,
+                ItemKind::Trinket,
+                Material::Gem,
+            ),
+            (
+                CLAY_MUG_RECIPE_ID,
+                BuildingType::StonePrep,
+                ResourceKind::Clay,
+                ItemKind::Mug,
+                Material::Clay,
+            ),
+            (
+                CLAY_BOWL_RECIPE_ID,
+                BuildingType::StonePrep,
+                ResourceKind::Clay,
+                ItemKind::Bowl,
+                Material::Clay,
+            ),
+            (
+                CLAY_BRICK_RECIPE_ID,
+                BuildingType::StonePrep,
+                ResourceKind::Clay,
+                ItemKind::Brick,
+                Material::Clay,
+            ),
+            (
+                SAND_MUG_RECIPE_ID,
+                BuildingType::Workshop,
+                ResourceKind::Sand,
+                ItemKind::Mug,
+                Material::Sand,
+            ),
+            (
+                SAND_BOWL_RECIPE_ID,
+                BuildingType::Workshop,
+                ResourceKind::Sand,
+                ItemKind::Bowl,
+                Material::Sand,
+            ),
+            (
+                SAND_TRINKET_RECIPE_ID,
+                BuildingType::Workshop,
+                ResourceKind::Sand,
+                ItemKind::Trinket,
+                Material::Sand,
+            ),
+        ];
+        for (id, building, input, kind, material) in expected {
+            let recipe = station_item_recipe(id).expect("variant recipe is runtime-backed");
+            assert_eq!(recipe.building_type, building, "{id}");
+            assert_eq!(recipe.input_resources, &[input], "{id}");
+            assert!(
+                recipe.output_resources.is_empty(),
+                "{id} has no fake scalar output"
+            );
+            let output = recipe.output_item.expect("exact output");
+            assert_eq!((output.kind, output.material), (kind, material), "{id}");
+            assert!(!recipe.founding_available, "{id}");
+        }
     }
 
     #[test]

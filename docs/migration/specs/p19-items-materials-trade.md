@@ -41,7 +41,7 @@ every workshop remains an open-top, function-readable map station.
 | Smelter | Ore → Metal bars | building `smelting`; study `metallurgy_preparation` | Metalwork / Captain | Same station-local carry/work/delivery contract |
 | Smithy | Metal → metal Tools, Weapons, or Armor | building `smithy`; separate Toolmaking, Weaponsmithing, and Armorsmithing recipes | Metalwork / Captain | One selected queue recipe per worker through local stores |
 | Workshop | Supplies → Crafted Supplies | `basic_tools`; study `trade_goods_preparation` | Process / Steward | Preserve the current physical `materials_to_refined` route |
-| Variant goods | Planks/Blocks/Cloth/Leather/Metal → material-specific items | matching craft-family recipe | Owning station's labor/officer | Stable finite item units remain local until hauled |
+| Variant goods | Bone → Tools/Trinkets/Toys; Gem → jewelry; Clay → pottery/Bricks; Sand → glassy goods | matching craft-family recipe | Owning station's labor/officer | Stable finite item units remain local until hauled |
 
 ### Stable taxonomy and save compatibility
 
@@ -49,7 +49,7 @@ every workshop remains an open-top, function-readable map station.
   **Lumber** is structural timber. Construction accepts both and prefers Lumber when available.
 - **Stone** is a defaulted raw resource with a physical quarry route. **Blocks** remain dressed
   stone. Existing `materials` are not reinterpreted as Stone. **Bone** is likewise a distinct
-  defaulted hunt byproduct carried after Hide; its item-variant recipes remain open breadth.
+  defaulted hunt byproduct carried after Hide; selected Tool, Trinket, and Toy recipes are live.
 - Keep the stable `materials` and `refined` wire/save IDs. Player-facing copy may call them
   **Supplies** and **Crafted Supplies** so their generic bulk Workshop chain is unambiguous.
 - Keep the stable `tools`, `weapons`, and `armor` resource fields for old-save and wire
@@ -59,7 +59,7 @@ every workshop remains an open-top, function-readable map station.
   Woodworking, Smithy, Clothier, and Tannery, use the same ordered/repeatable/pausable queue
   contract; future benches must preserve it.
 
-The C2.0 scaffold and sourced-breadth follow-up give all thirteen maintained station recipes stable data-owned descriptors,
+The C2.0 scaffold and sourced-breadth follow-ups give all 23 maintained station recipes stable data-owned descriptors,
 canonical input/output resource sets, deterministic default queues, and exact catalog-derived
 availability. C2.1 completes Wood Cutter's five-Logs-to-one-Plank physical route. C2.2 completes
 Stone Prep's five-Stone-to-one-Block physical route. C2.3 completes Woodworking's sequential
@@ -91,9 +91,9 @@ durability research effect scales restored condition. These values and actions s
 restart, and the Goods panel makes condition and repair visible.
 
 One signed caravan sale may transfer at most 20,000 grams of items. That bounded-load seam and the
-finite-item loop are implemented foundations; they do not make the catalog complete. Bone item
-variants, Gem/clay/sand sources and variants, and broader generated material/recipe breadth are
-still product work. Functional Tool/Weapon/Armor chains are complete and must retain their single
+finite-item loop are implemented foundations; they do not make the catalog complete. Ten selected
+Bone/Gem/Clay/Sand variants now use that complete loop; broader generated material/recipe breadth
+is still product work. Functional Tool/Weapon/Armor chains are complete and must retain their single
 finite authority. All ten maintained processors, including Smithy's three selected recipes, already
 use physical station-local logistics.
 

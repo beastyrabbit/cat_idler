@@ -1207,7 +1207,7 @@ fn payload_line(payload: &ResearchPayload) -> String {
     }
 }
 
-fn recipe_display_name(recipe_id: &str) -> String {
+pub(super) fn recipe_display_name(recipe_id: &str) -> String {
     match recipe_id {
         "grain_to_flour" => "Grain grinding".to_owned(),
         "flour_to_food" => "Food baking".to_owned(),
@@ -1219,6 +1219,16 @@ fn recipe_display_name(recipe_id: &str) -> String {
         "smithy_weapon" => "Weapon forging".to_owned(),
         "smithy_tool" => "Tool forging".to_owned(),
         "smithy_armor" => "Armor forging".to_owned(),
+        "bone_tool" => "Bone tool carving".to_owned(),
+        "bone_trinket" => "Bone decoration carving".to_owned(),
+        "bone_toy" => "Bone toy carving".to_owned(),
+        "gem_jewelry" => "Gem jewelry and decoration".to_owned(),
+        "clay_mug" => "Clay mug pottery".to_owned(),
+        "clay_bowl" => "Clay bowl pottery".to_owned(),
+        "clay_brick" => "Fired clay brick goods".to_owned(),
+        "sand_glass_mug" => "Glass mug casting".to_owned(),
+        "sand_glass_bowl" => "Glass bowl casting".to_owned(),
+        "sand_glass_trinket" => "Glass decoration casting".to_owned(),
         _ => title_case_identifier(recipe_id),
     }
 }

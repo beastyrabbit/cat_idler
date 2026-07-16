@@ -124,6 +124,8 @@ pub enum ItemKind {
     Trinket,
     /// Plaything for kittens.
     Toy,
+    /// Fired construction and hearth brick goods.
+    Brick,
 }
 
 impl ItemKind {
@@ -139,6 +141,7 @@ impl ItemKind {
         Self::Clothing,
         Self::Trinket,
         Self::Toy,
+        Self::Brick,
     ];
 
     /// Stable lowercase wire label (matches the `snake_case` serde rename).
@@ -154,6 +157,7 @@ impl ItemKind {
             Self::Clothing => "clothing",
             Self::Trinket => "trinket",
             Self::Toy => "toy",
+            Self::Brick => "brick",
         }
     }
 
@@ -172,6 +176,7 @@ impl ItemKind {
             Self::Bowl => 4,
             Self::Toy => 5,
             Self::Trinket => 6,
+            Self::Brick => 7,
             Self::Clothing => 8,
             Self::Tool => 12,
             Self::Furniture => 15,
@@ -294,6 +299,7 @@ pub fn item_weight_grams(item: Item) -> u32 {
         ItemKind::Clothing => 800,
         ItemKind::Trinket => 300,
         ItemKind::Toy => 500,
+        ItemKind::Brick => 2_000,
     };
     let material_pct = match item.material {
         Material::Fibre => 40_u64,
@@ -326,6 +332,7 @@ pub fn item_base_max_durability(item: Item) -> u32 {
         ItemKind::Clothing => 7,
         ItemKind::Trinket => 6,
         ItemKind::Toy => 5,
+        ItemKind::Brick => 14,
     };
     let material_pct = match item.material {
         Material::Fibre => 55_u64,
@@ -371,9 +378,8 @@ pub const fn item_workshop_id(item: Item) -> &'static str {
         ItemKind::Weapon | ItemKind::Armor => "smithy",
         _ => match item.material {
             Material::Wood => "woodworking",
-            Material::Stone | Material::Clay | Material::Sand | Material::Gem | Material::Bone => {
-                "stone_prep"
-            }
+            Material::Stone | Material::Clay | Material::Bone => "stone_prep",
+            Material::Sand | Material::Gem => "workshop",
             Material::Metal => "smithy",
             Material::Fibre => "clothier",
             Material::Leather => "tannery",

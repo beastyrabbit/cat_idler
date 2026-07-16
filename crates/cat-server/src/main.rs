@@ -2475,7 +2475,7 @@ mod tests {
             let mut world = guided.world.lock().await;
             let _ = world_tick(&mut world, started_at + 1_000);
             let colony = &world.colonies[0];
-            assert_eq!(colony.stock_ledger.steward_managed_piles.len(), 9);
+            assert_eq!(colony.stock_ledger.steward_managed_piles.len(), 11);
             assert!(colony.jobs.iter().any(|job| matches!(
                 job.metadata,
                 cat_sim::world_tick::JobMetadata::StockpileHaul { .. }

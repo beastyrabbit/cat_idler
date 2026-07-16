@@ -2199,6 +2199,7 @@ struct StationQueueText;
 #[derive(Component, Clone, Copy)]
 enum StationQueueButton {
     Add,
+    SelectRecipe,
     SelectWorker,
     SelectNext,
     MoveUp,
@@ -2211,6 +2212,7 @@ enum StationQueueButton {
 struct StationQueueUi {
     selected: usize,
     worker_selected: usize,
+    recipe_selected: usize,
 }
 /// Marker for the HUD colony header text (name / leader / pop / threat).
 #[derive(Component)]
@@ -4803,7 +4805,8 @@ fn setup(
                     controls.spawn((ui_text("", FS_SMALL, UI_MUTED), StationQueueText));
                     controls.spawn(bottom_bar_row_node()).with_children(|row| {
                         for (kind, label) in [
-                            (StationQueueButton::Add, "+ recipe"),
+                            (StationQueueButton::Add, "add"),
+                            (StationQueueButton::SelectRecipe, "choose"),
                             (StationQueueButton::SelectWorker, "worker"),
                             (StationQueueButton::SelectNext, "next"),
                             (StationQueueButton::MoveUp, "up"),
@@ -7649,6 +7652,16 @@ fn update_station_queue_controls(
         slot.production_queue.as_slice()
     });
     let paused = slot.map_or(building.production_paused, |slot| slot.production_paused);
+    ui.recipe_selected = ui
+        .recipe_selected
+        .min(building.available_recipes.len().saturating_sub(1));
+    let add_recipe = building
+        .available_recipes
+        .get(ui.recipe_selected)
+        .map_or_else(
+            || "recipe".to_owned(),
+            |recipe| research_ui::recipe_display_name(recipe),
+        );
     let worker_label = slot.map_or_else(
         || "legacy slot".to_owned(),
         |slot| {
@@ -7667,18 +7680,14 @@ fn update_station_queue_controls(
         ui.selected = 0;
         text.0 = format!(
             "{worker_label} — queue empty — add {} | {}",
-            building
-                .available_recipes
-                .first()
-                .map_or("recipe", |recipe| recipe.as_str())
-                .replace('_', " "),
+            add_recipe,
             if paused { "paused" } else { "running" }
         );
     } else {
         ui.selected = ui.selected.min(queue.len() - 1);
         let entry = &queue[ui.selected];
         text.0 = format!(
-            "{worker_label} — queue {}/{}: {}{} | {}",
+            "{worker_label} — add: {add_recipe} — queue {}/{}: {}{} | {}",
             ui.selected + 1,
             queue.len(),
             entry.recipe_id.replace('_', " "),
@@ -7716,6 +7725,12 @@ fn handle_station_queue_buttons(
             }
             continue;
         }
+        if matches!(button, StationQueueButton::SelectRecipe) {
+            if !building.available_recipes.is_empty() {
+                ui.recipe_selected = (ui.recipe_selected + 1) % building.available_recipes.len();
+            }
+            continue;
+        }
         if matches!(button, StationQueueButton::SelectNext) {
             let queue_len = building
                 .work_slots
@@ -7731,11 +7746,12 @@ fn handle_station_queue_buttons(
         if !session.ready {
             continue;
         }
-        let Some(action) = station_queue_action_for_worker(
+        let Some(action) = station_queue_action_for_worker_selected(
             &session,
             building,
             ui.worker_selected,
             ui.selected,
+            ui.recipe_selected,
             *button,
         ) else {
             continue;
@@ -7744,11 +7760,30 @@ fn handle_station_queue_buttons(
     }
 }
 
+#[cfg(test)]
 fn station_queue_action_for_worker(
     session: &Session,
     building: &BuildingSnapshot,
     worker_selected: usize,
     selected: usize,
+    button: StationQueueButton,
+) -> Option<ClientAction> {
+    station_queue_action_for_worker_selected(
+        session,
+        building,
+        worker_selected,
+        selected,
+        0,
+        button,
+    )
+}
+
+fn station_queue_action_for_worker_selected(
+    session: &Session,
+    building: &BuildingSnapshot,
+    worker_selected: usize,
+    selected: usize,
+    recipe_selected: usize,
     button: StationQueueButton,
 ) -> Option<ClientAction> {
     if !session.ready {
@@ -7761,7 +7796,7 @@ fn station_queue_action_for_worker(
     let paused = slot.map_or(building.production_paused, |slot| slot.production_paused);
     let edit = match button {
         StationQueueButton::Add => ProductionQueueEdit::Add {
-            recipe_id: building.available_recipes.first()?.clone(),
+            recipe_id: building.available_recipes.get(recipe_selected)?.clone(),
             repeat: true,
         },
         StationQueueButton::MoveUp => ProductionQueueEdit::Move {
@@ -7781,7 +7816,9 @@ fn station_queue_action_for_worker(
             }
         }
         StationQueueButton::TogglePause => ProductionQueueEdit::SetPaused { paused: !paused },
-        StationQueueButton::SelectWorker | StationQueueButton::SelectNext => return None,
+        StationQueueButton::SelectWorker
+        | StationQueueButton::SelectRecipe
+        | StationQueueButton::SelectNext => return None,
     };
     Some(if let Some(slot) = slot {
         ClientAction::EditProductionWorkSlot {
@@ -16181,6 +16218,20 @@ mod tests {
             }) if session_id == "mill-queue-session"
                 && building_id == "mill-1"
                 && recipe_id == "grain_to_flour"
+        ));
+        assert!(matches!(
+            station_queue_action_for_worker_selected(
+                &signed_session("mill-queue-session"),
+                &mill,
+                0,
+                0,
+                1,
+                StationQueueButton::Add,
+            ),
+            Some(ClientAction::EditProductionQueue {
+                edit: ProductionQueueEdit::Add { recipe_id, repeat: true },
+                ..
+            }) if recipe_id == "flour_to_food"
         ));
         assert_ne!(
             carrying_color(CarryingKind::Flour),

@@ -1418,6 +1418,16 @@ mod tests {
             ("toolmaking_staples", "smithy_tool"),
             ("metallurgy_preparation", "ore_to_metal"),
             ("trade_goods_preparation", "materials_to_refined"),
+            ("hunting_preparation", "bone_trinket"),
+            ("hunting_staples", "bone_toy"),
+            ("toolmaking_quality", "bone_tool"),
+            ("stonecraft_staples", "clay_mug"),
+            ("stonecraft_quality", "clay_bowl"),
+            ("stonecraft_specialty", "clay_brick"),
+            ("trade_goods_staples", "gem_jewelry"),
+            ("trade_goods_quality", "sand_glass_mug"),
+            ("trade_goods_specialty", "sand_glass_bowl"),
+            ("trade_goods_masterwork", "sand_glass_trinket"),
             ("textiles", "fibre_to_cloth"),
             ("textiles", "hide_to_leather"),
             ("weaponsmithing", "smithy_weapon"),
@@ -1494,7 +1504,7 @@ mod tests {
             .filter(|payload| matches!(payload, ResearchPayload::UnlockResource { .. }))
             .count();
 
-        assert_eq!(unsupported_recipes, 91);
+        assert_eq!(unsupported_recipes, 81);
         assert_eq!(unsupported_resources, 64);
     }
 

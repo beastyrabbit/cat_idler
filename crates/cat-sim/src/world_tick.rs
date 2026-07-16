@@ -851,6 +851,10 @@ pub fn default_production_queue(building_type: BuildingType) -> Vec<ProductionQu
         station
             .recipes
             .iter()
+            // Material variants are deliberate player/research additions, not
+            // surprise defaults that could strand a founding survival queue on
+            // its first still-locked study.
+            .filter(|recipe| recipe.output_item.is_none())
             .map(|recipe| ProductionQueueEntry {
                 recipe_id: recipe.id.to_owned(),
                 repeat: true,
@@ -10083,11 +10087,38 @@ fn advance_primary_production_slot(
     allow_output_haul: bool,
 ) {
     let building_type = colony.buildings[building_index].building_type;
+    if allow_output_haul {
+        let building = colony.buildings[building_index].clone();
+        if let Some(cat_id) = building.assigned_cat.as_deref()
+            && let Some(cat_index) = colony
+                .cats
+                .iter()
+                .position(|cat| cat.id == cat_id && cat.death_time.is_none())
+            && colony.cats[cat_index].carrying.is_none()
+            && begin_station_item_output_haul(colony, &building, cat_index, gate)
+        {
+            return;
+        }
+    }
     let productive_tools = colony.buildings[building_index]
         .assigned_cat
         .as_deref()
         .map_or(0.0, |cat_id| cat_usable_tool_stock(colony, cat_id));
     let building_crafting_elapsed = productive_elapsed(building_elapsed, productive_tools);
+    let selected_item_recipe = colony.buildings[building_index]
+        .production_queue
+        .first()
+        .and_then(|entry| item_physical_recipe(&entry.recipe_id));
+    if selected_item_recipe.is_some() {
+        advance_physical_item_recipe_slot(
+            colony,
+            building_index,
+            gate,
+            building_crafting_elapsed,
+            productive_tools >= 1.0,
+        );
+        return;
+    }
     match building_type {
         BuildingType::Field => {
             // The Field is a role station, not an invisible food faucet. Its worker
@@ -20079,8 +20110,14 @@ fn raw_material_staffing_priority(
 fn release_raw_material_workshop_workers(colony: &mut ColonyRuntime) {
     for index in 0..colony.buildings.len() {
         let building = &colony.buildings[index];
-        let physical_recipe_id = single_input_physical_recipe(building.building_type)
+        let physical_recipe_id = building
+            .production_queue
+            .first()
+            .and_then(|entry| item_physical_recipe(&entry.recipe_id))
             .map(|recipe| recipe.recipe_id)
+            .or_else(|| {
+                single_input_physical_recipe(building.building_type).map(|recipe| recipe.recipe_id)
+            })
             .or_else(|| {
                 twin_input_physical_recipe(building.building_type).map(|recipe| recipe.recipe_id)
             });
@@ -20110,6 +20147,12 @@ fn release_raw_material_workshop_workers(colony: &mut ColonyRuntime) {
                 outputs.iter().copied().any(|kind| {
                     station_inventory_amount(colony, &building.id, true, kind) > f64::EPSILON
                 })
+            }) || colony.items.instances().any(|instance| {
+                instance.location
+                    == (ItemLocation::Station {
+                        building_id: building.id.clone(),
+                        compartment: StationCompartment::LocalOutput,
+                    })
             });
         let committed_physical_route = physical_recipe_id.is_some_and(|_| {
             station_cargo_committed
@@ -22242,6 +22285,7 @@ fn general_storehouse_rect(colony: &ColonyRuntime) -> ZoneRect {
 
 const STATION_IN_CARGO_PREFIX: &str = "station-in|";
 const STATION_OUT_CARGO_PREFIX: &str = "station-out|";
+const STATION_ITEM_SUFFIX: &str = "|item:";
 const STEWARD_HAUL_CARGO_PREFIX: &str = "steward-haul|";
 const FARM_OUT_CARGO_PREFIX: &str = "farm-out|";
 const FARM_GATHER_SPOT_PREFIX: &str = "farm-gather:";
@@ -22261,6 +22305,18 @@ fn parse_station_cargo(marker: Option<&str>) -> Option<(&str, &str, &str)> {
     };
     let (building_id, pile_id) = rest.split_once('|')?;
     Some((direction, building_id, pile_id))
+}
+
+fn station_item_cargo_marker(building_id: &str, pile_id: &str, item_id: &str) -> String {
+    format!("{STATION_OUT_CARGO_PREFIX}{building_id}|{pile_id}{STATION_ITEM_SUFFIX}{item_id}")
+}
+
+fn parse_station_item_cargo(marker: Option<&str>) -> Option<(&str, &str, &str)> {
+    let (direction, building_id, remainder) = parse_station_cargo(marker)?;
+    (direction == "out")
+        .then_some(())
+        .and_then(|()| remainder.split_once(STATION_ITEM_SUFFIX))
+        .map(|(pile_id, item_id)| (building_id, pile_id, item_id))
 }
 
 fn steward_haul_cargo_marker(job_id: &str) -> String {
@@ -22398,6 +22454,52 @@ struct TwinInputPhysicalRecipe {
     output_per_cycle: f64,
     cycle_sec: f64,
     labor: Labor,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ItemPhysicalRecipe {
+    recipe_id: &'static str,
+    input_kind: ResourceKind,
+    input_per_cycle: f64,
+    output_item: Item,
+    cycle_sec: f64,
+    labor: Labor,
+}
+
+fn item_physical_recipe(recipe_id: &str) -> Option<ItemPhysicalRecipe> {
+    let descriptor = crate::station_recipes::station_item_recipe(recipe_id)?;
+    let output = descriptor.output_item?;
+    let input_kind = *descriptor.input_resources.first()?;
+    debug_assert_eq!(descriptor.input_resources.len(), 1);
+    let input_per_cycle = match input_kind {
+        ResourceKind::Gem => 1.0,
+        ResourceKind::Bone | ResourceKind::Clay => 2.0,
+        ResourceKind::Sand => 3.0,
+        _ => return None,
+    };
+    let labor = match descriptor.building_type {
+        BuildingType::Woodworking => Labor::Craft,
+        BuildingType::StonePrep | BuildingType::Workshop => Labor::Process,
+        _ => return None,
+    };
+    Some(ItemPhysicalRecipe {
+        recipe_id: descriptor.id,
+        input_kind,
+        input_per_cycle,
+        output_item: Item::new(output.kind, output.material, output.quality),
+        cycle_sec: crate::production::WORKSHOP_CYCLE_SEC,
+        labor,
+    })
+}
+
+const fn item_recipe_resource_label(kind: ResourceKind) -> &'static str {
+    match kind {
+        ResourceKind::Bone => "bone",
+        ResourceKind::Gem => "gem",
+        ResourceKind::Clay => "clay",
+        ResourceKind::Sand => "sand",
+        _ => "material",
+    }
 }
 
 fn twin_input_physical_recipe(building_type: BuildingType) -> Option<TwinInputPhysicalRecipe> {
@@ -23244,6 +23346,90 @@ fn begin_station_output_haul(
     true
 }
 
+/// Put one exact crafted-goods identity in the worker's paws. Variant goods do
+/// not mint a fake scalar resource: their stable item id is the entire cargo and
+/// becomes saleable only after this physical delivery reaches ordinary storage.
+fn begin_station_item_output_haul(
+    colony: &mut ColonyRuntime,
+    building: &BuildingRuntime,
+    cat_index: usize,
+    gate: TickGate,
+) -> bool {
+    let station = ItemLocation::Station {
+        building_id: building.id.clone(),
+        compartment: StationCompartment::LocalOutput,
+    };
+    let item_id = colony
+        .items
+        .instances()
+        .find(|instance| {
+            instance.location == station
+                && !instance.credited
+                && crate::station_recipes::station_recipe_set(building.building_type).is_some_and(
+                    |set| {
+                        set.recipes.iter().any(|recipe| {
+                            recipe.output_item.is_some_and(|output| {
+                                instance.item.kind == output.kind
+                                    && instance.item.material == output.material
+                                    && instance.item.quality == output.quality
+                            })
+                        })
+                    },
+                )
+        })
+        .map(|instance| instance.id.clone());
+    let Some(item_id) = item_id else {
+        return false;
+    };
+    let work_point = station_work_point(building);
+    if !at_world_point(colony, cat_index, work_point) {
+        send_cat_to(colony, cat_index, work_point);
+        return true;
+    }
+    let destination = colony
+        .stockpiles
+        .iter()
+        .find(|pile| pile.id == stockpiles::GENERAL_STOREHOUSE_ID)
+        .or_else(|| {
+            colony
+                .stockpiles
+                .iter()
+                .find(|pile| !pile.is_station_local())
+        });
+    let Some(destination) = destination else {
+        return true;
+    };
+    let destination_id = destination.id.clone();
+    let destination_center = destination.center();
+    let cat_id = colony.cats[cat_index].id.clone();
+    let moved = colony.items.relocate(
+        &item_id,
+        ItemLocation::Carrier {
+            cat_id: cat_id.clone(),
+        },
+    );
+    debug_assert!(moved);
+    colony.cats[cat_index].carrying = Some(Carrying {
+        kind: CarryingKind::Refined,
+        amount: 1.0,
+        job_ended_at: gate.processed_through,
+        source_gather_spot: Some(station_item_cargo_marker(
+            &building.id,
+            &destination_id,
+            &item_id,
+        )),
+    });
+    send_cat_to(
+        colony,
+        cat_index,
+        WorldPos {
+            x: destination_center.0,
+            y: destination_center.1,
+        },
+    );
+    true
+}
+
 fn add_functional_station_output(
     colony: &mut ColonyRuntime,
     building_id: &str,
@@ -23709,6 +23895,192 @@ fn advance_physical_sawmill_slot(
         colony.buildings[building_index]
             .production_queue
             .push(completed);
+    }
+}
+
+/// Advance one exact material-variant recipe. Raw inputs use the same visible
+/// source → transit → local-input route as scalar refiners, while each completed
+/// batch creates one durable item identity in local output. Delivery is handled
+/// by [`begin_station_item_output_haul`] and never reconstructs that identity.
+fn advance_physical_item_recipe_slot(
+    colony: &mut ColonyRuntime,
+    building_index: usize,
+    gate: TickGate,
+    production_elapsed: f64,
+    tools_contributed: bool,
+) {
+    ensure_station_stores(colony, building_index);
+    let building = colony.buildings[building_index].clone();
+    let Some(selected) = building.production_queue.first() else {
+        return;
+    };
+    let Some(recipe) = item_physical_recipe(&selected.recipe_id) else {
+        return;
+    };
+    let Some(cat_id) = building.assigned_cat.as_deref() else {
+        return;
+    };
+    let Some(cat_index) = colony
+        .cats
+        .iter()
+        .position(|cat| cat.id == cat_id && cat.death_time.is_none())
+    else {
+        return;
+    };
+    if colony.cats[cat_index].carrying.is_some()
+        || building.production_paused
+        || !production_recipe_availability(colony, building.building_type, recipe.recipe_id)
+            .is_some_and(|availability| availability.available)
+    {
+        return;
+    }
+
+    let local_input = station_inventory_amount(colony, &building.id, false, recipe.input_kind);
+    if local_input + f64::EPSILON < recipe.input_per_cycle {
+        let amount_needed = (recipe.input_per_cycle - local_input).max(0.0);
+        let _ = begin_station_input_haul(
+            colony,
+            &building,
+            cat_index,
+            recipe.input_kind,
+            amount_needed,
+            gate,
+        );
+        return;
+    }
+    let work_point = station_work_point(&building);
+    if !at_world_point(colony, cat_index, work_point) {
+        send_cat_to(colony, cat_index, work_point);
+        return;
+    }
+    colony.cats[cat_index].activity = CatActivity::Working;
+    let output_location = ItemLocation::Station {
+        building_id: building.id.clone(),
+        compartment: StationCompartment::LocalOutput,
+    };
+    let output_count = colony
+        .items
+        .instances()
+        .filter(|instance| instance.location == output_location)
+        .count() as f64;
+    let output_headroom = (building_station_capacity(colony, &building) - output_count)
+        .max(0.0)
+        .floor();
+    if output_headroom < 1.0 {
+        return;
+    }
+
+    let architect_rate =
+        if colony.cats[cat_index].specialization == Some(CatSpecialization::Architect) {
+            crate::production::ARCHITECT_SPEED
+        } else {
+            1.0
+        };
+    let base_skill = colony.cats[cat_index].skill(recipe.labor);
+    let mut remaining_elapsed = production_elapsed.max(0.0);
+    let mut progress = building.production_progress.max(0.0).min(recipe.cycle_sec);
+    let mut available_input = local_input;
+    let mut available_output = output_headroom;
+    let mut queue_preview = building.production_queue.clone();
+    let mut completed_cycles = 0_usize;
+    while queue_preview
+        .first()
+        .is_some_and(|entry| entry.recipe_id == recipe.recipe_id)
+        && available_input + f64::EPSILON >= recipe.input_per_cycle
+        && available_output >= 1.0
+    {
+        let rate = work_rate_multiplier(base_skill + completed_cycles as f64 * SKILL_GAIN_PER_JOB)
+            * architect_rate;
+        let elapsed_needed = ((recipe.cycle_sec - progress).max(0.0) / rate).max(0.0);
+        if remaining_elapsed + f64::EPSILON < elapsed_needed {
+            progress = (progress + remaining_elapsed * rate).min(recipe.cycle_sec);
+            remaining_elapsed = 0.0;
+            break;
+        }
+        remaining_elapsed = (remaining_elapsed - elapsed_needed).max(0.0);
+        progress = 0.0;
+        available_input -= recipe.input_per_cycle;
+        available_output -= 1.0;
+        let completed = queue_preview.remove(0);
+        if completed.repeat {
+            queue_preview.push(completed);
+        }
+        completed_cycles += 1;
+        if remaining_elapsed <= f64::EPSILON {
+            break;
+        }
+    }
+    if remaining_elapsed > f64::EPSILON
+        && queue_preview
+            .first()
+            .is_some_and(|entry| entry.recipe_id == recipe.recipe_id)
+        && available_output >= 1.0
+    {
+        let rate = work_rate_multiplier(base_skill + completed_cycles as f64 * SKILL_GAIN_PER_JOB)
+            * architect_rate;
+        progress = (progress + remaining_elapsed * rate).min(recipe.cycle_sec);
+    } else if queue_preview.is_empty() {
+        progress = 0.0;
+    }
+    colony.buildings[building_index].production_progress = progress;
+    if completed_cycles == 0 {
+        return;
+    }
+
+    let input_used = recipe.input_per_cycle * completed_cycles as f64;
+    let input_id = stockpiles::station_input_id(&building.id);
+    if let Some(input) = colony
+        .stockpiles
+        .iter_mut()
+        .find(|pile| pile.id == input_id)
+    {
+        stockpiles::add_resource(&mut input.contents, recipe.input_kind, -input_used);
+    }
+    stockpiles::add_resource(&mut colony.resources, recipe.input_kind, -input_used);
+    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let durability_mult = effects
+        .building(items::item_workshop_id(recipe.output_item))
+        .durability_mult;
+    colony.items.add_at(
+        recipe.output_item,
+        completed_cycles as u32,
+        durability_mult,
+        output_location,
+        false,
+    );
+    if tools_contributed {
+        for _ in 0..completed_cycles {
+            wear_equipped_item(colony, cat_id, ItemKind::Tool, gate.processed_through);
+        }
+    }
+    append_event(
+        colony,
+        gate.processed_through,
+        EventKind::Production,
+        format!(
+            "The {} crafted {} {} {}{} from {} delivered {}; the exact goods await haulage.",
+            building.building_type.as_str().replace('_', " "),
+            completed_cycles,
+            recipe.output_item.material.as_str(),
+            recipe.output_item.kind.as_str(),
+            if completed_cycles == 1 { "" } else { "s" },
+            input_used,
+            item_recipe_resource_label(recipe.input_kind),
+        ),
+    );
+    grant_building_skill(
+        colony,
+        &building.id,
+        recipe.labor,
+        completed_cycles as f64 * SKILL_GAIN_PER_JOB,
+    );
+    for _ in 0..completed_cycles {
+        let completed = colony.buildings[building_index].production_queue.remove(0);
+        if completed.repeat {
+            colony.buildings[building_index]
+                .production_queue
+                .push(completed);
+        }
     }
 }
 
@@ -24684,6 +25056,17 @@ fn haul_deposit_target(
                 },
             );
     }
+    if let Some((_, pile_id, _)) = parse_station_item_cargo(carrying.source_gather_spot.as_deref())
+    {
+        return colony
+            .stockpiles
+            .iter()
+            .find(|pile| pile.id == pile_id && !pile.is_station_local())
+            .map_or(from_pos, |pile| {
+                let (x, y) = pile.center();
+                WorldPos { x, y }
+            });
+    }
     if let Some((direction, building_id, pile_id)) =
         parse_station_cargo(carrying.source_gather_spot.as_deref())
     {
@@ -25077,6 +25460,56 @@ pub(crate) fn building_production_block_reason_with_availability(
             .to_owned(),
         );
     }
+    if let Some(item_recipe) = item_physical_recipe(&recipe.recipe_id) {
+        let output_location = ItemLocation::Station {
+            building_id: building.id.clone(),
+            compartment: StationCompartment::LocalOutput,
+        };
+        if colony
+            .items
+            .instances()
+            .any(|instance| instance.location == output_location && !instance.credited)
+        {
+            return Some(
+                if colony
+                    .stockpiles
+                    .iter()
+                    .any(|pile| !pile.is_station_local())
+                {
+                    "output_awaiting_haul"
+                } else {
+                    "output_storage_full"
+                }
+                .to_owned(),
+            );
+        }
+        let input = station_inventory_amount(colony, &building.id, false, item_recipe.input_kind);
+        if input + f64::EPSILON < item_recipe.input_per_cycle {
+            let needed = (item_recipe.input_per_cycle - input).max(0.0);
+            return Some(
+                if nearest_source_pile(
+                    colony,
+                    item_recipe.input_kind,
+                    needed,
+                    station_work_point(building),
+                )
+                .is_some()
+                {
+                    format!(
+                        "fetching_{}",
+                        item_recipe_resource_label(item_recipe.input_kind)
+                    )
+                } else {
+                    format!(
+                        "missing_{}",
+                        item_recipe_resource_label(item_recipe.input_kind)
+                    )
+                },
+            );
+        }
+        return (!at_world_point(colony, cat_index, station_work_point(building)))
+            .then(|| "worker_travel".to_owned());
+    }
     if let Some(recipe) = twin_input_physical_recipe(building.building_type) {
         let reserve = construction_material_reserve(colony);
         for (kind, per_cycle, fetching, missing) in [
@@ -25273,6 +25706,46 @@ fn credit_carrying(colony: &mut ColonyRuntime, carrying: &Carrying, deposit_at: 
         .map(|cat| cat.id.clone());
     if steward_haul_job_id(carrying.source_gather_spot.as_deref()).is_some() {
         return credit_steward_haul_carrying(colony, carrying);
+    }
+    if let Some((_building_id, pile_id, item_id)) =
+        parse_station_item_cargo(carrying.source_gather_spot.as_deref())
+    {
+        let Some(cat_id) = carrier_cat_id.as_deref() else {
+            return carrying.amount;
+        };
+        let expected = ItemLocation::Carrier {
+            cat_id: cat_id.to_owned(),
+        };
+        let destination_exists = colony
+            .stockpiles
+            .iter()
+            .any(|pile| pile.id == pile_id && !pile.is_station_local());
+        let at_destination = colony
+            .stockpiles
+            .iter()
+            .find(|pile| pile.id == pile_id)
+            .is_some_and(|pile| {
+                let (x, y) = pile.center();
+                is_at_shrine(deposit_at, WorldPos { x, y })
+            });
+        if !destination_exists
+            || !at_destination
+            || colony
+                .items
+                .instance(item_id)
+                .is_none_or(|instance| instance.location != expected || instance.credited)
+        {
+            return carrying.amount;
+        }
+        let credited = colony.items.credit_at(
+            item_id,
+            ItemLocation::Stockpile {
+                stockpile_id: pile_id.to_owned(),
+            },
+        );
+        debug_assert!(credited);
+        reconcile_finite_equipment_projections(colony);
+        return 0.0;
     }
     if let Some((plot_id, pile_id)) = parse_farm_cargo(carrying.source_gather_spot.as_deref()) {
         let Some(kind) = carrying_resource_kind(carrying.kind) else {
@@ -25694,6 +26167,52 @@ fn salvage_station_cargo_for_carrier(
             plot.pending_output += carrying.amount;
             plot.worker_id = None;
             plot.work_phase = FarmWorkPhase::WaitingForWorker;
+        }
+        return true;
+    }
+    if let Some((building_id, _, item_id)) =
+        parse_station_item_cargo(carrying.source_gather_spot.as_deref())
+    {
+        if carrier_cat_id.is_some_and(|cat_id| {
+            colony.items.instance(item_id).is_some_and(|instance| {
+                instance.location
+                    == (ItemLocation::Carrier {
+                        cat_id: cat_id.to_owned(),
+                    })
+                    && !instance.credited
+            })
+        }) {
+            if colony
+                .buildings
+                .iter()
+                .any(|building| building.id == building_id)
+            {
+                let moved = colony.items.relocate(
+                    item_id,
+                    ItemLocation::Station {
+                        building_id: building_id.to_owned(),
+                        compartment: StationCompartment::LocalOutput,
+                    },
+                );
+                debug_assert!(moved);
+            } else if let Some(stockpile_id) = colony
+                .stockpiles
+                .iter()
+                .find(|pile| pile.id == stockpiles::GENERAL_STOREHOUSE_ID)
+                .or_else(|| {
+                    colony
+                        .stockpiles
+                        .iter()
+                        .find(|pile| !pile.is_station_local())
+                })
+                .map(|pile| pile.id.clone())
+            {
+                let credited = colony
+                    .items
+                    .credit_at(item_id, ItemLocation::Stockpile { stockpile_id });
+                debug_assert!(credited);
+                reconcile_finite_equipment_projections(colony);
+            }
         }
         return true;
     }
@@ -31625,7 +32144,7 @@ mod tests {
         sync_steward_managed_piles(&mut right, 1_000, 7);
         assert_eq!(left.stockpiles, right.stockpiles);
         assert_eq!(left.stock_ledger, right.stock_ledger);
-        assert_eq!(left.stock_ledger.steward_managed_piles.len(), 9);
+        assert_eq!(left.stock_ledger.steward_managed_piles.len(), 11);
         let actual = left
             .stock_ledger
             .steward_managed_piles
@@ -31641,6 +32160,8 @@ mod tests {
             ("smelter-a", ResourceKind::Ore),
             ("smelter-a", ResourceKind::Metal),
             ("workshop-a", ResourceKind::Materials),
+            ("workshop-a", ResourceKind::Gem),
+            ("workshop-a", ResourceKind::Sand),
             ("workshop-a", ResourceKind::Refined),
         ]);
         assert_eq!(
@@ -33658,23 +34179,49 @@ mod tests {
             assert!(catalog_recipe_entitlement(&colony, recipe_id).available);
         }
 
-        for (building_type, expected) in [
+        for (building_type, expected, expected_default) in [
             (
                 BuildingType::WoodCutter,
+                vec![crate::station_recipes::LOGS_TO_PLANKS_RECIPE_ID],
                 vec![crate::station_recipes::LOGS_TO_PLANKS_RECIPE_ID],
             ),
             (
                 BuildingType::StonePrep,
+                vec![
+                    crate::station_recipes::STONE_TO_BLOCKS_RECIPE_ID,
+                    crate::station_recipes::BONE_TRINKET_RECIPE_ID,
+                    crate::station_recipes::BONE_TOY_RECIPE_ID,
+                    crate::station_recipes::CLAY_MUG_RECIPE_ID,
+                    crate::station_recipes::CLAY_BOWL_RECIPE_ID,
+                    crate::station_recipes::CLAY_BRICK_RECIPE_ID,
+                ],
                 vec![crate::station_recipes::STONE_TO_BLOCKS_RECIPE_ID],
             ),
             (
                 BuildingType::Woodworking,
+                vec![
+                    crate::station_recipes::PLANKS_AND_BLOCKS_TO_TOOLS_RECIPE_ID,
+                    crate::station_recipes::BONE_TOOL_RECIPE_ID,
+                ],
                 vec![crate::station_recipes::PLANKS_AND_BLOCKS_TO_TOOLS_RECIPE_ID],
             ),
-            (BuildingType::Clothier, vec![CLOTHIER_RECIPE_ID]),
-            (BuildingType::Tannery, vec![TANNERY_RECIPE_ID]),
+            (
+                BuildingType::Clothier,
+                vec![CLOTHIER_RECIPE_ID],
+                vec![CLOTHIER_RECIPE_ID],
+            ),
+            (
+                BuildingType::Tannery,
+                vec![TANNERY_RECIPE_ID],
+                vec![TANNERY_RECIPE_ID],
+            ),
             (
                 BuildingType::Smithy,
+                vec![
+                    SMITHY_WEAPON_RECIPE_ID,
+                    SMITHY_TOOL_RECIPE_ID,
+                    SMITHY_ARMOR_RECIPE_ID,
+                ],
                 vec![
                     SMITHY_WEAPON_RECIPE_ID,
                     SMITHY_TOOL_RECIPE_ID,
@@ -33685,7 +34232,7 @@ mod tests {
             assert_eq!(available_production_recipes(building_type), expected);
             assert_eq!(
                 default_production_queue(building_type),
-                expected
+                expected_default
                     .iter()
                     .map(|recipe_id| ProductionQueueEntry {
                         recipe_id: (*recipe_id).to_owned(),
@@ -37586,6 +38133,266 @@ mod tests {
             .position(|pile| pile.id == input_id)
             .expect("station input");
         stockpiles::add_resource(&mut colony.stockpiles[input].contents, kind, amount);
+    }
+
+    #[test]
+    fn every_material_variant_consumes_exact_raw_stock_and_delivers_the_same_finite_id() {
+        let cases = [
+            (
+                crate::station_recipes::BONE_TOOL_RECIPE_ID,
+                BuildingType::Woodworking,
+                ResourceKind::Bone,
+                2.0,
+                ItemKind::Tool,
+                Material::Bone,
+            ),
+            (
+                crate::station_recipes::BONE_TRINKET_RECIPE_ID,
+                BuildingType::StonePrep,
+                ResourceKind::Bone,
+                2.0,
+                ItemKind::Trinket,
+                Material::Bone,
+            ),
+            (
+                crate::station_recipes::BONE_TOY_RECIPE_ID,
+                BuildingType::StonePrep,
+                ResourceKind::Bone,
+                2.0,
+                ItemKind::Toy,
+                Material::Bone,
+            ),
+            (
+                crate::station_recipes::GEM_TRINKET_RECIPE_ID,
+                BuildingType::Workshop,
+                ResourceKind::Gem,
+                1.0,
+                ItemKind::Trinket,
+                Material::Gem,
+            ),
+            (
+                crate::station_recipes::CLAY_MUG_RECIPE_ID,
+                BuildingType::StonePrep,
+                ResourceKind::Clay,
+                2.0,
+                ItemKind::Mug,
+                Material::Clay,
+            ),
+            (
+                crate::station_recipes::CLAY_BOWL_RECIPE_ID,
+                BuildingType::StonePrep,
+                ResourceKind::Clay,
+                2.0,
+                ItemKind::Bowl,
+                Material::Clay,
+            ),
+            (
+                crate::station_recipes::CLAY_BRICK_RECIPE_ID,
+                BuildingType::StonePrep,
+                ResourceKind::Clay,
+                2.0,
+                ItemKind::Brick,
+                Material::Clay,
+            ),
+            (
+                crate::station_recipes::SAND_MUG_RECIPE_ID,
+                BuildingType::Workshop,
+                ResourceKind::Sand,
+                3.0,
+                ItemKind::Mug,
+                Material::Sand,
+            ),
+            (
+                crate::station_recipes::SAND_BOWL_RECIPE_ID,
+                BuildingType::Workshop,
+                ResourceKind::Sand,
+                3.0,
+                ItemKind::Bowl,
+                Material::Sand,
+            ),
+            (
+                crate::station_recipes::SAND_TRINKET_RECIPE_ID,
+                BuildingType::Workshop,
+                ResourceKind::Sand,
+                3.0,
+                ItemKind::Trinket,
+                Material::Sand,
+            ),
+        ];
+        for (recipe_id, building_type, input_kind, input_amount, kind, material) in cases {
+            let mut resources = Resources::default();
+            stockpiles::set_resource(&mut resources, input_kind, input_amount);
+            let mut colony = chain_colony(building_type, resources, true);
+            colony.recipe_entitlement_rules_version = 0;
+            colony.buildings[0].production_progress = 590.0;
+            colony.buildings[0].production_queue = vec![ProductionQueueEntry {
+                recipe_id: recipe_id.to_owned(),
+                repeat: false,
+            }];
+            move_general_stock_to_station_input(&mut colony, input_kind, input_amount);
+            let building = colony.buildings[0].clone();
+            colony.cats[0].position = position_from_world(station_work_point(&building));
+
+            advance_physical_item_recipe_slot(
+                &mut colony,
+                0,
+                production_gate(10, 10_000),
+                10.0,
+                false,
+            );
+            assert_eq!(
+                stockpiles::resource_amount(&colony.resources, input_kind),
+                0.0,
+                "{recipe_id} did not consume exact aggregate input"
+            );
+            let local = colony
+                .items
+                .instances()
+                .find(|instance| instance.item.kind == kind && instance.item.material == material)
+                .cloned()
+                .expect("finite local output");
+            assert!(!local.credited, "{recipe_id} credited before haul");
+            assert_eq!(
+                local.location,
+                ItemLocation::Station {
+                    building_id: building.id.clone(),
+                    compartment: StationCompartment::LocalOutput,
+                }
+            );
+
+            assert!(begin_station_item_output_haul(
+                &mut colony,
+                &building,
+                0,
+                production_gate(1, 11_000),
+            ));
+            let carried_id = parse_station_item_cargo(
+                colony.cats[0]
+                    .carrying
+                    .as_ref()
+                    .and_then(|cargo| cargo.source_gather_spot.as_deref()),
+            )
+            .map(|(_, _, id)| id.to_owned())
+            .expect("exact outbound marker");
+            assert_eq!(carried_id, local.id, "{recipe_id} reconstructed cargo");
+            deliver_station_cargo_to_current_target(&mut colony);
+            let delivered = colony.items.instance(&local.id).expect("same delivered id");
+            assert!(delivered.credited, "{recipe_id}");
+            assert!(matches!(delivered.location, ItemLocation::Stockpile { .. }));
+            assert!(
+                colony.buildings[0].production_queue.is_empty(),
+                "{recipe_id}"
+            );
+        }
+    }
+
+    #[test]
+    fn variant_research_gate_and_dead_outbound_carrier_preserve_exact_goods() {
+        let recipe_id = crate::station_recipes::GEM_TRINKET_RECIPE_ID;
+        let mut colony = chain_colony(
+            BuildingType::Workshop,
+            Resources {
+                gem: 1.0,
+                ..Resources::default()
+            },
+            true,
+        );
+        colony.recipe_entitlement_rules_version = CURRENT_RECIPE_ENTITLEMENT_RULES_VERSION;
+        colony.buildings[0].production_progress = 590.0;
+        colony.buildings[0].production_queue = vec![ProductionQueueEntry {
+            recipe_id: recipe_id.to_owned(),
+            repeat: false,
+        }];
+        move_general_stock_to_station_input(&mut colony, ResourceKind::Gem, 1.0);
+        let building = colony.buildings[0].clone();
+        colony.cats[0].position = position_from_world(station_work_point(&building));
+
+        advance_physical_item_recipe_slot(&mut colony, 0, production_gate(10, 10_000), 10.0, false);
+        assert_eq!(colony.items.count_kind(ItemKind::Trinket), 0);
+        assert_eq!(colony.resources.gem, 1.0);
+
+        colony
+            .upgrade_tree
+            .owned_node_ids
+            .push("trade_goods_staples".to_owned());
+        advance_physical_item_recipe_slot(&mut colony, 0, production_gate(10, 20_000), 10.0, false);
+        let item_id = colony
+            .items
+            .instances()
+            .next()
+            .expect("researched item produced")
+            .id
+            .clone();
+        assert!(begin_station_item_output_haul(
+            &mut colony,
+            &building,
+            0,
+            production_gate(1, 21_000),
+        ));
+        let cargo = colony.cats[0]
+            .carrying
+            .clone()
+            .expect("outbound item cargo");
+        assert!(salvage_station_cargo(
+            &mut colony,
+            &cargo,
+            station_work_point(&building),
+        ));
+        colony.cats[0].carrying = None;
+        let recovered = colony.items.instance(&item_id).expect("identity preserved");
+        assert!(!recovered.credited);
+        assert_eq!(
+            recovered.location,
+            ItemLocation::Station {
+                building_id: building.id,
+                compartment: StationCompartment::LocalOutput,
+            }
+        );
+        assert_eq!(colony.resources.gem, 0.0);
+    }
+
+    fn run_passive_gem_goods_campaign() -> ColonyRuntime {
+        let mut colony = chain_colony(
+            BuildingType::Workshop,
+            Resources {
+                gem: 1.0,
+                food: 100.0,
+                water: 100.0,
+                ..Resources::default()
+            },
+            true,
+        );
+        colony.recipe_entitlement_rules_version = 0;
+        colony.buildings[0].production_progress = 0.0;
+        colony.buildings[0].production_queue = vec![ProductionQueueEntry {
+            recipe_id: crate::station_recipes::GEM_TRINKET_RECIPE_ID.to_owned(),
+            repeat: false,
+        }];
+        move_general_stock_to_station_input(&mut colony, ResourceKind::Gem, 1.0);
+        let work = station_work_point(&colony.buildings[0]);
+        colony.cats[0].position = position_from_world(work);
+        for second in 1..=1_200 {
+            phase_23_production(
+                &mut colony,
+                production_gate(1, i64::from(second) * 1_000),
+                8_181,
+            );
+            deliver_all_station_cargo_to_current_targets(&mut colony);
+        }
+        colony
+    }
+
+    #[test]
+    fn unattended_material_variant_campaign_is_deterministic_and_delivers_trade_ready_goods() {
+        let left = run_passive_gem_goods_campaign();
+        let right = run_passive_gem_goods_campaign();
+        assert_eq!(left, right, "passive material-variant campaign diverged");
+        let item = left.items.instances().next().expect("gem trinket produced");
+        assert_eq!(item.item, Item::new(ItemKind::Trinket, Material::Gem, 2));
+        assert!(item.credited);
+        assert!(item.is_pristine());
+        assert!(matches!(item.location, ItemLocation::Stockpile { .. }));
+        assert_eq!(left.resources.gem, 0.0);
     }
 
     fn flush_refiner_output(colony: &mut ColonyRuntime, gate: TickGate) {
@@ -60906,15 +61713,33 @@ fn steward_managed_topology_needs_sync(colony: &ColonyRuntime) -> bool {
 fn steward_resource_key(kind: ResourceKind) -> &'static str {
     match kind {
         ResourceKind::Food => "food",
+        ResourceKind::Fish => "fish",
+        ResourceKind::Water => "water",
+        ResourceKind::Herbs => "herbs",
+        ResourceKind::Catnip => "catnip",
         ResourceKind::Grain => "grain",
         ResourceKind::Flour => "flour",
         ResourceKind::Materials => "materials",
+        ResourceKind::Stone => "stone",
         ResourceKind::Refined => "refined",
+        ResourceKind::Weapons => "weapons",
+        ResourceKind::Armor => "armor",
         ResourceKind::Logs => "logs",
         ResourceKind::Lumber => "lumber",
+        ResourceKind::Planks => "planks",
+        ResourceKind::Blocks => "blocks",
+        ResourceKind::Tools => "tools",
+        ResourceKind::Fibre => "fibre",
+        ResourceKind::Hide => "hide",
+        ResourceKind::Bone => "bone",
+        ResourceKind::Cloth => "cloth",
+        ResourceKind::Leather => "leather",
         ResourceKind::Ore => "ore",
+        ResourceKind::Gem => "gem",
+        ResourceKind::Clay => "clay",
+        ResourceKind::Sand => "sand",
         ResourceKind::Metal => "metal",
-        _ => "unsupported",
+        ResourceKind::Blessings => "blessings",
     }
 }
 

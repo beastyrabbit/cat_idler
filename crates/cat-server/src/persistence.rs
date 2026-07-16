@@ -2677,6 +2677,114 @@ mod tests {
     }
 
     #[test]
+    fn material_variant_local_output_and_exact_outbound_identity_survive_sqlite_restart() {
+        use cat_sim::items::{Item, ItemKind, ItemLocation, Material, StationCompartment};
+
+        let conn = open_database(":memory:").expect("database");
+        let mut world = new_world(77);
+        let mut colony = found_colony(77, "variant-restart", 1_000_000, 9);
+        let carrier_id = colony.cats[0].id.clone();
+        let building_id = "variant-workshop".to_owned();
+        colony.buildings.push(BuildingRuntime {
+            id: building_id.clone(),
+            building_type: BuildingType::Workshop,
+            is_complete: true,
+            construction_progress: 100,
+            production_progress: 321.0,
+            assigned_cat: Some(carrier_id.clone()),
+            production_queue: vec![ProductionQueueEntry {
+                recipe_id: cat_sim::station_recipes::SAND_TRINKET_RECIPE_ID.to_owned(),
+                repeat: true,
+            }],
+            ..BuildingRuntime::default()
+        });
+        let local_id = colony
+            .items
+            .add_at(
+                Item::new(ItemKind::Brick, Material::Clay, 1),
+                1,
+                1.0,
+                ItemLocation::Station {
+                    building_id: building_id.clone(),
+                    compartment: StationCompartment::LocalOutput,
+                },
+                false,
+            )
+            .remove(0);
+        let outbound_id = colony
+            .items
+            .add_at(
+                Item::new(ItemKind::Trinket, Material::Gem, 2),
+                1,
+                1.0,
+                ItemLocation::Carrier {
+                    cat_id: carrier_id.clone(),
+                },
+                false,
+            )
+            .remove(0);
+        colony.cats[0].carrying = Some(Carrying {
+            kind: CarryingKind::Refined,
+            amount: 1.0,
+            job_ended_at: 1_234_000,
+            source_gather_spot: Some(format!(
+                "station-out|{building_id}|{}|item:{outbound_id}",
+                cat_sim::stockpiles::GENERAL_STOREHOUSE_ID,
+            )),
+        });
+        world.colonies.push(colony);
+
+        save_world(&conn, &world).expect("save variant routes");
+        let restarted = load_world(&conn).expect("load").expect("world");
+        let colony = &restarted.colonies[0];
+        let local = colony
+            .items
+            .instance(&local_id)
+            .expect("local item identity");
+        assert_eq!(
+            local.location,
+            ItemLocation::Station {
+                building_id: building_id.clone(),
+                compartment: StationCompartment::LocalOutput,
+            }
+        );
+        assert_eq!(local.item, Item::new(ItemKind::Brick, Material::Clay, 1));
+        assert!(!local.credited);
+        let outbound = colony
+            .items
+            .instance(&outbound_id)
+            .expect("outbound item identity");
+        assert_eq!(
+            outbound.location,
+            ItemLocation::Carrier {
+                cat_id: carrier_id.clone(),
+            }
+        );
+        assert_eq!(
+            outbound.item,
+            Item::new(ItemKind::Trinket, Material::Gem, 2)
+        );
+        assert!(!outbound.credited);
+        let carrying = colony.cats[0].carrying.as_ref().expect("persisted cargo");
+        assert!(
+            carrying
+                .source_gather_spot
+                .as_deref()
+                .is_some_and(|marker| marker.ends_with(&format!("|item:{outbound_id}")))
+        );
+        let station = colony
+            .buildings
+            .iter()
+            .find(|building| building.id == building_id)
+            .expect("persisted variant station");
+        assert_eq!(station.production_progress, 321.0);
+        assert_eq!(
+            station.production_queue[0].recipe_id,
+            cat_sim::station_recipes::SAND_TRINKET_RECIPE_ID
+        );
+    }
+
+    #[test]
     fn legacy_functional_scalars_migrate_once_without_duplicate_identities() {
         use cat_sim::items::{Item, ItemKind, ItemLocation, Material};
 

@@ -9,8 +9,7 @@ and any changed Bevy visuals have been verified.
 
 | Finding | Required correction | State |
 | --- | --- | --- |
-| Research recipe/resource breadth remains incomplete | Thirteen maintained runtime recipe IDs now have data-owned station descriptors and exact catalog ownership metadata: ten are research-gated and three are founding baselines. All thirteen execute through physical queues. The explicit Grain→Flour, Flour→Food, and Metal→exact Tool routes are live. The other 91 generated recipe IDs and all 64 generated resource IDs have no authoritative consumer, are visibly marked `FUTURE`, and cannot spend points. Continue only from the evidence boundary in `RECIPE_RESOURCE_MATRIX.md`. | in progress |
-| Fine-biome recipe breadth is incomplete | Bone has a finite hunt source, and Gem/Clay/Sand have distinct finite fine-biome deposits, physical quarry cargo, depletion, storage/trade/persistence/wire/HUD identities, and zero-stock village interiors. Their downstream crafting variants remain incomplete. | in progress |
+| Research recipe/resource breadth remains incomplete | Twenty-three runtime recipe IDs now have data-owned station descriptors and exact catalog ownership metadata: twenty are research-gated and three are founding baselines. The remaining 81 generated recipe IDs and all 64 generated resource IDs have no authoritative consumer, are visibly marked `FUTURE`, and cannot spend points. Continue only from the evidence boundary in `RECIPE_RESOURCE_MATRIX.md`. | in progress |
 
 ## Verified fixes
 
@@ -46,6 +45,33 @@ scouting, and raid work remained active. The final simulation gate passes all 1,
 intentional skip), the authenticated server contact/trade test passes, and strict
 Clippy/formatting/diff checks are clean. Exact commands are recorded in
 `docs/IMPLEMENTATION_AUDIT.md`.
+
+## 2026-07-16 — Physical Bone, Gem, Clay, and Sand goods
+
+**Problem:** Four raw materials had real finite source and storage identities but no selected
+consumer. Their research studies were therefore honest `FUTURE` cards, and a player could not turn
+Bone into tools/decor/toys, Gem into jewelry, Clay into pottery/bricks, or Sand into glassy goods.
+
+**Fix:** Ten catalog studies now own ten exact runtime recipes across Woodworking, Stone Prep, and
+Workshop. Every batch reserves and carries its exact raw input, requires a living assigned worker,
+creates one stable finite output identity in the station's local output, and carries that same ID
+to finite storage before credit. Material, kind, quality, condition, location, death recovery,
+SQLite persistence, trader visibility, and exact sale remain authoritative. Default founding
+queues still contain only their safe baselines; the client now selects among all unlocked recipes
+before adding one, so breadth beyond the first row is reachable. Steward pile keys are exhaustive,
+preventing Gem/Sand input piles from colliding under an `unsupported` ID.
+
+**Evidence:** An exhaustive route table proves all ten source→station→exact-output mappings. A
+single physical lifecycle test produces and delivers every variant while preserving the same ID;
+research denial/ownership, carrier death, passive deterministic Gem crafting, signed player queue
+selection, trader sale, and SQLite mid-station/mid-carrier restart campaigns cover both unattended
+and guided play. The inspected client-owned 1090×2105 RGB framebuffer
+`/tmp/material-variant-breadth-final.png` (SHA-256
+`8ef0ad5521d98128869e4ddd66992c5a1097faab1c74143ea258e15bc85e360f`) shows the selected
+Stone Prep inspector, its independently cycled `Fired clay brick goods` add target, current queue,
+staffing, local stores, and controls without overlap or clipping. The temporary fixture/capture
+hook and isolated processes were removed. The catalog now pins 23 runtime recipes and 81 recipe/64
+ resource future payloads.
 
 ## 2026-07-15 — Finite fine-biome Gem, Clay, and Sand sources
 

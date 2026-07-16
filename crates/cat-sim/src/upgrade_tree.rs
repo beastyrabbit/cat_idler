@@ -1691,7 +1691,7 @@ mod tests {
             .iter()
             .filter(|node| crate::research_catalog::research_node_is_implemented(node))
             .count();
-        assert_eq!(implemented_count, 319);
+        assert_eq!(implemented_count, 329);
         while state.owned_node_ids.len() < implemented_count {
             let next = crate::research_catalog::research_catalog()
                 .nodes()

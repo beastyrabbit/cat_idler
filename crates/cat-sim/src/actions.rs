@@ -2256,6 +2256,7 @@ fn repair_recipe(item: Item) -> (BuildingType, stockpiles::ResourceKind) {
         "smithy" => BuildingType::Smithy,
         "clothier" => BuildingType::Clothier,
         "tannery" => BuildingType::Tannery,
+        "workshop" => BuildingType::Workshop,
         _ => BuildingType::StonePrep,
     };
     let resource = match item.material {
@@ -10578,6 +10579,47 @@ mod tests {
     }
 
     #[test]
+    fn every_selected_material_variant_is_visible_and_sellable_to_the_trader() {
+        let mut world = world_with_one_colony();
+        let variants = [
+            Item::new(ItemKind::Tool, Material::Bone, 1),
+            Item::new(ItemKind::Trinket, Material::Bone, 1),
+            Item::new(ItemKind::Toy, Material::Bone, 1),
+            Item::new(ItemKind::Trinket, Material::Gem, 2),
+            Item::new(ItemKind::Mug, Material::Clay, 1),
+            Item::new(ItemKind::Bowl, Material::Clay, 1),
+            Item::new(ItemKind::Brick, Material::Clay, 1),
+            Item::new(ItemKind::Mug, Material::Sand, 1),
+            Item::new(ItemKind::Bowl, Material::Sand, 1),
+            Item::new(ItemKind::Trinket, Material::Sand, 2),
+        ];
+        for item in variants {
+            world.colonies[0].add_item(item, 1);
+        }
+        world.colonies[0].trader = Some(trading_trader());
+
+        let snapshot = build_snapshot(&world, ctx().now_ms, 1);
+        let offers = &snapshot.colonies[0].trader.as_ref().unwrap().buy_offers;
+        for item in variants {
+            assert!(offers.iter().any(|offer| {
+                offer.kind == item.kind.as_str()
+                    && offer.material == item.material.as_str()
+                    && offer.quality == item.quality
+                    && offer.available == 1
+            }));
+        }
+        let gem = variants[3];
+        let sold = apply_action(
+            &mut world,
+            &sell_goods_action(gem.kind.as_str(), gem.material.as_str(), gem.quality, 1),
+            &ctx(),
+        );
+        assert!(sold.ok, "{sold:?}");
+        assert_eq!(world.colonies[0].items.pristine_count(gem), 0);
+        assert!(world.colonies[0].coin > 0.0);
+    }
+
+    #[test]
     fn guided_sale_can_select_and_sell_an_offer_beyond_the_clients_first_six_rows() {
         let mut world = world_with_one_colony();
         for quality in 0..=4 {
@@ -11909,6 +11951,129 @@ mod tests {
             [crate::world_tick::SAWMILL_RECIPE_ID]
         );
         assert_eq!(sawmill.required_recipe_study, None);
+    }
+
+    #[test]
+    fn signed_player_can_select_each_researched_material_variant_only_at_its_station() {
+        let mut world = world_with_one_colony();
+        let colony = &mut world.colonies[0];
+        colony.recipe_entitlement_rules_version =
+            crate::world_tick::CURRENT_RECIPE_ENTITLEMENT_RULES_VERSION;
+        colony.upgrade_tree.owned_node_ids.extend(
+            [
+                "hunting_preparation",
+                "hunting_staples",
+                "toolmaking_quality",
+                "stonecraft_staples",
+                "stonecraft_quality",
+                "stonecraft_specialty",
+                "trade_goods_staples",
+                "trade_goods_quality",
+                "trade_goods_specialty",
+                "trade_goods_masterwork",
+            ]
+            .map(str::to_owned),
+        );
+        for (id, building_type) in [
+            ("guided-woodworking", BuildingType::Woodworking),
+            ("guided-stone-prep", BuildingType::StonePrep),
+            ("guided-workshop", BuildingType::Workshop),
+        ] {
+            colony.buildings.push(BuildingRuntime {
+                id: id.to_owned(),
+                building_type,
+                is_complete: true,
+                construction_progress: 100,
+                production_queue: Vec::new(),
+                ..BuildingRuntime::default()
+            });
+        }
+        let routes = [
+            (
+                "guided-woodworking",
+                crate::station_recipes::BONE_TOOL_RECIPE_ID,
+            ),
+            (
+                "guided-stone-prep",
+                crate::station_recipes::BONE_TRINKET_RECIPE_ID,
+            ),
+            (
+                "guided-stone-prep",
+                crate::station_recipes::BONE_TOY_RECIPE_ID,
+            ),
+            (
+                "guided-stone-prep",
+                crate::station_recipes::CLAY_MUG_RECIPE_ID,
+            ),
+            (
+                "guided-stone-prep",
+                crate::station_recipes::CLAY_BOWL_RECIPE_ID,
+            ),
+            (
+                "guided-stone-prep",
+                crate::station_recipes::CLAY_BRICK_RECIPE_ID,
+            ),
+            (
+                "guided-workshop",
+                crate::station_recipes::GEM_TRINKET_RECIPE_ID,
+            ),
+            (
+                "guided-workshop",
+                crate::station_recipes::SAND_MUG_RECIPE_ID,
+            ),
+            (
+                "guided-workshop",
+                crate::station_recipes::SAND_BOWL_RECIPE_ID,
+            ),
+            (
+                "guided-workshop",
+                crate::station_recipes::SAND_TRINKET_RECIPE_ID,
+            ),
+        ];
+        for (building_id, recipe_id) in routes {
+            let action = proto::ClientAction::EditProductionQueue {
+                session_id: "sess_1".to_owned(),
+                nickname: "Player".to_owned(),
+                sig: "signed".to_owned(),
+                building_id: building_id.to_owned(),
+                edit: proto::ProductionQueueEdit::Add {
+                    recipe_id: recipe_id.to_owned(),
+                    repeat: false,
+                },
+            };
+            assert!(apply_action(&mut world, &action, &ctx()).ok, "{recipe_id}");
+        }
+        let wrong_station = proto::ClientAction::EditProductionQueue {
+            session_id: "sess_1".to_owned(),
+            nickname: "Player".to_owned(),
+            sig: "signed".to_owned(),
+            building_id: "guided-workshop".to_owned(),
+            edit: proto::ProductionQueueEdit::Add {
+                recipe_id: crate::station_recipes::CLAY_MUG_RECIPE_ID.to_owned(),
+                repeat: false,
+            },
+        };
+        assert!(!apply_action(&mut world, &wrong_station, &ctx()).ok);
+
+        let snapshot = build_snapshot(&world, ctx().now_ms, 1);
+        for (building_id, recipe_id) in routes {
+            let building = snapshot.colonies[0]
+                .buildings
+                .iter()
+                .find(|building| building.id == building_id)
+                .expect("guided station snapshot");
+            assert!(
+                building.available_recipes.iter().any(|id| id == recipe_id),
+                "{recipe_id} absent from signed client controls"
+            );
+            assert!(
+                building
+                    .production_queue
+                    .iter()
+                    .any(|entry| entry.recipe_id == recipe_id),
+                "{recipe_id} missing from signed queue"
+            );
+        }
     }
 
     #[test]
