@@ -148,6 +148,9 @@ pub enum ResourceKind {
     Cloth,
     Leather,
     Ore,
+    Gem,
+    Clay,
+    Sand,
     Metal,
     Blessings,
 }
@@ -178,6 +181,9 @@ impl ResourceKind {
         Self::Cloth,
         Self::Leather,
         Self::Ore,
+        Self::Gem,
+        Self::Clay,
+        Self::Sand,
         Self::Metal,
         Self::Blessings,
     ];
@@ -210,6 +216,9 @@ pub fn resource_amount(resources: &Resources, kind: ResourceKind) -> f64 {
         ResourceKind::Cloth => resources.cloth,
         ResourceKind::Leather => resources.leather,
         ResourceKind::Ore => resources.ore,
+        ResourceKind::Gem => resources.gem,
+        ResourceKind::Clay => resources.clay,
+        ResourceKind::Sand => resources.sand,
         ResourceKind::Metal => resources.metal,
         ResourceKind::Blessings => resources.blessings,
     }
@@ -241,6 +250,9 @@ pub fn set_resource(resources: &mut Resources, kind: ResourceKind, value: f64) {
         ResourceKind::Cloth => resources.cloth = value,
         ResourceKind::Leather => resources.leather = value,
         ResourceKind::Ore => resources.ore = value,
+        ResourceKind::Gem => resources.gem = value,
+        ResourceKind::Clay => resources.clay = value,
+        ResourceKind::Sand => resources.sand = value,
         ResourceKind::Metal => resources.metal = value,
         ResourceKind::Blessings => resources.blessings = value,
     }
@@ -446,6 +458,9 @@ pub const fn storage_capacity_for(caps: StorageCapacities, kind: ResourceKind) -
         ResourceKind::Cloth => caps.cloth,
         ResourceKind::Leather => caps.leather,
         ResourceKind::Ore => caps.ore,
+        ResourceKind::Gem => caps.gem,
+        ResourceKind::Clay => caps.clay,
+        ResourceKind::Sand => caps.sand,
         ResourceKind::Metal => caps.metal,
         ResourceKind::Blessings => f64::INFINITY,
     }

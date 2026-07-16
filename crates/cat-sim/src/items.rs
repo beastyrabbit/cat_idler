@@ -36,8 +36,10 @@ pub enum Material {
     Leather,
     /// Mountain gems. The rarest, most valuable material.
     Gem,
-    /// Clay/sand, fired or sun-dried. Cheap, common for mugs/bowls.
+    /// Clay, fired or sun-dried. Cheap, common for mugs/bowls.
     Clay,
+    /// Sand, used for cast forms and simple glassy decorations.
+    Sand,
 }
 
 impl Material {
@@ -52,6 +54,7 @@ impl Material {
         Self::Leather,
         Self::Gem,
         Self::Clay,
+        Self::Sand,
     ];
 
     /// Stable lowercase wire label (matches the `snake_case` serde rename).
@@ -66,6 +69,7 @@ impl Material {
             Self::Leather => "leather",
             Self::Gem => "gem",
             Self::Clay => "clay",
+            Self::Sand => "sand",
         }
     }
 
@@ -84,6 +88,7 @@ impl Material {
         match self {
             Self::Fibre => 50,
             Self::Clay => 70,
+            Self::Sand => 60,
             Self::Wood => 100,
             Self::Bone => 115,
             Self::Leather => 130,
@@ -294,6 +299,7 @@ pub fn item_weight_grams(item: Item) -> u32 {
         Material::Fibre => 40_u64,
         Material::Leather => 70,
         Material::Gem => 80,
+        Material::Sand => 110,
         Material::Bone => 90,
         Material::Wood => 100,
         Material::Clay => 120,
@@ -324,6 +330,7 @@ pub fn item_base_max_durability(item: Item) -> u32 {
     let material_pct = match item.material {
         Material::Fibre => 55_u64,
         Material::Clay => 70,
+        Material::Sand => 60,
         Material::Wood => 100,
         Material::Leather => 120,
         Material::Bone => 130,
@@ -364,7 +371,9 @@ pub const fn item_workshop_id(item: Item) -> &'static str {
         ItemKind::Weapon | ItemKind::Armor => "smithy",
         _ => match item.material {
             Material::Wood => "woodworking",
-            Material::Stone | Material::Clay | Material::Gem | Material::Bone => "stone_prep",
+            Material::Stone | Material::Clay | Material::Sand | Material::Gem | Material::Bone => {
+                "stone_prep"
+            }
             Material::Metal => "smithy",
             Material::Fibre => "clothier",
             Material::Leather => "tannery",

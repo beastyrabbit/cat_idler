@@ -2187,9 +2187,11 @@ fn repair_recipe(item: Item) -> (BuildingType, stockpiles::ResourceKind) {
     };
     let resource = match item.material {
         Material::Wood => stockpiles::ResourceKind::Planks,
-        Material::Stone | Material::Clay | Material::Gem | Material::Bone => {
-            stockpiles::ResourceKind::Blocks
-        }
+        Material::Stone => stockpiles::ResourceKind::Blocks,
+        Material::Clay => stockpiles::ResourceKind::Clay,
+        Material::Gem => stockpiles::ResourceKind::Gem,
+        Material::Sand => stockpiles::ResourceKind::Sand,
+        Material::Bone => stockpiles::ResourceKind::Bone,
         Material::Metal => stockpiles::ResourceKind::Metal,
         Material::Fibre => stockpiles::ResourceKind::Cloth,
         Material::Leather => stockpiles::ResourceKind::Leather,
@@ -3090,6 +3092,9 @@ fn trade_would_overflow(
         stockpiles::ResourceKind::Cloth => Some(capacities.cloth),
         stockpiles::ResourceKind::Leather => Some(capacities.leather),
         stockpiles::ResourceKind::Ore => Some(capacities.ore),
+        stockpiles::ResourceKind::Gem => Some(capacities.gem),
+        stockpiles::ResourceKind::Clay => Some(capacities.clay),
+        stockpiles::ResourceKind::Sand => Some(capacities.sand),
         stockpiles::ResourceKind::Metal => Some(capacities.metal),
         stockpiles::ResourceKind::Blessings => None,
     };
@@ -3251,6 +3256,9 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
                 cloth: caps.cloth,
                 leather: caps.leather,
                 ore: caps.ore,
+                gem: caps.gem,
+                clay: caps.clay,
+                sand: caps.sand,
                 metal: caps.metal,
             },
             food_capacity: Some(caps.food),
@@ -4781,6 +4789,9 @@ fn resources_snapshot(resources: &entities::Resources) -> proto::ResourceAmounts
         cloth: resources.cloth,
         leather: resources.leather,
         ore: resources.ore,
+        gem: resources.gem,
+        clay: resources.clay,
+        sand: resources.sand,
         metal: resources.metal,
         blessings: resources.blessings,
     }
@@ -5062,6 +5073,9 @@ fn proto_to_sim_resource_kind(kind: proto::ResourceKind) -> stockpiles::Resource
         proto::ResourceKind::Cloth => ResourceKind::Cloth,
         proto::ResourceKind::Leather => ResourceKind::Leather,
         proto::ResourceKind::Ore => ResourceKind::Ore,
+        proto::ResourceKind::Gem => ResourceKind::Gem,
+        proto::ResourceKind::Clay => ResourceKind::Clay,
+        proto::ResourceKind::Sand => ResourceKind::Sand,
         proto::ResourceKind::Metal => ResourceKind::Metal,
         proto::ResourceKind::Blessings => ResourceKind::Blessings,
     }
@@ -5093,6 +5107,9 @@ fn sim_to_proto_resource_kind(kind: stockpiles::ResourceKind) -> proto::Resource
         ResourceKind::Cloth => proto::ResourceKind::Cloth,
         ResourceKind::Leather => proto::ResourceKind::Leather,
         ResourceKind::Ore => proto::ResourceKind::Ore,
+        ResourceKind::Gem => proto::ResourceKind::Gem,
+        ResourceKind::Clay => proto::ResourceKind::Clay,
+        ResourceKind::Sand => proto::ResourceKind::Sand,
         ResourceKind::Metal => proto::ResourceKind::Metal,
         ResourceKind::Blessings => proto::ResourceKind::Blessings,
     }
@@ -5321,6 +5338,9 @@ fn sim_to_proto_carrying_kind(kind: entities::CarryingKind) -> proto::CarryingKi
         entities::CarryingKind::Cloth => proto::CarryingKind::Cloth,
         entities::CarryingKind::Bone => proto::CarryingKind::Bone,
         entities::CarryingKind::Ore => proto::CarryingKind::Ore,
+        entities::CarryingKind::Gem => proto::CarryingKind::Gem,
+        entities::CarryingKind::Clay => proto::CarryingKind::Clay,
+        entities::CarryingKind::Sand => proto::CarryingKind::Sand,
         entities::CarryingKind::Metal => proto::CarryingKind::Metal,
         entities::CarryingKind::Weapons => proto::CarryingKind::Weapons,
         entities::CarryingKind::Armor => proto::CarryingKind::Armor,
@@ -6357,6 +6377,17 @@ mod tests {
     fn assigned_cats_exact_tool_accelerates_player_quarry_without_being_consumed() {
         let mut baseline = world_with_one_colony();
         baseline.colonies[0].jobs.clear();
+        let site = baseline.colonies[0]
+            .revealed_tiles
+            .iter()
+            .copied()
+            .find(|pos| baseline.colonies[0].world_tiles.contains_key(pos))
+            .expect("fixture has a revealed tile");
+        baseline.colonies[0]
+            .world_tiles
+            .get_mut(&site)
+            .expect("revealed tile is materialized")
+            .tile_type = crate::types::TileType::CaveEntrance;
         let mut equipped = baseline.clone();
         let action = proto::ClientAction::RequestJob {
             session_id: "sess_1".to_owned(),
@@ -8085,7 +8116,7 @@ mod tests {
     fn designate_stockpile_accepts_all_physical_kinds_and_rejects_only_blessings() {
         const NONPHYSICAL_MESSAGE: &str = "Stockpiles accept only physical goods; Blessings are divine favor and are never hauled or stored in piles.";
 
-        assert_eq!(proto::ResourceKind::ALL.len(), 25);
+        assert_eq!(proto::ResourceKind::ALL.len(), 28);
         for &kind in proto::ResourceKind::ALL {
             let mut world = world_with_one_colony();
             let before = world.colonies[0].stockpiles.len();
@@ -8785,6 +8816,7 @@ mod tests {
             .find(|tile| {
                 tile.overlay_feature.is_none()
                     && !world.colonies[0].claimed_tiles.contains(&tile.pos)
+                    && tile.resources.water == 0
                     && !matches!(
                         tile.tile_type,
                         crate::types::TileType::Mountains | crate::types::TileType::CaveEntrance

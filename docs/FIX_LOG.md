@@ -12,9 +12,35 @@ and any changed Bevy visuals have been verified.
 | Research recipe/resource breadth remains incomplete | Thirteen maintained runtime recipe IDs now have data-owned station descriptors and exact catalog ownership metadata: ten are research-gated and three are founding baselines. All thirteen execute through physical queues. The explicit Grain→Flour, Flour→Food, and Metal→exact Tool routes are live. The other 91 generated recipe IDs and all 64 generated resource IDs have no authoritative consumer, are visibly marked `FUTURE`, and cannot spend points. Continue only from the evidence boundary in `RECIPE_RESOURCE_MATRIX.md`. | in progress |
 | Shared terrain is duplicated per colony | Terrain, ecology, roads, wear, depletion, and fish are colony-owned, so two villages at the same coordinates do not inhabit one authoritative mutable world. Move canonical spatial state to world scope while keeping fog and learned contact private. | queued |
 | Inter-village trade is nonphysical | Contact summaries and atomic scalar barter exist, but cats do not meet, carry items, form caravans, or travel trade routes. Preserve knowledge-blind scouting and shrine-return discovery while adding physical exchange. | queued |
-| Fine-biome resources and transport are incomplete | Bone now has a finite physical hunt source, storage/trade/persistence/HUD identity, and conserved final haul, but its crafting variants remain incomplete; Gem, clay, and sand still lack complete physical sources/chains. Rail and Shipping now grant blueprint entitlements only: they deliberately do not alter ordinary walking pathfinding or speed. Build tracks, rolling stock, docks, vessels, boarding, and staffed routes before activating transport effects. | queued |
+| Fine-biome resources and transport are incomplete | Bone has a finite hunt source, and Gem/Clay/Sand now have distinct finite fine-biome deposits, physical quarry cargo, depletion, storage/trade/persistence/wire/HUD identities, and zero-stock village interiors. Their downstream crafting variants remain incomplete. Rail and Shipping remain separate transport work: blueprint ownership alone must never alter ordinary walking. | in progress |
 
 ## Verified fixes
+
+## 2026-07-15 — Finite fine-biome Gem, Clay, and Sand sources
+
+**Problem:** Climate named rare minerals, wet earth, and sand, but runtime world tiles could not
+hold them. Generic coarse quarry terrain therefore could not prove a finite, biome-specific source,
+and the three identities disappeared across hauling, storage, persistence, trade, and the client.
+
+**Fix:** Mountain tiles receive a small finite Gem deposit, marsh/swamp/badlands tiles finite Clay,
+and beach/desert tiles finite Sand. Extraction drains the persisted tile only when a cat physically
+picks up the exact cargo; final partial trips conserve integers and exhausted Clay/Sand-only sites
+remain visibly and durably depleted. Generic Quarry selection protects the founding Stone/tool
+chain before considering special-only sites. The new resources have independent aggregate and
+stockpile capacity, wire/action/carrying kinds, SQLite-compatible defaulted tile JSON, trade and
+Accountant projections, distinct public-pack HUD/cargo art, and exact repair-material matching.
+Founding and expanded village interiors explicitly erase all three deposits.
+
+**Evidence:** The exhaustive 26-biome deposit matrix proves both presence and absence without
+inventing deposits from a coarse role. Physical multi-trip tests prove source decrement, exact
+cargo identity, delivery-before-credit, exhaustion, and deterministic replay. Founding clearing,
+storage clamping, protocol compatibility, SQLite round-trip, and full simulation survival/tool
+campaigns pass. Client mapping tests cover all 28 resource and carrying identities with unique PNG
+contents. The inspected client-owned `/tmp/fine-biome-resource-ecology.png` is a 1090×1046 RGB PNG
+(SHA-256 `38f53853eca81a1836eb7d5de17129e3f0461a67042f645bb623982e89737cff`): all 28 HUD rows,
+the top-down village, cats, roads, open stations, and bottom controls remain readable without
+clipping or overlap. The temporary hook and isolated processes were removed. Downstream
+Gem/Clay/Sand/Bone recipes remain explicitly open rather than being advertised as implemented.
 
 ## 2026-07-15 — Palisades read as solid top-down fortress cells
 

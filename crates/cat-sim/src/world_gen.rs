@@ -3,6 +3,7 @@
 
 use crate::{
     biomes::{BiomeType, MaxResources, OverlayFeature, biome_properties, calculate_danger_level},
+    climate::Biome,
     noise::{HashSeedPart, create_seeded_random, hash_seed},
     terrain_gen::{BiomeRole, TerrainTile, WORLD_TERRAIN_OPTIONS, generate_terrain_chunk},
     types::TileType,
@@ -30,6 +31,12 @@ pub struct TileResources {
     pub food: u32,
     pub herbs: u32,
     pub water: u32,
+    /// Finite rare mountain deposit.
+    pub gem: u32,
+    /// Finite wetland/badlands deposit.
+    pub clay: u32,
+    /// Finite beach/desert deposit.
+    pub sand: u32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -116,6 +123,7 @@ fn terrain_to_world_tile(
         HashSeedPart::Number(f64::from(tile.y)),
     ])));
 
+    let (gem, clay, sand) = natural_deposits_for_biome(tile.climate_biome);
     WorldTileData {
         x: tile.x,
         y: tile.y,
@@ -132,12 +140,25 @@ fn terrain_to_world_tile(
                 props.base_resources.herbs.max,
             ),
             water: props.base_resources.water,
+            gem,
+            clay,
+            sand,
         },
         max_resources: props.max_resources,
         danger_level: calculate_danger_level(biome_type, None, dist),
         path_wear: 0,
         last_depleted: 0,
         overlay_feature: None,
+    }
+}
+
+#[must_use]
+pub const fn natural_deposits_for_biome(biome: Biome) -> (u32, u32, u32) {
+    match biome {
+        Biome::Mountains => (2, 0, 0),
+        Biome::Badlands | Biome::Swamp | Biome::Marsh => (0, 12, 0),
+        Biome::Beach | Biome::Desert => (0, 0, 16),
+        _ => (0, 0, 0),
     }
 }
 
@@ -174,6 +195,9 @@ fn ensure_water_near_colony(tiles: &mut [WorldTileData], seed: i64, colony_x: i3
         food: 0,
         herbs: 0,
         water: INFINITE_WATER,
+        gem: 0,
+        clay: 0,
+        sand: 0,
     };
     pond.max_resources = MaxResources { food: 0, herbs: 0 };
     pond.danger_level = 5.0;
@@ -188,6 +212,9 @@ fn river_tile(x: i32, y: i32) -> WorldTileData {
             food: 0,
             herbs: 0,
             water: INFINITE_WATER,
+            gem: 0,
+            clay: 0,
+            sand: 0,
         },
         max_resources: MaxResources { food: 0, herbs: 0 },
         danger_level: 5.0,
@@ -390,13 +417,16 @@ mod tests {
             "{context} type"
         );
         assert_eq!(
-            actual.resources,
-            TileResources {
-                food: expected.resources.food,
-                herbs: expected.resources.herbs,
-                water: expected.resources.water,
-            },
-            "{context} resources"
+            actual.resources.food, expected.resources.food,
+            "{context} food"
+        );
+        assert_eq!(
+            actual.resources.herbs, expected.resources.herbs,
+            "{context} herbs"
+        );
+        assert_eq!(
+            actual.resources.water, expected.resources.water,
+            "{context} water"
         );
         assert_eq!(
             actual.max_resources,
@@ -424,6 +454,10 @@ mod tests {
         );
     }
 
+    fn distance_from_colony(tile: &WorldTileData, colony: &TileCoordsFixture) -> f64 {
+        distance_to(tile.x, tile.y, colony.x, colony.y)
+    }
+
     fn type_counts(tiles: &[WorldTileData]) -> HashMap<String, usize> {
         let mut counts = HashMap::new();
         for tile in tiles {
@@ -432,10 +466,6 @@ mod tests {
                 .or_insert(0) += 1;
         }
         counts
-    }
-
-    fn distance_from_colony(tile: &WorldTileData, colony: &TileCoordsFixture) -> f64 {
-        distance_to(tile.x, tile.y, colony.x, colony.y)
     }
 
     #[test]
@@ -646,6 +676,25 @@ mod tests {
                 first, second,
                 "seed {} chunk ({}, {})",
                 case.seed, case.chunk_x, case.chunk_y
+            );
+        }
+    }
+
+    #[test]
+    fn fine_biomes_have_distinct_finite_natural_deposits_without_coarse_leakage() {
+        for biome in Biome::ALL {
+            let actual = natural_deposits_for_biome(*biome);
+            let expected = match biome {
+                Biome::Mountains => (2, 0, 0),
+                Biome::Badlands | Biome::Swamp | Biome::Marsh => (0, 12, 0),
+                Biome::Beach | Biome::Desert => (0, 0, 16),
+                _ => (0, 0, 0),
+            };
+            assert_eq!(
+                actual,
+                expected,
+                "{} deposit matrix",
+                biome.properties().wire
             );
         }
     }

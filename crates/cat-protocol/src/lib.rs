@@ -607,6 +607,9 @@ define_resource_kinds! {
     Cloth => true,
     Leather => true,
     Ore => true,
+    Gem => true,
+    Clay => true,
+    Sand => true,
     Metal => true,
     /// Spendable divine favor, not an item cats can haul or place in a pile.
     Blessings => false,
@@ -666,6 +669,12 @@ pub struct ResourceAmounts {
     #[serde(default)]
     pub ore: f64,
     #[serde(default)]
+    pub gem: f64,
+    #[serde(default)]
+    pub clay: f64,
+    #[serde(default)]
+    pub sand: f64,
+    #[serde(default)]
     pub metal: f64,
     pub blessings: f64,
 }
@@ -724,6 +733,12 @@ pub struct ResourceCapacities {
     pub leather: f64,
     #[serde(default)]
     pub ore: f64,
+    #[serde(default)]
+    pub gem: f64,
+    #[serde(default)]
+    pub clay: f64,
+    #[serde(default)]
+    pub sand: f64,
     #[serde(default)]
     pub metal: f64,
 }
@@ -933,6 +948,9 @@ pub enum CarryingKind {
     Cloth,
     Bone,
     Ore,
+    Gem,
+    Clay,
+    Sand,
     Metal,
     Weapons,
     Armor,
@@ -1967,6 +1985,9 @@ mod tests {
         }))
         .expect("legacy capacity payload");
         assert_eq!(capacities.bone, 0.0);
+        assert_eq!(capacities.gem, 0.0);
+        assert_eq!(capacities.clay, 0.0);
+        assert_eq!(capacities.sand, 0.0);
     }
     use serde_json::json;
 
@@ -1996,13 +2017,16 @@ mod tests {
             ResourceKind::Cloth,
             ResourceKind::Leather,
             ResourceKind::Ore,
+            ResourceKind::Gem,
+            ResourceKind::Clay,
+            ResourceKind::Sand,
             ResourceKind::Metal,
             ResourceKind::Blessings,
         ];
         assert_eq!(ResourceKind::ALL, expected_all);
 
         let physical = ResourceKind::physical_stockpile_goods().collect::<Vec<_>>();
-        assert_eq!(physical.len(), 24);
+        assert_eq!(physical.len(), 27);
         for &kind in ResourceKind::ALL {
             assert_eq!(
                 physical.contains(&kind),
@@ -2645,6 +2669,9 @@ mod tests {
                     cloth: 0.0,
                     leather: 0.0,
                     ore: 0.0,
+                    gem: 0.0,
+                    clay: 0.0,
+                    sand: 0.0,
                     metal: 0.0,
                     blessings: 8.0,
                 },
@@ -2673,6 +2700,9 @@ mod tests {
                         cloth: 100.0,
                         leather: 100.0,
                         ore: 100.0,
+                        gem: 100.0,
+                        clay: 100.0,
+                        sand: 100.0,
                         metal: 100.0,
                     },
                     food_capacity: Some(200.0),

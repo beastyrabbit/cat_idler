@@ -1752,6 +1752,9 @@ fn tile_resources_json(resources: TileResources) -> Value {
         "food": resources.food,
         "herbs": resources.herbs,
         "water": resources.water,
+        "gem": resources.gem,
+        "clay": resources.clay,
+        "sand": resources.sand,
     })
 }
 
@@ -1761,6 +1764,9 @@ fn parse_tile_resources(raw: &str) -> rusqlite::Result<TileResources> {
         food: value_u32(&value, "food"),
         herbs: value_u32(&value, "herbs"),
         water: value_u32(&value, "water"),
+        gem: value_u32(&value, "gem"),
+        clay: value_u32(&value, "clay"),
+        sand: value_u32(&value, "sand"),
     })
 }
 
@@ -6406,6 +6412,9 @@ mod tests {
             cloth: 23.0,
             leather: 24.0,
             ore: 25.5,
+            gem: 25.6,
+            clay: 25.7,
+            sand: 25.8,
             metal: 26.5,
             blessings: 25.0,
         };

@@ -3587,6 +3587,9 @@ fn starting_resources(scale_kind: VillageScale) -> Resources {
         // Ore/metal chain (P17/P19) — also empty at founding; ore only ever comes from
         // quarrying a mountain, which needs the `mountaineering` unlock first.
         ore: 0.0,
+        gem: 0.0,
+        clay: 0.0,
+        sand: 0.0,
         metal: 0.0,
         blessings: 0.0,
     }
@@ -3936,6 +3939,9 @@ fn clear_founding_interior(colony: &mut ColonyRuntime) {
         tile.resources.food = 0;
         tile.resources.herbs = 0;
         tile.resources.water = 0;
+        tile.resources.gem = 0;
+        tile.resources.clay = 0;
+        tile.resources.sand = 0;
         tile.max_resources.food = 0;
         tile.max_resources.herbs = 0;
         tile.danger_level = 0.0;
@@ -4791,9 +4797,13 @@ fn phase_7_consumption_spoilage_resource_pre_patch_minute_cadence(
     colony.resources.tools = clamp_resource(colony.resources.tools, caps.tools);
     colony.resources.fibre = clamp_resource(colony.resources.fibre, caps.fibre);
     colony.resources.hide = clamp_resource(colony.resources.hide, caps.hide);
+    colony.resources.bone = clamp_resource(colony.resources.bone, caps.bone);
     colony.resources.cloth = clamp_resource(colony.resources.cloth, caps.cloth);
     colony.resources.leather = clamp_resource(colony.resources.leather, caps.leather);
     colony.resources.ore = clamp_resource(colony.resources.ore, caps.ore);
+    colony.resources.gem = clamp_resource(colony.resources.gem, caps.gem);
+    colony.resources.clay = clamp_resource(colony.resources.clay, caps.clay);
+    colony.resources.sand = clamp_resource(colony.resources.sand, caps.sand);
     colony.resources.metal = clamp_resource(colony.resources.metal, caps.metal);
 }
 
@@ -11438,8 +11448,7 @@ fn phase_31_mid_job_hauling(colony: &mut ColonyRuntime, gate: TickGate, world_se
         else {
             continue;
         };
-        let quarry_has_ore = quarry_has_ore(colony, &job);
-        let trip_count = source_cargo_trip_count(&job, quarry_has_ore);
+        let trip_count = source_cargo_trip_count_for(colony, &job);
         if trips_done >= (trip_count - 1) as u32 {
             continue;
         }
@@ -11490,9 +11499,11 @@ fn phase_31_mid_job_hauling(colony: &mut ColonyRuntime, gate: TickGate, world_se
         let total =
             total_yield.unwrap_or_else(|| total_yield_for_job(colony, &job, cat_index, world_seed));
         let (carrying_kind, requested_share) =
-            source_cargo_for_trip(&job, total, trips_done, quarry_has_ore);
+            source_cargo_for_colony_trip(colony, &job, total, trips_done);
         let share = if job.kind == JobKind::Fish {
             harvest_fish(colony, site, requested_share)
+        } else if job.kind == JobKind::Quarry {
+            drain_quarry_deposit(colony, site, carrying_kind, requested_share)
         } else {
             requested_share
         };
@@ -13110,6 +13121,9 @@ fn carrying_kind_for_resource(kind: ResourceKind) -> Option<CarryingKind> {
         ResourceKind::Blocks => Some(CarryingKind::Blocks),
         ResourceKind::Tools => Some(CarryingKind::Tools),
         ResourceKind::Ore => Some(CarryingKind::Ore),
+        ResourceKind::Gem => Some(CarryingKind::Gem),
+        ResourceKind::Clay => Some(CarryingKind::Clay),
+        ResourceKind::Sand => Some(CarryingKind::Sand),
         ResourceKind::Metal => Some(CarryingKind::Metal),
         ResourceKind::Weapons => Some(CarryingKind::Weapons),
         ResourceKind::Armor => Some(CarryingKind::Armor),
@@ -13717,6 +13731,9 @@ pub(crate) fn fresh_ground_tile(pos: TilePos) -> WorldTileRuntime {
             food: 0,
             herbs: 0,
             water: 0,
+            gem: 0,
+            clay: 0,
+            sand: 0,
         },
         max_resources: MaxResources { food: 0, herbs: 0 },
         danger_level: 0.0,
@@ -16379,9 +16396,13 @@ fn clamp_resources_to_caps(resources: &mut Resources, caps: StorageCapacities) {
     resources.tools = clamp_resource(resources.tools, caps.tools);
     resources.fibre = clamp_resource(resources.fibre, caps.fibre);
     resources.hide = clamp_resource(resources.hide, caps.hide);
+    resources.bone = clamp_resource(resources.bone, caps.bone);
     resources.cloth = clamp_resource(resources.cloth, caps.cloth);
     resources.leather = clamp_resource(resources.leather, caps.leather);
     resources.ore = clamp_resource(resources.ore, caps.ore);
+    resources.gem = clamp_resource(resources.gem, caps.gem);
+    resources.clay = clamp_resource(resources.clay, caps.clay);
+    resources.sand = clamp_resource(resources.sand, caps.sand);
     resources.metal = clamp_resource(resources.metal, caps.metal);
 }
 
@@ -17033,10 +17054,22 @@ fn has_complete_building(colony: &ColonyRuntime, building_type: BuildingType) ->
 pub(crate) fn has_quarry_site(colony: &ColonyRuntime) -> bool {
     // Keep this predicate identical to `quarry_sites_near_village`: only knowledge
     // delivered by a scout (or seeded in the founding reveal) can unlock quarry work.
-    colony.world_tiles.values().any(|tile| {
-        matches!(tile.tile_type, TileType::Mountains | TileType::CaveEntrance)
-            && tile_is_explored(colony, tile)
-    })
+    colony
+        .world_tiles
+        .values()
+        .any(|tile| quarry_tile_is_available(tile) && tile_is_explored(colony, tile))
+}
+
+fn quarry_tile_is_available(tile: &WorldTileRuntime) -> bool {
+    let deposit_depleted = matches!(
+        tile.overlay_feature.as_deref(),
+        Some("sand_depleted" | "clay_depleted")
+    );
+    !deposit_depleted
+        && (matches!(tile.tile_type, TileType::Mountains | TileType::CaveEntrance)
+            || tile.resources.gem > 0
+            || tile.resources.clay > 0
+            || tile.resources.sand > 0)
 }
 
 pub(crate) fn has_water_site(colony: &ColonyRuntime) -> bool {
@@ -17539,9 +17572,7 @@ fn scout_tile_matches_resource(
         // Coarse mountain/cave sites are the stable, already-materialised source used
         // by the quarry site finder. Avoid regenerating a 12x12 fine-terrain chunk for
         // every candidate on every stone expedition.
-        ScoutResource::Stone => {
-            matches!(tile.tile_type, TileType::Mountains | TileType::CaveEntrance)
-        }
+        ScoutResource::Stone => quarry_tile_is_available(tile),
     }
 }
 
@@ -18943,13 +18974,24 @@ fn quarry_sites_near_village(colony: &ColonyRuntime) -> Vec<WorldPos> {
     let mut sites = colony
         .world_tiles
         .values()
-        .filter(|tile| {
-            matches!(tile.tile_type, TileType::Mountains | TileType::CaveEntrance)
-                && tile_is_explored(colony, tile)
-        })
+        .filter(|tile| quarry_tile_is_available(tile) && tile_is_explored(colony, tile))
         .map(|tile| tile.pos)
         .collect::<Vec<_>>();
-    sites.sort_by_key(|site| cheb_from_anchor(colony.anchor, *site));
+    // Generic Quarry orders protect the founding stone/tool chain. Distinct
+    // clay/sand-only deposits remain valid fallback sites, but cannot steal the
+    // first quarry order merely because a beach or wetland happens to be closer.
+    sites.sort_by_key(|site| {
+        let special_only = colony
+            .world_tiles
+            .get(site)
+            .is_some_and(quarry_is_special_primary);
+        (
+            special_only,
+            cheb_from_anchor(colony.anchor, *site),
+            site.y,
+            site.x,
+        )
+    });
     sites.into_iter().map(tile_pos_to_world).collect()
 }
 
@@ -20366,6 +20408,156 @@ fn source_cargo_trip_count(job: &JobRuntime, quarry_has_ore: bool) -> i32 {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct QuarryProfile {
+    primary: CarryingKind,
+    supplies: bool,
+    ore: bool,
+    gem: bool,
+    clay: bool,
+}
+
+fn quarry_is_special_primary(tile: &WorldTileRuntime) -> bool {
+    tile.resources.sand > 0
+        || (tile.resources.clay > 0
+            && !matches!(tile.tile_type, TileType::Mountains | TileType::CaveEntrance))
+}
+
+fn quarry_profile(colony: &ColonyRuntime, job: &JobRuntime) -> QuarryProfile {
+    let tile = hauling_metadata(job)
+        .0
+        .and_then(|site| colony.world_tiles.get(&site));
+    let sand = tile.is_some_and(|tile| {
+        tile.resources.sand > 0 || tile.overlay_feature.as_deref() == Some("sand_depleted")
+    });
+    let clay = tile.is_some_and(|tile| {
+        tile.resources.clay > 0 || tile.overlay_feature.as_deref() == Some("clay_depleted")
+    });
+    let primary = if sand {
+        CarryingKind::Sand
+    } else if clay
+        && !tile.is_some_and(|tile| {
+            matches!(tile.tile_type, TileType::Mountains | TileType::CaveEntrance)
+        })
+    {
+        CarryingKind::Clay
+    } else {
+        CarryingKind::Stone
+    };
+    QuarryProfile {
+        primary,
+        supplies: primary == CarryingKind::Stone,
+        ore: quarry_has_ore(colony, job),
+        gem: tile.is_some_and(|tile| tile.resources.gem > 0),
+        clay: primary == CarryingKind::Stone && clay,
+    }
+}
+
+fn source_cargo_trip_count_for(colony: &ColonyRuntime, job: &JobRuntime) -> i32 {
+    if job.kind != JobKind::Quarry {
+        return source_cargo_trip_count(job, false);
+    }
+    let profile = quarry_profile(colony, job);
+    HUNT_TRIP_COUNT
+        + i32::from(profile.supplies)
+        + i32::from(profile.ore)
+        + i32::from(profile.gem)
+        + i32::from(profile.clay)
+}
+
+fn source_cargo_for_colony_trip(
+    colony: &ColonyRuntime,
+    job: &JobRuntime,
+    total: f64,
+    trip_index: u32,
+) -> (CarryingKind, f64) {
+    if job.kind != JobKind::Quarry {
+        return source_cargo_for_trip(job, total, trip_index, false);
+    }
+    let profile = quarry_profile(colony, job);
+    if trip_index < HUNT_TRIP_COUNT as u32 {
+        return (
+            profile.primary,
+            split_yield(total, HUNT_TRIP_COUNT, trip_index as i32),
+        );
+    }
+    let mut cursor = HUNT_TRIP_COUNT as u32;
+    if profile.supplies {
+        if trip_index == cursor {
+            return (CarryingKind::Materials, total * QUARRY_SUPPLIES_YIELD_RATIO);
+        }
+        cursor += 1;
+    }
+    if profile.ore {
+        if trip_index == cursor {
+            return (CarryingKind::Ore, total * QUARRY_ORE_YIELD_RATIO);
+        }
+        cursor += 1;
+    }
+    if profile.gem {
+        if trip_index == cursor {
+            let available = hauling_metadata(job)
+                .0
+                .and_then(|site| colony.world_tiles.get(&site))
+                .map_or(0.0, |tile| f64::from(tile.resources.gem));
+            return (
+                CarryingKind::Gem,
+                (total * 0.1).floor().max(1.0).min(available),
+            );
+        }
+        cursor += 1;
+    }
+    if profile.clay && trip_index == cursor {
+        let available = hauling_metadata(job)
+            .0
+            .and_then(|site| colony.world_tiles.get(&site))
+            .map_or(0.0, |tile| f64::from(tile.resources.clay));
+        return (
+            CarryingKind::Clay,
+            (total * 0.5).floor().max(1.0).min(available),
+        );
+    }
+    (profile.primary, 0.0)
+}
+
+fn drain_quarry_deposit(
+    colony: &mut ColonyRuntime,
+    site: TilePos,
+    kind: CarryingKind,
+    amount: f64,
+) -> f64 {
+    if !matches!(
+        kind,
+        CarryingKind::Gem | CarryingKind::Clay | CarryingKind::Sand
+    ) {
+        return amount;
+    }
+    let Some(tile) = colony.world_tiles.get_mut(&site) else {
+        return 0.0;
+    };
+    let requested = amount.floor().max(0.0) as u32;
+    let stock = match kind {
+        CarryingKind::Gem => &mut tile.resources.gem,
+        CarryingKind::Clay => &mut tile.resources.clay,
+        CarryingKind::Sand => &mut tile.resources.sand,
+        _ => unreachable!("non-finite quarry cargo returned above"),
+    };
+    let extracted = requested.min(*stock);
+    *stock -= extracted;
+    if *stock == 0 {
+        match kind {
+            CarryingKind::Sand => tile.overlay_feature = Some("sand_depleted".to_owned()),
+            CarryingKind::Clay
+                if !matches!(tile.tile_type, TileType::Mountains | TileType::CaveEntrance) =>
+            {
+                tile.overlay_feature = Some("clay_depleted".to_owned());
+            }
+            _ => {}
+        }
+    }
+    f64::from(extracted)
+}
+
 fn is_physical_source_job(kind: JobKind) -> bool {
     matches!(
         kind,
@@ -20385,7 +20577,7 @@ fn source_job_ready_for_final_load(colony: &ColonyRuntime, job: &JobRuntime) -> 
     let (Some(site), _, trips_done) = hauling_metadata(job) else {
         return false;
     };
-    let trip_count = source_cargo_trip_count(job, quarry_has_ore(colony, job));
+    let trip_count = source_cargo_trip_count_for(colony, job);
     if trips_done != (trip_count - 1) as u32 {
         return false;
     }
@@ -20411,7 +20603,7 @@ fn source_job_ready_for_final_load(colony: &ColonyRuntime, job: &JobRuntime) -> 
 /// after phase 29 creates the final [`Carrying`] load, allowing phase 30 to retire the
 /// job in the same tick without mistaking that newly occupied paw for an older load.
 fn mark_source_final_load_extracted(colony: &mut ColonyRuntime, job: &JobRuntime) {
-    let trip_count = source_cargo_trip_count(job, quarry_has_ore(colony, job)) as u32;
+    let trip_count = source_cargo_trip_count_for(colony, job) as u32;
     let Some(stored) = colony
         .jobs
         .iter_mut()
@@ -20429,7 +20621,7 @@ fn source_final_load_was_extracted(colony: &ColonyRuntime, job: &JobRuntime) -> 
         return false;
     };
     let (_, _, trips_done) = hauling_metadata(stored);
-    trips_done >= source_cargo_trip_count(stored, quarry_has_ore(colony, stored)).max(0) as u32
+    trips_done >= source_cargo_trip_count_for(colony, stored).max(0) as u32
 }
 
 /// Ore eligibility is read from the already-persisted quarry site. Runtime world tiles
@@ -20437,10 +20629,15 @@ fn source_final_load_was_extracted(colony: &ColonyRuntime, job: &JobRuntime) -> 
 /// terrain chunk merely to learn a manifest property on every tick.
 fn quarry_has_ore(colony: &ColonyRuntime, job: &JobRuntime) -> bool {
     quarry_has_ore_with(job, |site| {
-        colony
-            .world_tiles
-            .get(&site)
-            .is_some_and(|tile| tile.tile_type == TileType::Mountains)
+        colony.world_tiles.get(&site).is_some_and(|tile| {
+            tile.tile_type == TileType::Mountains
+                && tile.resources.clay == 0
+                && tile.resources.sand == 0
+                && !matches!(
+                    tile.overlay_feature.as_deref(),
+                    Some("sand_depleted" | "clay_depleted")
+                )
+        })
     })
 }
 
@@ -20529,8 +20726,15 @@ fn complete_fixed_yield_job(
         total_yield_for_job(colony, job, cat_index, world_seed)
     });
     let _ = kind;
-    let (cargo_kind, reward) =
-        source_cargo_for_trip(job, scaled_total, trips_done, quarry_has_ore(colony, job));
+    let (cargo_kind, requested_reward) =
+        source_cargo_for_colony_trip(colony, job, scaled_total, trips_done);
+    let reward = if job.kind == JobKind::Quarry {
+        site.map_or(0.0, |site| {
+            drain_quarry_deposit(colony, site, cargo_kind, requested_reward)
+        })
+    } else {
+        requested_reward
+    };
     if job.kind == JobKind::GatherLogs && reward > 0.0 {
         mark_logged_site(colony, site, gate.processed_through);
     }
@@ -20793,6 +20997,9 @@ fn complete_village_expansion(
     tile.resources.food = 0;
     tile.resources.herbs = 0;
     tile.resources.water = 0;
+    tile.resources.gem = 0;
+    tile.resources.clay = 0;
+    tile.resources.sand = 0;
     tile.max_resources.food = 0;
     tile.max_resources.herbs = 0;
     tile.danger_level = 0.0;
@@ -21155,14 +21362,26 @@ fn total_yield_for_job(
         // P17 mining rules: `QUARRY_TOTAL_YIELD` is the "full mountain" base yield,
         // scaled by the site's mining rule (`quarry_yield_multiplier`).
         JobKind::Quarry => {
+            let profile = quarry_profile(colony, job);
             let mult = hauling_metadata(job).0.map_or(1.0, |site| {
                 quarry_yield_multiplier(colony, world_seed, site)
             });
-            (skill_scaled_yield(cat, job.kind, QUARRY_TOTAL_YIELD)
+            let yield_total = (skill_scaled_yield(cat, job.kind, QUARRY_TOTAL_YIELD)
                 * mult
                 * effects.material_yield_mult.max(0.0)
                 * haul_mult)
-                .floor()
+                .floor();
+            match profile.primary {
+                CarryingKind::Clay => hauling_metadata(job)
+                    .0
+                    .and_then(|site| colony.world_tiles.get(&site))
+                    .map_or(0.0, |tile| yield_total.min(f64::from(tile.resources.clay))),
+                CarryingKind::Sand => hauling_metadata(job)
+                    .0
+                    .and_then(|site| colony.world_tiles.get(&site))
+                    .map_or(0.0, |tile| yield_total.min(f64::from(tile.resources.sand))),
+                _ => yield_total,
+            }
         }
         JobKind::GatherLogs => {
             skill_scaled_yield(cat, job.kind, LOGGING_TOTAL_YIELD)
@@ -21184,27 +21403,27 @@ fn base_yield_for_job(kind: JobKind) -> f64 {
     }
 }
 
-/// P17 mining-yield multiplier for a quarry `site`, the OR/superset of two signals
-/// (mirrors `tile_is_farmable`): the legacy coarse ground type
-/// (`Mountains`/`CaveEntrance` — the same signal `quarry_sites_near_village` uses
-/// to *discover* a site, so a discovered site always mines fully and the founding
-/// raw-Stone economy never regresses) OR the fine per-tile climate biome's mining
-/// rule (`Full` mountains, `Trickle` stony/gravel, `None` elsewhere). Taking the
-/// max means a legacy mountain is always full even when the fine biome under it is
-/// non-mining (e.g. a `Mountains` tile carved near the founding grass plateau),
-/// while a fine stony biome that isn't a legacy mountain still yields its trickle.
+/// P17 mining-yield multiplier for a quarry `site`. Fine climate supplies the full
+/// and trickle rules. Legacy coarse mountain/cave tiles remain a full-yield fallback
+/// for saved worlds and the established founding economy; importantly, that fallback
+/// never invents one of the new finite gem/clay/sand stocks. A finite clay or sand
+/// deposit is a full-yield special source even when its surface biome is non-mining.
 fn quarry_yield_multiplier(colony: &ColonyRuntime, world_seed: u32, site: TilePos) -> f64 {
+    let fine = crate::terrain_gen::tile_climate_biome(world_seed, site.x, site.y)
+        .properties()
+        .mining
+        .yield_multiplier();
     let legacy = colony.world_tiles.get(&site).map_or(0.0, |tile| {
-        if matches!(tile.tile_type, TileType::Mountains | TileType::CaveEntrance) {
+        if (tile.resources.clay > 0 || tile.resources.sand > 0) && fine == 0.0 {
+            1.0
+        } else if fine > 0.0 {
+            0.0
+        } else if matches!(tile.tile_type, TileType::Mountains | TileType::CaveEntrance) {
             crate::climate::Mining::Full.yield_multiplier()
         } else {
             0.0
         }
     });
-    let fine = crate::terrain_gen::tile_climate_biome(world_seed, site.x, site.y)
-        .properties()
-        .mining
-        .yield_multiplier();
     legacy.max(fine)
 }
 
@@ -23600,6 +23819,9 @@ fn carrying_resource_kind(kind: CarryingKind) -> Option<ResourceKind> {
         CarryingKind::Cloth => Some(ResourceKind::Cloth),
         CarryingKind::Bone => Some(ResourceKind::Bone),
         CarryingKind::Ore => Some(ResourceKind::Ore),
+        CarryingKind::Gem => Some(ResourceKind::Gem),
+        CarryingKind::Clay => Some(ResourceKind::Clay),
+        CarryingKind::Sand => Some(ResourceKind::Sand),
         CarryingKind::Metal => Some(ResourceKind::Metal),
         CarryingKind::Weapons => Some(ResourceKind::Weapons),
         CarryingKind::Armor => Some(ResourceKind::Armor),
@@ -24461,6 +24683,9 @@ fn credit_carrying(colony: &mut ColonyRuntime, carrying: &Carrying, deposit_at: 
         CarryingKind::Cloth => ResourceKind::Cloth,
         CarryingKind::Bone => ResourceKind::Bone,
         CarryingKind::Ore => ResourceKind::Ore,
+        CarryingKind::Gem => ResourceKind::Gem,
+        CarryingKind::Clay => ResourceKind::Clay,
+        CarryingKind::Sand => ResourceKind::Sand,
         CarryingKind::Metal => ResourceKind::Metal,
         CarryingKind::Weapons => ResourceKind::Weapons,
         CarryingKind::Armor => ResourceKind::Armor,
@@ -24832,6 +25057,9 @@ fn deposit_message(cat_id: &str, carrying: &Carrying) -> String {
         CarryingKind::Cloth => format!("{cat_id} hauled {} cloth.", carrying.amount),
         CarryingKind::Bone => format!("{cat_id} hauled {} bone.", carrying.amount),
         CarryingKind::Ore => format!("{cat_id} hauled {} ore.", carrying.amount),
+        CarryingKind::Gem => format!("{cat_id} hauled {} gems.", carrying.amount),
+        CarryingKind::Clay => format!("{cat_id} hauled {} clay.", carrying.amount),
+        CarryingKind::Sand => format!("{cat_id} hauled {} sand.", carrying.amount),
         CarryingKind::Metal => format!("{cat_id} hauled {} metal bars.", carrying.amount),
         CarryingKind::Weapons => format!("{cat_id} hauled {} weapons.", carrying.amount),
         CarryingKind::Armor => format!("{cat_id} hauled {} armor.", carrying.amount),
@@ -25513,18 +25741,23 @@ mod tests {
             cloth: 1_000.0,
             leather: 1_000.0,
             ore: 1_000.0,
+            gem: 1_000.0,
+            clay: 1_000.0,
+            sand: 1_000.0,
             metal: 1_000.0,
             blessings: 77.0,
         };
         clamp_resources_to_caps(&mut resources, BASE_CAPACITY);
         for (actual, cap) in [
             (resources.food, BASE_CAPACITY.food),
+            (resources.fish, BASE_CAPACITY.fish),
             (resources.water, BASE_CAPACITY.water),
             (resources.herbs, BASE_CAPACITY.herbs),
             (resources.catnip, BASE_CAPACITY.catnip),
             (resources.grain, BASE_CAPACITY.grain),
             (resources.flour, BASE_CAPACITY.flour),
             (resources.materials, BASE_CAPACITY.materials),
+            (resources.stone, BASE_CAPACITY.stone),
             (resources.refined, BASE_CAPACITY.refined),
             (resources.weapons, BASE_CAPACITY.weapons),
             (resources.armor, BASE_CAPACITY.armor),
@@ -25535,9 +25768,13 @@ mod tests {
             (resources.tools, BASE_CAPACITY.tools),
             (resources.fibre, BASE_CAPACITY.fibre),
             (resources.hide, BASE_CAPACITY.hide),
+            (resources.bone, BASE_CAPACITY.bone),
             (resources.cloth, BASE_CAPACITY.cloth),
             (resources.leather, BASE_CAPACITY.leather),
             (resources.ore, BASE_CAPACITY.ore),
+            (resources.gem, BASE_CAPACITY.gem),
+            (resources.clay, BASE_CAPACITY.clay),
+            (resources.sand, BASE_CAPACITY.sand),
             (resources.metal, BASE_CAPACITY.metal),
         ] {
             assert_eq!(actual, cap);
@@ -26456,6 +26693,9 @@ mod tests {
                     cloth: 0.0,
                     leather: 0.0,
                     ore: 0.0,
+                    gem: 0.0,
+                    clay: 0.0,
+                    sand: 0.0,
                     metal: 0.0,
                     blessings: 0.0,
                 },
@@ -26541,6 +26781,9 @@ mod tests {
                     cloth: 0.0,
                     leather: 0.0,
                     ore: 0.0,
+                    gem: 0.0,
+                    clay: 0.0,
+                    sand: 0.0,
                     metal: 0.0,
                     blessings: 0.0,
                 },
@@ -26590,6 +26833,9 @@ mod tests {
                             food: 0,
                             herbs: 0,
                             water: 100,
+                            gem: 0,
+                            clay: 0,
+                            sand: 0,
                         },
                         max_resources: MaxResources { food: 0, herbs: 0 },
                         danger_level: 0.0,
@@ -26774,6 +27020,9 @@ mod tests {
                             food: 30,
                             herbs: 0,
                             water: 0,
+                            gem: 0,
+                            clay: 0,
+                            sand: 0,
                         },
                         path_wear: 63,
                         ..tile(12, 6, 63, None)
@@ -26856,6 +27105,9 @@ mod tests {
                             food: 30,
                             herbs: 0,
                             water: 0,
+                            gem: 0,
+                            clay: 0,
+                            sand: 0,
                         },
                         path_wear: 63,
                         ..tile(20, 6, 63, None)
@@ -27362,6 +27614,9 @@ mod tests {
                             food: 30,
                             herbs: 0,
                             water: 0,
+                            gem: 0,
+                            clay: 0,
+                            sand: 0,
                         },
                         path_wear: 63,
                         ..tile(12, 6, 63, None)
@@ -28870,6 +29125,9 @@ mod tests {
                     cloth: 0.0,
                     leather: 0.0,
                     ore: 0.0,
+                    gem: 0.0,
+                    clay: 0.0,
+                    sand: 0.0,
                     metal: 0.0,
                     blessings: 7.0,
                 },
@@ -31595,6 +31853,9 @@ mod tests {
                             food: 30,
                             herbs: 0,
                             water: 0,
+                            gem: 0,
+                            clay: 0,
+                            sand: 0,
                         },
                         path_wear: 63,
                         ..tile(20, 6, 63, None)
@@ -39385,6 +39646,96 @@ mod tests {
         colony.world_tiles.get_mut(&site).unwrap().tile_type = TileType::CaveEntrance;
         assert!(!quarry_has_ore(&colony, &job));
         assert_eq!(source_cargo_trip_count(&job, false), HUNT_TRIP_COUNT + 1);
+    }
+
+    #[test]
+    fn sand_clay_and_gems_are_finite_distinct_physical_quarry_cargo() {
+        for (kind, amount, depleted_overlay) in [
+            (CarryingKind::Sand, 6_u32, "sand_depleted"),
+            (CarryingKind::Clay, 6_u32, "clay_depleted"),
+        ] {
+            let site = TilePos { x: 30, y: 40 };
+            let mut source = typed_tile(site.x, site.y, TileType::Meadow);
+            match kind {
+                CarryingKind::Sand => source.resources.sand = amount,
+                CarryingKind::Clay => source.resources.clay = amount,
+                _ => unreachable!(),
+            }
+            let mut colony = ColonyRuntime {
+                id: "fine-source".to_owned(),
+                cats: vec![adult_idle_cat("miner", "fine-source")],
+                world_tiles: [(site, source)].into(),
+                ..ColonyRuntime::default()
+            };
+            colony.cats[0].activity = CatActivity::Working;
+            let mut hauled = 0.0;
+            for trip_index in 0..HUNT_TRIP_COUNT as u32 {
+                let job = JobRuntime {
+                    id: "fine-quarry".to_owned(),
+                    kind: JobKind::Quarry,
+                    status: JobStatus::Active,
+                    assigned_cat: Some("miner".to_owned()),
+                    metadata: JobMetadata::Hauling {
+                        site: Some(site),
+                        total_yield: Some(f64::from(amount)),
+                        trips_done: trip_index,
+                        next_trip_at: None,
+                        accepted: true,
+                    },
+                    ..JobRuntime::default()
+                };
+                assert_eq!(source_cargo_trip_count_for(&colony, &job), HUNT_TRIP_COUNT);
+                complete_fixed_yield_job(
+                    &mut colony,
+                    &job,
+                    production_gate(0, i64::from(trip_index + 1) * 1_000),
+                    QUARRY_TOTAL_YIELD,
+                    CarryingKind::Stone,
+                    777,
+                );
+                let cargo = colony.cats[0]
+                    .carrying
+                    .take()
+                    .expect("each source share is carried, never directly credited");
+                assert_eq!(cargo.kind, kind);
+                hauled += cargo.amount;
+            }
+            assert_eq!(hauled, f64::from(amount));
+            assert_eq!(
+                colony.resources.gem + colony.resources.clay + colony.resources.sand,
+                0.0
+            );
+            let exhausted = colony.world_tiles.get(&site).unwrap();
+            assert_eq!(exhausted.overlay_feature.as_deref(), Some(depleted_overlay));
+            assert!(!quarry_tile_is_available(exhausted));
+        }
+
+        let site = TilePos { x: 50, y: 60 };
+        let mut source = typed_tile(site.x, site.y, TileType::Mountains);
+        source.resources.gem = 2;
+        let job = JobRuntime {
+            kind: JobKind::Quarry,
+            status: JobStatus::Active,
+            metadata: JobMetadata::Hauling {
+                site: Some(site),
+                total_yield: Some(10.0),
+                trips_done: 0,
+                next_trip_at: None,
+                accepted: true,
+            },
+            ..JobRuntime::default()
+        };
+        let colony = ColonyRuntime {
+            world_tiles: [(site, source)].into(),
+            ..ColonyRuntime::default()
+        };
+        assert_eq!(
+            source_cargo_trip_count_for(&colony, &job),
+            HUNT_TRIP_COUNT + 3
+        );
+        let (gem_kind, gem_amount) =
+            source_cargo_for_colony_trip(&colony, &job, 10.0, (HUNT_TRIP_COUNT + 2) as u32);
+        assert_eq!((gem_kind, gem_amount), (CarryingKind::Gem, 1.0));
     }
 
     #[test]
@@ -47976,6 +48327,9 @@ mod tests {
                                 food: 30,
                                 herbs: 0,
                                 water: 0,
+                                gem: 0,
+                                clay: 0,
+                                sand: 0,
                             },
                             ..tile(food_a.x, food_a.y, 63, None)
                         },
@@ -47987,6 +48341,9 @@ mod tests {
                                 food: 30,
                                 herbs: 0,
                                 water: 0,
+                                gem: 0,
+                                clay: 0,
+                                sand: 0,
                             },
                             ..tile(food_b.x, food_b.y, 63, None)
                         },
@@ -48577,6 +48934,9 @@ mod tests {
             cloth: 0.0,
             leather: 0.0,
             ore: 100.0,
+            gem: 100.0,
+            clay: 100.0,
+            sand: 100.0,
             metal: 100.0,
             blessings: 0.0,
         }
@@ -48609,6 +48969,9 @@ mod tests {
                 food: 0,
                 herbs: 0,
                 water: 0,
+                gem: 0,
+                clay: 0,
+                sand: 0,
             },
             max_resources: MaxResources { food: 0, herbs: 0 },
             danger_level: 0.0,
@@ -53844,6 +54207,9 @@ mod tests {
             cloth: 0.0,
             leather: 0.0,
             ore: 0.0,
+            gem: 0.0,
+            clay: 0.0,
+            sand: 0.0,
             metal: 0.0,
             blessings: 0.0,
         }
@@ -53874,6 +54240,9 @@ mod tests {
             cloth: 0.0,
             leather: 0.0,
             ore: 0.0,
+            gem: 0.0,
+            clay: 0.0,
+            sand: 0.0,
             metal: 0.0,
             blessings: 0.0,
         }
@@ -54057,6 +54426,9 @@ mod tests {
                 assert_eq!(tile.resources.food, 0, "seed {seed} at {pos:?}");
                 assert_eq!(tile.resources.herbs, 0, "seed {seed} at {pos:?}");
                 assert_eq!(tile.resources.water, 0, "seed {seed} at {pos:?}");
+                assert_eq!(tile.resources.gem, 0, "seed {seed} at {pos:?}");
+                assert_eq!(tile.resources.clay, 0, "seed {seed} at {pos:?}");
+                assert_eq!(tile.resources.sand, 0, "seed {seed} at {pos:?}");
                 assert_eq!(tile.max_resources.food, 0, "seed {seed} at {pos:?}");
                 assert_eq!(tile.max_resources.herbs, 0, "seed {seed} at {pos:?}");
                 assert!(!tile_has_uncleared_tree(&colony, *pos, seed));
@@ -54080,6 +54452,9 @@ mod tests {
                 food: 0,
                 herbs: 0,
                 water: 0,
+                gem: 0,
+                clay: 0,
+                sand: 0,
             },
             max_resources: MaxResources { food: 0, herbs: 0 },
             danger_level: 0.0,

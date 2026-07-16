@@ -1262,7 +1262,7 @@ const WIDE_BOTTOM_BAR_FOOTPRINT: f32 = 3.0 * UI_BTN_H + 4.0 * UI_GAP + 2.0 * UI_
 const NARROW_BOTTOM_BAR_FOOTPRINT: f32 = 4.0 * UI_BTN_H + 5.0 * UI_GAP + 2.0 * UI_BORDER_W + 10.0;
 const NARROW_LAYOUT_MAX_WIDTH: f32 = 1100.0;
 const BOTTOM_OVERLAY_CLEARANCE: f32 = WIDE_BOTTOM_BAR_FOOTPRINT + UI_GAP;
-/// Thirteen two-column resource rows remain readable at this compact height and
+/// Fourteen two-column resource rows remain readable at this compact height and
 /// leave room for Dispatches above the narrow wrapped toolbar.
 const HUD_RESOURCE_PILL_HEIGHT: f32 = 19.0;
 #[cfg(test)]
@@ -3653,6 +3653,9 @@ enum HudRes {
     Cloth,
     Leather,
     Ore,
+    Gem,
+    Clay,
+    Sand,
     Metal,
     Weapons,
     Armor,
@@ -3660,7 +3663,7 @@ enum HudRes {
 }
 
 /// The HUD resources, in display order (refinement tier grouped after refined).
-const HUD_RESOURCES: [HudRes; 25] = [
+const HUD_RESOURCES: [HudRes; 28] = [
     HudRes::Food,
     HudRes::Fish,
     HudRes::Water,
@@ -3682,6 +3685,9 @@ const HUD_RESOURCES: [HudRes; 25] = [
     HudRes::Cloth,
     HudRes::Leather,
     HudRes::Ore,
+    HudRes::Gem,
+    HudRes::Clay,
+    HudRes::Sand,
     HudRes::Metal,
     HudRes::Weapons,
     HudRes::Armor,
@@ -3753,6 +3759,9 @@ fn resource_icon_path(kind: HudRes) -> &'static str {
         HudRes::Cloth => "public/images/game/icons/cloth.png",
         HudRes::Leather => "public/images/game/icons/leather.png",
         HudRes::Ore => "public/images/game/icons/ore.png",
+        HudRes::Gem => "public/images/game/props/gold_pile.png",
+        HudRes::Clay => "public/images/game/props/stone_pile.png",
+        HudRes::Sand => "public/images/game/props/sack.png",
         HudRes::Metal => "public/images/game/icons/metal.png",
         HudRes::Weapons => "public/images/game/icons/weapons.png",
         HudRes::Armor => "public/images/game/icons/armor.png",
@@ -3772,6 +3781,7 @@ fn material_tint(material: &str) -> Color {
         "leather" => Color::srgb(0.66, 0.45, 0.30),
         "gem" => Color::srgb(0.42, 0.80, 0.86),
         "clay" => Color::srgb(0.80, 0.52, 0.40),
+        "sand" => Color::srgb(0.88, 0.78, 0.52),
         _ => Color::srgb(0.78, 0.76, 0.72),
     }
 }
@@ -3808,6 +3818,9 @@ fn hud_res_of(kind: ResourceKind) -> HudRes {
         ResourceKind::Cloth => HudRes::Cloth,
         ResourceKind::Leather => HudRes::Leather,
         ResourceKind::Ore => HudRes::Ore,
+        ResourceKind::Gem => HudRes::Gem,
+        ResourceKind::Clay => HudRes::Clay,
+        ResourceKind::Sand => HudRes::Sand,
         ResourceKind::Metal => HudRes::Metal,
         ResourceKind::Blessings => HudRes::Blessings,
     }
@@ -3836,6 +3849,9 @@ fn hud_resource_label(kind: HudRes) -> &'static str {
         HudRes::Cloth => "Cloth",
         HudRes::Leather => "Leather",
         HudRes::Ore => "Ore",
+        HudRes::Gem => "Gem",
+        HudRes::Clay => "Clay",
+        HudRes::Sand => "Sand",
         HudRes::Metal => "Metal",
         HudRes::Weapons => "Weapons",
         HudRes::Armor => "Armor",
@@ -3867,6 +3883,9 @@ fn resource_icon_tint(kind: HudRes) -> Color {
         HudRes::Cloth => Color::srgb(0.74, 0.48, 0.69),
         HudRes::Leather => Color::srgb(0.55, 0.34, 0.22),
         HudRes::Ore => Color::srgb(0.48, 0.57, 0.66),
+        HudRes::Gem => Color::srgb(0.42, 0.80, 0.86),
+        HudRes::Clay => Color::srgb(0.80, 0.52, 0.40),
+        HudRes::Sand => Color::srgb(0.88, 0.78, 0.52),
         HudRes::Metal => Color::srgb(0.73, 0.80, 0.86),
         HudRes::Weapons => Color::srgb(0.74, 0.76, 0.82),
         HudRes::Armor => Color::srgb(0.56, 0.64, 0.76),
@@ -3899,6 +3918,9 @@ fn hud_resource_value(kind: HudRes, r: &ResourceAmounts, cap: &ResourceCapacitie
         HudRes::Cloth => format!("{:.0} / {:.0}", r.cloth, cap.cloth),
         HudRes::Leather => format!("{:.0} / {:.0}", r.leather, cap.leather),
         HudRes::Ore => format!("{:.0} / {:.0}", r.ore, cap.ore),
+        HudRes::Gem => format!("{:.0} / {:.0}", r.gem, cap.gem),
+        HudRes::Clay => format!("{:.0} / {:.0}", r.clay, cap.clay),
+        HudRes::Sand => format!("{:.0} / {:.0}", r.sand, cap.sand),
         HudRes::Metal => format!("{:.0} / {:.0}", r.metal, cap.metal),
         HudRes::Weapons => format!("{:.0}", r.weapons),
         HudRes::Armor => format!("{:.0}", r.armor),
@@ -9296,7 +9318,7 @@ fn is_discovered_trade_target(
             .any(|village| village.id == target_id)
 }
 
-const VILLAGE_TRADE_KINDS: [ResourceKind; 22] = [
+const VILLAGE_TRADE_KINDS: [ResourceKind; 25] = [
     ResourceKind::Food,
     ResourceKind::Fish,
     ResourceKind::Water,
@@ -9317,6 +9339,9 @@ const VILLAGE_TRADE_KINDS: [ResourceKind; 22] = [
     ResourceKind::Cloth,
     ResourceKind::Leather,
     ResourceKind::Ore,
+    ResourceKind::Gem,
+    ResourceKind::Clay,
+    ResourceKind::Sand,
     ResourceKind::Metal,
     ResourceKind::Blessings,
 ];
@@ -9351,6 +9376,9 @@ fn trade_resource_short_label(kind: ResourceKind) -> &'static str {
         ResourceKind::Cloth => "cloth",
         ResourceKind::Leather => "leather",
         ResourceKind::Ore => "ore",
+        ResourceKind::Gem => "gem",
+        ResourceKind::Clay => "clay",
+        ResourceKind::Sand => "sand",
         ResourceKind::Metal => "metal",
         ResourceKind::Blessings => "bless",
     }
@@ -9890,6 +9918,7 @@ fn production_stores_text(resources: &ResourceAmounts) -> String {
          Crops: herbs {:.0} · catnip {:.0} · grain {:.0} · flour {:.0}\n\
          Timber: logs {:.0} · lumber {:.0} · planks {:.0}\n\
          Stonework: materials {:.0} · blocks {:.0} · refined {:.0}\n\
+         Earthworks: gem {:.0} · clay {:.0} · sand {:.0}\n\
          Textiles: fibre {:.0} · hide {:.0} · cloth {:.0} · leather {:.0}\n\
          Smithing: ore {:.0} · metal {:.0} · tools {:.0}\n\
          Arms: weapons {:.0} · armor {:.0} · blessings {:.1}",
@@ -9906,6 +9935,9 @@ fn production_stores_text(resources: &ResourceAmounts) -> String {
         resources.materials,
         resources.blocks,
         resources.refined,
+        resources.gem,
+        resources.clay,
+        resources.sand,
         resources.fibre,
         resources.hide,
         resources.cloth,
@@ -11080,7 +11112,7 @@ fn officer_holder_name(colony: &ColonySnapshot, role: OfficerRole) -> Option<&st
         .map(|c| c.name.as_str())
 }
 
-const MAINTAINED_RESOURCE_KINDS: [ResourceKind; 25] = [
+const MAINTAINED_RESOURCE_KINDS: [ResourceKind; 28] = [
     ResourceKind::Food,
     ResourceKind::Fish,
     ResourceKind::Water,
@@ -11102,6 +11134,9 @@ const MAINTAINED_RESOURCE_KINDS: [ResourceKind; 25] = [
     ResourceKind::Cloth,
     ResourceKind::Leather,
     ResourceKind::Ore,
+    ResourceKind::Gem,
+    ResourceKind::Clay,
+    ResourceKind::Sand,
     ResourceKind::Metal,
     ResourceKind::Weapons,
     ResourceKind::Armor,
@@ -11133,6 +11168,9 @@ fn resource_amount(kind: ResourceKind, resources: &ResourceAmounts) -> f64 {
         ResourceKind::Cloth => resources.cloth,
         ResourceKind::Leather => resources.leather,
         ResourceKind::Ore => resources.ore,
+        ResourceKind::Gem => resources.gem,
+        ResourceKind::Clay => resources.clay,
+        ResourceKind::Sand => resources.sand,
         ResourceKind::Metal => resources.metal,
         ResourceKind::Blessings => resources.blessings,
     }
@@ -11190,6 +11228,8 @@ fn pile_prop(kind: ResourceKind) -> PropTexture {
         ResourceKind::Fibre | ResourceKind::Cloth => PropTexture::Haystack,
         ResourceKind::Hide | ResourceKind::Bone | ResourceKind::Leather => PropTexture::Sack,
         ResourceKind::Ore => PropTexture::StonePile,
+        ResourceKind::Gem => PropTexture::GoldPile,
+        ResourceKind::Clay | ResourceKind::Sand => PropTexture::StonePile,
         ResourceKind::Metal => PropTexture::GoldPile,
         ResourceKind::Weapons | ResourceKind::Armor | ResourceKind::Blessings => PropTexture::Crate,
     }
@@ -11227,6 +11267,9 @@ fn resource_kind_name(kind: ResourceKind) -> &'static str {
         ResourceKind::Cloth => "cloth",
         ResourceKind::Leather => "leather",
         ResourceKind::Ore => "ore",
+        ResourceKind::Gem => "gem",
+        ResourceKind::Clay => "clay",
+        ResourceKind::Sand => "sand",
         ResourceKind::Metal => "metal",
         ResourceKind::Blessings => "blessings",
     }
@@ -11756,7 +11799,7 @@ fn carrying_color(kind: CarryingKind) -> Color {
     resource_icon_tint(carrying_hud_res(kind))
 }
 
-const CARRYING_KINDS: [CarryingKind; 25] = [
+const CARRYING_KINDS: [CarryingKind; 28] = [
     CarryingKind::Food,
     CarryingKind::Fish,
     CarryingKind::Blessings,
@@ -11779,6 +11822,9 @@ const CARRYING_KINDS: [CarryingKind; 25] = [
     CarryingKind::Cloth,
     CarryingKind::Bone,
     CarryingKind::Ore,
+    CarryingKind::Gem,
+    CarryingKind::Clay,
+    CarryingKind::Sand,
     CarryingKind::Metal,
     CarryingKind::Weapons,
     CarryingKind::Armor,
@@ -11811,6 +11857,9 @@ fn carrying_hud_res(kind: CarryingKind) -> HudRes {
         CarryingKind::Cloth => HudRes::Cloth,
         CarryingKind::Bone => HudRes::Bone,
         CarryingKind::Ore => HudRes::Ore,
+        CarryingKind::Gem => HudRes::Gem,
+        CarryingKind::Clay => HudRes::Clay,
+        CarryingKind::Sand => HudRes::Sand,
         CarryingKind::Metal => HudRes::Metal,
         CarryingKind::Weapons => HudRes::Weapons,
         CarryingKind::Armor => HudRes::Armor,
@@ -12473,8 +12522,8 @@ mod tests {
         assert_eq!(dispatches_display(1024.0, false), Display::None);
         assert_eq!(dispatches_display(1280.0, false), Display::Flex);
         assert_eq!(dispatches_display(1280.0, true), Display::None);
-        assert_eq!(hud_resource_grid_rows(), 13);
-        assert_eq!(hud_resource_grid_height(), 283.0);
+        assert_eq!(hud_resource_grid_rows(), 14);
+        assert_eq!(hud_resource_grid_height(), 305.0);
         let grid_width = HUD_RESOURCE_COLUMNS as f32 * HUD_RESOURCE_CELL_WIDTH
             + (HUD_RESOURCE_COLUMNS - 1) as f32 * UI_GAP
             + 2.0 * UI_PAD
@@ -13543,7 +13592,7 @@ mod tests {
     #[test]
     fn every_cargo_kind_uses_a_unique_tracked_semantic_png() {
         let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        assert_eq!(CARRYING_KINDS.len(), 25, "wire cargo cardinality changed");
+        assert_eq!(CARRYING_KINDS.len(), 28, "wire cargo cardinality changed");
         let paths = CARRYING_KINDS
             .into_iter()
             .map(carrying_icon_path)
@@ -13555,7 +13604,7 @@ mod tests {
             let path = carrying_icon_path(kind);
             assert!(
                 (path.starts_with("public/images/game/icons/")
-                    || path == "public/images/game/props/haystack.png")
+                    || path.starts_with("public/images/game/props/"))
                     && path.ends_with(".png"),
                 "{kind:?} escaped the tracked semantic icon set: {path}"
             );
@@ -13648,6 +13697,9 @@ mod tests {
             cloth: 0.0,
             leather: 0.0,
             ore: 0.0,
+            gem: 0.0,
+            clay: 0.0,
+            sand: 0.0,
             metal: 0.0,
             blessings: 0.0,
         }
@@ -13690,7 +13742,7 @@ mod tests {
     #[test]
     fn each_new_single_resource_pile_has_a_visible_total_and_dominant_prop() {
         type ResourceSetter = fn(&mut ResourceAmounts);
-        let cases: [(ResourceKind, ResourceSetter); 7] = [
+        let cases: [(ResourceKind, ResourceSetter); 10] = [
             (ResourceKind::Fibre, |a: &mut ResourceAmounts| a.fibre = 3.0),
             (ResourceKind::Hide, |a: &mut ResourceAmounts| a.hide = 3.0),
             (ResourceKind::Bone, |a: &mut ResourceAmounts| a.bone = 3.0),
@@ -13699,6 +13751,9 @@ mod tests {
                 a.leather = 3.0
             }),
             (ResourceKind::Ore, |a: &mut ResourceAmounts| a.ore = 3.0),
+            (ResourceKind::Gem, |a: &mut ResourceAmounts| a.gem = 3.0),
+            (ResourceKind::Clay, |a: &mut ResourceAmounts| a.clay = 3.0),
+            (ResourceKind::Sand, |a: &mut ResourceAmounts| a.sand = 3.0),
             (ResourceKind::Metal, |a: &mut ResourceAmounts| a.metal = 3.0),
         ];
         for (kind, set) in cases {
@@ -13736,7 +13791,7 @@ mod tests {
     #[test]
     fn accept_choice_cycles_general_through_kinds() {
         let storable = storable_kinds();
-        assert_eq!(storable.len(), 24);
+        assert_eq!(storable.len(), 27);
         for &kind in ResourceKind::ALL {
             assert_eq!(
                 storable.contains(&kind),
@@ -15071,7 +15126,7 @@ mod tests {
             .iter()
             .map(|kind| hud_resource_label(*kind))
             .collect::<HashSet<_>>();
-        assert_eq!(HUD_RESOURCES.len(), 25);
+        assert_eq!(HUD_RESOURCES.len(), 28);
         assert_eq!(HUD_RESOURCES.len(), MAINTAINED_RESOURCE_KINDS.len());
         assert_eq!(paths.len(), HUD_RESOURCES.len(), "no icon-path aliases");
         assert_eq!(labels.len(), HUD_RESOURCES.len(), "no label aliases");
@@ -15081,6 +15136,9 @@ mod tests {
         assert_eq!(hud_resource_label(HudRes::Bone), "Bone");
         assert_eq!(hud_resource_label(HudRes::Leather), "Leather");
         assert_eq!(hud_resource_label(HudRes::Ore), "Ore");
+        assert_eq!(hud_resource_label(HudRes::Gem), "Gem");
+        assert_eq!(hud_resource_label(HudRes::Clay), "Clay");
+        assert_eq!(hud_resource_label(HudRes::Sand), "Sand");
         assert_eq!(hud_resource_label(HudRes::Metal), "Metal");
         assert_eq!(hud_resource_label(HudRes::Stone), "Stone");
     }
@@ -15092,7 +15150,7 @@ mod tests {
             let path = resource_icon_path(kind);
             assert!(
                 (path.starts_with("public/images/game/icons/")
-                    || path == "public/images/game/props/haystack.png")
+                    || path.starts_with("public/images/game/props/"))
                     && path.ends_with(".png"),
                 "{kind:?} escaped the tracked semantic icon set: {path}"
             );
@@ -15131,6 +15189,9 @@ mod tests {
             cloth: 5.0,
             leather: 6.0,
             ore: 7.0,
+            gem: 2.0,
+            clay: 9.0,
+            sand: 10.0,
             metal: 8.0,
             blessings: 4.5,
         };
@@ -15158,6 +15219,9 @@ mod tests {
             cloth: 100.0,
             leather: 100.0,
             ore: 100.0,
+            gem: 100.0,
+            clay: 100.0,
+            sand: 100.0,
             metal: 100.0,
         };
         assert_eq!(hud_resource_value(HudRes::Food, &r, &cap), "150 / 200");
@@ -15173,6 +15237,9 @@ mod tests {
         assert_eq!(hud_resource_value(HudRes::Fibre, &r, &cap), "11 / 100");
         assert_eq!(hud_resource_value(HudRes::Hide, &r, &cap), "12 / 100");
         assert_eq!(hud_resource_value(HudRes::Bone, &r, &cap), "13 / 100");
+        assert_eq!(hud_resource_value(HudRes::Gem, &r, &cap), "2 / 100");
+        assert_eq!(hud_resource_value(HudRes::Clay, &r, &cap), "9 / 100");
+        assert_eq!(hud_resource_value(HudRes::Sand, &r, &cap), "10 / 100");
         assert_eq!(hud_resource_value(HudRes::Cloth, &r, &cap), "5 / 100");
         assert_eq!(hud_resource_value(HudRes::Leather, &r, &cap), "6 / 100");
         assert_eq!(hud_resource_value(HudRes::Ore, &r, &cap), "7 / 100");
@@ -15218,6 +15285,9 @@ mod tests {
                 cloth: 0.0,
                 leather: 0.0,
                 ore: 0.0,
+                gem: 0.0,
+                clay: 0.0,
+                sand: 0.0,
                 metal: 0.0,
                 blessings: 0.0,
             },
@@ -15491,6 +15561,9 @@ mod tests {
             cloth: 3.0,
             leather: 4.0,
             ore: 5.0,
+            gem: 7.0,
+            clay: 8.0,
+            sand: 9.0,
             metal: 6.0,
             blessings: 0.0,
         };
@@ -15511,6 +15584,9 @@ mod tests {
             "cloth 3",
             "leather 4",
             "ore 5",
+            "gem 7",
+            "clay 8",
+            "sand 9",
             "metal 6",
         ] {
             assert!(

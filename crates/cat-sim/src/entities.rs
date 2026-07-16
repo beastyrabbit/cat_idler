@@ -101,6 +101,15 @@ pub enum CarryingKind {
     /// Mountain ore moving into a Smelter's local input ledger.
     #[serde(rename = "ore")]
     Ore,
+    /// Rare gems physically extracted from a mountain vein.
+    #[serde(rename = "gem")]
+    Gem,
+    /// Raw clay physically dug from wetland or badlands deposits.
+    #[serde(rename = "clay")]
+    Clay,
+    /// Raw sand physically gathered from beach or desert deposits.
+    #[serde(rename = "sand")]
+    Sand,
     /// Smelted bars moving from a Smelter to physical storage.
     #[serde(rename = "metal")]
     Metal,
@@ -182,6 +191,15 @@ pub struct Resources {
     /// planks/blocks. Mountain quarry workers return it as a separate physical haul.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub ore: f64,
+    /// Rare raw mountain gems awaiting cutting or setting.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub gem: f64,
+    /// Raw clay from finite wetland and badlands deposits.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub clay: f64,
+    /// Raw sand from finite beach and desert deposits.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub sand: f64,
     /// Refined metal bars from the smelter (P17/P19 ore→metal chain: ore → metal).
     /// Two bars feed one selected physical Smithy Weapon or Armor batch.
     #[serde(default, skip_serializing_if = "is_zero")]
@@ -405,6 +423,9 @@ mod tests {
                 cloth: 23.0,
                 leather: 24.0,
                 ore: 25.0,
+                gem: 25.1,
+                clay: 25.2,
+                sand: 25.3,
                 metal: 26.0,
                 blessings: 17.0,
             },

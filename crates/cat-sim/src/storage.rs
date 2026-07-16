@@ -142,6 +142,12 @@ pub struct StorageCapacities {
     #[serde(default)]
     pub ore: f64,
     #[serde(default)]
+    pub gem: f64,
+    #[serde(default)]
+    pub clay: f64,
+    #[serde(default)]
+    pub sand: f64,
+    #[serde(default)]
     pub metal: f64,
 }
 
@@ -173,6 +179,9 @@ impl StorageCapacities {
             cloth: self.cloth * multiplier,
             leather: self.leather * multiplier,
             ore: self.ore * multiplier,
+            gem: self.gem * multiplier,
+            clay: self.clay * multiplier,
+            sand: self.sand * multiplier,
             metal: self.metal * multiplier,
         }
     }
@@ -234,6 +243,9 @@ pub const BASE_CAPACITY: StorageCapacities = StorageCapacities {
     cloth: 100.0,
     leather: 100.0,
     ore: 100.0,
+    gem: 100.0,
+    clay: 100.0,
+    sand: 100.0,
     metal: 100.0,
 };
 
@@ -364,6 +376,9 @@ impl StorageCapacities {
             cloth: self.cloth.min(other.cloth),
             leather: self.leather.min(other.leather),
             ore: self.ore.min(other.ore),
+            gem: self.gem.min(other.gem),
+            clay: self.clay.min(other.clay),
+            sand: self.sand.min(other.sand),
             metal: self.metal.min(other.metal),
         }
     }
@@ -404,6 +419,9 @@ fn physical_storage_capacities(
         cloth: capacity(ResourceKind::Cloth),
         leather: capacity(ResourceKind::Leather),
         ore: capacity(ResourceKind::Ore),
+        gem: capacity(ResourceKind::Gem),
+        clay: capacity(ResourceKind::Clay),
+        sand: capacity(ResourceKind::Sand),
         metal: capacity(ResourceKind::Metal),
     }
 }
@@ -760,6 +778,9 @@ mod tests {
                 cloth: 100.0,
                 leather: 100.0,
                 ore: 100.0,
+                gem: 100.0,
+                clay: 100.0,
+                sand: 100.0,
                 metal: 100.0,
             },
             "base capacity",
@@ -840,6 +861,9 @@ mod tests {
                 cloth: 100.0,
                 leather: 100.0,
                 ore: 100.0,
+                gem: 100.0,
+                clay: 100.0,
+                sand: 100.0,
                 metal: 100.0,
             },
             "mixed finished buildings",
@@ -891,6 +915,9 @@ mod tests {
                 cloth: 100.0,
                 leather: 100.0,
                 ore: 100.0,
+                gem: 100.0,
+                clay: 100.0,
+                sand: 100.0,
                 metal: 100.0,
             },
             "scaled building bonuses",
@@ -938,6 +965,9 @@ mod tests {
                 cloth: 100.0,
                 leather: 100.0,
                 ore: 100.0,
+                gem: 100.0,
+                clay: 100.0,
+                sand: 100.0,
                 metal: 100.0,
             },
             "default and minimum level",

@@ -166,6 +166,8 @@ pub const fn resource_unit_price(kind: ResourceKind) -> Option<u32> {
         | ResourceKind::Grain
         | ResourceKind::Logs
         | ResourceKind::Stone
+        | ResourceKind::Clay
+        | ResourceKind::Sand
         | ResourceKind::Materials => Some(1),
         ResourceKind::Flour
         | ResourceKind::Lumber
@@ -181,6 +183,7 @@ pub const fn resource_unit_price(kind: ResourceKind) -> Option<u32> {
         | ResourceKind::Cloth
         | ResourceKind::Leather
         | ResourceKind::Ore
+        | ResourceKind::Gem
         | ResourceKind::Metal
         | ResourceKind::Blessings => None,
     }

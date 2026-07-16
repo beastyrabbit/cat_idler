@@ -131,6 +131,9 @@ mod tests {
             cloth: 0.0,
             leather: 0.0,
             ore: 0.0,
+            gem: 0.0,
+            clay: 0.0,
+            sand: 0.0,
             metal: 0.0,
             blessings: 0.0,
         }
