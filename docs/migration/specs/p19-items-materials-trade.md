@@ -5,11 +5,11 @@
 > equipment location/loadout, weight, finite durability, work/combat wear, material-backed repair,
 > exact caravan cargo transfer, finite trader
 > stock/purse/capacity, persistence, and Goods/trade-panel truth are implemented. Full
-> source/crafting breadth, local physical inventories, and built
-> transport remain open. Finite fresh-Fish habitats and the
+> crafting breadth and broader local physical inventories remain open. Constructed Rail and
+> Shipping routes plus physical exact-equipment village caravans are live. Finite fresh-Fish habitats and the
 > physical shore→store route are verified. Configurable, consensual inter-village
-> resource barter is verified with a 32-open-offer cap and atomic inventory/storage rechecks;
-> deeper item-stack/route/relationship trade remains open in
+> resource barter is verified with a 32-open-offer cap, exact escrow, visible travel, and
+> cancellation/restart conservation; shared obstacle-derived caravan waypoints and encounters remain open in
 > [`docs/IMPLEMENTATION_AUDIT.md`](../../IMPLEMENTATION_AUDIT.md).
 
 User (2026-07-10): give the game a DF-like breadth of resources/items, but **cat-themed**

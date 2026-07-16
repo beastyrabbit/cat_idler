@@ -2,7 +2,7 @@
 
 Last updated: 2026-07-16
 
-This is the evidence boundary between the 500-study research ledger and authoritative gameplay.
+This is the evidence boundary between the exact 487-study ("about 500") research ledger and authoritative gameplay.
 A recipe is **live** only when it has a physical source, finite input, selected station work,
 finite output/delivery, and a catalog entitlement (or an explicit founding baseline). A generated
 catalog label alone is not an implementation.
