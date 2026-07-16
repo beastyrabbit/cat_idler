@@ -61,6 +61,69 @@ pub const CLAY_BRICK_RECIPE_ID: &str = "clay_brick";
 pub const SAND_MUG_RECIPE_ID: &str = "sand_glass_mug";
 pub const SAND_BOWL_RECIPE_ID: &str = "sand_glass_bowl";
 pub const SAND_TRINKET_RECIPE_ID: &str = "sand_glass_trinket";
+pub const HUNTING_QUALITY_RECIPE_ID: &str = "hunting_quality";
+pub const HUNTING_SPECIALTY_RECIPE_ID: &str = "hunting_specialty";
+pub const HUNTING_MASTERWORK_RECIPE_ID: &str = "hunting_masterwork";
+pub const FORAGING_PREPARATION_RECIPE_ID: &str = "foraging_preparation";
+pub const FORAGING_STAPLES_RECIPE_ID: &str = "foraging_staples";
+pub const FORAGING_QUALITY_RECIPE_ID: &str = "foraging_quality";
+pub const FORAGING_SPECIALTY_RECIPE_ID: &str = "foraging_specialty";
+pub const FORAGING_MASTERWORK_RECIPE_ID: &str = "foraging_masterwork";
+pub const WATERWORKS_PREPARATION_RECIPE_ID: &str = "waterworks_preparation";
+pub const WATERWORKS_STAPLES_RECIPE_ID: &str = "waterworks_staples";
+pub const WATERWORKS_QUALITY_RECIPE_ID: &str = "waterworks_quality";
+pub const WATERWORKS_SPECIALTY_RECIPE_ID: &str = "waterworks_specialty";
+pub const WATERWORKS_MASTERWORK_RECIPE_ID: &str = "waterworks_masterwork";
+pub const ANIMAL_HUSBANDRY_PREPARATION_RECIPE_ID: &str = "animal_husbandry_preparation";
+pub const ANIMAL_HUSBANDRY_STAPLES_RECIPE_ID: &str = "animal_husbandry_staples";
+pub const ANIMAL_HUSBANDRY_QUALITY_RECIPE_ID: &str = "animal_husbandry_quality";
+pub const ANIMAL_HUSBANDRY_SPECIALTY_RECIPE_ID: &str = "animal_husbandry_specialty";
+pub const ANIMAL_HUSBANDRY_MASTERWORK_RECIPE_ID: &str = "animal_husbandry_masterwork";
+pub const FIELD_CRAFT_PREPARATION_RECIPE_ID: &str = "field_craft_preparation";
+pub const FIELD_CRAFT_STAPLES_RECIPE_ID: &str = "field_craft_staples";
+pub const FIELD_CRAFT_QUALITY_RECIPE_ID: &str = "field_craft_quality";
+pub const FIELD_CRAFT_SPECIALTY_RECIPE_ID: &str = "field_craft_specialty";
+pub const FIELD_CRAFT_MASTERWORK_RECIPE_ID: &str = "field_craft_masterwork";
+pub const EXPEDITION_SUPPLIES_PREPARATION_RECIPE_ID: &str = "expedition_supplies_preparation";
+pub const EXPEDITION_SUPPLIES_STAPLES_RECIPE_ID: &str = "expedition_supplies_staples";
+pub const EXPEDITION_SUPPLIES_QUALITY_RECIPE_ID: &str = "expedition_supplies_quality";
+pub const EXPEDITION_SUPPLIES_SPECIALTY_RECIPE_ID: &str = "expedition_supplies_specialty";
+pub const EXPEDITION_SUPPLIES_MASTERWORK_RECIPE_ID: &str = "expedition_supplies_masterwork";
+
+/// Every recipe-bearing study in the six subsistence/frontier families. The two
+/// starter Hunting variants retain their established stable runtime ids.
+pub const SUBSISTENCE_FRONTIER_RECIPE_IDS: &[&str] = &[
+    BONE_TRINKET_RECIPE_ID,
+    BONE_TOY_RECIPE_ID,
+    HUNTING_QUALITY_RECIPE_ID,
+    HUNTING_SPECIALTY_RECIPE_ID,
+    HUNTING_MASTERWORK_RECIPE_ID,
+    FORAGING_PREPARATION_RECIPE_ID,
+    FORAGING_STAPLES_RECIPE_ID,
+    FORAGING_QUALITY_RECIPE_ID,
+    FORAGING_SPECIALTY_RECIPE_ID,
+    FORAGING_MASTERWORK_RECIPE_ID,
+    WATERWORKS_PREPARATION_RECIPE_ID,
+    WATERWORKS_STAPLES_RECIPE_ID,
+    WATERWORKS_QUALITY_RECIPE_ID,
+    WATERWORKS_SPECIALTY_RECIPE_ID,
+    WATERWORKS_MASTERWORK_RECIPE_ID,
+    ANIMAL_HUSBANDRY_PREPARATION_RECIPE_ID,
+    ANIMAL_HUSBANDRY_STAPLES_RECIPE_ID,
+    ANIMAL_HUSBANDRY_QUALITY_RECIPE_ID,
+    ANIMAL_HUSBANDRY_SPECIALTY_RECIPE_ID,
+    ANIMAL_HUSBANDRY_MASTERWORK_RECIPE_ID,
+    FIELD_CRAFT_PREPARATION_RECIPE_ID,
+    FIELD_CRAFT_STAPLES_RECIPE_ID,
+    FIELD_CRAFT_QUALITY_RECIPE_ID,
+    FIELD_CRAFT_SPECIALTY_RECIPE_ID,
+    FIELD_CRAFT_MASTERWORK_RECIPE_ID,
+    EXPEDITION_SUPPLIES_PREPARATION_RECIPE_ID,
+    EXPEDITION_SUPPLIES_STAPLES_RECIPE_ID,
+    EXPEDITION_SUPPLIES_QUALITY_RECIPE_ID,
+    EXPEDITION_SUPPLIES_SPECIALTY_RECIPE_ID,
+    EXPEDITION_SUPPLIES_MASTERWORK_RECIPE_ID,
+];
 
 /// Exact finite output identity for a material-variant station recipe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,6 +170,23 @@ macro_rules! scalar_recipe {
     };
 }
 
+macro_rules! item_recipe {
+    ($id:ident, $building:ident, $input:ident, $kind:ident, $material:ident, $quality:expr) => {
+        StationRecipeDescriptor {
+            id: $id,
+            building_type: BuildingType::$building,
+            input_resources: &[ResourceKind::$input],
+            output_resources: &[],
+            output_item: Some(StationItemOutput {
+                kind: ItemKind::$kind,
+                material: Material::$material,
+                quality: $quality,
+            }),
+            founding_available: false,
+        }
+    };
+}
+
 const MILL_INPUTS: &[ResourceKind] = &[
     ResourceKind::Grain,
     ResourceKind::Flour,
@@ -127,6 +207,7 @@ const WORKSHOP_INPUTS: &[ResourceKind] = &[
     ResourceKind::Gem,
     ResourceKind::Sand,
     ResourceKind::Herbs,
+    ResourceKind::Cloth,
 ];
 const WORKSHOP_OUTPUTS: &[ResourceKind] = &[ResourceKind::Refined, ResourceKind::Medicine];
 const SMELTER_INPUTS: &[ResourceKind] = &[ResourceKind::Ore];
@@ -215,6 +296,86 @@ const WORKSHOP_RECIPES: &[StationRecipeDescriptor] = &[
         Workshop,
         Herbs,
         Medicine
+    ),
+    item_recipe!(
+        FIELD_CRAFT_PREPARATION_RECIPE_ID,
+        Workshop,
+        Materials,
+        Tool,
+        Wood,
+        1
+    ),
+    item_recipe!(
+        FIELD_CRAFT_STAPLES_RECIPE_ID,
+        Workshop,
+        Materials,
+        Clothing,
+        Wood,
+        1
+    ),
+    item_recipe!(
+        FIELD_CRAFT_QUALITY_RECIPE_ID,
+        Workshop,
+        Materials,
+        Armor,
+        Wood,
+        1
+    ),
+    item_recipe!(
+        FIELD_CRAFT_SPECIALTY_RECIPE_ID,
+        Workshop,
+        Materials,
+        Furniture,
+        Wood,
+        1
+    ),
+    item_recipe!(
+        FIELD_CRAFT_MASTERWORK_RECIPE_ID,
+        Workshop,
+        Materials,
+        Toy,
+        Wood,
+        2
+    ),
+    item_recipe!(
+        EXPEDITION_SUPPLIES_PREPARATION_RECIPE_ID,
+        Workshop,
+        Cloth,
+        Bowl,
+        Fibre,
+        2
+    ),
+    item_recipe!(
+        EXPEDITION_SUPPLIES_STAPLES_RECIPE_ID,
+        Workshop,
+        Cloth,
+        Clothing,
+        Fibre,
+        2
+    ),
+    item_recipe!(
+        EXPEDITION_SUPPLIES_QUALITY_RECIPE_ID,
+        Workshop,
+        Cloth,
+        Tool,
+        Fibre,
+        2
+    ),
+    item_recipe!(
+        EXPEDITION_SUPPLIES_SPECIALTY_RECIPE_ID,
+        Workshop,
+        Cloth,
+        Armor,
+        Fibre,
+        2
+    ),
+    item_recipe!(
+        EXPEDITION_SUPPLIES_MASTERWORK_RECIPE_ID,
+        Workshop,
+        Cloth,
+        Furniture,
+        Fibre,
+        3
     ),
     StationRecipeDescriptor {
         id: GEM_TRINKET_RECIPE_ID,
@@ -372,23 +533,157 @@ const WOODWORKING_RECIPES: &[StationRecipeDescriptor] = &[
         }),
         founding_available: false,
     },
+    item_recipe!(
+        HUNTING_QUALITY_RECIPE_ID,
+        Woodworking,
+        Bone,
+        Weapon,
+        Bone,
+        1
+    ),
+    item_recipe!(
+        HUNTING_SPECIALTY_RECIPE_ID,
+        Woodworking,
+        Bone,
+        Armor,
+        Bone,
+        1
+    ),
+    item_recipe!(
+        HUNTING_MASTERWORK_RECIPE_ID,
+        Woodworking,
+        Bone,
+        Tool,
+        Bone,
+        2
+    ),
+    item_recipe!(
+        WATERWORKS_PREPARATION_RECIPE_ID,
+        Woodworking,
+        Planks,
+        Bowl,
+        Wood,
+        1
+    ),
+    item_recipe!(
+        WATERWORKS_STAPLES_RECIPE_ID,
+        Woodworking,
+        Planks,
+        Mug,
+        Wood,
+        1
+    ),
+    item_recipe!(
+        WATERWORKS_QUALITY_RECIPE_ID,
+        Woodworking,
+        Planks,
+        Toy,
+        Wood,
+        1
+    ),
+    item_recipe!(
+        WATERWORKS_SPECIALTY_RECIPE_ID,
+        Woodworking,
+        Planks,
+        Furniture,
+        Wood,
+        1
+    ),
+    item_recipe!(
+        WATERWORKS_MASTERWORK_RECIPE_ID,
+        Woodworking,
+        Planks,
+        Bowl,
+        Wood,
+        2
+    ),
 ];
-const CLOTHIER_RECIPES: &[StationRecipeDescriptor] = &[StationRecipeDescriptor {
-    id: FIBRE_TO_CLOTH_RECIPE_ID,
-    building_type: BuildingType::Clothier,
-    input_resources: CLOTHIER_INPUTS,
-    output_resources: CLOTHIER_OUTPUTS,
-    output_item: None,
-    founding_available: false,
-}];
-const TANNERY_RECIPES: &[StationRecipeDescriptor] = &[StationRecipeDescriptor {
-    id: HIDE_TO_LEATHER_RECIPE_ID,
-    building_type: BuildingType::Tannery,
-    input_resources: TANNERY_INPUTS,
-    output_resources: TANNERY_OUTPUTS,
-    output_item: None,
-    founding_available: false,
-}];
+const CLOTHIER_RECIPES: &[StationRecipeDescriptor] = &[
+    StationRecipeDescriptor {
+        id: FIBRE_TO_CLOTH_RECIPE_ID,
+        building_type: BuildingType::Clothier,
+        input_resources: CLOTHIER_INPUTS,
+        output_resources: CLOTHIER_OUTPUTS,
+        output_item: None,
+        founding_available: false,
+    },
+    item_recipe!(
+        FORAGING_PREPARATION_RECIPE_ID,
+        Clothier,
+        Fibre,
+        Bowl,
+        Fibre,
+        1
+    ),
+    item_recipe!(
+        FORAGING_STAPLES_RECIPE_ID,
+        Clothier,
+        Fibre,
+        Clothing,
+        Fibre,
+        1
+    ),
+    item_recipe!(FORAGING_QUALITY_RECIPE_ID, Clothier, Fibre, Tool, Fibre, 1),
+    item_recipe!(FORAGING_SPECIALTY_RECIPE_ID, Clothier, Fibre, Toy, Fibre, 2),
+    item_recipe!(
+        FORAGING_MASTERWORK_RECIPE_ID,
+        Clothier,
+        Fibre,
+        Furniture,
+        Fibre,
+        2
+    ),
+];
+const TANNERY_RECIPES: &[StationRecipeDescriptor] = &[
+    StationRecipeDescriptor {
+        id: HIDE_TO_LEATHER_RECIPE_ID,
+        building_type: BuildingType::Tannery,
+        input_resources: TANNERY_INPUTS,
+        output_resources: TANNERY_OUTPUTS,
+        output_item: None,
+        founding_available: false,
+    },
+    item_recipe!(
+        ANIMAL_HUSBANDRY_PREPARATION_RECIPE_ID,
+        Tannery,
+        Hide,
+        Clothing,
+        Leather,
+        1
+    ),
+    item_recipe!(
+        ANIMAL_HUSBANDRY_STAPLES_RECIPE_ID,
+        Tannery,
+        Hide,
+        Toy,
+        Leather,
+        1
+    ),
+    item_recipe!(
+        ANIMAL_HUSBANDRY_QUALITY_RECIPE_ID,
+        Tannery,
+        Hide,
+        Armor,
+        Leather,
+        1
+    ),
+    item_recipe!(
+        ANIMAL_HUSBANDRY_SPECIALTY_RECIPE_ID,
+        Tannery,
+        Hide,
+        Tool,
+        Leather,
+        1
+    ),
+    item_recipe!(
+        ANIMAL_HUSBANDRY_MASTERWORK_RECIPE_ID,
+        Tannery,
+        Hide,
+        Furniture,
+        Leather,
+        2
+    ),
+];
 const SMITHY_RECIPES: &[StationRecipeDescriptor] = &[
     StationRecipeDescriptor {
         id: SMITHY_WEAPON_RECIPE_ID,
@@ -500,7 +795,18 @@ mod tests {
             ),
             (
                 BuildingType::Woodworking,
-                &[PLANKS_AND_BLOCKS_TO_TOOLS_RECIPE_ID, BONE_TOOL_RECIPE_ID][..],
+                &[
+                    PLANKS_AND_BLOCKS_TO_TOOLS_RECIPE_ID,
+                    BONE_TOOL_RECIPE_ID,
+                    HUNTING_QUALITY_RECIPE_ID,
+                    HUNTING_SPECIALTY_RECIPE_ID,
+                    HUNTING_MASTERWORK_RECIPE_ID,
+                    WATERWORKS_PREPARATION_RECIPE_ID,
+                    WATERWORKS_STAPLES_RECIPE_ID,
+                    WATERWORKS_QUALITY_RECIPE_ID,
+                    WATERWORKS_SPECIALTY_RECIPE_ID,
+                    WATERWORKS_MASTERWORK_RECIPE_ID,
+                ][..],
                 &[
                     ResourceKind::Planks,
                     ResourceKind::Blocks,
@@ -510,13 +816,27 @@ mod tests {
             ),
             (
                 BuildingType::Clothier,
-                &[FIBRE_TO_CLOTH_RECIPE_ID][..],
+                &[
+                    FIBRE_TO_CLOTH_RECIPE_ID,
+                    FORAGING_PREPARATION_RECIPE_ID,
+                    FORAGING_STAPLES_RECIPE_ID,
+                    FORAGING_QUALITY_RECIPE_ID,
+                    FORAGING_SPECIALTY_RECIPE_ID,
+                    FORAGING_MASTERWORK_RECIPE_ID,
+                ][..],
                 &[ResourceKind::Fibre][..],
                 &[ResourceKind::Cloth][..],
             ),
             (
                 BuildingType::Tannery,
-                &[HIDE_TO_LEATHER_RECIPE_ID][..],
+                &[
+                    HIDE_TO_LEATHER_RECIPE_ID,
+                    ANIMAL_HUSBANDRY_PREPARATION_RECIPE_ID,
+                    ANIMAL_HUSBANDRY_STAPLES_RECIPE_ID,
+                    ANIMAL_HUSBANDRY_QUALITY_RECIPE_ID,
+                    ANIMAL_HUSBANDRY_SPECIALTY_RECIPE_ID,
+                    ANIMAL_HUSBANDRY_MASTERWORK_RECIPE_ID,
+                ][..],
                 &[ResourceKind::Hide][..],
                 &[ResourceKind::Leather][..],
             ),
@@ -581,7 +901,7 @@ mod tests {
                 assert!(ids.insert(recipe.id), "duplicate recipe id {}", recipe.id);
             }
         }
-        assert_eq!(ids.len(), 46);
+        assert_eq!(ids.len(), 74);
         assert!(station_recipe_set(BuildingType::Den).is_none());
     }
 
@@ -705,6 +1025,29 @@ mod tests {
             assert_eq!((output.kind, output.material), (kind, material), "{id}");
             assert!(!recipe.founding_available, "{id}");
         }
+    }
+
+    #[test]
+    fn subsistence_frontier_recipes_all_create_exact_finite_items() {
+        assert_eq!(SUBSISTENCE_FRONTIER_RECIPE_IDS.len(), 30);
+        let mut outputs = std::collections::BTreeSet::new();
+        for id in SUBSISTENCE_FRONTIER_RECIPE_IDS {
+            let recipe = station_item_recipe(id).expect("frontier recipe is runtime-backed");
+            assert_eq!(recipe.input_resources.len(), 1, "{id}");
+            assert!(recipe.output_resources.is_empty(), "{id}");
+            let output = recipe.output_item.expect("exact finite output");
+            assert!(!recipe.founding_available, "{id}");
+            outputs.insert((
+                recipe.building_type.as_str(),
+                output.kind,
+                output.material,
+                output.quality,
+            ));
+        }
+        assert!(
+            outputs.len() >= 25,
+            "family recipes should not collapse into cosmetic aliases"
+        );
     }
 
     #[test]

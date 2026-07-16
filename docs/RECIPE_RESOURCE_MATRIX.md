@@ -43,18 +43,37 @@ rules, and P19's canonical production table. Runtime identity comes only from
 | beach/desert deposit → Sand | `sand_glass_mug` | Workshop / Process | exact glassy sand Mug | `trade_goods_quality` |
 | beach/desert deposit → Sand | `sand_glass_bowl` | Workshop / Process | exact glassy sand Bowl | `trade_goods_specialty` |
 | beach/desert deposit → Sand | `sand_glass_trinket` | Workshop / Process | exact quality-2 glassy sand Trinket | `trade_goods_masterwork` |
+| hunt → Bone | `hunting_quality`, `hunting_specialty`, `hunting_masterwork` | Woodworking / Craft | exact bone Weapon, Armor, and quality-2 Tool | matching Hunting study |
+| forage → Fibre | five `foraging_*` recipe IDs | Clothier / Textile | exact fibre Bowl, Clothing, Tool, Toy, and Furniture | matching Foraging study |
+| stored Planks | five `waterworks_*` recipe IDs | Woodworking / Craft | exact wooden Bowl, Mug, Toy, Furniture, and quality-2 Bowl | matching Waterworks study |
+| hunt → Hide | five `animal_husbandry_*` recipe IDs | Tannery / Textile | exact leather Clothing, Toy, Armor, Tool, and Furniture | matching Animal Husbandry study |
+| stored Supplies | five `field_craft_*` recipe IDs | Workshop / Process | exact wooden Tool, Clothing, Armor, Furniture, and Toy field wares | matching Field Craft study |
+| stored Cloth | five `expedition_supplies_*` recipe IDs | Workshop / Process | exact quality-2/3 fibre Bowl, Clothing, Tool, Armor, and Furniture travel wares | matching Expedition Supplies study |
 
-All 46 operations use pile → carried input → station-local input → work → station-local output →
-carried delivery. The ten variant routes create a stable finite item identity in local output and
+All 74 operations use pile → carried input → station-local input → work → station-local output →
+carried delivery. The 38 exact-item routes create a stable finite item identity in local output and
 move that same identity, material, quality, maximum/current durability, and condition to storage;
 there is no shadow scalar good. The two Mill operations are deliberately separate: Flour must be
 delivered to storage before it can return as the selected baking input. Rules-v7 SQLite migration
 replaces the old `grain_to_flour_and_food` queue entry with both explicit entries while preserving
-order, repeat intent, pause, progress, and intentionally empty queues.
+order, repeat intent, pause, progress, and intentionally empty queues. The 28 new frontier routes
+use the same exact identity and conservation contract. Their present consumers are ordinary
+equipment where an item kind is functional and finite trade otherwise; Field Craft and Expedition
+Supplies do not secretly accelerate farms or scouts, Waterworks does not mint Water, and the
+one-step Tannery routes deliberately tan finite Hide into the listed finished leather identity.
+
+## Generated resource-stage consumers
+
+The twenty resource nodes in the six frontier families are runtime effects, not new shadow goods.
+For each family, `sources` reduces the finite input consumed by its selected kit recipes by 10%,
+`preservation` raises the exact output identities' maximum durability by 25%, and `bulk` shortens
+only that family's staffed physical cycles by 10%. `hunting_reserves` adds finite Food/Hide/Bone
+headroom; `foraging_reserves` adds finite Fibre/Herbs/Catnip headroom. Full and compact hauling
+capacity resolution share those exact additions.
 
 ## Catalog promises that remain future content
 
-There are exactly **58 generated recipe payload IDs** without a runtime descriptor and **47
+There are exactly **30 generated recipe payload IDs** without a runtime descriptor and **27
 generated resource payload IDs** without an authoritative source/consumer. They
 remain visible as `FUTURE` in the research ledger, cannot spend points, and cannot be selected by
 the Leader.
@@ -62,7 +81,7 @@ the Leader.
 | Generated breadth | Missing authoritative layer |
 | --- | --- |
 | Remaining gem, clay, sand, and bone families | The selected starter variants above are live; the other generated combinations have no selected runtime descriptor |
-| Furniture, remaining clothing, weapon/armor variants, field craft, expedition supplies, and other generated family recipes | No P19-selected station recipe descriptor and complete physical route |
+| Furniture and remaining clothing, weapon/armor, decorative, and material-family variants | No P19-selected station recipe descriptor and complete physical route |
 | Remaining generic `*_sources` resource IDs | They are catalog registry labels without an exact physical source or consumer |
 | Remaining material/category combinations | Item definitions alone do not provide a selected recipe, station-local input, exact output identity, or delivery loop |
 

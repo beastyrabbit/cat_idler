@@ -50,20 +50,22 @@ Verified foundations include:
   Supported studies can be purchased with research points and persist; unsupported generated
   recipe/resource promises remain visible as disabled `FUTURE` cards. The living Leader may complete at
   most one affordable full-catalog node per rolling real-life day while research labor/building
-  automation and rituals remain Loremaster-owned. Thirteen maintained runtime recipe IDs now have one
-  data-owned station descriptor, canonical input/output resource domains, deterministic default
-  queues, and exact catalog ownership metadata: ten are research-gated and three founding-bench
-  baselines are immediately available. Four preparation studies gate the physical
+  automation and rituals remain Loremaster-owned. Seventy-four maintained runtime recipe IDs now
+  have one data-owned station descriptor, canonical input/output resource domains, selected queues,
+  and exact catalog ownership metadata: 71 are research-gated and three founding-bench baselines
+  are immediately available. Four preparation studies gate the physical
   Mill/Sawmill/Workshop/Smelter queues; Textiles gates physical Tannery and Clothier,
   while Toolmaking, Weaponsmithing, and Armorsmithing independently gate the Smithy's selected
-  tool, weapon, and armor recipes. All thirteen recipes execute through physical station-local
-  queues. Mill grinding and baking are separate selected operations. Smithy consumes
+  tool, weapon, and armor recipes. All 74 recipes execute through physical station-local queues.
+  Complete food/plant families and the Hunting, Foraging, Waterworks, Animal Husbandry, Field
+  Craft, and Expedition Supplies families own exact finite routes or observable resource-stage
+  consumers. Mill grinding and baking are separate selected operations. Smithy consumes
   two Metal for one whole selected Tool, Weapon, or Armor after 900 game-seconds, and aggregate credit
   waits for outbound delivery; its old aggregate forge timers remain bit-frozen save data.
   Carpentry, Stonecraft, and Toolmaking studies gate later recipes rather than those three founding
   baselines; rules-v0 metadata
-  remains grandfathered. The other 91 generated recipe IDs and
-  all 64 generated resource IDs are visibly future-only and non-purchasable until a physical
+  remains grandfathered. The other 30 generated recipe IDs and
+  27 generated resource IDs are visibly future-only and non-purchasable until a physical
   consumer exists; see `docs/RECIPE_RESOURCE_MATRIX.md`. Sawmill→Gather Logs is the
   sole catalog job entitlement; founding water/scouting, manual research, and Barracks training
   remain available without false job payloads. Research Hut is explicitly founding-placeable;
@@ -256,7 +258,7 @@ so a correct scout route cannot conceal a missing founding dispatch.
    target-correct across clamp, physical routing, snapshot, trade, and persistence. Keep the other
    22 generated `*_stores` studies and the fixed 10-unit Mill/Sawmill/Wood Cutter/Stone Prep/Woodworking/Workshop/Smelter local stores
    explicitly open until each has a real physical domain. Then turn the remaining registry-only
-   research payloads (91 generated-only recipes and 64 resources) into observable behavior without
+   research payloads (30 generated-only recipes and 27 resources) into observable behavior without
    advertising IDs that have no runtime object. Twelve Crews studies now add real independently
    owned worker stations to the existing physical/research labor domains; the other thirteen are
    visibly future and non-purchasable until those buildings gain a safe concurrent labor state

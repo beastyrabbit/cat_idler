@@ -12699,6 +12699,82 @@ mod tests {
     }
 
     #[test]
+    fn signed_player_can_queue_every_researched_subsistence_frontier_recipe() {
+        let mut world = world_with_one_colony();
+        let colony = &mut world.colonies[0];
+        colony.recipe_entitlement_rules_version =
+            crate::world_tick::CURRENT_RECIPE_ENTITLEMENT_RULES_VERSION;
+        colony.upgrade_tree.owned_node_ids.extend(
+            crate::research_catalog::research_catalog()
+                .nodes()
+                .iter()
+                .filter(|node| {
+                    [
+                        "hunting_",
+                        "foraging_",
+                        "waterworks_",
+                        "animal_husbandry_",
+                        "field_craft_",
+                        "expedition_supplies_",
+                    ]
+                    .iter()
+                    .any(|prefix| node.id.starts_with(prefix))
+                })
+                .map(|node| node.id.clone()),
+        );
+        for building_type in [
+            BuildingType::StonePrep,
+            BuildingType::Woodworking,
+            BuildingType::Clothier,
+            BuildingType::Tannery,
+            BuildingType::Workshop,
+        ] {
+            colony.buildings.push(BuildingRuntime {
+                id: format!("frontier-{}", building_type.as_str()),
+                building_type,
+                is_complete: true,
+                construction_progress: 100,
+                production_queue: Vec::new(),
+                ..BuildingRuntime::default()
+            });
+        }
+
+        for recipe_id in crate::station_recipes::SUBSISTENCE_FRONTIER_RECIPE_IDS {
+            let descriptor = crate::station_recipes::station_recipe(recipe_id).unwrap();
+            let building_id = format!("frontier-{}", descriptor.building_type.as_str());
+            let queued = apply_action(
+                &mut world,
+                &proto::ClientAction::EditProductionQueue {
+                    session_id: "sess_1".to_owned(),
+                    nickname: "Frontier Guide".to_owned(),
+                    sig: "signed".to_owned(),
+                    building_id,
+                    edit: proto::ProductionQueueEdit::Add {
+                        recipe_id: (*recipe_id).to_owned(),
+                        repeat: false,
+                    },
+                },
+                &ctx(),
+            );
+            assert!(queued.ok, "signed queue failed for {recipe_id}: {queued:?}");
+        }
+
+        let queued = world.colonies[0]
+            .buildings
+            .iter()
+            .filter(|building| building.id.starts_with("frontier-"))
+            .flat_map(|building| &building.production_queue)
+            .map(|entry| entry.recipe_id.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(queued.len(), 30);
+        assert!(
+            crate::station_recipes::SUBSISTENCE_FRONTIER_RECIPE_IDS
+                .iter()
+                .all(|id| queued.contains(id))
+        );
+    }
+
+    #[test]
     fn manual_fishing_requires_a_site_and_honors_exact_labor_preference() {
         let mut world = world_with_one_colony();
         let request = |world: &mut WorldState| {

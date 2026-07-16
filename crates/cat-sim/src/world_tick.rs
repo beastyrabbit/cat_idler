@@ -23436,13 +23436,18 @@ fn item_physical_recipe(recipe_id: &str) -> Option<ItemPhysicalRecipe> {
     debug_assert_eq!(descriptor.input_resources.len(), 1);
     let input_per_cycle = match input_kind {
         ResourceKind::Gem => 1.0,
-        ResourceKind::Bone | ResourceKind::Clay => 2.0,
-        ResourceKind::Sand => 3.0,
+        ResourceKind::Bone | ResourceKind::Clay | ResourceKind::Hide => 2.0,
+        ResourceKind::Sand
+        | ResourceKind::Fibre
+        | ResourceKind::Planks
+        | ResourceKind::Materials
+        | ResourceKind::Cloth => 3.0,
         _ => return None,
     };
     let labor = match descriptor.building_type {
         BuildingType::Woodworking => Labor::Craft,
         BuildingType::StonePrep | BuildingType::Workshop => Labor::Process,
+        BuildingType::Clothier | BuildingType::Tannery => Labor::Textile,
         _ => return None,
     };
     Some(ItemPhysicalRecipe {
@@ -23461,8 +23466,89 @@ const fn item_recipe_resource_label(kind: ResourceKind) -> &'static str {
         ResourceKind::Gem => "gem",
         ResourceKind::Clay => "clay",
         ResourceKind::Sand => "sand",
+        ResourceKind::Fibre => "fibre",
+        ResourceKind::Hide => "hide",
+        ResourceKind::Planks => "planks",
+        ResourceKind::Materials => "supplies",
+        ResourceKind::Cloth => "cloth",
         _ => "material",
     }
+}
+
+fn subsistence_frontier_item_recipe_family(recipe_id: &str) -> Option<&'static str> {
+    if matches!(
+        recipe_id,
+        crate::station_recipes::BONE_TRINKET_RECIPE_ID
+            | crate::station_recipes::BONE_TOY_RECIPE_ID
+            | crate::station_recipes::HUNTING_QUALITY_RECIPE_ID
+            | crate::station_recipes::HUNTING_SPECIALTY_RECIPE_ID
+            | crate::station_recipes::HUNTING_MASTERWORK_RECIPE_ID
+    ) {
+        Some("hunting")
+    } else if recipe_id.starts_with("foraging_") {
+        Some("foraging")
+    } else if recipe_id.starts_with("waterworks_") {
+        Some("waterworks")
+    } else if recipe_id.starts_with("animal_husbandry_") {
+        Some("animal_husbandry")
+    } else if recipe_id.starts_with("field_craft_") {
+        Some("field_craft")
+    } else if recipe_id.starts_with("expedition_supplies_") {
+        Some("expedition_supplies")
+    } else {
+        None
+    }
+}
+
+/// Apply only the three generated resource-stage promises owned by one selected
+/// frontier recipe. Sources conserve ten percent of its finite input, Bulk shortens
+/// its physical work cycle, and Preservation increases the exact item's durability.
+fn apply_subsistence_frontier_recipe_research(
+    colony: &ColonyRuntime,
+    recipe: &mut ItemPhysicalRecipe,
+) -> f64 {
+    let Some(family) = subsistence_frontier_item_recipe_family(recipe.recipe_id) else {
+        return 1.0;
+    };
+    let (sources, preservation, bulk) = match family {
+        "hunting" => ("hunting_sources", "hunting_preservation", "hunting_bulk"),
+        "foraging" => ("foraging_sources", "foraging_preservation", "foraging_bulk"),
+        "waterworks" => (
+            "waterworks_sources",
+            "waterworks_preservation",
+            "waterworks_bulk",
+        ),
+        "animal_husbandry" => (
+            "animal_husbandry_sources",
+            "animal_husbandry_preservation",
+            "animal_husbandry_bulk",
+        ),
+        "field_craft" => (
+            "field_craft_sources",
+            "field_craft_preservation",
+            "field_craft_bulk",
+        ),
+        "expedition_supplies" => (
+            "expedition_supplies_sources",
+            "expedition_supplies_preservation",
+            "expedition_supplies_bulk",
+        ),
+        _ => unreachable!("known subsistence/frontier recipe family"),
+    };
+    let owns = |node_id: &str| {
+        colony
+            .upgrade_tree
+            .owned_node_ids
+            .iter()
+            .any(|owned| owned == node_id)
+    };
+    if owns(sources) {
+        recipe.input_per_cycle *= 0.9;
+    }
+    if owns(bulk) {
+        recipe.cycle_sec *= 0.9;
+    }
+    if owns(preservation) { 1.25 } else { 1.0 }
 }
 
 fn twin_input_physical_recipe(building_type: BuildingType) -> Option<TwinInputPhysicalRecipe> {
@@ -25162,9 +25248,10 @@ fn advance_physical_item_recipe_slot(
     let Some(selected) = building.production_queue.first() else {
         return;
     };
-    let Some(recipe) = item_physical_recipe(&selected.recipe_id) else {
+    let Some(mut recipe) = item_physical_recipe(&selected.recipe_id) else {
         return;
     };
+    let frontier_durability_mult = apply_subsistence_frontier_recipe_research(colony, &mut recipe);
     let Some(cat_id) = building.assigned_cat.as_deref() else {
         return;
     };
@@ -25288,7 +25375,8 @@ fn advance_physical_item_recipe_slot(
     let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
     let durability_mult = effects
         .building(items::item_workshop_id(recipe.output_item))
-        .durability_mult;
+        .durability_mult
+        * frontier_durability_mult;
     colony.items.add_at(
         recipe.output_item,
         completed_cycles as u32,
@@ -26712,7 +26800,8 @@ pub(crate) fn building_production_block_reason_with_availability(
             .to_owned(),
         );
     }
-    if let Some(item_recipe) = item_physical_recipe(&recipe.recipe_id) {
+    if let Some(mut item_recipe) = item_physical_recipe(&recipe.recipe_id) {
+        apply_subsistence_frontier_recipe_research(colony, &mut item_recipe);
         let output_location = ItemLocation::Station {
             building_id: building.id.clone(),
             compartment: StationCompartment::LocalOutput,
@@ -35469,17 +35558,39 @@ mod tests {
                 vec![
                     crate::station_recipes::PLANKS_AND_BLOCKS_TO_TOOLS_RECIPE_ID,
                     crate::station_recipes::BONE_TOOL_RECIPE_ID,
+                    crate::station_recipes::HUNTING_QUALITY_RECIPE_ID,
+                    crate::station_recipes::HUNTING_SPECIALTY_RECIPE_ID,
+                    crate::station_recipes::HUNTING_MASTERWORK_RECIPE_ID,
+                    crate::station_recipes::WATERWORKS_PREPARATION_RECIPE_ID,
+                    crate::station_recipes::WATERWORKS_STAPLES_RECIPE_ID,
+                    crate::station_recipes::WATERWORKS_QUALITY_RECIPE_ID,
+                    crate::station_recipes::WATERWORKS_SPECIALTY_RECIPE_ID,
+                    crate::station_recipes::WATERWORKS_MASTERWORK_RECIPE_ID,
                 ],
                 vec![crate::station_recipes::PLANKS_AND_BLOCKS_TO_TOOLS_RECIPE_ID],
             ),
             (
                 BuildingType::Clothier,
-                vec![CLOTHIER_RECIPE_ID],
+                vec![
+                    CLOTHIER_RECIPE_ID,
+                    crate::station_recipes::FORAGING_PREPARATION_RECIPE_ID,
+                    crate::station_recipes::FORAGING_STAPLES_RECIPE_ID,
+                    crate::station_recipes::FORAGING_QUALITY_RECIPE_ID,
+                    crate::station_recipes::FORAGING_SPECIALTY_RECIPE_ID,
+                    crate::station_recipes::FORAGING_MASTERWORK_RECIPE_ID,
+                ],
                 vec![CLOTHIER_RECIPE_ID],
             ),
             (
                 BuildingType::Tannery,
-                vec![TANNERY_RECIPE_ID],
+                vec![
+                    TANNERY_RECIPE_ID,
+                    crate::station_recipes::ANIMAL_HUSBANDRY_PREPARATION_RECIPE_ID,
+                    crate::station_recipes::ANIMAL_HUSBANDRY_STAPLES_RECIPE_ID,
+                    crate::station_recipes::ANIMAL_HUSBANDRY_QUALITY_RECIPE_ID,
+                    crate::station_recipes::ANIMAL_HUSBANDRY_SPECIALTY_RECIPE_ID,
+                    crate::station_recipes::ANIMAL_HUSBANDRY_MASTERWORK_RECIPE_ID,
+                ],
                 vec![TANNERY_RECIPE_ID],
             ),
             (
@@ -39551,6 +39662,138 @@ mod tests {
                 "{recipe_id}"
             );
         }
+    }
+
+    #[test]
+    fn every_subsistence_frontier_recipe_conserves_input_and_delivers_one_exact_identity() {
+        for recipe_id in crate::station_recipes::SUBSISTENCE_FRONTIER_RECIPE_IDS {
+            let descriptor = crate::station_recipes::station_item_recipe(recipe_id).unwrap();
+            let recipe = item_physical_recipe(recipe_id).unwrap();
+            let mut resources = Resources::default();
+            stockpiles::set_resource(&mut resources, recipe.input_kind, recipe.input_per_cycle);
+            let mut colony = chain_colony(descriptor.building_type, resources, true);
+            colony.recipe_entitlement_rules_version = CURRENT_RECIPE_ENTITLEMENT_RULES_VERSION;
+            let study = crate::research_catalog::research_catalog()
+                .recipe_unlock_study(recipe_id)
+                .expect("frontier entitlement");
+            colony.upgrade_tree.owned_node_ids.push(study.id.clone());
+            colony.buildings[0].production_progress = recipe.cycle_sec - 10.0;
+            colony.buildings[0].production_queue = vec![ProductionQueueEntry {
+                recipe_id: (*recipe_id).to_owned(),
+                repeat: false,
+            }];
+            move_general_stock_to_station_input(
+                &mut colony,
+                recipe.input_kind,
+                recipe.input_per_cycle,
+            );
+            let building = colony.buildings[0].clone();
+            colony.cats[0].position = position_from_world(station_work_point(&building));
+
+            let mut twin = colony.clone();
+            for candidate in [&mut colony, &mut twin] {
+                advance_physical_item_recipe_slot(
+                    candidate,
+                    0,
+                    production_gate(10, 10_000),
+                    10.0,
+                    false,
+                );
+            }
+            assert_eq!(colony, twin, "{recipe_id} diverged");
+            assert_eq!(
+                stockpiles::resource_amount(&colony.resources, recipe.input_kind),
+                0.0,
+                "{recipe_id} aggregate input"
+            );
+            let local = colony
+                .items
+                .instances()
+                .find(|instance| {
+                    descriptor.output_item.is_some_and(|output| {
+                        instance.item.kind == output.kind
+                            && instance.item.material == output.material
+                            && instance.item.quality == output.quality
+                    })
+                })
+                .cloned()
+                .expect("one exact local output");
+            assert!(!local.credited, "{recipe_id} credited before haul");
+            assert!(begin_station_item_output_haul(
+                &mut colony,
+                &building,
+                0,
+                production_gate(1, 11_000),
+            ));
+            let carried_id = parse_station_item_cargo(
+                colony.cats[0]
+                    .carrying
+                    .as_ref()
+                    .and_then(|cargo| cargo.source_gather_spot.as_deref()),
+            )
+            .map(|(_, _, id)| id.to_owned())
+            .expect("exact outbound marker");
+            assert_eq!(carried_id, local.id, "{recipe_id} reconstructed cargo");
+            deliver_station_cargo_to_current_target(&mut colony);
+            let delivered = colony.items.instance(&local.id).expect("same delivered id");
+            assert!(delivered.credited, "{recipe_id}");
+            assert!(matches!(delivered.location, ItemLocation::Stockpile { .. }));
+        }
+    }
+
+    #[test]
+    fn every_frontier_resource_stage_changes_exact_recipe_or_storage_physics() {
+        for (family, representative) in [
+            ("hunting", crate::station_recipes::HUNTING_QUALITY_RECIPE_ID),
+            (
+                "foraging",
+                crate::station_recipes::FORAGING_PREPARATION_RECIPE_ID,
+            ),
+            (
+                "waterworks",
+                crate::station_recipes::WATERWORKS_PREPARATION_RECIPE_ID,
+            ),
+            (
+                "animal_husbandry",
+                crate::station_recipes::ANIMAL_HUSBANDRY_PREPARATION_RECIPE_ID,
+            ),
+            (
+                "field_craft",
+                crate::station_recipes::FIELD_CRAFT_PREPARATION_RECIPE_ID,
+            ),
+            (
+                "expedition_supplies",
+                crate::station_recipes::EXPEDITION_SUPPLIES_PREPARATION_RECIPE_ID,
+            ),
+        ] {
+            let baseline = item_physical_recipe(representative).unwrap();
+            let mut researched = baseline;
+            let mut colony = ColonyRuntime::default();
+            colony.upgrade_tree.owned_node_ids = vec![
+                format!("{family}_sources"),
+                format!("{family}_preservation"),
+                format!("{family}_bulk"),
+            ];
+            let durability = apply_subsistence_frontier_recipe_research(&colony, &mut researched);
+            assert_eq!(researched.input_per_cycle, baseline.input_per_cycle * 0.9);
+            assert_eq!(researched.cycle_sec, baseline.cycle_sec * 0.9);
+            assert_eq!(durability, 1.25);
+        }
+    }
+
+    #[test]
+    fn frontier_research_recipes_never_enter_default_automation_queues() {
+        let queued = BuildingType::ALL
+            .iter()
+            .copied()
+            .flat_map(default_production_queue)
+            .map(|entry| entry.recipe_id)
+            .collect::<BTreeSet<_>>();
+        assert!(
+            crate::station_recipes::SUBSISTENCE_FRONTIER_RECIPE_IDS
+                .iter()
+                .all(|id| !queued.contains(*id))
+        );
     }
 
     #[test]

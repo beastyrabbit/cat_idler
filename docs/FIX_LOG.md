@@ -9,9 +9,33 @@ and any changed Bevy visuals have been verified.
 
 | Finding | Required correction | State |
 | --- | --- | --- |
-| Research recipe/resource breadth remains incomplete | Forty-six runtime recipe IDs now have data-owned station descriptors and exact catalog ownership metadata. The remaining 58 generated recipe IDs and 47 generated resource IDs have no authoritative consumer, are visibly marked `FUTURE`, and cannot spend points. Continue only from the evidence boundary in `RECIPE_RESOURCE_MATRIX.md`. | in progress |
+| Research recipe/resource breadth remains incomplete | Seventy-four runtime recipe IDs now have data-owned station descriptors and exact catalog ownership metadata. The remaining 30 generated recipe IDs and 27 generated resource IDs have no authoritative consumer, are visibly marked `FUTURE`, and cannot spend points. Continue only from the evidence boundary in `RECIPE_RESOURCE_MATRIX.md`. | in progress |
 
 ## Verified fixes
+
+## 2026-07-16 — Subsistence and frontier research breadth has finite routes
+
+**Problem:** Forty-eight nodes across Hunting, Foraging, Waterworks, Animal Husbandry, Field
+Craft, and Expedition Supplies were still disabled `FUTURE` cards: 28 recipes had no station route
+and twenty resource stages had no observable effect.
+
+**Fix:** All thirty recipe-bearing studies in those families now map to exact finite item routes;
+the two established Hunting bone goods are retained and 28 new operations consume Bone, Fibre,
+Planks, Hide, Supplies, or Cloth at Woodworking, Clothier, Tannery, or Workshop. Every output is one
+stable identity through local output, outbound cargo, storage, equipment where functional, and
+trade otherwise. They do not claim hidden farm, water, husbandry, or scout automation. Sources,
+Preservation, and Bulk respectively reduce exact family-recipe input, raise exact item durability,
+and shorten only the matching physical cycle; Hunting and Foraging Reserves expand only their
+listed finite storehouse domains. Research recipes remain absent from default automation queues.
+
+**Evidence:** Exhaustive catalog tests make all fifty family nodes purchasable and pin their honest
+descriptions and catalog-derived entitlements. Descriptor tests cover all thirty item mappings.
+Every route consumes its exact aggregate/local input, creates one uncredited station identity,
+moves that same ID in a carrier, and credits it only at storage in deterministic twins. Effect and
+capacity tests cover all twenty resource stages, and signed player actions queue all thirty
+recipes only at their actual station. The supported boundary is now 74 physical recipes with 30
+recipe and 27 resource payloads intentionally still `FUTURE`. No protocol/client surface or art
+changed, so no framebuffer recapture was required.
 
 ## 2026-07-16 — Useful labor pressure is measured, not inferred from idle labels
 

@@ -22,6 +22,11 @@ pub struct StorageResearchEffects {
     pub preserves_capacity_add: f64,
     pub medicine_capacity_add: f64,
     pub brew_capacity_add: f64,
+    pub hide_capacity_add: f64,
+    pub bone_capacity_add: f64,
+    pub fibre_capacity_add: f64,
+    pub herbs_capacity_add: f64,
+    pub catnip_capacity_add: f64,
 }
 
 impl Default for StorageResearchEffects {
@@ -38,6 +43,11 @@ impl Default for StorageResearchEffects {
             preserves_capacity_add: 0.0,
             medicine_capacity_add: 0.0,
             brew_capacity_add: 0.0,
+            hide_capacity_add: 0.0,
+            bone_capacity_add: 0.0,
+            fibre_capacity_add: 0.0,
+            herbs_capacity_add: 0.0,
+            catnip_capacity_add: 0.0,
         }
     }
 }
@@ -78,6 +88,16 @@ where
             "herbalism_preservation" => effects.medicine_capacity_add += 50.0,
             "food_preservation_preservation" => effects.preserves_capacity_add += 50.0,
             "brewing_preservation" => effects.brew_capacity_add += 50.0,
+            "hunting_reserves" => {
+                effects.food_capacity_add += 50.0;
+                effects.hide_capacity_add += 50.0;
+                effects.bone_capacity_add += 50.0;
+            }
+            "foraging_reserves" => {
+                effects.fibre_capacity_add += 100.0;
+                effects.herbs_capacity_add += 50.0;
+                effects.catnip_capacity_add += 50.0;
+            }
             _ => {}
         }
         let Some(node) = research_catalog().get(id.as_ref()) else {
@@ -381,6 +401,11 @@ pub fn research_aware_storage_capacities(
             .contains("herbalism_preservation"),
         effects.unlocked_resources.contains("brewing_preservation"),
     );
+    apply_subsistence_frontier_storage_additions(
+        &mut caps,
+        effects.unlocked_resources.contains("hunting_reserves"),
+        effects.unlocked_resources.contains("foraging_reserves"),
+    );
     caps
 }
 
@@ -405,6 +430,11 @@ fn research_aware_storage_capacities_compact(
     caps.preserves += effects.preserves_capacity_add;
     caps.medicine += effects.medicine_capacity_add;
     caps.brew += effects.brew_capacity_add;
+    caps.hide += effects.hide_capacity_add;
+    caps.bone += effects.bone_capacity_add;
+    caps.fibre += effects.fibre_capacity_add;
+    caps.herbs += effects.herbs_capacity_add;
+    caps.catnip += effects.catnip_capacity_add;
     caps
 }
 
@@ -423,6 +453,23 @@ fn apply_food_plant_storage_additions(
     caps.preserves += if preserves_storage { 50.0 } else { 0.0 };
     caps.medicine += if medicine_storage { 50.0 } else { 0.0 };
     caps.brew += if brew_storage { 50.0 } else { 0.0 };
+}
+
+fn apply_subsistence_frontier_storage_additions(
+    caps: &mut StorageCapacities,
+    hunting_reserves: bool,
+    foraging_reserves: bool,
+) {
+    if hunting_reserves {
+        caps.food += 50.0;
+        caps.hide += 50.0;
+        caps.bone += 50.0;
+    }
+    if foraging_reserves {
+        caps.fibre += 100.0;
+        caps.herbs += 50.0;
+        caps.catnip += 50.0;
+    }
 }
 
 impl StorageCapacities {
@@ -769,6 +816,32 @@ mod tests {
             Some(physical_food.food),
             "the targeted study expands real founding-store headroom"
         );
+    }
+
+    #[test]
+    fn hunting_and_foraging_reserves_expand_only_their_physical_stores() {
+        let physical = [roomy_physical_store()];
+        let baseline =
+            authoritative_storage_capacities(&[], &physical, &resolve_effects([] as [&str; 0]));
+        let hunting = authoritative_storage_capacities(
+            &[],
+            &physical,
+            &resolve_effects(["hunting_reserves"]),
+        );
+        assert_eq!(hunting.food, baseline.food + 50.0);
+        assert_eq!(hunting.hide, baseline.hide + 50.0);
+        assert_eq!(hunting.bone, baseline.bone + 50.0);
+        assert_eq!(hunting.fibre, baseline.fibre);
+
+        let foraging = authoritative_storage_capacities(
+            &[],
+            &physical,
+            &resolve_effects(["foraging_reserves"]),
+        );
+        assert_eq!(foraging.fibre, baseline.fibre + 100.0);
+        assert_eq!(foraging.herbs, baseline.herbs + 50.0);
+        assert_eq!(foraging.catnip, baseline.catnip + 50.0);
+        assert_eq!(foraging.hide, baseline.hide);
     }
 
     #[test]

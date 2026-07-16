@@ -1710,12 +1710,13 @@ mod tests {
         let model = ResearchUiModel::from_catalog();
         let research = snapshot(&["research_hut", "basic_tools"], 999.0);
         assert_eq!(
-            model.purchase_state("hunting_sources", &research),
+            model.purchase_state("textile_work_sources", &research),
             PurchaseState::Future
         );
-        assert!(!model.dispatchable_research_node("hunting_sources", &research));
+        assert!(!model.dispatchable_research_node("textile_work_sources", &research));
         assert!(
-            research_purchase_action(&model, &research, "hunting_sources", &session()).is_none()
+            research_purchase_action(&model, &research, "textile_work_sources", &session())
+                .is_none()
         );
         assert!(research_purchase_disabled(
             true,

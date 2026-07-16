@@ -223,6 +223,26 @@ pub const RUNTIME_RESOURCE_UNLOCK_IDS: &[&str] = &[
     "brewing_sources",
     "brewing_preservation",
     "brewing_bulk",
+    "hunting_sources",
+    "hunting_preservation",
+    "hunting_bulk",
+    "hunting_reserves",
+    "foraging_sources",
+    "foraging_preservation",
+    "foraging_bulk",
+    "foraging_reserves",
+    "waterworks_sources",
+    "waterworks_preservation",
+    "waterworks_bulk",
+    "animal_husbandry_sources",
+    "animal_husbandry_preservation",
+    "animal_husbandry_bulk",
+    "field_craft_sources",
+    "field_craft_preservation",
+    "field_craft_bulk",
+    "expedition_supplies_sources",
+    "expedition_supplies_preservation",
+    "expedition_supplies_bulk",
 ];
 
 #[must_use]
@@ -579,6 +599,86 @@ pub fn research_node_is_implemented(node: &ResearchNode) -> bool {
     !node.is_future_content()
 }
 
+fn is_subsistence_frontier_family(family_id: &str) -> bool {
+    matches!(
+        family_id,
+        "hunting"
+            | "foraging"
+            | "waterworks"
+            | "animal_husbandry"
+            | "field_craft"
+            | "expedition_supplies"
+    )
+}
+
+fn subsistence_frontier_payload_description(
+    family: &RecipeFamily,
+    stage: &RecipeStage,
+    payload: &ResearchPayload,
+) -> Option<String> {
+    if !is_subsistence_frontier_family(&family.id) {
+        return None;
+    }
+    match payload {
+        ResearchPayload::UnlockRecipe { recipe_id } => {
+            let recipe = crate::station_recipes::station_recipe(recipe_id)?;
+            let output = recipe.output_item?;
+            let input = recipe.input_resources.first()?;
+            Some(format!(
+                "{} {} consumes finite {input:?} at the {} and creates one exact {} {} identity. It uses ordinary equipment where that item kind is functional and ordinary trade otherwise; it does not silently automate farming, water fetching, husbandry, or scouting.",
+                family.display_name,
+                stage.name,
+                recipe.building_type.as_str().replace('_', " "),
+                output.material.as_str(),
+                output.kind.as_str(),
+            ))
+        }
+        ResearchPayload::UnlockResource { .. } => Some(match stage.id.as_str() {
+            "sources" => format!(
+                "{} Sources reduces the finite input consumed by this family's selected physical kit recipes by 10%.",
+                family.display_name
+            ),
+            "preservation" => format!(
+                "{} Preservation increases the exact crafted kit identities' maximum durability by 25%.",
+                family.display_name
+            ),
+            "bulk" => format!(
+                "{} Bulk Work shortens this family's staffed physical recipe cycles by 10%.",
+                family.display_name
+            ),
+            "reserves" if family.id == "hunting" => {
+                "Hunting Reserves adds finite Food, Hide, and Bone storehouse headroom.".to_owned()
+            }
+            "reserves" if family.id == "foraging" => {
+                "Foraging Reserves adds finite Fibre, Herbs, and Catnip storehouse headroom."
+                    .to_owned()
+            }
+            _ => return None,
+        }),
+        _ => None,
+    }
+}
+
+fn subsistence_frontier_leader_priority(
+    family_id: &str,
+    stage_id: &str,
+    index: usize,
+) -> Option<u16> {
+    if family_id == "hunting" && matches!(stage_id, "preparation" | "staples") {
+        return None;
+    }
+    let family_offset = match family_id {
+        "hunting" => 0,
+        "foraging" => 10,
+        "waterworks" => 20,
+        "animal_husbandry" => 30,
+        "field_craft" => 40,
+        "expedition_supplies" => 50,
+        _ => return None,
+    };
+    Some(1_200 + family_offset + u16::try_from(index).ok()?)
+}
+
 fn expand_recipe_family(
     family: &RecipeFamily,
     stages: &[RecipeStage],
@@ -603,25 +703,32 @@ fn expand_recipe_family(
                 resource_id: payload_id,
             },
         };
-        // An implemented physical recipe must never sit behind a generic resource
-        // registry promise that has no source entitlement. Give that recipe the
-        // family's real maintained prerequisites directly; future nodes remain
-        // visible on their own branch and cannot consume points.
-        let bypass_future_predecessor =
-            matches!(
-                &payload,
-                ResearchPayload::UnlockRecipe { recipe_id }
-                    if crate::station_recipes::is_runtime_recipe_id(recipe_id)
-            ) && nodes.last().is_some_and(ResearchNode::is_future_content);
-        let prerequisites = if index == 0 || bypass_future_predecessor {
+        // A physical recipe does not require the adjacent resource-efficiency study.
+        // Keep selected work on its own branch both for unsupported registry promises
+        // and for the independently observable frontier input/durability/cycle effects.
+        let bypass_registry_predecessor = matches!(
+            &payload,
+            ResearchPayload::UnlockRecipe { recipe_id }
+                if crate::station_recipes::is_runtime_recipe_id(recipe_id)
+        ) && nodes.last().is_some_and(|previous| {
+            previous.is_future_content()
+                || (is_subsistence_frontier_family(&family.id)
+                    && matches!(
+                        previous.payloads.first(),
+                        Some(ResearchPayload::UnlockResource { .. })
+                    ))
+        });
+        let prerequisites = if index == 0 || bypass_registry_predecessor {
             family.root_prerequisites.clone()
         } else {
             vec![nodes[index - 1].id.clone()]
         };
+        let description = subsistence_frontier_payload_description(family, stage, &payload)
+            .unwrap_or_else(|| format!("{} {}", family.display_name, stage.description));
         nodes.push(ResearchNode {
             id,
             name: format!("{} {}", family.display_name, stage.name),
-            description: format!("{} {}", family.display_name, stage.description),
+            description,
             category: ResearchCategory::RecipeResource,
             cost: family.cost_base + 3.5 * index as f64,
             prerequisites,
@@ -633,8 +740,11 @@ fn expand_recipe_family(
                 x: family.layout_x,
                 y: i32::try_from(index + 1).map_err(|_| "recipe layout overflow")?,
             },
-            leader_priority: family.leader_priority_base
-                + u16::try_from(index).map_err(|_| "recipe priority overflow")?,
+            leader_priority: subsistence_frontier_leader_priority(&family.id, &stage.id, index)
+                .unwrap_or(
+                    family.leader_priority_base
+                        + u16::try_from(index).map_err(|_| "recipe priority overflow")?,
+                ),
             payloads: vec![payload],
         });
     }
@@ -1480,7 +1590,7 @@ mod tests {
     }
 
     #[test]
-    fn activated_food_plant_breadth_is_runtime_while_other_promises_remain_future() {
+    fn activated_sourced_breadth_is_runtime_while_other_promises_remain_future() {
         let catalog = research_catalog();
         assert!(
             !catalog
@@ -1489,7 +1599,13 @@ mod tests {
                 .is_future_content()
         );
         assert!(!catalog.get("brewing_bulk").unwrap().is_future_content());
-        assert!(catalog.get("hunting_sources").unwrap().is_future_content());
+        assert!(!catalog.get("hunting_sources").unwrap().is_future_content());
+        assert!(
+            catalog
+                .get("textile_work_sources")
+                .unwrap()
+                .is_future_content()
+        );
         assert!(
             !catalog
                 .get("grain_milling_preparation")
@@ -1535,8 +1651,8 @@ mod tests {
             })
             .count();
 
-        assert_eq!(unsupported_recipes, 58);
-        assert_eq!(unsupported_resources, 47);
+        assert_eq!(unsupported_recipes, 30);
+        assert_eq!(unsupported_resources, 27);
     }
 
     #[test]
@@ -1550,16 +1666,91 @@ mod tests {
             "food_preservation_",
             "brewing_",
         ] {
-            for node in catalog
-                .nodes()
-                .iter()
-                .filter(|node| node.id.starts_with(family))
-            {
+            for node in catalog.nodes().iter().filter(|node| {
+                node.category == ResearchCategory::RecipeResource && node.id.starts_with(family)
+            }) {
                 assert!(!node.is_future_content(), "{} remained FUTURE", node.id);
                 activated += 1;
             }
         }
         assert_eq!(activated, 42);
+    }
+
+    #[test]
+    fn every_subsistence_frontier_family_stage_has_an_observable_runtime_consumer() {
+        let catalog = research_catalog();
+        let mut activated = 0;
+        for family in [
+            "hunting_",
+            "foraging_",
+            "waterworks_",
+            "animal_husbandry_",
+            "field_craft_",
+            "expedition_supplies_",
+        ] {
+            for node in catalog.nodes().iter().filter(|node| {
+                node.category == ResearchCategory::RecipeResource && node.id.starts_with(family)
+            }) {
+                assert!(!node.is_future_content(), "{} remained FUTURE", node.id);
+                match &node.payloads[0] {
+                    ResearchPayload::UnlockRecipe { .. } => {
+                        assert!(node.description.contains("one exact"), "{}", node.id);
+                        assert!(
+                            node.description.contains("ordinary equipment")
+                                && node.description.contains("ordinary trade"),
+                            "{}",
+                            node.id
+                        );
+                    }
+                    ResearchPayload::UnlockResource { .. } => {
+                        assert!(
+                            node.description.contains("finite input")
+                                || node.description.contains("maximum durability")
+                                || node.description.contains("physical recipe cycles")
+                                || node.description.contains("storehouse headroom"),
+                            "{}",
+                            node.id
+                        );
+                    }
+                    payload => panic!("{} has unexpected payload {payload:?}", node.id),
+                }
+                activated += 1;
+            }
+        }
+        assert_eq!(activated, 50);
+        assert_eq!(
+            catalog.get("hunting_preparation").unwrap().leader_priority,
+            601
+        );
+        assert_eq!(catalog.get("hunting_staples").unwrap().leader_priority, 602);
+        for id in [
+            "hunting_sources",
+            "foraging_sources",
+            "waterworks_sources",
+            "animal_husbandry_sources",
+            "field_craft_sources",
+            "expedition_supplies_sources",
+        ] {
+            assert!(
+                catalog.get(id).unwrap().leader_priority >= 1_200,
+                "{id} should not displace the established autonomous research order"
+            );
+        }
+
+        for recipe_id in crate::station_recipes::SUBSISTENCE_FRONTIER_RECIPE_IDS {
+            let expected_study = match *recipe_id {
+                crate::station_recipes::BONE_TRINKET_RECIPE_ID => "hunting_preparation",
+                crate::station_recipes::BONE_TOY_RECIPE_ID => "hunting_staples",
+                generated => generated,
+            };
+            assert_eq!(
+                catalog
+                    .recipe_unlock_study(recipe_id)
+                    .map(|node| node.id.as_str()),
+                Some(expected_study),
+                "{recipe_id} entitlement"
+            );
+        }
     }
 
     #[test]
