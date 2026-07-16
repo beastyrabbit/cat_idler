@@ -9,43 +9,51 @@ use std::collections::{BTreeSet, HashSet};
 
 use cat_protocol as proto;
 use cat_sim::{
-    actions::{ActionCtx, apply_action, build_snapshot},
+    actions::{ActionCtx, advance_village_trade_caravans, apply_action, build_snapshot},
     entities::{CatActivity, MapType, Position},
-    items::{Item, ItemKind, ItemStore, Material},
+    items::{Item, ItemKind, ItemLocation, ItemStore, Material},
     officers::OfficerRole,
+    stockpiles::{self, ResourceKind, Stockpile},
     terrain_gen::tile_climate_biome,
     trader::{self, TraderState},
+    transport::{Dock, TransportMode, Vehicle},
     types::{BuildingType, JobKind, TileType},
     upgrade_tree::{self, UPGRADE_NODES},
     world_tick::{
         BuildingRuntime, ElectionKind, EventKind, RaidPhase, RaiderRuntime, TilePos, TraderRuntime,
         WorldState, building_is_road_connected_to_shrine, can_plan_building_at,
         default_production_queue, found_colony, new_world, publish_colony_spatial,
-        road_path_attaches_to_shrine, road_placement_error, stockpile_placement_error,
-        tile_is_occupied, world_tick,
+        reconcile_colony_stockpiles, road_path_attaches_to_shrine, road_placement_error,
+        stockpile_placement_error, tile_is_occupied, world_tick,
     },
     zones::ZoneRect,
 };
 
-const EXPECTED_ACTIONS: [&str; 41] = [
+const EXPECTED_ACTIONS: [&str; 51] = [
     "advance_time",
     "assign_officer",
     "assign_worker",
     "boost",
     "boost_cat",
+    "build_dock",
     "build_road",
+    "build_transport_vehicle",
     "buy_resource",
     "cast_vote",
     "clear_farm",
     "create_zone",
+    "create_transport_route",
+    "cancel_transport_route",
     "defend_raid",
     "designate_farm",
     "designate_gather_spot",
     "designate_fishing_spot",
+    "designate_rail",
     "designate_stockpile",
     "dispatch_scout",
     "edit_production_queue",
     "edit_production_work_slot",
+    "equip_item",
     "ensure",
     "found_village",
     "haul_gather_spot",
@@ -69,6 +77,10 @@ const EXPECTED_ACTIONS: [&str; 41] = [
     "unlock_node",
     "offer_materials",
     "offer_tithe",
+    "offer_village_trade",
+    "accept_village_trade",
+    "cancel_village_trade",
+    "unequip_item",
 ];
 
 fn action_name(action: &proto::ClientAction) -> &'static str {
@@ -221,6 +233,559 @@ fn open_stockpile_rect(world: &WorldState, require_claimed: bool, edge: i32) -> 
             stockpile_placement_error(colony, *rect, world.world_seed, require_claimed).is_none()
         })
         .expect("campaign map has a valid stockpile footprint")
+}
+
+fn signed_action_fields() -> (String, String, String) {
+    (
+        "campaign-session".to_owned(),
+        "Playtester".to_owned(),
+        "ignored-by-pure-sim".to_owned(),
+    )
+}
+
+fn campaign_tile_has_water(tile: Option<&cat_sim::world_tick::WorldTileRuntime>) -> bool {
+    tile.is_some_and(|tile| tile.resources.water > 0 || tile.tile_type == TileType::River)
+}
+
+/// Exercise the post-P19 public controls in one longitudinal state. The campaign
+/// observes its generated map to choose legal rail/dock sites, validates both
+/// matching route kinds, and watches the inter-village caravan to completion
+/// rather than relying on a hard-coded completion time.
+fn exercise_transport_trade_and_equipment(
+    world: &mut WorldState,
+    coverage: &mut BTreeSet<&'static str>,
+    tool_id: &str,
+) {
+    reset_workers(world);
+    let cat_id = world.colonies[0].cats[0].id.clone();
+    let (session_id, nickname, sig) = signed_action_fields();
+    apply_ok(
+        world,
+        coverage,
+        proto::ClientAction::EquipItem {
+            session_id,
+            nickname,
+            sig,
+            cat_id: cat_id.clone(),
+            item_id: tool_id.to_owned(),
+        },
+        &ctx(8_510),
+    );
+    assert_eq!(
+        world.colonies[0].items.instance(tool_id).unwrap().location,
+        ItemLocation::Equipped {
+            cat_id: cat_id.clone()
+        }
+    );
+    let (session_id, nickname, sig) = signed_action_fields();
+    apply_ok(
+        world,
+        coverage,
+        proto::ClientAction::UnequipItem {
+            session_id,
+            nickname,
+            sig,
+            cat_id: cat_id.clone(),
+            item_id: tool_id.to_owned(),
+        },
+        &ctx(8_520),
+    );
+    assert!(matches!(
+        world.colonies[0].items.instance(tool_id).unwrap().location,
+        ItemLocation::Stockpile { .. }
+    ));
+
+    for node in ["rail", "shipping"] {
+        if !world.colonies[0]
+            .upgrade_tree
+            .owned_node_ids
+            .iter()
+            .any(|owned| owned == node)
+        {
+            world.colonies[0]
+                .upgrade_tree
+                .owned_node_ids
+                .push(node.to_owned());
+        }
+    }
+    let world_seed = world.world_seed;
+    let dry_pair = world.colonies[0]
+        .world_tiles
+        .keys()
+        .copied()
+        .find_map(|left| {
+            let right = TilePos {
+                x: left.x + 1,
+                y: left.y,
+            };
+            (world.colonies[0].world_tiles.contains_key(&right)
+                && world.colonies[0].revealed_tiles.contains(&left)
+                && world.colonies[0].revealed_tiles.contains(&right)
+                && !campaign_tile_has_water(world.colonies[0].world_tiles.get(&left))
+                && !campaign_tile_has_water(world.colonies[0].world_tiles.get(&right))
+                && road_placement_error(&world.colonies[0], left, world_seed).is_none()
+                && road_placement_error(&world.colonies[0], right, world_seed).is_none())
+            .then_some((left, right))
+        })
+        .expect("revealed campaign map has a legal two-tile rail alignment");
+    let dock_pair = world.colonies[0]
+        .world_tiles
+        .keys()
+        .copied()
+        .find_map(|land| {
+            [(-1, 0), (1, 0), (0, -1), (0, 1)]
+                .into_iter()
+                .map(|(dx, dy)| TilePos {
+                    x: land.x + dx,
+                    y: land.y + dy,
+                })
+                .find(|water| {
+                    world.colonies[0].revealed_tiles.contains(&land)
+                        && world.colonies[0].revealed_tiles.contains(water)
+                        && !campaign_tile_has_water(world.colonies[0].world_tiles.get(&land))
+                        && campaign_tile_has_water(world.colonies[0].world_tiles.get(water))
+                })
+                .map(|water| (land, water))
+        })
+        .expect("revealed campaign map has a dry bank beside water");
+
+    let supply_pile = world.colonies[0]
+        .stockpiles
+        .iter_mut()
+        .find(|pile| !pile.is_station_local())
+        .expect("founding village has physical storage");
+    supply_pile.contents.metal += 100.0;
+    supply_pile.contents.lumber += 100.0;
+    supply_pile.contents.blocks += 100.0;
+    world.colonies[0].resources.metal += 100.0;
+    world.colonies[0].resources.lumber += 100.0;
+    world.colonies[0].resources.blocks += 100.0;
+    let builders = world.colonies[0]
+        .cats
+        .iter()
+        .take(5)
+        .map(|cat| cat.id.clone())
+        .collect::<Vec<_>>();
+
+    let (session_id, nickname, sig) = signed_action_fields();
+    apply_ok(
+        world,
+        coverage,
+        proto::ClientAction::DesignateRail {
+            session_id,
+            nickname,
+            sig,
+            a: proto::TilePoint {
+                x: dry_pair.0.x,
+                y: dry_pair.0.y,
+            },
+            b: proto::TilePoint {
+                x: dry_pair.1.x,
+                y: dry_pair.1.y,
+            },
+            cat_id: builders[0].clone(),
+        },
+        &ctx(8_530),
+    );
+    let (session_id, nickname, sig) = signed_action_fields();
+    apply_ok(
+        world,
+        coverage,
+        proto::ClientAction::BuildDock {
+            session_id,
+            nickname,
+            sig,
+            land: proto::TilePoint {
+                x: dock_pair.0.x,
+                y: dock_pair.0.y,
+            },
+            water: proto::TilePoint {
+                x: dock_pair.1.x,
+                y: dock_pair.1.y,
+            },
+            cat_id: builders[1].clone(),
+        },
+        &ctx(8_540),
+    );
+
+    // Finish-independent route coverage: install a second already-constructed
+    // two-tile alignment and wagon, then author and cancel a real finite route.
+    world.colonies[0]
+        .transport
+        .track_tiles
+        .extend([dry_pair.0, dry_pair.1]);
+    let (session_id, nickname, sig) = signed_action_fields();
+    apply_ok(
+        world,
+        coverage,
+        proto::ClientAction::BuildTransportVehicle {
+            session_id,
+            nickname,
+            sig,
+            mode: proto::TransportMode::Rail,
+            home: proto::TilePoint {
+                x: dry_pair.0.x,
+                y: dry_pair.0.y,
+            },
+            cat_id: builders[2].clone(),
+        },
+        &ctx(8_550),
+    );
+    world.colonies[0].transport.vehicles.insert(
+        "campaign-wagon".to_owned(),
+        Vehicle {
+            id: "campaign-wagon".to_owned(),
+            mode: TransportMode::Rail,
+            home: dry_pair.0,
+            assigned_route_id: None,
+        },
+    );
+    world.colonies[0].stockpiles.extend([
+        Stockpile {
+            id: "campaign-rail-source".to_owned(),
+            rect: ZoneRect {
+                x1: dry_pair.0.x,
+                y1: dry_pair.0.y,
+                x2: dry_pair.0.x,
+                y2: dry_pair.0.y,
+            },
+            accepts: [ResourceKind::Food].into_iter().collect(),
+            contents: cat_sim::entities::Resources {
+                food: 4.0,
+                ..Default::default()
+            },
+        },
+        Stockpile {
+            id: "campaign-rail-destination".to_owned(),
+            rect: ZoneRect {
+                x1: dry_pair.1.x,
+                y1: dry_pair.1.y,
+                x2: dry_pair.1.x,
+                y2: dry_pair.1.y,
+            },
+            accepts: [ResourceKind::Food].into_iter().collect(),
+            contents: Default::default(),
+        },
+    ]);
+    reconcile_colony_stockpiles(&mut world.colonies[0]);
+    let (session_id, nickname, sig) = signed_action_fields();
+    apply_ok(
+        world,
+        coverage,
+        proto::ClientAction::CreateTransportRoute {
+            session_id,
+            nickname,
+            sig,
+            mode: proto::TransportMode::Rail,
+            source_stockpile_id: "campaign-rail-source".to_owned(),
+            destination_stockpile_id: "campaign-rail-destination".to_owned(),
+            resource: proto::ResourceKind::Food,
+            amount: 2.0,
+            path: [dry_pair.0, dry_pair.1]
+                .into_iter()
+                .map(|tile| proto::TilePoint {
+                    x: tile.x,
+                    y: tile.y,
+                })
+                .collect(),
+            cat_id: builders[3].clone(),
+            repeat: false,
+        },
+        &ctx(8_560),
+    );
+    let route_id = world.colonies[0]
+        .transport
+        .routes
+        .keys()
+        .next()
+        .expect("public transport action creates a route")
+        .clone();
+    let (session_id, nickname, sig) = signed_action_fields();
+    apply_ok(
+        world,
+        coverage,
+        proto::ClientAction::CancelTransportRoute {
+            session_id,
+            nickname,
+            sig,
+            route_id,
+        },
+        &ctx(8_570),
+    );
+
+    // Reuse the now-cancelled two-tile fixture as a constructed water lane. This
+    // checks that the same public route action accepts Shipping only when both
+    // endpoint docks, the whole water path, a vessel, storage, and living crew exist.
+    for tile in [dry_pair.0, dry_pair.1] {
+        let runtime = world.colonies[0]
+            .world_tiles
+            .get_mut(&tile)
+            .expect("campaign transport tile remains loaded");
+        runtime.tile_type = TileType::River;
+        runtime.resources.water = 1;
+    }
+    publish_colony_spatial(&mut world.shared_spatial, &world.colonies[0]);
+    let ship_land_a = TilePos {
+        x: dry_pair.0.x,
+        y: dry_pair.0.y + 1,
+    };
+    let ship_land_b = TilePos {
+        x: dry_pair.1.x,
+        y: dry_pair.1.y + 1,
+    };
+    world.colonies[0].transport.docks.extend([
+        (
+            "campaign-dock-a".to_owned(),
+            Dock {
+                id: "campaign-dock-a".to_owned(),
+                land_tile: ship_land_a,
+                water_tile: dry_pair.0,
+            },
+        ),
+        (
+            "campaign-dock-b".to_owned(),
+            Dock {
+                id: "campaign-dock-b".to_owned(),
+                land_tile: ship_land_b,
+                water_tile: dry_pair.1,
+            },
+        ),
+    ]);
+    world.colonies[0].transport.vehicles.insert(
+        "campaign-vessel".to_owned(),
+        Vehicle {
+            id: "campaign-vessel".to_owned(),
+            mode: TransportMode::Shipping,
+            home: dry_pair.0,
+            assigned_route_id: None,
+        },
+    );
+    world.colonies[0].stockpiles.extend([
+        Stockpile {
+            id: "campaign-ship-source".to_owned(),
+            rect: ZoneRect {
+                x1: ship_land_a.x,
+                y1: ship_land_a.y,
+                x2: ship_land_a.x,
+                y2: ship_land_a.y,
+            },
+            accepts: [ResourceKind::Food].into_iter().collect(),
+            contents: cat_sim::entities::Resources {
+                food: 3.0,
+                ..Default::default()
+            },
+        },
+        Stockpile {
+            id: "campaign-ship-destination".to_owned(),
+            rect: ZoneRect {
+                x1: ship_land_b.x,
+                y1: ship_land_b.y,
+                x2: ship_land_b.x,
+                y2: ship_land_b.y,
+            },
+            accepts: [ResourceKind::Food].into_iter().collect(),
+            contents: Default::default(),
+        },
+    ]);
+    world.colonies[0].resources.food += 3.0;
+    reconcile_colony_stockpiles(&mut world.colonies[0]);
+    let (session_id, nickname, sig) = signed_action_fields();
+    apply_ok(
+        world,
+        coverage,
+        proto::ClientAction::CreateTransportRoute {
+            session_id,
+            nickname,
+            sig,
+            mode: proto::TransportMode::Shipping,
+            source_stockpile_id: "campaign-ship-source".to_owned(),
+            destination_stockpile_id: "campaign-ship-destination".to_owned(),
+            resource: proto::ResourceKind::Food,
+            amount: 2.0,
+            path: [dry_pair.0, dry_pair.1]
+                .into_iter()
+                .map(|tile| proto::TilePoint {
+                    x: tile.x,
+                    y: tile.y,
+                })
+                .collect(),
+            cat_id: builders[4].clone(),
+            repeat: false,
+        },
+        &ctx(8_575),
+    );
+    let shipping_route_id = world.colonies[0]
+        .transport
+        .routes
+        .values()
+        .find(|route| {
+            route.mode == TransportMode::Shipping
+                && !matches!(route.phase, cat_sim::transport::RoutePhase::Cancelled)
+        })
+        .expect("constructed shipping lane accepts a public route")
+        .id
+        .clone();
+    let (session_id, nickname, sig) = signed_action_fields();
+    apply_ok(
+        world,
+        coverage,
+        proto::ClientAction::CancelTransportRoute {
+            session_id,
+            nickname,
+            sig,
+            route_id: shipping_route_id,
+        },
+        &ctx(8_579),
+    );
+
+    // The two villages were founded by the same stable player during this
+    // campaign. Make their returned-scout contact explicit, then offer, withdraw,
+    // re-offer, accept, and observe exact cargo until the physical actor returns.
+    let first_id = world.colonies[0].id.clone();
+    let second_id = world.colonies[1].id.clone();
+    world.colonies[0]
+        .known_village_ids
+        .insert(second_id.clone());
+    world.colonies[1].known_village_ids.insert(first_id.clone());
+    world.colonies[0].stockpiles.push(Stockpile {
+        id: "campaign-trade-materials".to_owned(),
+        rect: ZoneRect {
+            x1: dry_pair.0.x,
+            y1: dry_pair.0.y + 2,
+            x2: dry_pair.0.x,
+            y2: dry_pair.0.y + 2,
+        },
+        accepts: [ResourceKind::Materials].into_iter().collect(),
+        contents: Default::default(),
+    });
+    world.colonies[1].stockpiles.push(Stockpile {
+        id: "campaign-trade-food".to_owned(),
+        rect: ZoneRect {
+            x1: 1,
+            y1: 1,
+            x2: 1,
+            y2: 1,
+        },
+        accepts: [ResourceKind::Food].into_iter().collect(),
+        contents: Default::default(),
+    });
+    for colony in &mut world.colonies {
+        for pile in colony
+            .stockpiles
+            .iter_mut()
+            .filter(|pile| !pile.is_station_local())
+        {
+            pile.contents.food = 0.0;
+            pile.contents.materials = 0.0;
+        }
+        colony.resources.food = 0.0;
+        colony.resources.materials = 0.0;
+    }
+    for (index, kind, amount) in [
+        (0, ResourceKind::Food, 12.0),
+        (1, ResourceKind::Materials, 6.0),
+    ] {
+        let pile = world.colonies[index]
+            .stockpiles
+            .iter_mut()
+            .find(|pile| !pile.is_station_local())
+            .expect("village trade has a physical source pile");
+        stockpiles::add_resource(&mut pile.contents, kind, amount);
+        stockpiles::add_resource(&mut world.colonies[index].resources, kind, amount);
+        reconcile_colony_stockpiles(&mut world.colonies[index]);
+    }
+    let offer_action = || {
+        let (session_id, nickname, sig) = signed_action_fields();
+        proto::ClientAction::OfferVillageTrade {
+            session_id,
+            nickname,
+            sig,
+            target_colony_id: second_id.clone(),
+            offered_kind: proto::ResourceKind::Food,
+            offered_amount: 5.0,
+            requested_kind: proto::ResourceKind::Materials,
+            requested_amount: 3.0,
+        }
+    };
+    let first_materials_before = world.colonies[0].resources.materials;
+    let second_food_before = world.colonies[1].resources.food;
+    apply_ok(world, coverage, offer_action(), &ctx(8_580));
+    let first_offer = world.colonies[0]
+        .village_trade_offers
+        .keys()
+        .next()
+        .expect("open offer")
+        .clone();
+    let (session_id, nickname, sig) = signed_action_fields();
+    apply_ok(
+        world,
+        coverage,
+        proto::ClientAction::CancelVillageTrade {
+            session_id,
+            nickname,
+            sig,
+            offer_id: first_offer,
+        },
+        &ctx(8_590),
+    );
+    apply_ok(world, coverage, offer_action(), &ctx(8_600));
+    let accepted_offer = world.colonies[0]
+        .village_trade_offers
+        .keys()
+        .next()
+        .expect("replacement offer")
+        .clone();
+    let mut target_ctx = ctx(8_610);
+    target_ctx.colony_id = second_id;
+    let (session_id, nickname, sig) = signed_action_fields();
+    apply_ok(
+        world,
+        coverage,
+        proto::ClientAction::AcceptVillageTrade {
+            session_id,
+            nickname,
+            sig,
+            offer_id: accepted_offer,
+        },
+        &target_ctx,
+    );
+    let food_after_escrow = world.colonies[0].resources.food;
+    let materials_after_escrow = world.colonies[1].resources.materials;
+    let route_distance = world.colonies[0]
+        .anchor
+        .x
+        .abs_diff(world.colonies[1].anchor.x)
+        + world.colonies[0]
+            .anchor
+            .y
+            .abs_diff(world.colonies[1].anchor.y);
+    let max_observed_seconds = usize::try_from(route_distance)
+        .expect("village distance fits usize")
+        .saturating_mul(3)
+        .saturating_add(120);
+    let mut now = 9_610;
+    for _ in 0..max_observed_seconds {
+        if world.colonies[0].village_trade_caravans.is_empty() {
+            break;
+        }
+        now += 1_000;
+        advance_village_trade_caravans(world, now);
+    }
+    assert!(
+        world.colonies[0].village_trade_caravans.is_empty(),
+        "the observed exact caravan never completed across {route_distance} tiles: {:?}",
+        world.colonies[0].village_trade_caravans
+    );
+    assert_eq!(world.colonies[0].resources.food, food_after_escrow);
+    assert_eq!(
+        world.colonies[0].resources.materials,
+        first_materials_before + 3.0
+    );
+    assert_eq!(world.colonies[1].resources.food, second_food_before + 5.0);
+    assert_eq!(
+        world.colonies[1].resources.materials,
+        materials_after_escrow
+    );
 }
 
 fn run_action_campaign() -> WorldState {
@@ -1436,6 +2001,8 @@ fn run_action_campaign() -> WorldState {
             .is_pristine()
     );
     assert_eq!(world.colonies[0].resources.planks, planks_before_repair);
+
+    exercise_transport_trade_and_equipment(&mut world, &mut coverage, &tool_id);
 
     let expected: BTreeSet<&str> = EXPECTED_ACTIONS.into_iter().collect();
     assert_eq!(coverage, expected, "the campaign missed an action variant");

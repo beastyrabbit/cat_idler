@@ -14,6 +14,39 @@ and any changed Bevy visuals have been verified.
 
 ## Verified fixes
 
+## 2026-07-16 — Whole-game signed action campaign covers post-P19 controls
+
+**Problem:** The deterministic `player_action_campaign` claimed to exercise every public
+`ClientAction`, but its expected set stopped at 41 pre-transport actions. Ten subsequently shipped
+paths were present in the protocol and client yet absent from that longitudinal gate: Rail
+designation, Dock construction, transport-vehicle construction, route creation/cancellation,
+village-trade offer/accept/cancel, and exact equipment equip/unequip. A regression across one of
+those feature boundaries could therefore keep the “every action” campaign green.
+
+**Fix:** The same deterministic campaign now covers all 51 action variants. It observes generated
+terrain to select legal dry rail and land/water dock sites, uses signed construction actions,
+authors both a constructed-track Rail route and a dock-to-dock Shipping route, and cancels each
+through the public boundary. It equips and unequips the repaired finite Tool without changing its
+identity. Its fresh global plus owner-personal villages establish explicit mutual contact (the
+separate fog campaign owns physical shrine-return provenance), withdraw one offer, accept a
+replacement, and then advance the exact escrow caravan at one-second cadence until its observed
+round trip completes. The bound derives from the actual
+generated distance rather than a scripted completion timestamp; final resource deltas and
+byte-identical replay are asserted.
+
+**Evidence:** The focused campaign passes twice within its own determinism assertion. The broader
+player-guided matrix also covers three-seed manual survival, fog/shrine return, house/farm/building
+placement, officer handoff, research purchase and staffed accrual, physical processor queues,
+finite equipment/repair/trader controls, authored roads, Rail/Shipping cargo state machines, and
+the signed two-player server founding/contact/exact-caravan path. Passive controls for seeds 7,
+555, and 2024 run at the production one-second cadence as byte-identical four-game-hour twins,
+growing fog from 289 to 459, 327, and 425 tiles respectively with three shrine deliveries each;
+the seed-7 48-hour visible pass additionally held 15 cats with no death or reset while survival,
+scouting, and raid work remained active. The final simulation gate passes all 1,306 tests (one
+intentional skip), the authenticated server contact/trade test passes, and strict
+Clippy/formatting/diff checks are clean. Exact commands are recorded in
+`docs/IMPLEMENTATION_AUDIT.md`.
+
 ## 2026-07-15 — Finite fine-biome Gem, Clay, and Sand sources
 
 **Problem:** Climate named rare minerals, wet earth, and sand, but runtime world tiles could not

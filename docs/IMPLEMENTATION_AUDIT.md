@@ -25,7 +25,7 @@ Status key: `open`, `in progress`, `verified`, `deferred`.
 | Client reliability | Failed actions are visible and closed/error sockets reconnect with capped backoff. | verified | Focused action/reconnect tests and connected own-framebuffer smoke |
 | Infinite map | Terrain/fog stream as a bounded camera-centered chunk cache. | verified | Normal and 80-tile-distant framebuffers plus loaded-chunk assertion |
 | Officers/manual play | Steward, Accountant, Forester, Farmer, Captain, Loremaster, and Cloth Leader each own one specialist automation category. Beyond the founding Leader's bounded hunt/water/scout safety floor, a vacancy is manual-only; appointment requires the matching researched unlock and completed role station. Ownership and replacement persist, and the client exposes signed appointment/vacate and maintained manual-order paths. | verified | Seven-role vacancy matrix, staged 7→0 manual-frequency handoff, independent building/unlock denials, dead-holder succession, signed server isolation/authentication, client action tests, and deterministic guided campaigns |
-| Manual controls | Every currently modeled management path has a signed client control: farm/gather/road painting, exact construction, staffing, clear/remove, governance, raw resources, expansion, defense/training, ritual/shrine, hauling, research, durable per-cat typed labor preferences, and all ten physical processors' add/remove/reorder/repeat/pause queues. Preferences bias eligible matching without bypassing survival, liveness, busy, station, unlock, or officer gates. | verified | Deterministic guided actions, foreign-village denial, HMAC/SQLite restart, death durability, queue conservation/no-early-credit, exact placement/governance, exhaustive action coverage, current four-crate tests, and strict four-crate Clippy |
+| Manual controls | Every currently modeled management path has a signed client control: farm/gather/road painting, exact construction, staffing, clear/remove, governance, raw resources, expansion, defense/training, ritual/shrine, hauling, research, durable per-cat typed labor preferences, and all ten physical processors' add/remove/reorder/repeat/pause queues. Preferences bias eligible matching without bypassing survival, liveness, busy, station, unlock, or officer gates. | verified | The deterministic longitudinal gate now covers all 51 public action variants, including exact equip/unequip, village caravan offer/accept/cancel, and constructed Rail/Shipping controls; foreign-village denial, HMAC/SQLite restart, death durability, queue conservation/no-early-credit, exact placement/governance, current four-crate tests, and strict four-crate Clippy also pass |
 | Election schedule visibility | Automatic term elections remain authoritative in `cat-sim`; between open elections, the snapshot exposes the resolved term start, next election boundary, scaled term length, and nonnegative server-derived remaining time. The governance panel shows that countdown rather than implying that no election means no schedule. | verified | Exact boundary/overdue timing, acceleration scaling, deterministic snapshot projection, legacy SQLite backfill, persistence round trip, open-election display precedence, protocol compatibility, client text/layout tests, and accepted full-frame native governance capture |
 | Manual raid defense | Each `DefendRaid` action applies exactly one `DEFEND_CLICK_DAMAGE`; the following tick performs terminal cleanup without replaying click telemetry or producing duplicate events. | verified | Per-click health assertions, killing-click cleanup on the next tick, exactly one repelled event, and guided multi-seed manual campaign |
 | Spatial placement | Player and leader placement validates and commits atomically across terrain, claims, buildings, roads, stockpiles, gather spots, queued footprints, rendered 2×3 tree canopies, and 1×1 rocks. Buildings and trees are exact soft obstacles; water, mountains, and walls remain hard obstacles. | verified | Atomic placement/reservation campaigns, climate-decoration source parity, multi-cell footprint collision tests, soft-obstacle path tests, and clear-interior framebuffer |
@@ -148,6 +148,53 @@ This section is required completion coverage, not a claim that every listed camp
 - Invalid authentication, malformed actions, rate limiting, restart equality, and test-control denial.
 
 ## Playtest evidence
+
+### Whole-game passive/control and player-guided matrix — 2026-07-16
+
+The public-action campaign previously described itself as exhaustive while its expected list
+silently omitted ten post-P19 variants. It now performs and asserts all 51 `ClientAction` variants
+in one byte-identical longitudinal replay. The added player journey chooses legal rail and bank
+sites from observed generated terrain, submits signed Rail/Dock/vehicle projects, creates
+constructed Rail and Shipping routes, equips/unequips one exact repaired Tool, and drives an
+accepted exact village barter at one-second cadence until the visible caravan returns. Its timeout
+is derived from actual village distance. A separate authenticated two-player server campaign owns
+the real personal-village founding, shrine-delivery contact, summary privacy, exact escrow, and
+arrival path; the fog campaign below owns provisional-notebook and physical shrine-return truth.
+
+This is deliberately combined with, not substituted for, the behavior-oriented campaigns:
+seeds 7, 555, and 2024 receive observed-state manual survival orders at a one-second worker cadence,
+then exercise Research Hut purchase/staffing/accrual, housing and field/building placement, seven
+officer handoffs, physical station queues, exact equipment/repair/trader actions, and authored-road
+work. The signed farming/forestry/processing campaign repeats on three seeds. Rail and Shipping
+state-machine campaigns prove finite load/travel/unload/return, while the new action sweep proves
+those systems remain reachable through the public player boundary.
+
+For the no-input control, seeds 7, 555, and 2024 each ran four game-hours at the exact 1,000 ms
+production cadence followed by a silent byte-identical repeat. All retained 15 living cats with
+zero deaths/resets while Leader survival, water, and scouting work stayed active; permanent fog
+grew 289→459, 289→327, and 289→425 respectively, with three shrine deliveries per seed. A seed-7
+48-game-hour visible pass was also observed hour by hour: population stayed 15, there were no
+deaths or resets, and food/water remained positive at hour 48 while work and a raid were active;
+the expensive silent 48-hour repeat was intentionally replaced by the checked-in long-horizon
+determinism/viability guardrails plus the bounded three-seed live twins above.
+
+The focused guided group passes all 14 cases. The complete simulation gate passes all 1,306 tests
+(one intentional skip), including the long economy, research, fishing, textile, migration,
+passive-control, and deterministic twins. The authenticated two-player server contact/exact-trade
+case passes, as do strict all-target `cat-sim` Clippy, formatting, and diff checks.
+
+Commands:
+
+```text
+for seed in 7 555 2024; do SEED=$seed HOURS=4 CADENCE_MS=1000 cargo run --release -q -p cat-sim --example playtest; done
+cargo nextest run -p cat-sim --test player_action_campaign
+cargo nextest run -p cat-sim --test manual_officer_campaign
+cargo nextest run -p cat-sim --test farming_processing_campaign
+cargo nextest run -p cat-sim
+cargo nextest run -p cat-server two_signed_players_found_discover_and_physically_trade_between_villages
+cargo clippy -p cat-sim --all-targets -- -D warnings
+cargo fmt --all -- --check
+```
 
 ### Shrine-return fog and resource scouting — 2026-07-13
 
