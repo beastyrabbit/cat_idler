@@ -142,8 +142,10 @@ forest animals — these are the closest cohesive fantasy-creature stand-ins, no
 ## Also present (other agents / earlier passes)
 
 - `public/images/game/terrain/`, `nature/` — ground + trees, owned by the ground/terrain agent.
-- `public/images/game/infra/` (11 files) — soil/palisade/gate/bridge/road sprites from the Base
-  sheet. The client renders both authored stone roads and live traffic-formed dirt paths.
+- `public/images/game/infra/` (12 files) — soil/palisade/gate/bridge/road sprites from the Base
+  sheet. The six road cells have verified edge semantics (lone, horizontal, vertical, north-east
+  corner, north-east-west T, cross); the client rotates them across all 16 neighbour masks for
+  authored stone roads, live traffic-formed dirt paths, and tracks.
 
 ## Files written / current in each dir
 

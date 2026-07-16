@@ -6,8 +6,8 @@ runtime building grammar lives in `crates/cat-client/src/station_layout.rs`.
 
 ## The load-bearing constraint
 
-Colonists use `public/images/cats/cat-sheet.png` — `32x64` cells, eight direction groups,
-four walk frames — and the world uses readable pixel art around them. The existing cat and
+Colonists use `public/images/cats/cat-sheet.png` — `32x32` cells, eight direction groups,
+four walk frames across the live first row — and the world uses readable pixel art around them. The existing cat and
 raider sheets are accepted project assets; replacing them is not a maintained release task.
 
 That single fact resolves the cross-slice tie: the buildings agent's beautiful
@@ -27,7 +27,7 @@ buildings agent pre-conceded "use the 16px set if the ground agent picks 16px ro
 | Open stations | **Roguelike Base + tracked interior props** | repeated 16px floor cells + typed props | `public/images/game/{interior,props,farm}/` |
 | Farm plots + crop growth stages | **Pixel Platformer Farm Expansion** | 18px → downscale to 16 | `Pixel Platformer Farm Expansion/Tiles/` |
 | Enemies / critters / raiders | **Roguelike Dungeon + Characters Packs** | 16px, same style as Base | `Roguelike Dungeon Pack/`, `Roguelike Characters Pack/` |
-| Cats / colonists | **cat-sheet.png** + hats | 32×64 walk sheet, 32×32 hats | already tracked in `public/images/cats/` |
+| Cats / colonists | **cat-sheet.png** + hats | 32×32 walk cells, 32×32 hats | already tracked in `public/images/cats/` |
 | HUD / UI / resource icons | **Board Game Icons** + **UI Pack – Adventure** + **Fish Pack** | vector, recolorable | `Icons/Board Game Icons`, `UI assets/UI Pack - Adventure`, `2D assets/Fish Pack` |
 
 **Why not one single pack:** the world is a blend of two Kenney **16px pixel** packs, which
@@ -105,8 +105,8 @@ simultaneous cargo overlays are framebuffer-verified.
 ## Source mapping
 
 - Terrain, buildings, enemies, icons, and UI come from the selected Kenney packs.
-- `cat-sheet.png` and `raider-sheet.png` share the `32x64`, eight-direction, four-frame runtime
-  atlas contract documented in `cats.md`.
+- `cat-sheet.png` and `raider-sheet.png` share the `32x32`, eight-direction, four-frame first-row
+  runtime atlas contract documented in `cats.md`; their second PNG row is not rendered as another body.
 
 ## Copy convention
 

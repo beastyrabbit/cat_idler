@@ -8,8 +8,9 @@ truth.
 
 - Colonists use `public/images/cats/cat-sheet.png`.
 - Rival-cat raiders use `public/images/cats/raider-sheet.png`.
-- Both sheets are `1024x64`: eight direction groups, four walk frames per group, and `32x64`
-  atlas cells. Direction order is S, SW, W, NW, N, NE, E, SE.
+- Both sheets are `1024x64`: `32x32` atlas cells in 32 columns and two rows. The live first row
+  contains eight direction groups with four walk frames per group; the second source row is not
+  part of the current animation contract. Direction order is S, SW, W, NW, N, NE, E, SE.
 - The client keeps each body entity across snapshots, interpolates toward the latest tile, and
   selects the facing group from movement. Idle cats use frame zero.
 - The existing sheets are accepted project art for the current top-down game. Replacing them is

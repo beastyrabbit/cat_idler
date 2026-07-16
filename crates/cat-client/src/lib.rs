@@ -1148,7 +1148,10 @@ const PALISADE_ASSET_PATH: &str = "public/images/game/infra/palisade_topdown.png
 struct InfraArt {
     palisade: Handle<Image>,
     gate: Handle<Image>,
+    road_lone: Handle<Image>,
     road_cross: Handle<Image>,
+    road_corner: Handle<Image>,
+    road_t: Handle<Image>,
     road_h: Handle<Image>,
     road_v: Handle<Image>,
 }
@@ -1161,7 +1164,10 @@ impl InfraArt {
             // stripe at the simulation's square wall-cell size.
             palisade: assets.load(PALISADE_ASSET_PATH),
             gate: assets.load("public/images/game/infra/gate_open.png"),
+            road_lone: assets.load("public/images/game/infra/road_lone.png"),
             road_cross: assets.load("public/images/game/infra/road_cross.png"),
+            road_corner: assets.load("public/images/game/infra/road_corner.png"),
+            road_t: assets.load("public/images/game/infra/road_t.png"),
             road_h: assets.load("public/images/game/infra/road_straight_h.png"),
             road_v: assets.load("public/images/game/infra/road_straight_v.png"),
         }
@@ -1169,33 +1175,90 @@ impl InfraArt {
 
     fn road(&self, sprite: RoadSprite) -> Handle<Image> {
         match sprite {
+            RoadSprite::Lone => self.road_lone.clone(),
             RoadSprite::Cross => self.road_cross.clone(),
+            RoadSprite::Corner => self.road_corner.clone(),
+            RoadSprite::Tee => self.road_t.clone(),
             RoadSprite::StraightH => self.road_h.clone(),
             RoadSprite::StraightV => self.road_v.clone(),
         }
     }
 }
 
-/// The oriented road tile to draw, chosen from a tile's road neighbours.
+/// The road autotile texture family. Corner and T cells rotate to cover their
+/// four orientations; straight cells are already authored on both axes.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum RoadSprite {
+    Lone,
     Cross,
+    Corner,
+    Tee,
     StraightH,
     StraightV,
 }
 
-/// Pick a road sprite from which orthogonal neighbours are also road: tiles that
-/// connect on both axes (or stand alone) read as a cross; a single-axis run uses
-/// the matching straight. Covers the blueprint's shrine-to-walls cross cleanly.
-fn road_sprite_kind(n: bool, s: bool, e: bool, w: bool) -> RoadSprite {
-    let vertical = n || s;
-    let horizontal = e || w;
-    match (vertical, horizontal) {
-        (true, false) => RoadSprite::StraightV,
-        (false, true) => RoadSprite::StraightH,
-        // Both axes (the cross centre) or a lone tile default to the cross.
-        _ => RoadSprite::Cross,
+/// A selected road cell and its counter-clockwise quarter-turns. The corner
+/// source faces north+east; the T source faces north+east+west.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct RoadVisual {
+    sprite: RoadSprite,
+    quarter_turns: u8,
+}
+
+impl RoadVisual {
+    const fn new(sprite: RoadSprite, quarter_turns: u8) -> Self {
+        Self {
+            sprite,
+            quarter_turns,
+        }
     }
+
+    fn rotation(self) -> Quat {
+        Quat::from_rotation_z(std::f32::consts::FRAC_PI_2 * f32::from(self.quarter_turns))
+    }
+}
+
+/// Pick the complete four-neighbour autotile grammar. End cells intentionally
+/// use their axis' straight texture: it reaches the connected edge and avoids
+/// inventing an untracked cap sprite. A lone designation uses the tracked
+/// centre blob from the same source autotile family.
+fn road_visual(n: bool, s: bool, e: bool, w: bool) -> RoadVisual {
+    match (n, s, e, w) {
+        (false, false, false, false) => RoadVisual::new(RoadSprite::Lone, 0),
+
+        // Ends and straight runs.
+        (true, false, false, false) | (false, true, false, false) => {
+            RoadVisual::new(RoadSprite::StraightV, 0)
+        }
+        (false, false, true, false) | (false, false, false, true) => {
+            RoadVisual::new(RoadSprite::StraightH, 0)
+        }
+        (true, true, false, false) => RoadVisual::new(RoadSprite::StraightV, 0),
+        (false, false, true, true) => RoadVisual::new(RoadSprite::StraightH, 0),
+
+        // Base corner is NE. Positive turns are counter-clockwise.
+        (true, false, true, false) => RoadVisual::new(RoadSprite::Corner, 0),
+        (true, false, false, true) => RoadVisual::new(RoadSprite::Corner, 1),
+        (false, true, false, true) => RoadVisual::new(RoadSprite::Corner, 2),
+        (false, true, true, false) => RoadVisual::new(RoadSprite::Corner, 3),
+
+        // Base T is NEW (missing south), then rotates counter-clockwise.
+        (true, false, true, true) => RoadVisual::new(RoadSprite::Tee, 0),
+        (true, true, false, true) => RoadVisual::new(RoadSprite::Tee, 1),
+        (false, true, true, true) => RoadVisual::new(RoadSprite::Tee, 2),
+        (true, true, true, false) => RoadVisual::new(RoadSprite::Tee, 3),
+
+        (true, true, true, true) => RoadVisual::new(RoadSprite::Cross, 0),
+    }
+}
+
+fn road_visual_at(roads: &HashSet<(i32, i32)>, x: i32, y: i32) -> RoadVisual {
+    road_visual(
+        roads.contains(&(x, y - 1)),
+        roads.contains(&(x, y + 1)),
+        roads.contains(&(x + 1, y)),
+        roads.contains(&(x - 1, y)),
+    )
 }
 
 // ============================================================================
@@ -1796,8 +1859,13 @@ fn update_adventure_cursor(
     state.0 = Some(kind);
 }
 
-/// Animated character sheets (cats + raiders) and specialization hats. The
-/// sheets are 8 direction groups x 4 walk frames in 32x64 cells, one row of 32.
+/// Animated character sheets (cats + raiders) and specialization hats. Both
+/// PNGs contain 32 columns by two rows of individual 32x32 bodies. The original
+/// browser renderer used the first row: eight direction groups x four frames.
+const CHARACTER_CELL: UVec2 = UVec2::new(32, 32);
+const CHARACTER_SHEET_COLUMNS: u32 = 32;
+const CHARACTER_SHEET_ROWS: u32 = 2;
+
 #[derive(Resource, Clone)]
 struct SpriteSheets {
     cat: Handle<Image>,
@@ -1813,9 +1881,9 @@ struct SpriteSheets {
 impl SpriteSheets {
     fn load(assets: &AssetServer, layouts: &mut Assets<TextureAtlasLayout>) -> Self {
         let layout = layouts.add(TextureAtlasLayout::from_grid(
-            UVec2::new(32, 64),
-            32,
-            1,
+            CHARACTER_CELL,
+            CHARACTER_SHEET_COLUMNS,
+            CHARACTER_SHEET_ROWS,
             None,
             None,
         ));
@@ -6133,16 +6201,11 @@ fn render_roads(
     let dirt_set: HashSet<(i32, i32)> = colony.dirt_road_tiles.iter().map(|t| (t.x, t.y)).collect();
     let road_set: HashSet<(i32, i32)> = stone_set.union(&dirt_set).copied().collect();
     for &(x, y) in &road_set {
-        let sprite = road_sprite_kind(
-            road_set.contains(&(x, y - 1)),
-            road_set.contains(&(x, y + 1)),
-            road_set.contains(&(x + 1, y)),
-            road_set.contains(&(x - 1, y)),
-        );
+        let visual = road_visual_at(&road_set, x, y);
         let p = grid_to_world(x, y);
         commands.spawn((
             Sprite {
-                image: art.road(sprite),
+                image: art.road(visual.sprite),
                 custom_size: Some(Vec2::splat(TILE)),
                 color: if dirt_set.contains(&(x, y)) {
                     Color::srgb(0.72, 0.40, 0.16)
@@ -6151,7 +6214,7 @@ fn render_roads(
                 },
                 ..default()
             },
-            Transform::from_xyz(p.x, p.y, Z_ROAD),
+            Transform::from_xyz(p.x, p.y, Z_ROAD).with_rotation(visual.rotation()),
             RoadTile,
         ));
     }
@@ -6162,21 +6225,16 @@ fn render_roads(
         .map(|tile| (tile.x, tile.y))
         .collect::<HashSet<_>>();
     for &(x, y) in &track_set {
-        let sprite = road_sprite_kind(
-            track_set.contains(&(x, y - 1)),
-            track_set.contains(&(x, y + 1)),
-            track_set.contains(&(x + 1, y)),
-            track_set.contains(&(x - 1, y)),
-        );
+        let visual = road_visual_at(&track_set, x, y);
         let p = grid_to_world(x, y);
         commands.spawn((
             Sprite {
-                image: art.road(sprite),
+                image: art.road(visual.sprite),
                 custom_size: Some(Vec2::splat(TILE)),
                 color: Color::srgb(0.24, 0.27, 0.30),
                 ..default()
             },
-            Transform::from_xyz(p.x, p.y, Z_ROAD + 0.08),
+            Transform::from_xyz(p.x, p.y, Z_ROAD + 0.08).with_rotation(visual.rotation()),
             RoadTile,
         ));
     }
@@ -7899,9 +7957,9 @@ fn handle_vacate_buttons(
     }
 }
 
-/// Cat sprite size (32x64 cell → 1:2 aspect). Rendered larger than one tile so
-/// cats stay readable + charming at the small tile.
-const CAT_SIZE: Vec2 = Vec2::new(TILE * 1.4, TILE * 2.8);
+/// One 32x32 body cell, rendered larger than a tile so cats stay readable at
+/// the small world-tile scale. The former 1:2 box displayed both sheet rows.
+const CAT_SIZE: Vec2 = Vec2::splat(TILE * 1.4);
 /// Constant walk speed for body movement (world units/sec ≈ 3 tiles/sec) so
 /// cats visibly stride tile-to-tile and never teleport.
 const BODY_WALK_SPEED: f32 = TILE * 3.0;
@@ -7925,13 +7983,17 @@ fn body_base_exact(x: f64, y: f64) -> Vec2 {
 /// Reconcile persistent cat bodies with the snapshot: update each living cat's
 /// glide target + facing (spawning new cats, despawning gone/dead ones), then
 /// rebuild the follow-along overlays (hat / carried item / selection ring).
+#[allow(clippy::type_complexity)]
 fn sync_cats(
     mut commands: Commands,
     latest: Res<LatestSnapshot>,
     selection: Res<Selection>,
     sheets: Option<Res<SpriteSheets>>,
     mut bodies: ResMut<CatBodies>,
-    mut cats: Query<(&Transform, &mut MoveTarget, &mut AnimSprite), With<CatBody>>,
+    mut cats: ParamSet<(
+        Query<(Entity, &CatBody)>,
+        Query<(Entity, &Transform, &mut MoveTarget, &mut AnimSprite), With<CatBody>>,
+    )>,
     overlays: Query<Entity, With<CatOverlay>>,
 ) {
     if !latest.is_changed() && !selection.is_changed() {
@@ -7947,16 +8009,54 @@ fn sync_cats(
         commands.entity(entity).despawn();
     }
 
-    let mut live = HashSet::new();
-    for cat in &colony.cats {
-        if cat.death_time.is_some() {
+    // The ECS is authoritative for which bodies actually exist. Rebuild the
+    // cache every sync, reusing its valid preferred entity when duplicates are
+    // present and removing all orphans. This repairs stale/reset CatBodies maps
+    // instead of spawning a second visible body for the same cat.
+    let live: HashSet<String> = colony
+        .cats
+        .iter()
+        .filter(|cat| cat.death_time.is_none())
+        .map(|cat| cat.id.clone())
+        .collect();
+    let preferred = bodies.0.clone();
+    let mut reconciled = HashMap::new();
+    let valid_entities = cats
+        .p1()
+        .iter()
+        .map(|(entity, _, _, _)| entity)
+        .collect::<HashSet<_>>();
+    for (entity, body) in &cats.p0() {
+        if !live.contains(&body.0) || !valid_entities.contains(&entity) {
+            commands.entity(entity).despawn();
             continue;
         }
-        live.insert(cat.id.clone());
+        match reconciled.entry(body.0.clone()) {
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                slot.insert(entity);
+            }
+            std::collections::hash_map::Entry::Occupied(mut slot) => {
+                if preferred.get(&body.0) == Some(&entity) && *slot.get() != entity {
+                    commands.entity(*slot.get()).despawn();
+                    slot.insert(entity);
+                } else {
+                    commands.entity(entity).despawn();
+                }
+            }
+        }
+    }
+    bodies.0 = reconciled;
+
+    let mut processed = HashSet::new();
+    let mut animated = cats.p1();
+    for cat in &colony.cats {
+        if cat.death_time.is_some() || !processed.insert(cat.id.clone()) {
+            continue;
+        }
         let target = body_base(cat.position.x, cat.position.y);
 
         if let Some(&entity) = bodies.0.get(&cat.id) {
-            if let Ok((transform, mut move_target, mut anim)) = cats.get_mut(entity) {
+            if let Ok((_, transform, mut move_target, mut anim)) = animated.get_mut(entity) {
                 // Face the direction of travel; keep the last facing when idle.
                 if let Some(group) = facing_from_delta(target - transform.translation.truncate()) {
                     anim.group = group;
@@ -8040,15 +8140,7 @@ fn sync_cats(
         }
     }
 
-    // Despawn bodies for cats that died or vanished.
-    bodies.0.retain(|id, entity| {
-        if live.contains(id) {
-            true
-        } else {
-            commands.entity(*entity).despawn();
-            false
-        }
-    });
+    debug_assert_eq!(bodies.0.len(), processed.len());
 }
 
 fn spawn_cat_overlay(commands: &mut Commands, id: &str, offset: Vec3, sprite: Sprite) {
@@ -13790,33 +13882,91 @@ mod tests {
     }
 
     #[test]
-    fn road_sprite_kind_picks_orientation_from_neighbours() {
-        // Cross centre: connected on both axes.
-        assert_eq!(road_sprite_kind(true, true, true, true), RoadSprite::Cross);
-        // Vertical arm: only north/south neighbours.
+    fn road_autotile_grammar_covers_every_neighbour_mask() {
+        let expected = [
+            RoadVisual::new(RoadSprite::Lone, 0),      // 0000 lone
+            RoadVisual::new(RoadSprite::StraightH, 0), // 0001 W end
+            RoadVisual::new(RoadSprite::StraightH, 0), // 0010 E end
+            RoadVisual::new(RoadSprite::StraightH, 0), // 0011 EW
+            RoadVisual::new(RoadSprite::StraightV, 0), // 0100 S end
+            RoadVisual::new(RoadSprite::Corner, 2),    // 0101 SW
+            RoadVisual::new(RoadSprite::Corner, 3),    // 0110 SE
+            RoadVisual::new(RoadSprite::Tee, 2),       // 0111 SEW
+            RoadVisual::new(RoadSprite::StraightV, 0), // 1000 N end
+            RoadVisual::new(RoadSprite::Corner, 1),    // 1001 NW
+            RoadVisual::new(RoadSprite::Corner, 0),    // 1010 NE
+            RoadVisual::new(RoadSprite::Tee, 0),       // 1011 NEW
+            RoadVisual::new(RoadSprite::StraightV, 0), // 1100 NS
+            RoadVisual::new(RoadSprite::Tee, 1),       // 1101 NSW
+            RoadVisual::new(RoadSprite::Tee, 3),       // 1110 NSE
+            RoadVisual::new(RoadSprite::Cross, 0),     // 1111 cross
+        ];
+        for mask in 0_u8..16 {
+            let actual = road_visual(
+                mask & 0b1000 != 0,
+                mask & 0b0100 != 0,
+                mask & 0b0010 != 0,
+                mask & 0b0001 != 0,
+            );
+            assert_eq!(actual, expected[usize::from(mask)], "mask {mask:04b}");
+            assert!(actual.quarter_turns < 4);
+        }
+    }
+
+    #[test]
+    fn mixed_stone_and_dirt_tiles_connect_as_one_road_network() {
+        let stone = HashSet::from([(0, 0), (-1, 0), (0, -1)]);
+        let dirt = HashSet::from([(1, 0), (0, 1)]);
+        let all = stone.union(&dirt).copied().collect::<HashSet<_>>();
+
         assert_eq!(
-            road_sprite_kind(true, true, false, false),
-            RoadSprite::StraightV
+            road_visual_at(&all, 0, 0),
+            RoadVisual::new(RoadSprite::Cross, 0)
         );
         assert_eq!(
-            road_sprite_kind(true, false, false, false),
-            RoadSprite::StraightV
+            road_visual_at(&all, 1, 0),
+            RoadVisual::new(RoadSprite::StraightH, 0),
+            "the dirt end must connect to its adjacent stone centre"
         );
-        // Horizontal arm: only east/west neighbours.
-        assert_eq!(
-            road_sprite_kind(false, false, true, true),
-            RoadSprite::StraightH
-        );
-        // A lone road tile falls back to the cross.
-        assert_eq!(
-            road_sprite_kind(false, false, false, false),
-            RoadSprite::Cross
-        );
-        // A corner (one vertical + one horizontal) reads as a cross for now.
-        assert_eq!(
-            road_sprite_kind(true, false, true, false),
-            RoadSprite::Cross
-        );
+    }
+
+    fn road_edge_signature(path: &std::path::Path) -> [bool; 4] {
+        let pixels = image::open(path)
+            .unwrap_or_else(|error| panic!("could not decode {}: {error}", path.display()))
+            .into_rgba8();
+        assert_eq!(pixels.dimensions(), (16, 16));
+        let edges = [
+            (5..11).map(|x| (x, 0)).collect::<Vec<_>>(),
+            (5..11).map(|x| (x, 15)).collect::<Vec<_>>(),
+            (5..11).map(|y| (15, y)).collect::<Vec<_>>(),
+            (5..11).map(|y| (0, y)).collect::<Vec<_>>(),
+        ];
+        edges.map(|edge| {
+            edge.into_iter()
+                .filter(|&(x, y)| pixels.get_pixel(x, y).0[3] != 0)
+                .count()
+                >= 3
+        })
+    }
+
+    #[test]
+    fn tracked_road_assets_match_their_north_south_east_west_semantics() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let cases = [
+            ("road_lone.png", [false, false, false, false]),
+            ("road_straight_h.png", [false, false, true, true]),
+            ("road_straight_v.png", [true, true, false, false]),
+            ("road_corner.png", [true, false, true, false]),
+            ("road_t.png", [true, false, true, true]),
+            ("road_cross.png", [true, true, true, true]),
+        ];
+        for (file, expected) in cases {
+            assert_eq!(
+                road_edge_signature(&root.join("public/images/game/infra").join(file)),
+                expected,
+                "{file} no longer matches the runtime base orientation"
+            );
+        }
     }
 
     #[test]
@@ -13973,7 +14123,123 @@ mod tests {
         assert_eq!(atlas_index(0, 0), 0);
         assert_eq!(atlas_index(0, 3), 3);
         assert_eq!(atlas_index(1, 0), 4);
-        assert_eq!(atlas_index(7, 3), 31); // last cell of a 32-cell sheet
+        assert_eq!(atlas_index(7, 3), 31); // last cell of the first sheet row
+        for group in 0..8 {
+            for frame in 0..4 {
+                assert!(atlas_index(group, frame) < CHARACTER_SHEET_COLUMNS as usize);
+            }
+        }
+    }
+
+    fn png_dimensions(path: &std::path::Path) -> (u32, u32) {
+        let bytes = std::fs::read(path).expect("tracked sprite sheet");
+        assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
+        assert_eq!(&bytes[12..16], b"IHDR");
+        (
+            u32::from_be_bytes(bytes[16..20].try_into().unwrap()),
+            u32::from_be_bytes(bytes[20..24].try_into().unwrap()),
+        )
+    }
+
+    #[test]
+    fn cat_and_raider_sheets_each_match_the_single_body_atlas_contract() {
+        let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let expected = (
+            CHARACTER_CELL.x * CHARACTER_SHEET_COLUMNS,
+            CHARACTER_CELL.y * CHARACTER_SHEET_ROWS,
+        );
+        assert_eq!(
+            png_dimensions(&workspace.join("public/images/cats/cat-sheet.png")),
+            expected,
+            "colonist sheet geometry changed"
+        );
+        assert_eq!(
+            png_dimensions(&workspace.join("public/images/cats/raider-sheet.png")),
+            expected,
+            "raider sheet geometry must be checked independently"
+        );
+        assert_eq!(CHARACTER_CELL, UVec2::splat(32));
+        assert_eq!(CHARACTER_SHEET_COLUMNS * CHARACTER_SHEET_ROWS, 64);
+        assert_eq!(CAT_SIZE.x, CAT_SIZE.y, "one square atlas body per entity");
+    }
+
+    fn test_sprite_sheets() -> SpriteSheets {
+        let image = Handle::<Image>::default();
+        SpriteSheets {
+            cat: image.clone(),
+            raider: image.clone(),
+            layout: Handle::default(),
+            hat_hunter: image.clone(),
+            hat_architect: image.clone(),
+            hat_ritualist: image.clone(),
+            hat_warrior: image.clone(),
+            carry_icons: CARRYING_KINDS
+                .into_iter()
+                .map(|kind| (kind, image.clone()))
+                .collect(),
+        }
+    }
+
+    fn spawn_test_cat_body(world: &mut World, id: &str) -> Entity {
+        world
+            .spawn((
+                CatBody(id.to_owned()),
+                Transform::default(),
+                MoveTarget(Vec2::ZERO),
+                AnimSprite {
+                    group: 0,
+                    moving: false,
+                },
+            ))
+            .id()
+    }
+
+    #[test]
+    fn cat_body_reconciliation_repairs_stale_cache_and_despawns_duplicates() {
+        let mut snapshot = village_world(&["alpha"]);
+        let mut moss = census_cat(30.0, None, false);
+        moss.id = "moss".to_owned();
+        let mut fern = census_cat(30.0, None, false);
+        fern.id = "fern".to_owned();
+        snapshot.colonies[0].cats = vec![moss, fern];
+
+        let mut app = App::new();
+        app.insert_resource(LatestSnapshot(Some(snapshot)))
+            .insert_resource(Selection::default())
+            .insert_resource(test_sprite_sheets());
+        let duplicate = spawn_test_cat_body(app.world_mut(), "moss");
+        let preferred = spawn_test_cat_body(app.world_mut(), "moss");
+        let orphan = spawn_test_cat_body(app.world_mut(), "vanished");
+        let malformed = app.world_mut().spawn(CatBody("fern".to_owned())).id();
+        let stale = spawn_test_cat_body(app.world_mut(), "stale");
+        app.world_mut().despawn(stale);
+        app.insert_resource(CatBodies(HashMap::from([
+            ("moss".to_owned(), preferred),
+            ("fern".to_owned(), stale),
+        ])))
+        .add_systems(Update, sync_cats);
+
+        app.update();
+
+        let world = app.world_mut();
+        let mut query = world.query::<(Entity, &CatBody)>();
+        let actual = query
+            .iter(world)
+            .map(|(entity, body)| (body.0.clone(), entity))
+            .collect::<Vec<_>>();
+        assert_eq!(actual.iter().filter(|(id, _)| id == "moss").count(), 1);
+        assert_eq!(actual.iter().filter(|(id, _)| id == "fern").count(), 1);
+        assert_eq!(actual.len(), 2, "orphan bodies must not survive a sync");
+        assert!(actual.contains(&("moss".to_owned(), preferred)));
+        assert!(!actual.iter().any(|(_, entity)| *entity == duplicate));
+        assert!(!actual.iter().any(|(_, entity)| *entity == orphan));
+        assert!(!actual.iter().any(|(_, entity)| *entity == malformed));
+
+        let cache = &world.resource::<CatBodies>().0;
+        assert_eq!(cache.len(), 2);
+        for (id, entity) in cache {
+            assert!(actual.contains(&(id.clone(), *entity)));
+        }
     }
 
     #[test]
