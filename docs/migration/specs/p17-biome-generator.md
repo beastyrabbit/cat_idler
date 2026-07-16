@@ -1,8 +1,8 @@
 # P17 — 2D biome generator (Minecraft-style, ~25 biomes)
 
 > **Living target spec.** The deterministic 26-biome climate generator and rendering exist.
-> Fine-biome movement, finite physical fishing, finite Gem/Clay/Sand source ecology, and
-> constructed staffed rail/ship transport are verified. Downstream material recipes remain open in
+> Fine-biome movement, crop fertility, finite fishing, Gem/Clay/Sand source ecology, downstream
+> material recipes, and constructed staffed rail/ship transport are verified in
 > [`docs/IMPLEMENTATION_AUDIT.md`](../../IMPLEMENTATION_AUDIT.md).
 
 User (2026-07-10): trees should be sparse on grass biomes and dense in forest biomes, etc. —
@@ -64,12 +64,10 @@ mushroom/odd. (≈25; trim/merge as needed.)
   **transport upgrades** — **trains** (land) and **ships** (water/ocean) unlocked via the upgrade
   tree — to haul over long distances. Late-game; gated behind the tech tree + escalating cost.
 
-## Sequencing
-Foundational terrain change → do it as a focused `cat-sim` card (grow terrain_gen + biomes
-table, keep it deterministic + per-chunk + infinite; golden-test a few chunks), THEN the client
-biome→tile/tint render + tree-density render. Coordinates with movement-speed (per-biome factor)
-and P14.2 (cost). Big but self-contained; slot after the current feel/movement cards land so the
-terrain subsystem isn't being edited by two agents at once.
+## Sequencing (completed)
+The deterministic terrain table and chunks landed first, followed by client tile/tint/density,
+fine-biome movement, fertility, finite sources, and constructed transport. This order is retained
+as implementation history, not an active queue.
 
 ## Fine-movement verification (2026-07-14)
 

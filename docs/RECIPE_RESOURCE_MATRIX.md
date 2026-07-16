@@ -87,10 +87,11 @@ each family's `*_sources` raises scalar batch yield by 10% or reduces exact-item
 both Lumber and Planks; the other exact capacity targets are Cloth, Leather, Blocks, Metal, Tools,
 Weapons, Armor, and Refined.
 
-## Catalog future boundary
+## Complete catalog boundary
 
 There are **zero generated recipe payload IDs** without a runtime descriptor and **zero generated
 resource payload IDs** without an authoritative source/consumer. All recipe/resource studies are
-implemented; the catalog's thirteen unrelated unbacked Crews studies remain explicit future work.
-New design-selected combinations must retain the same source/station choice and end-to-end
+implemented. Twelve `Crews` studies expand real concurrent physical stations; thirteen other
+stable `Crews` IDs provide bounded services scoped to their completed building and do not claim
+worker slots. New design-selected combinations must retain the same source/station choice and end-to-end
 simulation, persistence, protocol, client, unattended, and signed-player evidence.

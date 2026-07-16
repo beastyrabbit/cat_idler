@@ -2,8 +2,8 @@
 
 > **Living target spec.** Specialist manual-to-officer ownership (with a bounded founding Leader
 > hunt/water/scout safety floor), 19-labor skills, seeded spatial storehouses, physical Accountant
-> rounds, physical farm labor, and all ten maintained physical processor routes are verified.
-> Broader sourced recipe/resource breadth and local inventories remain partial. Current evidence and exact follow-ups live in
+> rounds, physical farm labor, all ten processor types, all 104 physical recipes, and the complete
+> 487-study catalog are verified. Current evidence lives in
 > [`docs/IMPLEMENTATION_AUDIT.md`](../../IMPLEMENTATION_AUDIT.md).
 
 The DF-texture depth from `docs/GAME_VISION.md`, decomposed into concrete, TDD-able Rust
@@ -55,8 +55,9 @@ founding collapsed before its officer buildings existed.
 **Maintained contract (2026-07-14):** seven specialist offices are authoritative:
 `Steward` (hauling, stockpiles, general workshops and roads), `Accountant` (physical stock counts),
 `Forester` (quarrying, logging, wood processing), `Farmer` (fields, forage, fishing and Mill),
-`Captain` (training, defense and metal stations), `Loremaster` (research, post-founding scouts and
-rituals), and `ClothLeader` (cloth/leather stations). The always-present founding Leader is the
+`Captain` (training, defense and metal stations), `Loremaster` (research labor/building automation
+and rituals), and `ClothLeader` (cloth/leather stations). Deficit-driven scouting remains with the
+always-present founding Leader, which is the
 only vacancy exception and may keep at most six hunts, two emergency water trips, and one scout
 in flight per 15 living cats, scaled proportionally. Other specialist work remains manual while
 its owning office is vacant.
@@ -104,7 +105,7 @@ workshop↔stockpile↔workshop (extends trips/shrine, which today only credit a
   each officer.
 - **Chains:** grain → Mill → flour → food; fibre → Clothier → cloth → clothing; hide → Tannery →
   leather; logs → Sawmill → structural lumber; ore → Smelter → metal → Smithy → tools/weapons/armor.
-  Catnip and herbs remain farm/ritual goods rather than Mill inputs. P19's canonical contract owns
+  Grain, Catnip, and Herbs also feed distinct physical Brewing recipes at the Mill. P19's canonical contract owns
   the exact raw/intermediate names and reconciles the founding Wood Cutter/Stone Prep/Woodworking
   benches with these later stations. Each cycle moves real goods between physical places.
 - **Cost:** role-buildings + workshops gated behind upgrade-tree nodes with **escalating**
@@ -112,14 +113,14 @@ workshop↔stockpile↔workshop (extends trips/shrine, which today only credit a
 - **Tests:** each chain converts inputs→outputs at the right rate only when staffed + inputs
   present; escalating cost math; unlock gating; determinism.
 
-**Verified physical subset:** Mill, Sawmill, Wood Cutter, Stone Prep, Woodworking, Workshop,
+**Verified physical graph:** Mill, Sawmill, Wood Cutter, Stone Prep, Woodworking, Workshop,
 Smelter, Tannery, Clothier, and Smithy no longer convert aggregate colony counters in place. Each reserves visible finite stock,
 carries input to a station-local
 store, works there under its durable ordered/repeatable/pausable queue, places output in a
 station-local store, and carries it to compatible finite storage before aggregate credit. Their
 snapshot/inspector state includes the worker, progress, queue, local inventory, transit cargo, and
 block reason. Woodworking's founding recipe is the two-input case: two Planks and two Blocks arrive
-sequentially and are consumed atomically into one whole scalar Tool. Tannery likewise carries five
+sequentially and are consumed atomically into one exact finite Tool. Tannery likewise carries five
 Hide into local input, performs one selected 600-second Textile batch, and carries one Leather out
 before credit. Clothier sources Fibre through explicit physical forage, carries five Fibre into
 local input, performs one selected 600-second Textile batch, and carries one Cloth out before

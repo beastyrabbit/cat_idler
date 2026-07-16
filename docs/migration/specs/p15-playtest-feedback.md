@@ -5,8 +5,8 @@
 > global/personal village foundations are verified. Coordinate placement, selectable/removable
 > designations, election controls plus authoritative between-term timing, and all ten physical
 > processor inspectors and queues are verified; the baseline Leader's browser and native
-> shrine-return campaigns are both verified. Recipe/resource breadth, broader local inventories,
-> and shared-world depth remain open in
+> shrine-return campaigns are both verified. All 104 recipes, all 487 studies, shared terrain,
+> and physical village trade are verified in
 > [`docs/IMPLEMENTATION_AUDIT.md`](../../IMPLEMENTATION_AUDIT.md).
 
 Captured from live `cargo dev` playtesting. Triaged; "already there" notes from a code survey.
@@ -57,11 +57,9 @@ Two-tier inspector, driven by the cursor:
 - **Roads visible — resolved.** Authored stone and traffic-formed dirt are disjoint snapshot
   surfaces with distinct rendering and 175%/105% movement effects; forbidden terrain cannot form
   dirt paths.
-- **Workshops + production chains + routes — partial breadth.** Grain→flour→food, logs→lumber,
-  Materials→Refined, ore→metal→selected weapons/armor, fibre/hide→cloth/leather, and useful tools
-  are live. All ten maintained processors have fully physical finite-store→station→store routes,
-  local ledgers, conserved cargo, and editable queues. Extend sourced recipe/resource breadth and
-  local inventory depth without reopening those routes.
+- **Workshops + production chains + routes — verified.** All 104 recipes across ten processor
+  types have physical finite-store→station→store routes, local ledgers, conserved cargo, editable
+  queues, and authoritative research ownership/effects.
 - **Fog of war + scout-driven discovery (detailed 2026-07-10).** The keystone exploration loop:
   - **World starts tiny** — only ~2 tiles outside the village are revealed at founding; everything
     beyond is fog.
@@ -88,9 +86,9 @@ Two-tier inspector, driven by the cursor:
     and the shrine-arrival pattern. Tiny initial reveal and two-tier provisional/committed knowledge
     are verified. The founding Leader now keeps autonomous Scout labor while Loremaster is vacant,
     without enabling research/ritual work; the matching native and browser visual gates are closed.
-- **Cat booster.** Look at a cat → give it a boost that makes it more likely to be picked for
-  jobs/roles. New per-cat "priority/boost" (sim) + inspector button (client). Pairs with the
-  matchCatsToSlots fit scoring.
+- **Cat booster — verified.** Looking at a cat exposes the signed priority/boost control; the
+  persisted boost raises its eligible job/role selection score without bypassing liveness,
+  qualification, station, or ownership gates.
 - **Elections auto-run — verified.** The lifecycle runs inside the authoritative tick and resolves
   terms without player action. Between elections the snapshot carries the resolved term start,
   next boundary, scaled term length, and server-derived remaining time; the governance panel shows
@@ -102,14 +100,14 @@ Two-tier inspector, driven by the cursor:
   propose/accept actions while foreign state stays summary-only.
 
 ## Assets
-- **Better wall asset** — the palisade could read better; source a nicer fence/wall (Roguelike/
-  Tiny Town).
+- **Wall asset — accepted.** The square top-down sharpened-timber palisade is the selected runtime
+  wall. Further art changes are optional polish.
 - **Cleaner top-down 2D cat?** The current `cat-sheet` is near-top-down. A future art-polish
   pass may evaluate alternatives, but it remains the selected runtime sheet.
 
 ## Existing foundations (verify before extending)
 - Cat movement, chunked-infinite terrain, authoritative multi-colony state, and term elections
   exist in the sim. Shrine-return fog/scouting plus usable global/personal founding, ownership,
-  discovery, barter, visible roads, election controls, exact designation tools, and all ten
-  physical processors' queues and inspectors are verified. Sourced recipe/resource breadth and
-  broader local inventories remain product work; authoritative data structures alone are not completion.
+  discovery, physical barter, visible roads, election controls, exact designation tools, and all
+  ten processor types' queues and inspectors are verified. The 104-recipe/487-study runtime closes
+  the maintained breadth contract.

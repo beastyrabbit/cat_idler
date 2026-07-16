@@ -26,10 +26,11 @@ The client loads four `32x32` role hats and follows the interpolated body with t
 | Ritualist | `public/images/cats/hat-ritualist.png` |
 | Warrior | `public/images/cats/hat-warrior.png` |
 
-Carried resources use a small semantic glyph above the interpolated body. All twenty-eight physical
+Carried resources use a small semantic glyph above the interpolated body. All 31 physical
 `CarryingKind` values reuse their exact tracked HUD resource PNG and tint; there is no generic
-colored-square or world-prop fallback. An exhaustive identity/file test and the inspected exact
-1024×768 client-owned cargo fixture verify the maintained contract. Player-priority cats receive
+colored-square or terrain fallback. An exhaustive identity/file test covers the complete mapping,
+and an inspected exact 1024×768 client-owned cargo fixture verifies representative simultaneous
+loads. Player-priority cats receive
 a gold marker, and the selected cat receives a selection marker. These are follower overlays,
 not additional sheet frames.
 

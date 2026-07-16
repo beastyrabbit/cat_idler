@@ -9,7 +9,7 @@ and any changed Bevy visuals have been verified.
 
 | Finding | Required correction | State |
 | --- | --- | --- |
-| Research recipe/resource breadth | All 104 runtime recipe IDs have data-owned station descriptors and exact catalog ownership metadata. All generated recipe and resource payloads now have authoritative consumers; none remain disabled as `FUTURE` content. | verified |
+| _None_ | The maintained correction queue is empty. Add a reproduced defect here before implementation. | — |
 
 ## Verified fixes
 

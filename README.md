@@ -110,8 +110,9 @@ Plus **cat-dev**, a small launcher bin (`cargo dev`) that builds and runs `cat-s
   `docs/GAME_VISION.md`): terrain by biome, cats colored by specialization with carried-item
   markers, label-free roofed homes and open craft stations, visible stockpiles/gather spots,
   fog of war, roads, raiders, a DF-Steam-inspired HUD (resources, census, event log, trade,
-  inspectors), and a full-page 487-study ("about 500") research ledger. Unsupported generated
-  studies are intentionally marked read-only until their runtime effects are integrated.
+  inspectors), and a full-page 487-study ("about 500") research ledger. All 487 studies are live
+  and purchasable; 104 physical recipes and every generated resource payload have authoritative
+  runtime consumers.
 - **`cat-desktop`** / **`cat-web`** — thin binaries over `cat-client`. `cat-web` builds with
   Trunk, serves the selected assets, derives a same-origin WebSocket URL for deployment, and
   has been exercised end-to-end in Chromium. The production `Dockerfile` serves the optimized
@@ -119,9 +120,9 @@ Plus **cat-dev**, a small launcher bin (`cargo dev`) that builds and runs `cat-s
   Origin checks. See [`docs/migration/WASM.md`](docs/migration/WASM.md) for the build recipe and
   optional transfer-weight work.
 
-For the full phase-by-phase build history and current in-flight work, see
+For the full phase-by-phase build history and maintained rollup, see
 [`docs/migration/BOARD.md`](docs/migration/BOARD.md). The post-cutover correctness pass and
-partial P12–P19 design promises are tracked in
+P12–P19 design evidence are tracked in
 [`docs/IMPLEMENTATION_AUDIT.md`](docs/IMPLEMENTATION_AUDIT.md).
 
 ## How to run it
@@ -237,20 +238,21 @@ port — they no longer describe how to build, run, or test this project.
 
 ## Status
 
-Pre-release, with the web→Rust/Bevy migration and P11 cutover complete. Verified product slices
+Pre-release, with the web→Rust/Bevy migration, P11 cutover, and maintained P12–P19 design complete. Verified product slices
 include the responsive authoritative server, selected-village routing, a production browser
 image, bounded world streaming, label-free roofed homes/open stations, the full-page 487-study
 ("about 500") ledger, exterior farming/logging with distinct Mill/Sawmill production, the
 seven-role manual/officer split, physical local workshop logistics, exact road/rail/shipping
-routes, and exhaustive guided coverage of every public action. Remaining product work is tracked
-in the maintained audit rather than inferred from old phase labels. The global/personal village
+  routes, all 104 physical recipes, all 487 live studies, and exhaustive guided coverage of every
+  public action. The global/personal village
 model and founding housing/migration lifecycle are verified. The accepted founding contract is
 15 adults in three five-bed Dens, slow
 reserved-bed pregnancy, prosperity migration with 36 game-hours to house each arrival,
 deterministic reset, physical emergency water hauling, and 240/288-game-hour ordinary versus
 leader/healer old-age thresholds.
-[`docs/IMPLEMENTATION_AUDIT.md`](docs/IMPLEMENTATION_AUDIT.md) is the living evidence-backed
-backlog.
+[`docs/IMPLEMENTATION_AUDIT.md`](docs/IMPLEMENTATION_AUDIT.md) is the living evidence ledger.
+The first pushed Forgejo workflow run and optional WASM transfer tuning are the maintained
+follow-ups; newly reproduced defects go in [`docs/FIX_LOG.md`](docs/FIX_LOG.md).
 
 ---
 

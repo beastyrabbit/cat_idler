@@ -132,27 +132,17 @@ unvisited or unreachable piles remain visibly stale.
   leaders and healers receive the same 20% extension and begin at **288 game-hours**. This is a
   deliberate current-design replacement for the archived web prototype's 48/57.6-hour values.
 
-## Post-cutover completion order
-The Rust/Bevy cutover is complete. P9–P19 are historical delivery groupings, not blanket claims
-that every product promise inside them is finished. Remaining product gaps are tracked in
-`docs/IMPLEMENTATION_AUDIT.md`; the intended dependency order is:
+## Post-cutover completion status
 
-- **Verified foundations and continuing depth:**
-  1. **Skills**: general per-labor skill/xp curve; skill affects speed/yield.
-  2. **Role/officer system**: split the leader director into assignable roles, each gating a
-     category of automation, each tied to a role-building + upgrade-tree unlock + escalating cost.
-  3. **Spatial stockpiles**: designatable stockpile zones that physically hold items; hauling
-     routes goods workshop↔stockpile↔workshop. Accountant rounds refresh only visited reports.
-  4. **More workshops + production chains**: physical Mill, Sawmill, Workshop, and Smelter are
-     complete; extend their local carry/work/delivery contract to cloth and the remaining craft
-     graph.
-  5. **Visible farm plots** in the overworld.
-- **Player paths:** designation tools (place stockpiles/farms/workshops), role assignment UI,
-  manual-workshop controls, then automation as roles unlock.
-- **World progression:** shrine-return scouting/fog, exact authored/traffic road rules,
-  global and personal villages, meeting, and trade.
-- **Long game:** the full research graph, migration/housing pressure, deeper production,
-  and native/WASM interaction and framebuffer campaigns.
+The Rust/Bevy cutover and maintained P12–P19 design are complete. Skills, seven specialist roles,
+spatial stockpiles and physical Accountant rounds, visible exterior farms, all ten processor types,
+104 physical recipes, shrine-return scouting, authored/traffic roads, global and personal villages,
+physical trade, the 487-study research graph, housing/migration pressure, and native/WASM player
+paths are verified in `docs/IMPLEMENTATION_AUDIT.md`.
+
+P9–P19 remain useful historical delivery groupings, not an active backlog. The only maintained
+follow-ups are the first pushed Forgejo quality run and optional WASM transfer tuning. New design
+work should be promoted here deliberately rather than inferred from old phase prose.
 
 ## Fidelity note
 The Rust sim is a "same idea" port of the TS game; this vision *extends* it, so new systems

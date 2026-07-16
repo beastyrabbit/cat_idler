@@ -4,7 +4,7 @@
 > Adventure 9-patch/button/progress/minimap/cursor skin are native-framebuffer verified at
 > 1024×768, 1280×800, and 1920×1080. Optimized WASM visual interaction is also verified at those
 > supported bounds. A verified integrated Accounting Tent plus staged wall/agricultural native
-> sequence close the remaining world-composition gate in
+> sequence closed the world-composition gate in
 > [`docs/IMPLEMENTATION_AUDIT.md`](../../IMPLEMENTATION_AUDIT.md).
 
 User (2026-07-10): (1) workshops should look like DF-Steam craft-stations — find a good asset or
@@ -43,5 +43,5 @@ panels**, ornate borders, **icon-driven** readouts, clear tabbed menus, banners/
   performant.
 
 ## Also here (from P15)
-- **Better wall asset** (palisade could read nicer) and a cleaner top-down cat search may be
-  folded into future asset polish; the current cat sheet remains the selected runtime art.
+- The square top-down sharpened-timber palisade and current top-down cat sheet are accepted runtime
+  art. Either may be revisited as optional visual polish, not as a release blocker.

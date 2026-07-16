@@ -22,8 +22,8 @@ Built as a Rust **Cargo workspace** under `crates/`:
 - **cat-dev** — `cargo dev`, a local launcher that builds + runs `cat-server` + `cat-desktop`
   together.
 
-**The platform rebuild and cutover are complete — this tree is now the Rust/Bevy game, while
-the maintained product backlog remains open.** The game originally shipped
+**The platform rebuild, cutover, and maintained P12–P19 product contract are complete — this tree
+is now the Rust/Bevy game.** The game originally shipped
 as a Next.js/TypeScript web app (a Victorian-newspaper-themed single shared colony, Drizzle ORM
 + `better-sqlite3`). That version was ported "same idea, not bit-identical" into this Rust +
 Bevy workspace and then **retired at the P11 cutover** (2026-07-11): the TypeScript source
@@ -142,13 +142,12 @@ design provenance. Current authority and verification live in
 Do not maintain a second detailed backlog in this file. The evidence-backed status source is
 [`docs/IMPLEMENTATION_AUDIT.md`](docs/IMPLEMENTATION_AUDIT.md), and the concrete correction queue is
 [`docs/FIX_LOG.md`](docs/FIX_LOG.md). In summary, seven-role manual-to-officer ownership, the
-15-adult/three-Den founding lifecycle, spatial stockpiles, physical farming/fishing and four
-station-local processors, the purchasable 500-study ledger, global/personal village routing, exact
-roads, all 25 building compositions, and native/optimized-WASM Adventure UI campaigns are live.
-The maintained backlog deepens those foundations: remaining physical sources and benches,
-scaffold-material delivery, finite equipment and research-payload breadth, authoritative shared
-terrain and physical trade, finite-stock trader travel, real rail/ship routes, and exhaustive
-guided play. Treat the linked trackers—not older phase prose—as authoritative.
+  15-adult/three-Den founding lifecycle, spatial stockpiles, physical farming/fishing, ten processor
+  types with 104 physical recipes, the 487/487 live-study ledger, global/personal village routing,
+  shared terrain and physical trade, exact roads/rail/shipping, all 25 building compositions, and
+  native/optimized-WASM Adventure UI campaigns are live. Twelve `Crews` studies add real concurrent
+  station slots; thirteen others are completed-building-scoped services rather than fake slots.
+  Treat the linked evidence trackers—not older phase prose—as authoritative.
 
 ### cat-protocol — the wire contract
 
@@ -187,9 +186,9 @@ terrain generated client-side from the shared `world_seed` (via `cat_sim::genera
 specialization, carrying marker), label-free roofed homes and typed open stations,
 stockpiles/gather spots, crop stages, raiders, and zone overlays. The HUD covers resources,
 census, events, trade, officers, persistent village selection, and inspectors. A full-page
-500-study ledger supports filter/search/pan/zoom and signed purchase of every affordable study.
-Payload copy distinguishes live effects from registry-only future content; the unresolved consumer
-matrix is tracked in `docs/IMPLEMENTATION_AUDIT.md` and `docs/FIX_LOG.md`.
+  487-study ledger supports filter/search/pan/zoom and signed purchase of every affordable study.
+  All studies are live, all 104 recipes have physical descriptors, and every generated resource
+  payload has an authoritative consumer; no research card is disabled as `FUTURE`.
 
 Art: curated pixel sprites under
 `public/images/game/{terrain,nature,buildings,interior,infra,props,farm,enemies}/` plus the
@@ -305,7 +304,7 @@ The world ticks once a second (fixed; not currently configurable via env var).
 - `docs/GAME_VISION.md` — design pillars for "Idle Cat Forest" (manual → role-automation,
   visible workplaces, production chains)
 - `docs/HANDOFF.md` — migration status + hard-won Bevy/codex build lessons
-- `docs/IMPLEMENTATION_AUDIT.md` — authoritative shipped/open status and verification matrix
+- `docs/IMPLEMENTATION_AUDIT.md` — authoritative shipped/follow-up status and verification matrix
 - `docs/FIX_LOG.md` — reproduced correction queue and evidence-backed verified fixes
 - `docs/migration/BOARD.md` — phase-by-phase task board (P0–P9 tracked in detail; later phases
   tracked in `docs/migration/specs/` and the git log)
@@ -319,7 +318,7 @@ The world ticks once a second (fixed; not currently configurable via env var).
 
 ## Status
 
-Pre-release; the Rust/Bevy migration and P11 cutover are complete. This file intentionally does not
+Pre-release; the Rust/Bevy migration, P11 cutover, and maintained P12–P19 contract are complete. This file intentionally does not
 duplicate fast-moving feature status. Use `docs/IMPLEMENTATION_AUDIT.md` for the authoritative
-shipped/open matrix and `docs/FIX_LOG.md` for the current correction queue. The Forgejo quality
+shipped/follow-up matrix and `docs/FIX_LOG.md` for the current correction queue. The Forgejo quality
 workflow is committed; its first pushed run remains unverified.

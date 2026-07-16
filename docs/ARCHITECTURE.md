@@ -111,83 +111,38 @@ Each module's doc comment cites the original TypeScript file it was ported from 
 `leader_director.rs` ← `lib/game/leaderDirector.ts`), per `AGENTS.md`'s commenting convention —
 that's the fastest way to find the ported behavior's original spec and tests.
 
-### Known product gaps
+### Maintained product state
 
-The core migration is complete, including ore/metal extraction and staffed Research Hut and
-School buildings. Verified post-cutover slices include atomic placement/reservations, exterior
-farm/logging production with physical processors, label-free open stations, selected-village routing,
-the complete persistent 487-study ("about 500") catalog/client ledger with supported purchases,
-and a responsive blocking-pool server tick. The catalog claim does not imply complete gameplay payload coverage;
-the remaining work is
-maintained product behavior rather than migration:
+The migration and maintained P12–P19 product contract are complete. The authoritative evidence
+ledger is `docs/IMPLEMENTATION_AUDIT.md`; the migration board retains dated implementation history.
 
-- **Officer/manual split.** The seven maintained offices now own distinct automation categories;
-  beyond the founding Leader's bounded hunt/water/scout safety floor, vacant offices are
-  manual-only. Appointment requires both the researched unlock and a completed role station.
-  Signed client paths cover basic farm/gather/road designation, staffing,
-  military, ritual, shrine, and production orders. Exact coordinate building placement,
-  selectable farm/gather variants, election/vote-kick controls, designation removal, durable
-  per-cat typed labor preferences, and editable ordered/repeatable/pausable queues for all ten
-  physical processors are live. The same generic queue model owns each sourced recipe that moves
-  from the research ledger into runtime. Automatic election timing is visible between election windows.
-- **Physical work and production breadth.** Founding now seeds a finite spatial storehouse and all
-  ten maintained processors physically route staffed cats, reserved
-  cargo, station-local input and output, and final stockpile delivery before aggregate credit.
-  Their inspectors expose real queues and travel state. A staffed Accountant physically visits
-  reachable piles, dwells to count them, and updates only those reports; blocked piles remain
-  stale. All 19 maintained labor skills now have truthful gain sources,
-  bounded effects, persistence, and inspector visibility. All ten maintained processors use
-  physical input/work/output routes; many additional recipes/material variants are still absent.
-- **Finite item condition.** Finished units carry stable IDs, material/quality-based weight and
-  durability, wear through truthful functional use, remain present when broken, and can be repaired
-  only at their appropriate completed, staffed workshop using one matching visible material.
-  Durability research changes finite-unit maxima, the signed trader sale path caps each load at
-  20kg, and the Goods UI exposes weight, condition, broken units, and exact repair actions. This is
-  a verified seam, not a claim that the planned material/recipe catalog is complete.
-- **Multi-village product model.** One canonical communal village and one personal village per
-  stable signed identity are live. Ownership and selection persist; foreign private state stays
-  server-filtered; explicit returned-scout delivery (never generic reveal state) creates mutual
-  summary contact; configurable signed propose/accept/cancel actions create persisted visible
-  caravans with exact source-pile or finite-equipment escrow and return-before-credit. Whole-world
-  SQLite replacement is transactional, and colony-local runtime ids receive a
-  storage-only colony namespace so simultaneous settlements cannot collide in legacy global-key
-  tables. A durable communal scale gives the ownerless global hub 30 adults, six Dens, a 19×19
-  core, doubled production/runway, and civic buildings, while personal villages remain exact
-  15-adult/three-Den/13×13 settlements through extinction recovery. `WorldState` owns one canonical
-  mutable terrain/Fish ledger; colony maps are fog-safe compatibility/view caches. Caravan cargo
-  can contain scalar goods or exact Tool/Weapon/Armor instances without identity collision.
-- **Durable native identity.** The native client keeps its HMAC bearer and selected village in a
-  mode-0600 file replaced through a synced same-directory temporary file and atomic rename; WASM
-  uses the corresponding local-storage record.
-- **Research and scouting depth.** The truthful 487-node catalog lets players spend research
-  points on every supported study;
-  unsupported generated promises remain visible as disabled FUTURE entries. The living Leader may
-  complete at most one affordable supported node per rolling real-life day.
-  Research labor/building automation and rituals remain Loremaster-owned.
-  Typed modeled effects (including the durability consumer) and future-content unlock registries
-  persist, but 91 generated recipe IDs and all 64 generated resource IDs still lack their intended
-  authoritative gameplay consumers. Twelve Crews studies own real concurrent stations; thirteen
-  unsafe/passive Crews nodes remain future-only. All listed capacity studies own
-  physical domains; thirteen former containerless studies are omitted and migrated with refunds.
-  Resource/general scouts now
-  preserve the shrine-return knowledge contract while following deterministic knowledge-blind
-  wander legs that only recognize targets after physical observation. Baseline deficit-driven
-  scouting belongs to the Leader before a Loremaster exists.
-- **Fresh idle safety floor.** The founding Leader retains only deficit-scaled hunt, emergency
-  water, and scouting jobs (ceilings six/two/one at 15 cats, scaled proportionally thereafter),
-  and vacancy cleanup preserves no more than those physical trips. Specialist production and
-  management stay manual while vacant. Three personal seeds pass exact 48-hour one-second
-  campaigns and byte-identical twins, and the 30-cat communal 48-hour campaign is green.
-- **Spatial, transport, and visual completeness.** Exact tree/rock occupancy, visible road
-  surfaces, persisted exterior agricultural claims, staged outer-wall construction with an
-  atomic one-gate cutover, persisted finite-water-habitat fishing routes, and finite conserved
-  rail/shipping routes with physical vehicles, loading, travel, unloading, and return legs are live.
-  The integrated staged-wall, physical Accounting Tent, native UI,
-  and optimized-WASM skin captures are verified. Accounting Tent is snapshot-reachable and has
-  an explicit open-station client composition; the maintained Adventure panel, button, progress,
-  minimap, and cursor foundation is native- and browser-framebuffer verified.
-
-The evidence and completion tests for each gap live in `docs/IMPLEMENTATION_AUDIT.md`.
+- **Manual-to-officer control.** The founding Leader retains only a bounded hunt/water/scout
+  safety floor. Seven specialist offices own distinct automation categories, and vacancies leave
+  those categories manual. Signed actions cover placement, designation, governance, labor,
+  production queues, research, combat, shrine work, transport, equipment, and trade.
+- **Physical economy.** Ten maintained processor types and all 104 runtime recipes reserve finite
+  input, carry it to station-local storage, perform staffed work, create finite local output, and
+  deliver it before aggregate credit. All generated recipe/resource research payloads have an
+  authoritative consumer. The 31-resource storage/wire/HUD/carrying vocabulary is exhaustive.
+- **Research.** The persistent ledger contains exactly 487 implemented studies: 165 Building,
+  167 Recipe/Resource, and 155 Upgrade. Every node is dependency-order purchasable; no card is a
+  disabled `FUTURE` promise. Twelve `Crews` studies expand real concurrent physical stations;
+  thirteen others provide bounded effects scoped to their completed building rather than inventing
+  worker slots. Thirteen former containerless capacity studies are omitted with migration refunds.
+- **Items and reports.** Exact equipment preserves identity, material, quality, weight, durability,
+  wear, repair, equipment, escrow, and persistence. A staffed Accountant physically visits piles;
+  only visited reports become current, and private exact totals never leak through snapshots.
+- **Shared world.** One ownerless 30-cat/six-Den Grand Commons and one private
+  15-cat/three-Den village per signed identity share canonical terrain and ecology. Returned scouts
+  establish contact. Persisted visible caravans conserve scalar goods and exact equipment over
+  obstacle-aware routes through both villages' gates.
+- **Spatial and visual truth.** Founding clearing, exterior farms, finite fishing and extraction,
+  dirt/stone roads, staged walls, rail/shipping, open label-free stations, physical cargo, the
+  Adventure UI, and native/WASM clients are verified. A final exact 1024×768 capture for the full
+  31-resource HUD and zero-`FUTURE` ledger remains a QA evidence task, not an implementation gap.
+- **Deployment.** The same-origin, non-root production image serves the client, assets, probes, and
+  WebSocket with compression and Origin checks. Optional WASM transfer tuning and the first pushed
+  Forgejo workflow run are the only maintained follow-ups.
 
 ### Maintained founding and life pacing
 
@@ -340,9 +295,9 @@ Quality gate before any commit (per `AGENTS.md`): `cargo nextest run -p <crate>`
 on pre-commit and clippy + nextest on pre-push (`lefthook.yml`) — the JS lint/typecheck/test
 hooks that used to gate the TypeScript game are no longer relevant to this workspace.
 
-## What's not here yet
+## Maintained follow-ups
 
-The P11 cutover is complete: the TypeScript implementation lives only on `archive/web-game`
-(`web-final`), and the browser bundle plus combined production host run end-to-end. Remaining
-work is the gameplay, client exposure, production breadth, and exhaustive QA backlog in
-`docs/IMPLEMENTATION_AUDIT.md`; it is not unfinished migration work.
+The P11 cutover and the maintained gameplay contract are complete. The TypeScript implementation
+lives only on `archive/web-game` (`web-final`), and the browser bundle plus combined production
+host run end-to-end. The first pushed Forgejo workflow run and optional WASM transfer tuning remain;
+new defects must be reproduced and recorded in `docs/FIX_LOG.md` rather than inferred from old phases.

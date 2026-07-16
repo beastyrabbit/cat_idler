@@ -40,7 +40,7 @@ no semantic names, so mapping is manual.
 
 ## Resource / goods art — live semantic copies
 
-The tracked semantic-art mapping contains one unique PNG for every maintained HUD row. Most live
+The tracked semantic-art mapping contains one unique image path for every maintained HUD row. Most live
 under `game/icons/`:
 `armor`, `blessings`, `blocks`, `bone`, `catnip`, `clay`, `cloth`, `fish`, `flour`, `food`,
 `gem`, `grain`, `herbs`, `hide`, `leather`, `logs`, `lumber`, `materials`, `metal`, `ore`, `planks`,
@@ -50,6 +50,8 @@ each finite item's physical weight, condition range, damaged/broken counts, and 
 when a valid staffed workshop and matching visible material are available.
 Raw Fibre intentionally maps to the tracked public-pack `game/props/haystack.png`, whose bundled
 plant silhouette stays distinct from both the Flour pouch and finished Cloth.
+Preserves, Medicine, and Brew use the equally tracked semantic paths
+`game/props/crate.png`, `ui/tasks/heal.png`, and `game/props/barrel.png` respectively.
 
 Source dir: `public/Kenney Game Assets All-in-1 3.5.0/Icons/Board Game Icons/PNG/`
 Two sizes: `Default (64px)/` and `Double (128px)/`. Ship **128px** (crisp, downscales clean).
@@ -95,16 +97,16 @@ blessings currency chip only.
 
 Every physical cargo overlay reuses the exact tracked semantic resource PNG named above rather
 than a second carry-only vocabulary. This covers Food, Fish, Water, Materials, Stone, Refined,
-Blessings, Logs, Lumber, Planks, Blocks, Tools, Weapons, Armor, Catnip, Grain, Flour, Herbs, Fibre,
-Hide, Bone, Cloth, Leather, Ore, Metal, Gem, Clay, and Sand. Fibre deliberately uses the tracked
+Blessings, Logs, Lumber, Planks, Blocks, Tools, Weapons, Armor, Catnip, Grain, Flour, Preserves,
+Medicine, Brew, Herbs, Fibre, Hide, Bone, Cloth, Leather, Ore, Metal, Gem, Clay, and Sand. Fibre deliberately uses the tracked
 public-pack haystack prop as its raw-plant bundle while Cloth keeps its finished-textile icon; both therefore remain distinct
 from the Flour pouch. Their existing resource tints remain legible at the on-map overlay size, while icon shape
 is authoritative: Lumber and Planks, for example, keep separate symbols. The runtime has no
 colored-square, terrain, farm, or furniture fallback for cargo.
 
-The exhaustive mapping/file/identity test and the inspected client-owned
-`/tmp/semantic-cargo-icons-1024.png` frame verify ten simultaneous representative loads at the
-supported 1024×768 lower bound.
+The exhaustive mapping/file/identity test covers all 31 kinds. The inspected client-owned
+`/tmp/semantic-cargo-icons-1024.png` frame verifies ten simultaneous representative loads at
+1024×768; the final combined all-resource HUD/research capture is tracked separately in the audit.
 
 ---
 

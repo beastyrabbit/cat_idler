@@ -4,8 +4,8 @@
 > playtest direction: every ordinary personal village starts with **15 adult cats in three
 > five-bed Dens**. Founding/housing, authoritative interior clearing, exterior water, and the
 > exact dirt/stone road model are verified. Selectable/removable gather controls, finite shoreline
-> fishing, persisted exterior agricultural territory, physical farm labor, and physical
-> all ten maintained processor routes are physical. Broader sourced recipe variants remain open. See
+> fishing, persisted exterior agricultural territory, physical farm labor, all ten processor
+> types, and all 104 physical recipe routes are verified. See
 > [`docs/IMPLEMENTATION_AUDIT.md`](../../IMPLEMENTATION_AUDIT.md).
 
 Detailed founding/economy/spatial design from playtest. Numbers are the spec.
@@ -110,9 +110,9 @@ New resource types + chains:
 2. **Default village blueprint** (sim founding): fixed shrine+roads+gate-south+3 Dens+3 workshops
    +pre-filled general stockpile+15 cats. Replaces organic founding. (After keep-cats-busy lands —
    both touch world_tick founding/director.)
-3. **Resource chains** (P12.4b/P19): Logs→Planks, Stone→Blocks, and Planks+Blocks→wooden Tools;
+3. **Resource chains — complete** (P12.4b/P19): Logs→Planks, Stone→Blocks, and Planks+Blocks→wooden Tools;
    houses consume processed timber+Blocks. Metal weapons/armor belong to the Smelter→Smithy chain.
-   This remains runtime work under the canonical P19 production cards.
+   The canonical P19 production cards verify this and the later 104-recipe graph.
 4. **Roads + movement speed**: built stone roads (175%) + auto dirt roads (105%) + surface speeds
    (stone 100% / grass 75%); render dark-grey stone vs worn dirt. (Extends roads.rs + pathfinding
    cost model + snapshot road tiles + client render.)
