@@ -268,11 +268,11 @@ so a correct scout route cannot conceal a missing founding dispatch.
    actions and Steward automation share that route; death/reassignment, source/spill recovery,
    map-cell reservation, tool wear, cadence, and SQLite restart are verified. Preserve the exact
    mapped-terrain, shrine-network attachment, disjoint stone/dirt surface, and movement rules.
-4. **Keep the verified semantic HUD complete while proving the whole game.** All 25 maintained
+4. **Keep the verified semantic HUD complete while proving the whole game.** All 28 maintained
    resource mappings now use unique, truthful tracked Board Game/Fish glyphs under the semantic
    icon directory; Stone has a block glyph and Bone a fish-skeleton glyph. The exact 1024×768
-   client-owned frame `/tmp/semantic-hud-25-final.png` shows every row without clipping. Preserve
-   the exhaustive 25-entry mapping/path tests as new resources land. All twenty-five physical
+   client-owned frame `/tmp/fine-biome-resource-ecology.png` shows every row without clipping. Preserve
+   the exhaustive 28-entry mapping/path tests as new resources land. All twenty-eight physical
    `CarryingKind` values also reuse their exact tracked HUD identities above moving cats;
    the inspected exact 1024×768 frame `/tmp/semantic-cargo-icons-1024.png` shows ten distinct
    simultaneous loads and no colored-square fallback. Preserve that exhaustive cargo mapping and

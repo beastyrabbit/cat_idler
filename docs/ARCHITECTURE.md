@@ -136,8 +136,8 @@ maintained product behavior rather than migration:
   Their inspectors expose real queues and travel state. A staffed Accountant physically visits
   reachable piles, dwells to count them, and updates only those reports; blocked piles remain
   stale. All 19 maintained labor skills now have truthful gain sources,
-  bounded effects, persistence, and inspector visibility. Other workshops still draw aggregate
-  inputs/outputs, and many recipes/material variants are absent.
+  bounded effects, persistence, and inspector visibility. All ten maintained processors use
+  physical input/work/output routes; many additional recipes/material variants are still absent.
 - **Finite item condition.** Finished units carry stable IDs, material/quality-based weight and
   durability, wear through truthful functional use, remain present when broken, and can be repaired
   only at their appropriate completed, staffed workshop using one matching visible material.
@@ -147,14 +147,15 @@ maintained product behavior rather than migration:
 - **Multi-village product model.** One canonical communal village and one personal village per
   stable signed identity are live. Ownership and selection persist; foreign private state stays
   server-filtered; explicit returned-scout delivery (never generic reveal state) creates mutual
-  summary contact; configurable signed propose/accept/cancel actions perform capped atomic direct
-  barter. Whole-world SQLite replacement is transactional, and colony-local runtime ids receive a
+  summary contact; configurable signed propose/accept/cancel actions create persisted visible
+  caravans with exact source-pile or finite-equipment escrow and return-before-credit. Whole-world
+  SQLite replacement is transactional, and colony-local runtime ids receive a
   storage-only colony namespace so simultaneous settlements cannot collide in legacy global-key
   tables. A durable communal scale gives the ownerless global hub 30 adults, six Dens, a 19×19
   core, doubled production/runway, and civic buildings, while personal villages remain exact
-  15-adult/three-Den/13×13 settlements through extinction recovery. Each colony still owns a
-  duplicate mutable terrain map; meeting is a delivered summary and direct barter swaps scalar
-  resources without physical encounters, caravans, or item stacks.
+  15-adult/three-Den/13×13 settlements through extinction recovery. `WorldState` owns one canonical
+  mutable terrain/Fish ledger; colony maps are fog-safe compatibility/view caches. Caravan cargo
+  can contain scalar goods or exact Tool/Weapon/Armor instances without identity collision.
 - **Durable native identity.** The native client keeps its HMAC bearer and selected village in a
   mode-0600 file replaced through a synced same-directory temporary file and atomic rename; WASM
   uses the corresponding local-storage record.
@@ -164,8 +165,9 @@ maintained product behavior rather than migration:
   complete at most one affordable supported node per rolling real-life day.
   Research labor/building automation and rituals remain Loremaster-owned.
   Typed modeled effects (including the durability consumer) and future-content unlock registries
-  persist, but 91 generated recipe IDs, all 64 generated resource IDs, and 25 worker-slot effects
-  still lack their intended authoritative gameplay consumers. All listed capacity studies own
+  persist, but 91 generated recipe IDs and all 64 generated resource IDs still lack their intended
+  authoritative gameplay consumers. Twelve Crews studies own real concurrent stations; thirteen
+  unsafe/passive Crews nodes remain future-only. All listed capacity studies own
   physical domains; thirteen former containerless studies are omitted and migrated with refunds.
   Resource/general scouts now
   preserve the shrine-return knowledge contract while following deterministic knowledge-blind

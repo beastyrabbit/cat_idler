@@ -1,8 +1,8 @@
 # P17 — 2D biome generator (Minecraft-style, ~25 biomes)
 
 > **Living target spec.** The deterministic 26-biome climate generator and rendering exist.
-> Fine-biome movement, finite physical fishing, and constructed staffed rail/ship transport are
-> verified. Complete biome-specific resource ecology remains open in
+> Fine-biome movement, finite physical fishing, finite Gem/Clay/Sand source ecology, and
+> constructed staffed rail/ship transport are verified. Downstream material recipes remain open in
 > [`docs/IMPLEMENTATION_AUDIT.md`](../../IMPLEMENTATION_AUDIT.md).
 
 User (2026-07-10): trees should be sparse on grass biomes and dense in forest biomes, etc. —
