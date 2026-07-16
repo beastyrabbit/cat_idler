@@ -8,6 +8,7 @@ use cat_protocol as proto;
 use cat_sim::{
     actions::{ActionCtx, apply_action},
     entities::{CatActivity, MapType, Position},
+    labor_pressure::observe_labor_pressure,
     officers::OfficerRole as SimOfficerRole,
     types::{BuildingType, CatSpecialization, JobKind, JobStatus, TileType},
     upgrade_tree::{self, UPGRADE_NODES},
@@ -847,6 +848,10 @@ fn staged_officer_handoff_reduces_manual_frequency_one_role_at_a_time() {
 
     let mut frequency = Vec::new();
     let mut baseline = world.clone();
+    assert_eq!(
+        observe_labor_pressure(&baseline.colonies[0]).manual_only_offices,
+        7
+    );
     frequency.push(manual_actions_for_vacancies(&mut baseline, 30_000));
     assert_eq!(
         frequency[0], 7,
@@ -860,6 +865,11 @@ fn staged_officer_handoff_reduces_manual_frequency_one_role_at_a_time() {
             &mut world,
             signed_officer(role, candidate),
             31_000 + index as i64,
+        );
+        assert_eq!(
+            observe_labor_pressure(&world.colonies[0]).manual_only_offices,
+            6 - index,
+            "{role:?} appointment was not reflected in observed labor ownership",
         );
 
         let mut guided = world.clone();

@@ -13,6 +13,32 @@ and any changed Bevy visuals have been verified.
 
 ## Verified fixes
 
+## 2026-07-16 — Useful labor pressure is measured, not inferred from idle labels
+
+**Problem:** The vision's central “more useful work than cats” tension had no quantitative
+guardrail. Existing playtests reported idle cats and officer vacancies, but could not distinguish a
+deliberately manual specialist category, a cat temporarily satisfying a physical need, a worker
+parked at an input-starved station, and a real shortage of paws for reachable work.
+
+**Fix:** `observe_labor_pressure` now reports unique job/station/farm/transport ownership, visible
+active and truly idle cats, sourced processor vacancies, workable exterior plots, and the seven
+manual-only office states without creating automation. Its read-only station probe uses the same
+authoritative recipe entitlement, physical input, output-headroom, and route block reason as the
+inspector; paused, research-locked, missing-input, and full-output stations do not count as useful
+demand. Player-guided tests issue ordinary signed actions from observed state and prove shortage by
+filling the roster, then receiving `No available worker.` on one more real physical order.
+
+**Evidence:** Seeds 7, 555, and 2024 each accept a mixed founding queue of six hunts, two water
+routes, fibre forage, expansion, and five fog scouts for all 15 cats; one sourced founding
+processor remains, measuring 16 useful slots for 15 paws. Three personal 200-game-hour guided
+campaigns and byte-identical five-minute twins retain positive food/water and zero resets while
+repeatedly reaching workforce-only denial. Three personal plus the communal 48-hour passive proxy
+twins survive with all seven specialist offices correctly manual. The established action matrix
+continues to exercise production, research, authored roads, exterior farms, scouts, and both
+transport modes; the staged signed officer test observes every 7→0 manual-office state. The
+existing exact one-second 48-hour personal/communal survival campaigns remain the live-cadence
+control. No gameplay correction or renderer change was required.
+
 ## 2026-07-16 — Village barter follows one durable shared-world land route
 
 **Problem:** Accepted village barter persisted arbitrary waypoint lists but production acceptance

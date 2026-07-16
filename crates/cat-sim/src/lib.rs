@@ -47,6 +47,7 @@ pub mod farming;
 pub mod housing;
 pub mod idle_engine;
 pub mod idle_rules;
+pub mod labor_pressure;
 pub mod ledger;
 pub mod processing;
 pub mod production;

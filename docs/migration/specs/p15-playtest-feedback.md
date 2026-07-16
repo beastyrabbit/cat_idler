@@ -20,10 +20,14 @@ Captured from live `cargo dev` playtesting. Triaged; "already there" notes from 
   little behind the sim is fine). Walk-anim only while moving; idle-frame when arrived. User wants
   it "realistic": cats always walk one tile to the next, never jump. (Sim already walks every tile
   internally; this is purely the client render. If a fast cat lags badly, cap the max lag.)
-- **Enough useful work.** The current founding is 15 cats, and strict vacant offices deliberately
-  wait for player orders rather than silently filling every paw. Guided and staged-officer
-  campaigns prove the ownership model; future playtests should judge whether each stage still
-  offers more useful work than labor without treating intentional manual vacancies as an AI bug.
+- **Enough useful work — verified quantitatively.** The current founding is 15 cats, and strict
+  vacant offices deliberately wait for player orders rather than silently filling every paw.
+  Read-only telemetry separates useful job/station/farm/transport ownership, sourced vacancies,
+  true idle cats, physical personal needs, and all seven manual-only offices. On seeds 7, 555, and
+  2024, observed-state signed guidance fills all 15 paws with a mixed physical queue while one
+  sourced processor remains available (16 useful slots); another real hunt is denied only because
+  no worker remains. Three-seed 200-hour guided twins and personal/communal 48-hour passive twins
+  keep the distinction stable without hidden specialist automation or filler jobs.
 - **Food storage & shrine overlap — resolved.** Exact multi-tile footprints, reservations, and
   client footprint rendering prevent the old point-sprite overlap.
 - **"2.5D but not really" — resolved.** Base-y depth sorting and exact footprints make cats pass

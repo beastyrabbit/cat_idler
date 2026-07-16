@@ -80,6 +80,10 @@ Verified foundations include:
   tools improve construction, crafting, quarrying, and hauling;
   repeated buildings have escalating type-local costs, and the Accounting Tent is live in the
   snapshot and client;
+- quantitative labor-pressure telemetry separates useful assigned work, sourced station/farm
+  vacancies, personal needs, true idle cats, and all seven intentionally manual offices. Three
+  founding seeds expose 16 useful physical slots for 15 cats, and 200-game-hour observed-state
+  guided twins preserve the shortage without hidden automation or survival resets;
 - automatic elections expose an authoritative between-term schedule in snapshots and the
   governance panel: term start, next election boundary, term length, and a server-derived
   countdown remain visible even while no election is open;
