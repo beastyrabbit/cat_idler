@@ -2019,6 +2019,7 @@ fn job_metadata_json(metadata: &JobMetadata) -> Value {
         }),
         JobMetadata::OfferingCarry {
             source_stockpile_id,
+            kind,
             site,
             accepted,
             escrow_id,
@@ -2026,14 +2027,20 @@ fn job_metadata_json(metadata: &JobMetadata) -> Value {
         } => json!({
             "kind": "offeringCarry",
             "sourceStockpileId": source_stockpile_id,
+            "resourceKind": kind,
             "site": site.as_ref().map(tile_pos_json),
             "accepted": accepted,
             "escrowId": escrow_id,
             "delivered": delivered,
         }),
-        JobMetadata::OfferingRitual { escrow_id, amount } => json!({
+        JobMetadata::OfferingRitual {
+            escrow_id,
+            kind,
+            amount,
+        } => json!({
             "kind": "offeringRitual",
             "escrowId": escrow_id,
+            "resourceKind": kind,
             "amount": amount,
         }),
         JobMetadata::Scout {
@@ -2205,6 +2212,13 @@ fn parse_job_metadata(raw: Option<String>) -> rusqlite::Result<JobMetadata> {
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_owned(),
+            kind: serde_json::from_value(
+                value
+                    .get("resourceKind")
+                    .cloned()
+                    .unwrap_or_else(|| Value::String("materials".to_owned())),
+            )
+            .map_err(from_sql_json)?,
             site: value
                 .get("site")
                 .filter(|site| !site.is_null())
@@ -2231,6 +2245,13 @@ fn parse_job_metadata(raw: Option<String>) -> rusqlite::Result<JobMetadata> {
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_owned(),
+            kind: serde_json::from_value(
+                value
+                    .get("resourceKind")
+                    .cloned()
+                    .unwrap_or_else(|| Value::String("materials".to_owned())),
+            )
+            .map_err(from_sql_json)?,
             amount: value
                 .get("amount")
                 .and_then(Value::as_f64)
@@ -4751,6 +4772,7 @@ mod tests {
             created_at: 10_000,
             metadata: JobMetadata::OfferingCarry {
                 source_stockpile_id: source_id,
+                kind: cat_sim::stockpiles::ResourceKind::Materials,
                 site: Some(TilePos { x: 9, y: 11 }),
                 accepted: false,
                 escrow_id: inbound_escrow,
@@ -4793,6 +4815,7 @@ mod tests {
             ends_at: Some(2_410_000),
             metadata: JobMetadata::OfferingRitual {
                 escrow_id: ritual_escrow,
+                kind: cat_sim::stockpiles::ResourceKind::Materials,
                 amount: 10.0,
             },
             ..JobRuntime::default()
@@ -4813,6 +4836,72 @@ mod tests {
                 "restarted physical offerings must make the same next-tick decisions"
             );
             assert_eq!(restarted, world);
+        }
+    }
+
+    #[test]
+    fn selectable_offering_metadata_round_trips_and_legacy_rows_default_to_materials() {
+        use cat_sim::stockpiles::ResourceKind;
+
+        for kind in [
+            ResourceKind::Food,
+            ResourceKind::Herbs,
+            ResourceKind::Materials,
+        ] {
+            for metadata in [
+                JobMetadata::OfferingCarry {
+                    source_stockpile_id: "source".to_owned(),
+                    kind,
+                    site: Some(TilePos { x: 4, y: 5 }),
+                    accepted: true,
+                    escrow_id: "station-input:offering-test".to_owned(),
+                    delivered: 3.0,
+                },
+                JobMetadata::OfferingRitual {
+                    escrow_id: "station-input:offering-test".to_owned(),
+                    kind,
+                    amount: 5.0,
+                },
+            ] {
+                let json = job_metadata_json(&metadata);
+                assert_eq!(json.get("resourceKind"), Some(&json!(kind)));
+                assert_eq!(
+                    parse_job_metadata(Some(json.to_string())).expect("parse typed metadata"),
+                    metadata
+                );
+            }
+        }
+
+        for mut legacy in [
+            json!({
+                "kind": "offeringCarry",
+                "sourceStockpileId": "source",
+                "site": null,
+                "accepted": false,
+                "escrowId": "station-input:offering-legacy",
+                "delivered": 4.0
+            }),
+            json!({
+                "kind": "offeringRitual",
+                "escrowId": "station-input:offering-legacy",
+                "amount": 10.0
+            }),
+        ] {
+            legacy
+                .as_object_mut()
+                .expect("fixture object")
+                .remove("resourceKind");
+            let parsed = parse_job_metadata(Some(legacy.to_string())).expect("parse legacy row");
+            assert!(matches!(
+                parsed,
+                JobMetadata::OfferingCarry {
+                    kind: ResourceKind::Materials,
+                    ..
+                } | JobMetadata::OfferingRitual {
+                    kind: ResourceKind::Materials,
+                    ..
+                }
+            ));
         }
     }
 

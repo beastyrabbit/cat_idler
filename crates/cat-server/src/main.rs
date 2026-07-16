@@ -1051,6 +1051,9 @@ fn action_authentication(action: &ClientAction) -> ActionAuthentication<'_> {
         | ClientAction::OfferMaterials {
             session_id, sig, ..
         }
+        | ClientAction::OfferResource {
+            session_id, sig, ..
+        }
         | ClientAction::HaulGatherSpot {
             session_id, sig, ..
         }
@@ -2966,6 +2969,12 @@ mod tests {
                 session_id: signed.session_id.clone(),
                 nickname: "Tester".to_owned(),
                 sig: "invalid".to_owned(),
+            },
+            ClientAction::OfferResource {
+                session_id: signed.session_id.clone(),
+                nickname: "Tester".to_owned(),
+                sig: "invalid".to_owned(),
+                resource: cat_protocol::OfferingResource::Herbs,
             },
             ClientAction::HaulGatherSpot {
                 session_id: signed.session_id.clone(),
@@ -5142,6 +5151,88 @@ mod tests {
             world.colonies[1], beta_before,
             "beta was mutated by alpha actions"
         );
+    }
+
+    #[tokio::test]
+    async fn signed_selectable_offerings_persist_the_chosen_physical_resource() {
+        use cat_protocol::OfferingResource;
+        use cat_sim::{
+            entities::{CatActivity, Resources},
+            stockpiles::ResourceKind as SimResourceKind,
+            types::JobKind as SimJobKind,
+            world_tick::{JobMetadata, reconcile_colony_stockpiles},
+        };
+
+        let mut world = new_world(WORLD_SEED);
+        let mut colony = found_colony(
+            WORLD_SEED,
+            STARTER_COLONY_ID,
+            1_000_000,
+            STARTER_COLONY_SEED,
+        );
+        colony.resources = Resources {
+            food: 200.0,
+            herbs: 50.0,
+            materials: 100.0,
+            ..colony.resources
+        };
+        reconcile_colony_stockpiles(&mut colony);
+        world.colonies.push(colony);
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        persistence::init_schema(&conn).expect("init in-memory schema");
+        persistence::save_world(&conn, &world).expect("seed signed offering world");
+        let state = build_state_from_world(
+            world,
+            conn,
+            "test-session-secret".to_owned(),
+            false,
+            1_000_000,
+        );
+        let (mut connection, signed) = authenticated_connection(&state);
+
+        for (resource, expected) in [
+            (OfferingResource::Food, SimResourceKind::Food),
+            (OfferingResource::Herbs, SimResourceKind::Herbs),
+            (OfferingResource::Materials, SimResourceKind::Materials),
+        ] {
+            let action = ClientAction::OfferResource {
+                session_id: signed.session_id.clone(),
+                nickname: "Shrine Guide".to_owned(),
+                sig: signed.sig.clone(),
+                resource,
+            };
+            let result = send_action(&state, &mut connection, &action).await;
+            assert!(
+                result.result.ok,
+                "signed {resource:?} offering failed: {result:?}"
+            );
+            save_current_world(&state)
+                .await
+                .expect("persist signed selectable offering");
+
+            let persisted = {
+                let db = state.db.lock().await;
+                persistence::load_world(&db)
+                    .expect("load signed offering")
+                    .expect("world persisted")
+            };
+            assert!(persisted.colonies[0].jobs.iter().any(|job| {
+                job.kind == SimJobKind::CarryOffering
+                    && matches!(
+                        job.metadata,
+                        JobMetadata::OfferingCarry { kind, .. } if kind == expected
+                    )
+            }));
+
+            let mut live = state.world.lock().await;
+            live.colonies[0].jobs.clear();
+            for cat in &mut live.colonies[0].cats {
+                cat.current_task = None;
+                cat.activity = CatActivity::Idle;
+                cat.destination = None;
+                cat.carrying = None;
+            }
+        }
     }
 
     #[tokio::test]

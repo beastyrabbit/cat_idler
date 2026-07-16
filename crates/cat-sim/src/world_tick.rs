@@ -34,9 +34,11 @@ use crate::{
     leader_ai::{LeaderDecision, LeaderHousing, LeaderResources, LeaderSnapshot},
     leader_director::{
         BASELINE_HUNT_MAX_SLOTS, BASELINE_SCOUT_MAX_SLOTS, BASELINE_WATER_MAX_SLOTS, CatBrief,
-        CatBriefStats, DirectorPlan, LaborGoalKind, MatchOptions, OFFERING_MATERIALS_AMOUNT,
-        OFFERING_MATERIALS_RESERVE, RESEARCH_COMFORT_FLOOR, RESEARCH_COMFORT_FOOD_PER_CAT,
-        RESEARCH_COMFORT_WATER_PER_CAT, WATER_MAX_SLOTS, automated_plan, is_research_comfortable,
+        CatBriefStats, DirectorPlan, LaborGoalKind, MatchOptions, OFFERING_FOOD_AMOUNT,
+        OFFERING_FOOD_RESERVE_FLOOR, OFFERING_FOOD_RESERVE_PER_CAT, OFFERING_HERBS_AMOUNT,
+        OFFERING_HERBS_RESERVE, OFFERING_MATERIALS_AMOUNT, OFFERING_MATERIALS_RESERVE,
+        RESEARCH_COMFORT_FLOOR, RESEARCH_COMFORT_FOOD_PER_CAT, RESEARCH_COMFORT_WATER_PER_CAT,
+        WATER_MAX_SLOTS, automated_plan, is_research_comfortable,
         match_cats_to_slots_with_officers, officer_role_for,
     },
     ledger::{
@@ -539,12 +541,14 @@ pub enum JobMetadata {
         transit_id: String,
         amount_in_transit: f64,
     },
-    /// Physical material offering delivery. `source_stockpile_id` identifies the next
+    /// Physical offering delivery. `source_stockpile_id` identifies the next
     /// visible pile to collect from; partial deliveries accumulate only in the persisted
     /// station-local `escrow_id` at the shrine. `delivered` mirrors that escrow for
-    /// truthful phase inspection and deterministic restart recovery.
+    /// truthful phase inspection and deterministic restart recovery. Missing resource
+    /// metadata in a legacy SQLite record migrates to Materials.
     OfferingCarry {
         source_stockpile_id: String,
+        kind: ResourceKind,
         site: Option<TilePos>,
         accepted: bool,
         escrow_id: String,
@@ -554,6 +558,7 @@ pub enum JobMetadata {
     /// consumes exactly `amount` there before producing any blessing.
     OfferingRitual {
         escrow_id: String,
+        kind: ResourceKind,
         amount: f64,
     },
     /// A scout excursion keeps its purpose and resolved route in durable job
@@ -6628,11 +6633,13 @@ fn phase_15_assign_promoted_job_destinations(
             JobKind::CarryOffering => match colony.jobs[job_index].metadata.clone() {
                 JobMetadata::OfferingCarry {
                     source_stockpile_id,
+                    kind,
                     escrow_id,
                     delivered,
                     ..
                 } => JobMetadata::OfferingCarry {
                     source_stockpile_id,
+                    kind,
                     site: Some(site),
                     accepted: false,
                     escrow_id,
@@ -8516,28 +8523,75 @@ const TITHE_COOLDOWN_MS: i64 = 24 * 3_600_000;
 const OFFERING_COOLDOWN_MS: i64 = 12 * 3_600_000;
 const OFFERING_CARGO_PREFIX: &str = "offering-cargo:";
 
-/// Materials physically present in player-visible stores. Station input/output/transit
-/// and shrine escrow are excluded: an offering must start from goods the player can see.
-pub(crate) fn visible_offering_materials(colony: &ColonyRuntime) -> f64 {
+/// The supported physical shrine offerings, in stable player-facing order.
+const OFFERING_RESOURCE_KINDS: [ResourceKind; 3] = [
+    ResourceKind::Food,
+    ResourceKind::Herbs,
+    ResourceKind::Materials,
+];
+
+/// Exact resource-specific cargo amount for one physical offering.
+pub(crate) const fn offering_amount(kind: ResourceKind) -> Option<f64> {
+    match kind {
+        ResourceKind::Food => Some(OFFERING_FOOD_AMOUNT as f64),
+        ResourceKind::Herbs => Some(OFFERING_HERBS_AMOUNT as f64),
+        ResourceKind::Materials => Some(OFFERING_MATERIALS_AMOUNT as f64),
+        _ => None,
+    }
+}
+
+/// Reserve that must remain in the colony aggregate throughout pickup. Food scales
+/// with living mouths; the lower-volume Herb and Materials policies use fixed safe
+/// operating reserves.
+pub(crate) fn offering_reserve(colony: &ColonyRuntime, kind: ResourceKind) -> Option<f64> {
+    match kind {
+        ResourceKind::Food => {
+            let population = colony
+                .cats
+                .iter()
+                .filter(|cat| cat.death_time.is_none())
+                .count() as f64;
+            Some((population * OFFERING_FOOD_RESERVE_PER_CAT).max(OFFERING_FOOD_RESERVE_FLOOR))
+        }
+        ResourceKind::Herbs => Some(OFFERING_HERBS_RESERVE),
+        ResourceKind::Materials => Some(OFFERING_MATERIALS_RESERVE),
+        _ => None,
+    }
+}
+
+const fn offering_resource_label(kind: ResourceKind) -> &'static str {
+    match kind {
+        ResourceKind::Food => "food",
+        ResourceKind::Herbs => "herbs",
+        ResourceKind::Materials => "materials",
+        _ => "unsupported resources",
+    }
+}
+
+/// Goods of one supported kind physically present in player-visible stores.
+/// Station input/output/transit and shrine escrow are excluded: an offering must
+/// start from goods the player can see.
+pub(crate) fn visible_offering_resource(colony: &ColonyRuntime, kind: ResourceKind) -> f64 {
     colony
         .stockpiles
         .iter()
         .filter(|pile| !pile.is_station_local())
-        .map(|pile| stockpiles::resource_amount(&pile.contents, ResourceKind::Materials))
+        .map(|pile| stockpiles::resource_amount(&pile.contents, kind))
         .sum()
 }
 
 fn offering_source_stockpile(
     colony: &ColonyRuntime,
     from: WorldPos,
+    kind: ResourceKind,
 ) -> Option<(&Stockpile, TilePos)> {
+    offering_amount(kind)?;
     colony
         .stockpiles
         .iter()
         .filter(|pile| {
             !pile.is_station_local()
-                && stockpiles::resource_amount(&pile.contents, ResourceKind::Materials)
-                    > f64::EPSILON
+                && stockpiles::resource_amount(&pile.contents, kind) > f64::EPSILON
         })
         .map(|pile| {
             let (x, y) = pile.center();
@@ -8559,15 +8613,17 @@ fn offering_source_stockpile(
         .map(|(pile, _, site)| (pile, site))
 }
 
-/// Build the durable first-stage offering metadata shared by player and officer dispatch.
-pub(crate) fn material_offering_metadata(
+/// Build durable first-stage offering metadata shared by player and officer dispatch.
+pub(crate) fn offering_metadata(
     colony: &ColonyRuntime,
     from: WorldPos,
     now_ms: i64,
+    kind: ResourceKind,
 ) -> Option<JobMetadata> {
-    let (source, _) = offering_source_stockpile(colony, from)?;
+    let (source, _) = offering_source_stockpile(colony, from, kind)?;
     Some(JobMetadata::OfferingCarry {
         source_stockpile_id: source.id.clone(),
+        kind,
         site: None,
         accepted: false,
         escrow_id: stockpiles::station_input_id(&format!(
@@ -8576,6 +8632,15 @@ pub(crate) fn material_offering_metadata(
         )),
         delivered: 0.0,
     })
+}
+
+/// Legacy material helper retained for the Loremaster's established policy.
+pub(crate) fn material_offering_metadata(
+    colony: &ColonyRuntime,
+    from: WorldPos,
+    now_ms: i64,
+) -> Option<JobMetadata> {
+    offering_metadata(colony, from, now_ms, ResourceKind::Materials)
 }
 
 fn offering_cargo_marker(job_id: &str) -> String {
@@ -13015,24 +13080,29 @@ fn is_offering_escrow_id(id: &str) -> bool {
         .is_some_and(|suffix| suffix.starts_with("offering-"))
 }
 
-fn offering_escrow_amount(colony: &ColonyRuntime, escrow_id: &str) -> f64 {
+fn offering_escrow_amount(colony: &ColonyRuntime, escrow_id: &str, kind: ResourceKind) -> f64 {
     colony
         .stockpiles
         .iter()
         .find(|pile| pile.id == escrow_id)
         .map_or(0.0, |pile| {
-            stockpiles::resource_amount(&pile.contents, ResourceKind::Materials)
+            stockpiles::resource_amount(&pile.contents, kind)
         })
 }
 
-fn ensure_offering_escrow(colony: &mut ColonyRuntime, escrow_id: &str) {
-    if colony.stockpiles.iter().any(|pile| pile.id == escrow_id) {
+fn ensure_offering_escrow(colony: &mut ColonyRuntime, escrow_id: &str, kind: ResourceKind) {
+    if let Some(existing) = colony
+        .stockpiles
+        .iter_mut()
+        .find(|pile| pile.id == escrow_id)
+    {
+        existing.accepts.insert(kind);
         return;
     }
     colony.stockpiles.push(stockpiles::make_station_store(
         escrow_id.to_owned(),
         stockpiles::shrine_rect(colony.anchor.x, colony.anchor.y),
-        [ResourceKind::Materials],
+        [kind],
     ));
 }
 
@@ -13058,37 +13128,35 @@ fn recover_orphaned_offering_escrows(colony: &mut ColonyRuntime) {
         .collect::<Vec<_>>();
 
     for escrow_id in orphaned {
-        loop {
-            let amount = offering_escrow_amount(colony, &escrow_id);
-            if amount <= f64::EPSILON {
-                colony.stockpiles.retain(|pile| pile.id != escrow_id);
-                break;
+        for kind in OFFERING_RESOURCE_KINDS {
+            loop {
+                let amount = offering_escrow_amount(colony, &escrow_id, kind);
+                if amount <= f64::EPSILON {
+                    break;
+                }
+                let from = village_anchor_world(colony.anchor);
+                let Some(destination) = nearest_output_pile(colony, kind, from) else {
+                    break;
+                };
+                let moved = amount.min(stockpile_headroom(colony, destination, kind));
+                if moved <= f64::EPSILON {
+                    break;
+                }
+                if let Some(escrow) = colony
+                    .stockpiles
+                    .iter_mut()
+                    .find(|pile| pile.id == escrow_id)
+                {
+                    stockpiles::add_resource(&mut escrow.contents, kind, -moved);
+                }
+                stockpiles::add_resource(&mut colony.stockpiles[destination].contents, kind, moved);
             }
-            let from = village_anchor_world(colony.anchor);
-            let Some(destination) = nearest_output_pile(colony, ResourceKind::Materials, from)
-            else {
-                break;
-            };
-            let moved = amount.min(stockpile_headroom(
-                colony,
-                destination,
-                ResourceKind::Materials,
-            ));
-            if moved <= f64::EPSILON {
-                break;
-            }
-            if let Some(escrow) = colony
-                .stockpiles
-                .iter_mut()
-                .find(|pile| pile.id == escrow_id)
-            {
-                stockpiles::add_resource(&mut escrow.contents, ResourceKind::Materials, -moved);
-            }
-            stockpiles::add_resource(
-                &mut colony.stockpiles[destination].contents,
-                ResourceKind::Materials,
-                moved,
-            );
+        }
+        let empty = OFFERING_RESOURCE_KINDS
+            .iter()
+            .all(|&kind| offering_escrow_amount(colony, &escrow_id, kind) <= f64::EPSILON);
+        if empty {
+            colony.stockpiles.retain(|pile| pile.id != escrow_id);
         }
     }
 }
@@ -13099,13 +13167,8 @@ fn retarget_offering_source(
     cat_index: usize,
 ) -> bool {
     let from = position_to_world(colony.anchor, colony.cats[cat_index].position);
-    let Some((source, site)) = offering_source_stockpile(colony, from) else {
-        colony.cats[cat_index].destination = None;
-        colony.cats[cat_index].activity = CatActivity::Idle;
-        return false;
-    };
-    let source_id = source.id.clone();
     let JobMetadata::OfferingCarry {
+        kind,
         escrow_id,
         delivered,
         ..
@@ -13113,8 +13176,15 @@ fn retarget_offering_source(
     else {
         return false;
     };
+    let Some((source, site)) = offering_source_stockpile(colony, from, kind) else {
+        colony.cats[cat_index].destination = None;
+        colony.cats[cat_index].activity = CatActivity::Idle;
+        return false;
+    };
+    let source_id = source.id.clone();
     colony.jobs[job_index].metadata = JobMetadata::OfferingCarry {
         source_stockpile_id: source_id,
+        kind,
         site: Some(site),
         accepted: false,
         escrow_id,
@@ -13213,6 +13283,7 @@ fn advance_material_offering_logistics(colony: &mut ColonyRuntime, now_ms: i64) 
         let metadata = colony.jobs[job_index].metadata.clone();
         let JobMetadata::OfferingCarry {
             source_stockpile_id,
+            kind,
             site,
             accepted,
             escrow_id,
@@ -13223,6 +13294,12 @@ fn advance_material_offering_logistics(colony: &mut ColonyRuntime, now_ms: i64) 
             colony.jobs[job_index].completed_at = Some(now_ms);
             continue;
         };
+        let Some(required_amount) = offering_amount(kind) else {
+            colony.jobs[job_index].status = JobStatus::Cancelled;
+            colony.jobs[job_index].completed_at = Some(now_ms);
+            continue;
+        };
+        let reserve = offering_reserve(colony, kind).expect("supported offering has a reserve");
 
         let carrying_this_offering =
             colony.cats[cat_index]
@@ -13248,48 +13325,36 @@ fn advance_material_offering_logistics(colony: &mut ColonyRuntime, now_ms: i64) 
                 .carrying
                 .take()
                 .map_or(0.0, |carrying| carrying.amount.max(0.0));
-            let remaining_needed = (f64::from(OFFERING_MATERIALS_AMOUNT) - delivered).max(0.0);
+            let remaining_needed = (required_amount - delivered).max(0.0);
             let accepted_amount = carried.min(remaining_needed);
-            ensure_offering_escrow(colony, &escrow_id);
+            ensure_offering_escrow(colony, &escrow_id, kind);
             if let Some(escrow) = colony
                 .stockpiles
                 .iter_mut()
                 .find(|pile| pile.id == escrow_id)
             {
-                stockpiles::add_resource(
-                    &mut escrow.contents,
-                    ResourceKind::Materials,
-                    accepted_amount,
-                );
+                stockpiles::add_resource(&mut escrow.contents, kind, accepted_amount);
             }
-            stockpiles::add_resource(
-                &mut colony.resources,
-                ResourceKind::Materials,
-                accepted_amount,
-            );
+            stockpiles::add_resource(&mut colony.resources, kind, accepted_amount);
             let excess = (carried - accepted_amount).max(0.0);
             if excess > f64::EPSILON {
                 let recovery_id = format!(
                     "{}offering-recovery-{job_id}-{now_ms}",
                     stockpiles::STATION_INPUT_PREFIX
                 );
-                ensure_offering_escrow(colony, &recovery_id);
+                ensure_offering_escrow(colony, &recovery_id, kind);
                 if let Some(recovery) = colony
                     .stockpiles
                     .iter_mut()
                     .find(|pile| pile.id == recovery_id)
                 {
-                    stockpiles::add_resource(
-                        &mut recovery.contents,
-                        ResourceKind::Materials,
-                        excess,
-                    );
+                    stockpiles::add_resource(&mut recovery.contents, kind, excess);
                 }
-                stockpiles::add_resource(&mut colony.resources, ResourceKind::Materials, excess);
+                stockpiles::add_resource(&mut colony.resources, kind, excess);
             }
             let delivered = delivered + accepted_amount;
 
-            if delivered + f64::EPSILON >= f64::from(OFFERING_MATERIALS_AMOUNT) {
+            if delivered + f64::EPSILON >= required_amount {
                 let requester = colony.jobs[job_index].requested_by;
                 colony.jobs[job_index].status = JobStatus::Completed;
                 colony.jobs[job_index].completed_at = Some(now_ms);
@@ -13298,7 +13363,10 @@ fn advance_material_offering_logistics(colony: &mut ColonyRuntime, now_ms: i64) 
                     colony,
                     now_ms,
                     EventKind::JobCompleted,
-                    "Completed carry offering.",
+                    format!(
+                        "Completed carry {} offering.",
+                        offering_resource_label(kind)
+                    ),
                 );
                 queue_job_requested_by(
                     colony,
@@ -13308,7 +13376,8 @@ fn advance_material_offering_logistics(colony: &mut ColonyRuntime, now_ms: i64) 
                     Some(cat_id.clone()),
                     JobMetadata::OfferingRitual {
                         escrow_id,
-                        amount: f64::from(OFFERING_MATERIALS_AMOUNT),
+                        kind,
+                        amount: required_amount,
                     },
                 );
                 if let Some(cat) = colony.cats.iter_mut().find(|cat| cat.id == cat_id) {
@@ -13319,6 +13388,7 @@ fn advance_material_offering_logistics(colony: &mut ColonyRuntime, now_ms: i64) 
             } else {
                 colony.jobs[job_index].metadata = JobMetadata::OfferingCarry {
                     source_stockpile_id,
+                    kind,
                     site,
                     accepted: false,
                     escrow_id,
@@ -13339,32 +13409,31 @@ fn advance_material_offering_logistics(colony: &mut ColonyRuntime, now_ms: i64) 
             )) == site
         });
         if accepted && at_source {
-            let remaining_needed = (f64::from(OFFERING_MATERIALS_AMOUNT) - delivered).max(0.0);
+            let remaining_needed = (required_amount - delivered).max(0.0);
             let available = colony
                 .stockpiles
                 .iter()
                 .find(|pile| pile.id == source_stockpile_id)
                 .map_or(0.0, |pile| {
-                    stockpiles::resource_amount(&pile.contents, ResourceKind::Materials)
+                    stockpiles::resource_amount(&pile.contents, kind)
                 });
             let pickup = available.min(remaining_needed);
             if pickup > f64::EPSILON
-                && colony.resources.materials + f64::EPSILON >= OFFERING_MATERIALS_RESERVE + pickup
+                && stockpiles::resource_amount(&colony.resources, kind) + f64::EPSILON
+                    >= reserve + pickup
+                && visible_offering_resource(colony, kind) + f64::EPSILON >= reserve + pickup
             {
                 if let Some(source) = colony
                     .stockpiles
                     .iter_mut()
                     .find(|pile| pile.id == source_stockpile_id)
                 {
-                    stockpiles::add_resource(
-                        &mut source.contents,
-                        ResourceKind::Materials,
-                        -pickup,
-                    );
+                    stockpiles::add_resource(&mut source.contents, kind, -pickup);
                 }
-                stockpiles::add_resource(&mut colony.resources, ResourceKind::Materials, -pickup);
+                stockpiles::add_resource(&mut colony.resources, kind, -pickup);
                 colony.cats[cat_index].carrying = Some(Carrying {
-                    kind: CarryingKind::Materials,
+                    kind: carrying_kind_for_resource(kind)
+                        .expect("supported offerings have a carrying kind"),
                     amount: pickup,
                     job_ended_at: now_ms,
                     source_gather_spot: Some(offering_cargo_marker(&job_id)),
@@ -13374,6 +13443,7 @@ fn advance_material_offering_logistics(colony: &mut ColonyRuntime, now_ms: i64) 
                 colony.cats[cat_index].activity = CatActivity::Returning;
                 colony.jobs[job_index].metadata = JobMetadata::OfferingCarry {
                     source_stockpile_id,
+                    kind,
                     site: Some(world_pos_to_tile(shrine)),
                     accepted: false,
                     escrow_id,
@@ -13394,8 +13464,7 @@ fn advance_material_offering_logistics(colony: &mut ColonyRuntime, now_ms: i64) 
 
         let source_still_valid = colony.stockpiles.iter().any(|pile| {
             pile.id == source_stockpile_id
-                && stockpiles::resource_amount(&pile.contents, ResourceKind::Materials)
-                    > f64::EPSILON
+                && stockpiles::resource_amount(&pile.contents, kind) > f64::EPSILON
         });
         if !source_still_valid || site.is_none() {
             retarget_offering_source(colony, job_index, cat_index);
@@ -17658,6 +17727,11 @@ fn recover_offering_cargo_from_cat(colony: &mut ColonyRuntime, cat_id: &str, now
         .carrying
         .take()
         .expect("offering cargo checked above");
+    let Some(kind) =
+        carrying_resource_kind(carrying.kind).filter(|kind| offering_amount(*kind).is_some())
+    else {
+        return;
+    };
     let remaining = credit_carrying(colony, &carrying, at);
     if remaining <= f64::EPSILON {
         return;
@@ -17666,15 +17740,15 @@ fn recover_offering_cargo_from_cat(colony: &mut ColonyRuntime, cat_id: &str, now
         "{}offering-recovery-{cat_id}-{now_ms}",
         stockpiles::STATION_INPUT_PREFIX
     );
-    ensure_offering_escrow(colony, &escrow_id);
+    ensure_offering_escrow(colony, &escrow_id, kind);
     if let Some(escrow) = colony
         .stockpiles
         .iter_mut()
         .find(|pile| pile.id == escrow_id)
     {
-        stockpiles::add_resource(&mut escrow.contents, ResourceKind::Materials, remaining);
+        stockpiles::add_resource(&mut escrow.contents, kind, remaining);
     }
-    stockpiles::add_resource(&mut colony.resources, ResourceKind::Materials, remaining);
+    stockpiles::add_resource(&mut colony.resources, kind, remaining);
 }
 
 fn mark_cat_dead(colony: &mut ColonyRuntime, cat_id: &str, now_ms: i64) {
@@ -19921,12 +19995,14 @@ fn accept_job(colony: &mut ColonyRuntime, job_index: usize, now_ms: i64) {
         },
         JobMetadata::OfferingCarry {
             source_stockpile_id,
+            kind,
             site,
             escrow_id,
             delivered,
             ..
         } => JobMetadata::OfferingCarry {
             source_stockpile_id,
+            kind,
             site,
             accepted: true,
             escrow_id,
@@ -23096,7 +23172,7 @@ fn complete_ritual(colony: &mut ColonyRuntime, job: &JobRuntime, gate: TickGate)
 
 /// Consume a completed physical shrine delivery and begin the ordinary blessing
 /// return leg. The aggregate ledger includes station input, so consumption removes
-/// the same amount from both the hidden offering escrow and `resources.materials`.
+/// the same amount from both the typed hidden offering escrow and aggregate resources.
 /// A missing shrine, malformed job, short escrow, or second invocation produces
 /// nothing and lets phase 33 recover any orphaned escrow into visible storage.
 fn complete_offering(colony: &mut ColonyRuntime, job: &JobRuntime, gate: TickGate) -> bool {
@@ -23106,14 +23182,21 @@ fn complete_offering(colony: &mut ColonyRuntime, job: &JobRuntime, gate: TickGat
     if !has_complete_building(colony, BuildingType::Shrine) {
         return false;
     }
-    let JobMetadata::OfferingRitual { escrow_id, amount } = &job.metadata else {
+    let JobMetadata::OfferingRitual {
+        escrow_id,
+        kind,
+        amount,
+    } = &job.metadata
+    else {
         return false;
     };
-    let required = f64::from(OFFERING_MATERIALS_AMOUNT);
+    let Some(required) = offering_amount(*kind) else {
+        return false;
+    };
     if !is_offering_escrow_id(escrow_id)
         || (*amount - required).abs() > f64::EPSILON
-        || offering_escrow_amount(colony, escrow_id) + f64::EPSILON < *amount
-        || colony.resources.materials + f64::EPSILON < *amount
+        || offering_escrow_amount(colony, escrow_id, *kind) + f64::EPSILON < *amount
+        || stockpiles::resource_amount(&colony.resources, *kind) + f64::EPSILON < *amount
     {
         return false;
     }
@@ -23122,12 +23205,11 @@ fn complete_offering(colony: &mut ColonyRuntime, job: &JobRuntime, gate: TickGat
         .iter_mut()
         .find(|pile| pile.id == *escrow_id)
     {
-        stockpiles::add_resource(&mut escrow.contents, ResourceKind::Materials, -*amount);
+        stockpiles::add_resource(&mut escrow.contents, *kind, -*amount);
     }
-    stockpiles::add_resource(&mut colony.resources, ResourceKind::Materials, -*amount);
+    stockpiles::add_resource(&mut colony.resources, *kind, -*amount);
     colony.stockpiles.retain(|pile| {
-        pile.id != *escrow_id
-            || stockpiles::resource_amount(&pile.contents, ResourceKind::Materials) > f64::EPSILON
+        pile.id != *escrow_id || stockpiles::resource_amount(&pile.contents, *kind) > f64::EPSILON
     });
     colony.last_offering_at = Some(gate.processed_through);
     let shrine_yield = if has_complete_building(colony, BuildingType::Shrine) {
@@ -23156,7 +23238,8 @@ fn complete_offering(colony: &mut ColonyRuntime, job: &JobRuntime, gate: TickGat
         gate.processed_through,
         EventKind::Offering,
         format!(
-            "{cat_id} offered {OFFERING_MATERIALS_AMOUNT} materials at the shrine for blessings."
+            "{cat_id} offered {required:.0} {} at the shrine for blessings.",
+            offering_resource_label(*kind)
         ),
     );
     true
@@ -60966,7 +61049,7 @@ mod tests {
             })
             .expect("fixture has a visible material source");
         stockpiles::add_resource(&mut source.contents, ResourceKind::Materials, -amount);
-        ensure_offering_escrow(colony, &escrow_id);
+        ensure_offering_escrow(colony, &escrow_id, ResourceKind::Materials);
         let escrow = colony
             .stockpiles
             .iter_mut()
@@ -60987,7 +61070,11 @@ mod tests {
             started_at: Some(0),
             ends_at: Some(2_400_000),
             completed_at: None,
-            metadata: JobMetadata::OfferingRitual { escrow_id, amount },
+            metadata: JobMetadata::OfferingRitual {
+                escrow_id,
+                kind: ResourceKind::Materials,
+                amount,
+            },
         }
     }
 
@@ -61012,6 +61099,7 @@ mod tests {
             created_at: 1_000,
             metadata: JobMetadata::OfferingCarry {
                 source_stockpile_id: source_id.to_owned(),
+                kind: ResourceKind::Materials,
                 site: Some(site),
                 accepted: true,
                 escrow_id: stockpiles::station_input_id("offering-physical-test"),
@@ -61024,6 +61112,212 @@ mod tests {
     fn reliable_policy() -> TickPolicy {
         TickPolicy {
             config: crate::policy::config_for_tier(crate::types::PolicyTier::Excellent),
+        }
+    }
+
+    fn run_selected_physical_offering(kind: ResourceKind) -> ColonyRuntime {
+        let total = match kind {
+            ResourceKind::Food => 60.0,
+            ResourceKind::Herbs => 20.0,
+            ResourceKind::Materials => 30.0,
+            _ => unreachable!(),
+        };
+        let mut colony = offering_colony(0.0);
+        stockpiles::set_resource(&mut colony.resources, kind, total);
+        reconcile_colony_stockpiles(&mut colony);
+        add_complete_shrine(&mut colony);
+        let mut world = WorldState {
+            shared_spatial: Default::default(),
+            world_seed: 7,
+            colonies: vec![colony],
+        };
+        let action = match kind {
+            ResourceKind::Materials => signed_shrine_action("materials", None),
+            ResourceKind::Food | ResourceKind::Herbs => proto::ClientAction::OfferResource {
+                session_id: "shrine-session".to_owned(),
+                nickname: "Shrine Tester".to_owned(),
+                sig: "signed-player-guidance".to_owned(),
+                resource: match kind {
+                    ResourceKind::Food => proto::OfferingResource::Food,
+                    ResourceKind::Herbs => proto::OfferingResource::Herbs,
+                    _ => unreachable!(),
+                },
+            },
+            _ => unreachable!(),
+        };
+        let result = apply_action(&mut world, &action, &shrine_action_ctx(1_000));
+        assert!(result.ok, "{kind:?} dispatch failed: {:?}", result.message);
+        assert_eq!(world.colonies[0].global_upgrade_points, 0.0);
+        let carry_index = world.colonies[0]
+            .jobs
+            .iter()
+            .position(|job| job.kind == JobKind::CarryOffering)
+            .expect("player action queues physical carry");
+        assert!(matches!(
+            world.colonies[0].jobs[carry_index].metadata,
+            JobMetadata::OfferingCarry { kind: actual, .. } if actual == kind
+        ));
+
+        phase_14_promote_queued_jobs_and_break_ground(
+            &mut world.colonies[0],
+            production_gate(1, 1_001),
+            world.world_seed,
+        );
+        phase_15_assign_promoted_job_destinations(
+            &mut world.colonies[0],
+            production_gate(1, 1_001),
+            world.world_seed,
+        );
+        let source_site = match world.colonies[0].jobs[carry_index].metadata {
+            JobMetadata::OfferingCarry {
+                kind: actual,
+                site: Some(site),
+                ..
+            } => {
+                assert_eq!(actual, kind);
+                site
+            }
+            ref metadata => panic!("expected typed physical source, got {metadata:?}"),
+        };
+        world.colonies[0].cats[0].position = position_from_world(tile_pos_to_world(source_site));
+        accept_job(&mut world.colonies[0], carry_index, 1_002);
+        advance_material_offering_logistics(&mut world.colonies[0], 1_002);
+        let amount = offering_amount(kind).unwrap();
+        assert_eq!(
+            stockpiles::resource_amount(&world.colonies[0].resources, kind),
+            total - amount,
+            "pickup debits exactly the chosen stack"
+        );
+        assert_eq!(
+            world.colonies[0].cats[0]
+                .carrying
+                .as_ref()
+                .and_then(|cargo| carrying_resource_kind(cargo.kind)),
+            Some(kind)
+        );
+        assert_eq!(world.colonies[0].global_upgrade_points, 0.0);
+
+        world.colonies[0].cats[0].position =
+            position_from_world(village_anchor_world(world.colonies[0].anchor));
+        advance_material_offering_logistics(&mut world.colonies[0], 1_003);
+        assert_eq!(
+            stockpiles::resource_amount(&world.colonies[0].resources, kind),
+            total,
+            "shrine escrow is still finite colony inventory"
+        );
+        let ritual_index = world.colonies[0]
+            .jobs
+            .iter()
+            .position(|job| job.kind == JobKind::PerformOffering)
+            .expect("typed delivery queues typed ritual");
+        assert!(matches!(
+            world.colonies[0].jobs[ritual_index].metadata,
+            JobMetadata::OfferingRitual {
+                kind: actual,
+                amount: actual_amount,
+                ..
+            } if actual == kind && actual_amount == amount
+        ));
+        phase_14_promote_queued_jobs_and_break_ground(
+            &mut world.colonies[0],
+            production_gate(1, 1_004),
+            world.world_seed,
+        );
+        world.colonies[0].jobs[ritual_index].ends_at = Some(1_005);
+        phase_30_due_completion_build_ritual_training_return_mark_done(
+            &mut world.colonies[0],
+            production_gate(1, 1_005),
+        );
+        assert_eq!(
+            stockpiles::resource_amount(&world.colonies[0].resources, kind),
+            total - amount
+        );
+        assert_eq!(world.colonies[0].global_upgrade_points, 0.0);
+        assert_eq!(
+            world.colonies[0].cats[0]
+                .carrying
+                .as_ref()
+                .map(|cargo| cargo.kind),
+            Some(CarryingKind::Blessings)
+        );
+
+        let gate = production_gate(1, 1_006);
+        let mut movement = phase_32_movement_setup_and_village_expansion_queue(
+            &mut world.colonies[0],
+            gate,
+            reliable_policy(),
+            world.world_seed,
+        );
+        phase_33_movement_deposits_and_no_destination_wander(
+            &mut world.colonies[0],
+            gate,
+            &mut movement,
+        );
+        assert_eq!(world.colonies[0].global_upgrade_points, 1.0);
+        phase_33_movement_deposits_and_no_destination_wander(
+            &mut world.colonies[0],
+            gate,
+            &mut movement,
+        );
+        assert_eq!(
+            world.colonies[0].global_upgrade_points, 1.0,
+            "the blessing cargo credits once"
+        );
+        assert!(world.colonies[0].events.iter().any(|event| {
+            event.kind == EventKind::Offering
+                && event.message.contains(offering_resource_label(kind))
+        }));
+        world.colonies.remove(0)
+    }
+
+    #[test]
+    fn signed_player_guidance_physically_offers_food_herbs_and_materials_deterministically() {
+        for kind in OFFERING_RESOURCE_KINDS {
+            let first = run_selected_physical_offering(kind);
+            let second = run_selected_physical_offering(kind);
+            assert_eq!(first, second, "{kind:?} route must replay bit-for-bit");
+        }
+    }
+
+    #[test]
+    fn each_selectable_offering_enforces_its_own_safe_reserve_and_amount() {
+        for kind in OFFERING_RESOURCE_KINDS {
+            let mut colony = offering_colony(0.0);
+            add_complete_shrine(&mut colony);
+            let reserve = offering_reserve(&colony, kind).unwrap();
+            let amount = offering_amount(kind).unwrap();
+            stockpiles::set_resource(&mut colony.resources, kind, reserve + amount - 0.01);
+            reconcile_colony_stockpiles(&mut colony);
+            let action = match kind {
+                ResourceKind::Materials => signed_shrine_action("materials", None),
+                ResourceKind::Food | ResourceKind::Herbs => proto::ClientAction::OfferResource {
+                    session_id: "shrine-session".to_owned(),
+                    nickname: "Shrine Tester".to_owned(),
+                    sig: "signed-player-guidance".to_owned(),
+                    resource: if kind == ResourceKind::Food {
+                        proto::OfferingResource::Food
+                    } else {
+                        proto::OfferingResource::Herbs
+                    },
+                },
+                _ => unreachable!(),
+            };
+            let mut world = WorldState {
+                shared_spatial: Default::default(),
+                world_seed: 7,
+                colonies: vec![colony],
+            };
+            let rejected = apply_action(&mut world, &action, &shrine_action_ctx(1_000));
+            assert!(!rejected.ok, "{kind:?} spent inside its reserve");
+
+            stockpiles::set_resource(&mut world.colonies[0].resources, kind, reserve + amount);
+            reconcile_colony_stockpiles(&mut world.colonies[0]);
+            let accepted = apply_action(&mut world, &action, &shrine_action_ctx(1_001));
+            assert!(
+                accepted.ok,
+                "{kind:?} exact safe threshold failed: {:?}",
+                accepted.message
+            );
         }
     }
 
@@ -62052,12 +62346,18 @@ mod tests {
         let mut ritual = offering_job(&mut colony);
         ritual.status = JobStatus::Cancelled;
         colony.jobs.push(ritual);
-        assert_eq!(visible_offering_materials(&colony), 20.0);
+        assert_eq!(
+            visible_offering_resource(&colony, ResourceKind::Materials),
+            20.0
+        );
 
         advance_material_offering_logistics(&mut colony, 2_000);
 
         assert_eq!(colony.resources.materials, 30.0);
-        assert_eq!(visible_offering_materials(&colony), 30.0);
+        assert_eq!(
+            visible_offering_resource(&colony, ResourceKind::Materials),
+            30.0
+        );
         assert!(
             colony
                 .stockpiles

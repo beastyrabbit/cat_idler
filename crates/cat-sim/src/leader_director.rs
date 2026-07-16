@@ -65,6 +65,16 @@ pub const TITHE_REFINED_AMOUNT: u32 = 5;
 pub const OFFERING_MATERIALS_RESERVE: f64 = 10.0;
 /// Materials consumed per `carry_offering` job.
 pub const OFFERING_MATERIALS_AMOUNT: u32 = 10;
+/// Food consumed by a player-selected physical offering. The survival reserve is
+/// population-relative and deliberately mirrors the safe larder bar used by the
+/// immediate tithe without sharing the tithe's refined-goods faucet.
+pub const OFFERING_FOOD_AMOUNT: u32 = 20;
+pub const OFFERING_FOOD_RESERVE_PER_CAT: f64 = RESEARCH_COMFORT_FOOD_PER_CAT;
+pub const OFFERING_FOOD_RESERVE_FLOOR: f64 = RESEARCH_COMFORT_FLOOR;
+/// Herbs are a lower-volume medicinal crop. A physical offering consumes five
+/// while retaining five for illness/status stability and downstream recipes.
+pub const OFFERING_HERBS_AMOUNT: u32 = 5;
+pub const OFFERING_HERBS_RESERVE: f64 = 5.0;
 pub const HUNT_MAX_SLOTS_RATIO: f64 = 0.7;
 pub const WATER_MAX_SLOTS: u32 = 4;
 pub const QUARRY_MAX_SLOTS: u32 = 2;

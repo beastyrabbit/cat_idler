@@ -18,8 +18,8 @@ use crate::{
         item_weight_grams, item_workshop_id,
     },
     leader_director::{
-        OFFERING_MATERIALS_AMOUNT, OFFERING_MATERIALS_RESERVE, TITHE_FOOD_AMOUNT,
-        TITHE_FOOD_RESERVE_FLOOR, TITHE_FOOD_RESERVE_PER_CAT, TITHE_REFINED_AMOUNT,
+        TITHE_FOOD_AMOUNT, TITHE_FOOD_RESERVE_FLOOR, TITHE_FOOD_RESERVE_PER_CAT,
+        TITHE_REFINED_AMOUNT,
     },
     life_sim::{can_work, get_life_stage},
     migration::MigrantSpatialPhase,
@@ -49,11 +49,11 @@ use crate::{
         farm_rect_touches_claim_boundary, farm_route_is_reachable, found_colony_at,
         found_global_colony, has_frontier, has_logging_site, has_quarry_site, has_replant_site,
         has_water_site, inside_village_interior, is_farm_gather_spot_id, legal_farm_gather_spots,
-        material_offering_metadata, migration_game_minute_at, occupied_farm_tiles,
-        publish_colony_spatial, reconcile_colony_stockpiles, register_colony_spatial,
-        release_farm_worker, release_role_automation, road_material_reservations,
-        sync_all_colonies_from_shared, sync_colony_from_shared, village_exterior_is_road_connected,
-        visible_offering_materials, world_tick,
+        migration_game_minute_at, occupied_farm_tiles, offering_amount, offering_metadata,
+        offering_reserve, publish_colony_spatial, reconcile_colony_stockpiles,
+        register_colony_spatial, release_farm_worker, release_role_automation,
+        road_material_reservations, sync_all_colonies_from_shared, sync_colony_from_shared,
+        village_exterior_is_road_connected, visible_offering_resource, world_tick,
     },
     zones,
 };
@@ -160,8 +160,16 @@ pub fn apply_action(
         proto::ClientAction::OfferTithe { .. } => {
             with_colony(world, ctx, |colony| offer_tithe(colony, ctx))
         }
-        proto::ClientAction::OfferMaterials { .. } => {
-            with_colony(world, ctx, |colony| offer_materials(colony, ctx))
+        proto::ClientAction::OfferMaterials { .. } => with_colony(world, ctx, |colony| {
+            offer_resource(colony, stockpiles::ResourceKind::Materials, ctx)
+        }),
+        proto::ClientAction::OfferResource { resource, .. } => {
+            let kind = match resource {
+                proto::OfferingResource::Food => stockpiles::ResourceKind::Food,
+                proto::OfferingResource::Herbs => stockpiles::ResourceKind::Herbs,
+                proto::OfferingResource::Materials => stockpiles::ResourceKind::Materials,
+            };
+            with_colony(world, ctx, |colony| offer_resource(colony, kind, ctx))
         }
         proto::ClientAction::HaulGatherSpot {
             stockpile_id,
@@ -558,7 +566,7 @@ fn request_job(
         return train_warrior(colony, None, ctx);
     }
     if kind == JobKind::CarryOffering {
-        return offer_materials(colony, ctx);
+        return offer_resource(colony, stockpiles::ResourceKind::Materials, ctx);
     }
     if kind == JobKind::PerformOffering {
         return fail("An offering ritual begins only after physical shrine delivery.");
@@ -1084,21 +1092,36 @@ fn offer_tithe(colony: &mut ColonyRuntime, ctx: &ActionCtx) -> proto::ActionResu
     ok()
 }
 
-fn offer_materials(colony: &mut ColonyRuntime, ctx: &ActionCtx) -> proto::ActionResult {
+fn offer_resource(
+    colony: &mut ColonyRuntime,
+    kind: stockpiles::ResourceKind,
+    ctx: &ActionCtx,
+) -> proto::ActionResult {
     if !has_complete_building(colony, BuildingType::Shrine) {
         return fail("This village needs a completed shrine.");
     }
-    if colony.resources.materials
-        < OFFERING_MATERIALS_RESERVE + f64::from(OFFERING_MATERIALS_AMOUNT)
-        || visible_offering_materials(colony) + f64::EPSILON < f64::from(OFFERING_MATERIALS_AMOUNT)
+    let Some(amount) = offering_amount(kind) else {
+        return fail("That resource cannot be offered at the shrine.");
+    };
+    let reserve = offering_reserve(colony, kind).expect("supported offering has a reserve");
+    let resource_name = match kind {
+        stockpiles::ResourceKind::Food => "food",
+        stockpiles::ResourceKind::Herbs => "herbs",
+        stockpiles::ResourceKind::Materials => "materials",
+        _ => unreachable!("offering_amount accepted only supported resources"),
+    };
+    if stockpiles::resource_amount(&colony.resources, kind) + f64::EPSILON < reserve + amount
+        || visible_offering_resource(colony, kind) + f64::EPSILON < reserve + amount
     {
-        return fail("Not enough physically stored surplus materials for an offering.");
+        return fail(format!(
+            "Not enough physically stored surplus {resource_name} for an offering."
+        ));
     }
     if active_or_queued_jobs(colony)
         .iter()
         .any(|job| matches!(job.kind, JobKind::CarryOffering | JobKind::PerformOffering))
     {
-        return fail("A material offering is already in progress.");
+        return fail("A shrine offering is already in progress.");
     }
     let Some(cat_id) = select_best_cat(colony, Some(CatSpecialization::Ritualist)) else {
         return fail("No available ritualist.");
@@ -1115,8 +1138,10 @@ fn offer_materials(colony: &mut ColonyRuntime, ctx: &ActionCtx) -> proto::Action
             x: f64::from(colony.anchor.x),
             y: f64::from(colony.anchor.y),
         });
-    let Some(metadata) = material_offering_metadata(colony, from, ctx.now_ms) else {
-        return fail("No reachable physical material pile is available.");
+    let Some(metadata) = offering_metadata(colony, from, ctx.now_ms, kind) else {
+        return fail(format!(
+            "No reachable physical {resource_name} pile is available."
+        ));
     };
     queue_job(
         colony,

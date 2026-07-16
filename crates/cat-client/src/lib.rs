@@ -32,12 +32,12 @@ use cat_protocol::{
     ActionResult, BuildingSnapshot, BuildingType, CarryingKind, CatActivity, CatHousingStatus,
     CatNeeds, CatSnapshot, ClientAction, ColonySnapshot, CropKind, EventSnapshot, FarmSnapshot,
     FarmStage, FootprintSize, GateSide, GatherSpotPurpose, ItemInstanceSnapshot, ItemLocation,
-    ItemStackSnapshot, JobKind, Labor, OfficerRole, ProductionQueueEdit, QueueMoveDirection,
-    RaiderStatus, ResourceAmounts, ResourceCapacities, ResourceKind, ResourceStackSnapshot, RoleXp,
-    ScoutMission, ScoutResource, Specialization, StationCompartment, StockLedgerSnapshot,
-    StockpileSnapshot, TilePoint, TraderBuyOffer, TraderSellOffer, TraderSnapshot,
-    TraderVisitState, TransportMode, VillageKind, VillageScale, VillageTradeCaravanPhase,
-    WorldSnapshot, ZoneKind,
+    ItemStackSnapshot, JobKind, Labor, OfferingResource, OfficerRole, ProductionQueueEdit,
+    QueueMoveDirection, RaiderStatus, ResourceAmounts, ResourceCapacities, ResourceKind,
+    ResourceStackSnapshot, RoleXp, ScoutMission, ScoutResource, Specialization, StationCompartment,
+    StockLedgerSnapshot, StockpileSnapshot, TilePoint, TraderBuyOffer, TraderSellOffer,
+    TraderSnapshot, TraderVisitState, TransportMode, VillageKind, VillageScale,
+    VillageTradeCaravanPhase, WorldSnapshot, ZoneKind,
 };
 use cat_sim::climate::{Biome, ResourceHint};
 use cat_sim::terrain_gen::{
@@ -3335,6 +3335,8 @@ enum OrderAction {
     ExpandVillage,
     Ritual,
     OfferTithe,
+    OfferFood,
+    OfferHerbs,
     OfferMaterials,
     HaulSelected,
     PlanBuilding,
@@ -3346,7 +3348,7 @@ enum OrderAction {
 
 impl OrderAction {
     #[cfg(test)]
-    const ALL: [Self; 17] = [
+    const ALL: [Self; 19] = [
         Self::Hunt,
         Self::Fish,
         Self::FetchWater,
@@ -3357,6 +3359,8 @@ impl OrderAction {
         Self::ExpandVillage,
         Self::Ritual,
         Self::OfferTithe,
+        Self::OfferFood,
+        Self::OfferHerbs,
         Self::OfferMaterials,
         Self::HaulSelected,
         Self::PlanBuilding,
@@ -3376,8 +3380,10 @@ impl OrderAction {
         Self::ExpandVillage,
         Self::Ritual,
     ];
-    const TARGETS: [Self; 7] = [
+    const TARGETS: [Self; 9] = [
         Self::OfferTithe,
+        Self::OfferFood,
+        Self::OfferHerbs,
         Self::OfferMaterials,
         Self::HaulSelected,
         Self::StaffSelected,
@@ -3398,6 +3404,8 @@ impl OrderAction {
             Self::ExpandVillage => "Expand village",
             Self::Ritual => "Request ritual",
             Self::OfferTithe => "Offer tithe",
+            Self::OfferFood => "Offer food",
+            Self::OfferHerbs => "Offer herbs",
             Self::OfferMaterials => "Offer materials",
             Self::HaulSelected => "Haul selected pile",
             Self::PlanBuilding => "Plan building",
@@ -7296,6 +7304,18 @@ fn build_order_action(
             session_id,
             nickname,
             sig,
+        },
+        OrderAction::OfferFood => ClientAction::OfferResource {
+            session_id,
+            nickname,
+            sig,
+            resource: OfferingResource::Food,
+        },
+        OrderAction::OfferHerbs => ClientAction::OfferResource {
+            session_id,
+            nickname,
+            sig,
+            resource: OfferingResource::Herbs,
         },
         OrderAction::OfferMaterials => ClientAction::OfferMaterials {
             session_id,
@@ -12467,6 +12487,18 @@ mod tests {
                 session_id: "session-1".to_owned(),
                 nickname: "Desktop Cat".to_owned(),
                 sig: "signed".to_owned(),
+            },
+            ClientAction::OfferResource {
+                session_id: "session-1".to_owned(),
+                nickname: "Desktop Cat".to_owned(),
+                sig: "signed".to_owned(),
+                resource: OfferingResource::Food,
+            },
+            ClientAction::OfferResource {
+                session_id: "session-1".to_owned(),
+                nickname: "Desktop Cat".to_owned(),
+                sig: "signed".to_owned(),
+                resource: OfferingResource::Herbs,
             },
             ClientAction::OfferMaterials {
                 session_id: "session-1".to_owned(),

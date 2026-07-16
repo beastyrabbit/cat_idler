@@ -33,7 +33,7 @@ use cat_sim::{
     zones::ZoneRect,
 };
 
-const EXPECTED_ACTIONS: [&str; 51] = [
+const EXPECTED_ACTIONS: [&str; 52] = [
     "advance_time",
     "assign_officer",
     "assign_worker",
@@ -80,6 +80,7 @@ const EXPECTED_ACTIONS: [&str; 51] = [
     "unassign_officer",
     "unlock_node",
     "offer_materials",
+    "offer_resource",
     "offer_tithe",
     "offer_village_trade",
     "accept_village_trade",
@@ -191,6 +192,7 @@ fn action_name(action: &proto::ClientAction) -> &'static str {
         proto::ClientAction::ResearchNode { .. } => "research_node",
         proto::ClientAction::OfferTithe { .. } => "offer_tithe",
         proto::ClientAction::OfferMaterials { .. } => "offer_materials",
+        proto::ClientAction::OfferResource { .. } => "offer_resource",
         proto::ClientAction::HaulGatherSpot { .. } => "haul_gather_spot",
         proto::ClientAction::AssignWorker { .. } => "assign_worker",
         proto::ClientAction::TrainWarrior { .. } => "train_warrior",
@@ -1158,6 +1160,29 @@ fn run_action_campaign() -> WorldState {
     );
     assert!(world.colonies[0].global_upgrade_points > blessings_before_tithe);
 
+    reset_workers(&mut world);
+    let (session_id, nickname, sig) = signed_fields();
+    apply_ok(
+        &mut world,
+        &mut coverage,
+        proto::ClientAction::OfferResource {
+            session_id,
+            nickname,
+            sig,
+            resource: proto::OfferingResource::Food,
+        },
+        &ctx(4_185),
+    );
+    assert!(world.colonies[0].jobs.iter().any(|job| {
+        job.kind == JobKind::CarryOffering
+            && matches!(
+                job.metadata,
+                cat_sim::world_tick::JobMetadata::OfferingCarry {
+                    kind: ResourceKind::Food,
+                    ..
+                }
+            )
+    }));
     reset_workers(&mut world);
     world.colonies[0].resources.materials = 100.0;
     let (session_id, nickname, sig) = signed_fields();

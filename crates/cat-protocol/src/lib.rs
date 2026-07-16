@@ -1024,6 +1024,18 @@ pub enum CarryingKind {
     Armor,
 }
 
+/// A finite stockpile resource the player may choose for the shrine's physical
+/// haul-then-ritual offering route. This intentionally excludes the immediate
+/// food/refined tithe, which remains a separate action and economy faucet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OfferingResource {
+    Food,
+    Herbs,
+    #[default]
+    Materials,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CatNeeds {
@@ -1818,6 +1830,14 @@ pub enum ClientAction {
         session_id: String,
         nickname: String,
         sig: String,
+    },
+    /// Dispatch a cat to carry the player's chosen finite resource to the
+    /// shrine. `OfferMaterials` remains accepted for older clients.
+    OfferResource {
+        session_id: String,
+        nickname: String,
+        sig: String,
+        resource: OfferingResource,
     },
     /// Dispatch one manual gather-spot haul. `cat_id = None` selects the best
     /// currently available carrier deterministically.
@@ -3913,6 +3933,12 @@ mod tests {
                 nickname: "n".to_owned(),
                 sig: "x".to_owned(),
             },
+            ClientAction::OfferResource {
+                session_id: "s".to_owned(),
+                nickname: "n".to_owned(),
+                sig: "x".to_owned(),
+                resource: OfferingResource::Herbs,
+            },
             ClientAction::HaulGatherSpot {
                 session_id: "s".to_owned(),
                 nickname: "n".to_owned(),
@@ -3930,6 +3956,37 @@ mod tests {
         assert_eq!(
             serde_json::to_value(BuildingType::AccountingTent).unwrap(),
             json!("accounting_tent")
+        );
+        assert_eq!(
+            serde_json::to_value(ClientAction::OfferMaterials {
+                session_id: "s".to_owned(),
+                nickname: "n".to_owned(),
+                sig: "x".to_owned(),
+            })
+            .unwrap(),
+            json!({
+                "action": "offerMaterials",
+                "sessionId": "s",
+                "nickname": "n",
+                "sig": "x"
+            }),
+            "the legacy material action must retain its exact JSON contract"
+        );
+        assert_eq!(
+            serde_json::to_value(ClientAction::OfferResource {
+                session_id: "s".to_owned(),
+                nickname: "n".to_owned(),
+                sig: "x".to_owned(),
+                resource: OfferingResource::Food,
+            })
+            .unwrap(),
+            json!({
+                "action": "offerResource",
+                "sessionId": "s",
+                "nickname": "n",
+                "sig": "x",
+                "resource": "food"
+            })
         );
     }
 
