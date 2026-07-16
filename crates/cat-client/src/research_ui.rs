@@ -1531,10 +1531,18 @@ mod tests {
             .expect("research hut founding placement copy");
         assert_eq!(founding_line, "Available from founding: Research Hut");
 
-        for (node_id, expected_building) in [
-            ("wood_cutter_foundations", "Wood Cutter"),
-            ("stone_prep_foundations", "Stone Prep"),
-            ("woodworking_foundations", "Woodworking"),
+        for (node_id, expected_building, expected_modifier) in [
+            ("wood_cutter_foundations", "Wood Cutter", "Output Add"),
+            (
+                "stone_prep_foundations",
+                "Stone Prep",
+                "Durability Add 0.15",
+            ),
+            (
+                "woodworking_foundations",
+                "Woodworking",
+                "Durability Add 0.15",
+            ),
         ] {
             let lines = research_catalog()
                 .get(node_id)
@@ -1548,9 +1556,7 @@ mod tests {
                 "{node_id}: {lines:?}"
             );
             assert!(
-                lines
-                    .iter()
-                    .any(|line| line.contains("Durability Add 0.15")),
+                lines.iter().any(|line| line.contains(expected_modifier)),
                 "the founding marker must not hide {node_id}'s purchased modifier"
             );
             assert!(

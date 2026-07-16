@@ -70,9 +70,41 @@ pub const APPROVED_EFFECT_IDS: &[&str] = &[
     "storagePerLevelMult",
     "housingPerDen",
     "waterCarryCapacity",
+    "restRecovery",
+    "herbMedicineEfficacy",
+    "kittenGrowth",
+    "elderProtection",
+    "mouseFarmFood",
+    "shrineBlessingYield",
+    "accountingSpeed",
+    "foodStorekeeping",
+    "waterStewardship",
+    "wallDefense",
+    "fieldStewardship",
+    "barracksReadiness",
+    "denStewardship",
 ];
 const LEGACY_SOURCE: &str = include_str!("research_catalog_legacy.json");
 const TRACK_SOURCE: &str = include_str!("research_catalog_tracks.json");
+
+const BUILDING_SERVICE_EFFECT_IDS: &[&str] = &[
+    "housingPerDen",
+    "constructionSpeed",
+    "housingCapacity",
+    "restRecovery",
+    "herbMedicineEfficacy",
+    "kittenGrowth",
+    "elderProtection",
+    "mouseFarmFood",
+    "shrineBlessingYield",
+    "accountingSpeed",
+    "foodStorekeeping",
+    "waterStewardship",
+    "wallDefense",
+    "fieldStewardship",
+    "barracksReadiness",
+    "denStewardship",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -425,6 +457,12 @@ struct BuildingFamily {
     /// charging research points for an inert modifier.
     #[serde(default)]
     physical_capacity: bool,
+    #[serde(default)]
+    service_effect_id: Option<String>,
+    #[serde(default)]
+    service_name: Option<String>,
+    #[serde(default)]
+    service_description: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -517,21 +555,15 @@ fn expand_building_family(
         return Err(format!("invalid stage count for {}", family.building_id));
     }
     let mut nodes: Vec<ResearchNode> = Vec::with_capacity(family.count);
+    let mut legacy_predecessor: Option<String> = None;
     for (index, stage) in stages.iter().take(family.count).enumerate() {
         if stage.attribute == BuildingAttribute::Capacity && !family.physical_capacity {
             continue;
         }
         let id = format!("{}_{}", family.building_id, stage.id);
-        let prerequisites = if nodes.is_empty() {
-            family.root_prerequisites.clone()
-        } else {
-            let previous = nodes
-                .iter()
-                .rev()
-                .find(|node| !node.is_future_content())
-                .expect("non-empty family has a supported predecessor");
-            vec![previous.id.clone()]
-        };
+        let prerequisites = legacy_predecessor
+            .as_ref()
+            .map_or_else(|| family.root_prerequisites.clone(), |id| vec![id.clone()]);
         let era_offset = u8::try_from(index / 2)
             .map_err(|_| format!("building era overflow for {}", family.building_id))?;
         let era = family
@@ -544,9 +576,37 @@ fn expand_building_family(
                 family.building_id
             ));
         }
+        let legacy_future_worker_study = stage.attribute == BuildingAttribute::WorkerSlots
+            && !worker_slots_building_is_implemented(&family.building_id);
+        let attribute_has_consumer =
+            building_attribute_has_runtime_consumer(&family.building_id, stage.attribute);
+        let maintenance_output_remap = !attribute_has_consumer
+            && stage.attribute == BuildingAttribute::Durability
+            && active_service_building(&family.building_id);
+        let named_service_remap = !(attribute_has_consumer
+            || maintenance_output_remap
+            || family.unlock_first && index == 0);
         let payload = if family.unlock_first && index == 0 {
             ResearchPayload::UnlockBuilding {
                 building_id: family.building_id.clone(),
+            }
+        } else if maintenance_output_remap {
+            ResearchPayload::ModifyBuilding {
+                building_id: family.building_id.clone(),
+                attribute: BuildingAttribute::Output,
+                operation: EffectOperation::Add,
+                value: stage.value * 0.1,
+            }
+        } else if named_service_remap {
+            ResearchPayload::Modify {
+                effect_id: family.service_effect_id.clone().ok_or_else(|| {
+                    format!(
+                        "{} {} has no runtime consumer or serviceEffectId",
+                        family.building_id, stage.id
+                    )
+                })?,
+                operation: EffectOperation::Add,
+                value: service_effect_value(stage),
             }
         } else {
             ResearchPayload::ModifyBuilding {
@@ -565,24 +625,37 @@ fn expand_building_family(
                 },
             );
         }
-        let future_worker_study = stage.attribute == BuildingAttribute::WorkerSlots
-            && !worker_slots_building_is_implemented(&family.building_id);
-        nodes.push(ResearchNode {
-            id,
-            name: format!(
-                "{} {}{}",
-                family.display_name,
-                stage.name,
-                if future_worker_study { " (future)" } else { "" }
-            ),
-            description: if future_worker_study {
+        let (name, description) = if named_service_remap {
+            let service_name = family
+                .service_name
+                .as_deref()
+                .ok_or_else(|| format!("{} has no serviceName", family.building_id))?;
+            let service_description = family
+                .service_description
+                .as_deref()
+                .ok_or_else(|| format!("{} has no serviceDescription", family.building_id))?;
+            (
+                format!("{} {} ({})", family.display_name, service_name, stage.name),
+                format!("{} {}.", family.display_name, service_description),
+            )
+        } else if maintenance_output_remap {
+            (
+                format!("{} Maintained {}", family.display_name, stage.name),
                 format!(
-                    "Future study: {} has no independent physical worker station yet; this node cannot be purchased.",
+                    "{} gains preventative maintenance that keeps its real service output available.",
                     family.display_name
-                )
-            } else {
-                format!("{} {}", family.display_name, stage.description)
-            },
+                ),
+            )
+        } else {
+            (
+                format!("{} {}", family.display_name, stage.name),
+                format!("{} {}", family.display_name, stage.description),
+            )
+        };
+        nodes.push(ResearchNode {
+            id: id.clone(),
+            name,
+            description,
             category: ResearchCategory::Building,
             cost: family.cost_base + 4.0 * index as f64,
             prerequisites,
@@ -595,13 +668,70 @@ fn expand_building_family(
                 + u16::try_from(index).map_err(|_| "building priority overflow")?,
             payloads,
         });
+        // Unsupported Crews nodes used to be FUTURE and were skipped by this family
+        // chain. Making them purchasable must not silently rewrite later dependencies.
+        if !legacy_future_worker_study {
+            legacy_predecessor = Some(id);
+        }
     }
     Ok(nodes)
 }
 
-/// Building families with a real independent worker-state consumer. Generated
-/// `*_crews` studies for every other family stay catalog-visible as future work but
-/// cannot be purchased or become a hidden no-op.
+fn service_effect_value(stage: &BuildingStage) -> f64 {
+    match stage.attribute {
+        BuildingAttribute::CycleTime => (1.0 - stage.value).max(0.0) * 0.1,
+        BuildingAttribute::WorkerSlots => stage.value * 0.05,
+        BuildingAttribute::Capacity | BuildingAttribute::Output | BuildingAttribute::Durability => {
+            stage.value * 0.1
+        }
+    }
+}
+
+fn active_service_building(building_id: &str) -> bool {
+    matches!(
+        building_id,
+        "wood_cutter" | "smelter" | "mill" | "sawmill" | "field" | "research_hut" | "school"
+    )
+}
+
+/// True only where the authoritative simulation reads this exact modifier. A field
+/// existing in `ResolvedEffects` is not itself evidence of a gameplay consumer.
+#[must_use]
+pub fn building_attribute_has_runtime_consumer(
+    building_id: &str,
+    attribute: BuildingAttribute,
+) -> bool {
+    let physical_station = matches!(
+        building_id,
+        "workshop"
+            | "wood_cutter"
+            | "stone_prep"
+            | "woodworking"
+            | "smithy"
+            | "clothier"
+            | "tannery"
+            | "smelter"
+            | "mill"
+            | "sawmill"
+    );
+    let item_workshop = matches!(
+        building_id,
+        "workshop" | "stone_prep" | "woodworking" | "smithy" | "clothier" | "tannery"
+    );
+    match attribute {
+        BuildingAttribute::Capacity => {
+            physical_station || matches!(building_id, "food_storage" | "water_bowl")
+        }
+        BuildingAttribute::Output | BuildingAttribute::CycleTime => {
+            physical_station || matches!(building_id, "field" | "research_hut" | "school")
+        }
+        BuildingAttribute::WorkerSlots => worker_slots_building_is_implemented(building_id),
+        BuildingAttribute::Durability => item_workshop,
+    }
+}
+
+/// Building families with a real independent worker-state consumer. Other Crews
+/// studies resolve to narrow service effects and never invent a worker station.
 #[must_use]
 pub fn worker_slots_building_is_implemented(building_id: &str) -> bool {
     matches!(
@@ -926,7 +1056,7 @@ fn validate_node(node: &ResearchNode) -> Result<(), String> {
             ) || matches!(
                 payload,
                 ResearchPayload::Modify { effect_id, .. }
-                    if matches!(effect_id.as_str(), "housingPerDen" | "constructionSpeed")
+                    if BUILDING_SERVICE_EFFECT_IDS.contains(&effect_id.as_str())
             )
         }),
         ResearchCategory::RecipeResource => node.payloads.iter().any(|payload| {
@@ -1218,9 +1348,10 @@ mod tests {
             payload,
             ResearchPayload::ModifyBuilding {
                 building_id,
-                attribute: BuildingAttribute::Durability,
-                ..
-            } if building_id == "mill"
+                attribute: BuildingAttribute::Output,
+                operation: EffectOperation::Add,
+                value,
+            } if building_id == "mill" && value.to_bits() == 0.015_f64.to_bits()
         )));
         assert!(mill_foundations.payloads.iter().all(|payload| !matches!(
             payload,
@@ -1298,14 +1429,21 @@ mod tests {
                     .collect::<Vec<_>>(),
                 prerequisites
             );
+            let expected = if building_id == "wood_cutter" {
+                (BuildingAttribute::Output, 0.015_f64)
+            } else {
+                (BuildingAttribute::Durability, 0.15_f64)
+            };
             assert!(first_study.payloads.iter().any(|payload| matches!(
                 payload,
                 ResearchPayload::ModifyBuilding {
                     building_id: target,
-                    attribute: BuildingAttribute::Durability,
+                    attribute,
                     operation: EffectOperation::Add,
                     value,
-                } if target == building_id && value.to_bits() == 0.15_f64.to_bits()
+                } if target == building_id
+                    && *attribute == expected.0
+                    && value.to_bits() == expected.1.to_bits()
             )));
         }
 
@@ -1523,6 +1661,11 @@ mod tests {
             .iter()
             .filter(|node| node.category == ResearchCategory::Building)
         {
+            for building_id in APPROVED_BUILDING_IDS {
+                if node.id.starts_with(&format!("{building_id}_")) {
+                    targeted.insert(*building_id);
+                }
+            }
             for payload in &node.payloads {
                 match payload {
                     ResearchPayload::UnlockBuilding { building_id } => {
@@ -1548,6 +1691,85 @@ mod tests {
             5,
             "all typed building attributes are represented"
         );
+    }
+
+    #[test]
+    fn every_building_study_is_live_and_passive_crews_are_truthful_services() {
+        let catalog = research_catalog();
+        for node in catalog
+            .nodes()
+            .iter()
+            .filter(|node| node.category == ResearchCategory::Building)
+        {
+            assert!(!node.is_future_content(), "{} remained FUTURE", node.id);
+            for payload in &node.payloads {
+                if let ResearchPayload::ModifyBuilding {
+                    building_id,
+                    attribute,
+                    ..
+                } = payload
+                {
+                    assert!(
+                        building_attribute_has_runtime_consumer(building_id, *attribute),
+                        "{} retained an unread {building_id} {attribute:?} modifier",
+                        node.id
+                    );
+                }
+            }
+        }
+        for (id, effect, predecessor) in [
+            ("den_crews", "denStewardship", "den_timing"),
+            (
+                "food_storage_crews",
+                "foodStorekeeping",
+                "food_storage_timing",
+            ),
+            ("water_bowl_crews", "waterStewardship", "water_bowl_timing"),
+            ("beds_crews", "restRecovery", "beds_timing"),
+            (
+                "herb_garden_crews",
+                "herbMedicineEfficacy",
+                "herb_garden_timing",
+            ),
+            ("nursery_crews", "kittenGrowth", "nursery_timing"),
+            (
+                "elder_corner_crews",
+                "elderProtection",
+                "elder_corner_timing",
+            ),
+            ("walls_crews", "wallDefense", "walls_timing"),
+            ("mouse_farm_crews", "mouseFarmFood", "mouse_farm_timing"),
+            ("shrine_crews", "shrineBlessingYield", "shrine_timing"),
+            ("field_crews", "fieldStewardship", "field_timing"),
+            ("barracks_crews", "barracksReadiness", "barracks_timing"),
+            (
+                "accounting_tent_crews",
+                "accountingSpeed",
+                "accounting_tent_timing",
+            ),
+        ] {
+            let node = catalog.get(id).unwrap();
+            assert_eq!(node.prerequisites, [predecessor]);
+            assert!(!node.name.contains("future"));
+            assert!(!node.description.contains("worker"));
+            assert!(
+                node.payloads.iter().any(|payload| matches!(
+                    payload,
+                    ResearchPayload::Modify {
+                        effect_id,
+                        operation: EffectOperation::Add,
+                        value,
+                    } if effect_id == effect && value.to_bits() == 0.05_f64.to_bits()
+                )),
+                "{id}"
+            );
+        }
+        // The old graph skipped future Crews studies; preserve that edge after activation.
+        assert_eq!(
+            catalog.get("den_reinforcement").unwrap().prerequisites,
+            ["den_timing"]
+        );
+        assert_eq!(catalog.category_count(ResearchCategory::Building), 165);
     }
 
     #[test]

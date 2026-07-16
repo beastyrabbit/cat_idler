@@ -258,11 +258,13 @@ so a correct scout route cannot conceal a missing founding dispatch.
    target-correct across clamp, physical routing, snapshot, trade, and persistence. Keep the other
    22 generated `*_stores` studies and the fixed 10-unit Mill/Sawmill/Wood Cutter/Stone Prep/Woodworking/Workshop/Smelter local stores
    explicitly open until each has a real physical domain. Then turn the remaining registry-only
-   research payloads (30 generated-only recipes and 27 resources) into observable behavior without
-   advertising IDs that have no runtime object. Twelve Crews studies now add real independently
-   owned worker stations to the existing physical/research labor domains; the other thirteen are
-   visibly future and non-purchasable until those buildings gain a safe concurrent labor state
-   machine. Preserve the
+   research payloads into observable behavior without advertising IDs that have no runtime object.
+   All generated recipe/resource promises now have authoritative consumers across 104 physical
+   recipes. Twelve Crews studies add real independently owned
+   worker stations to existing physical/research labor domains. The other thirteen stable Crews
+   IDs are now completed-building service studies rather than false extra-worker promises: their
+   housing, preservation, water, rest, medicine, kitten/elder care, defense, physical Mouse Farm
+   Food, blessings, harvest, combat, and accounting effects are verified. Preserve the
    catalog-derived Sawmill logging entitlement and the verified authority split: the Leader owns
    the daily strategic study choice, while
    research labor/building automation and rituals remain Loremaster-owned.

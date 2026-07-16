@@ -952,6 +952,19 @@ pub struct ResolvedEffects {
     pub health_recovery_mult: f64,
     pub spoilage_resistance: f64,
     pub water_efficiency_mult: f64,
+    pub rest_recovery_mult: f64,
+    pub herb_medicine_efficacy_mult: f64,
+    pub kitten_growth_mult: f64,
+    pub elder_protection_mult: f64,
+    pub mouse_farm_food_mult: f64,
+    pub shrine_blessing_yield_mult: f64,
+    pub accounting_speed_mult: f64,
+    pub food_storekeeping: f64,
+    pub water_stewardship_mult: f64,
+    pub wall_defense_mult: f64,
+    pub field_stewardship_mult: f64,
+    pub barracks_readiness_mult: f64,
+    pub den_stewardship_mult: f64,
     /// String-keyed ownership makes planned content truthful without pretending a
     /// corresponding enum-backed building, recipe, resource, or job exists yet.
     pub unlocked_buildings: BTreeSet<String>,
@@ -1014,6 +1027,19 @@ impl ResolvedEffects {
             "healthRecovery" => &mut self.health_recovery_mult,
             "spoilageResistance" => &mut self.spoilage_resistance,
             "waterEfficiency" => &mut self.water_efficiency_mult,
+            "restRecovery" => &mut self.rest_recovery_mult,
+            "herbMedicineEfficacy" => &mut self.herb_medicine_efficacy_mult,
+            "kittenGrowth" => &mut self.kitten_growth_mult,
+            "elderProtection" => &mut self.elder_protection_mult,
+            "mouseFarmFood" => &mut self.mouse_farm_food_mult,
+            "shrineBlessingYield" => &mut self.shrine_blessing_yield_mult,
+            "accountingSpeed" => &mut self.accounting_speed_mult,
+            "foodStorekeeping" => &mut self.food_storekeeping,
+            "waterStewardship" => &mut self.water_stewardship_mult,
+            "wallDefense" => &mut self.wall_defense_mult,
+            "fieldStewardship" => &mut self.field_stewardship_mult,
+            "barracksReadiness" => &mut self.barracks_readiness_mult,
+            "denStewardship" => &mut self.den_stewardship_mult,
             _ => return,
         };
         Self::apply_value(target, operation, value);
@@ -1118,6 +1144,19 @@ pub fn neutral_effects() -> ResolvedEffects {
         health_recovery_mult: 1.0,
         spoilage_resistance: 0.0,
         water_efficiency_mult: 1.0,
+        rest_recovery_mult: 1.0,
+        herb_medicine_efficacy_mult: 1.0,
+        kitten_growth_mult: 1.0,
+        elder_protection_mult: 1.0,
+        mouse_farm_food_mult: 1.0,
+        shrine_blessing_yield_mult: 1.0,
+        accounting_speed_mult: 1.0,
+        food_storekeeping: 0.0,
+        water_stewardship_mult: 1.0,
+        wall_defense_mult: 1.0,
+        field_stewardship_mult: 1.0,
+        barracks_readiness_mult: 1.0,
+        den_stewardship_mult: 1.0,
         unlocked_buildings: BTreeSet::new(),
         unlocked_recipes: BTreeSet::new(),
         unlocked_resources: BTreeSet::new(),
@@ -1691,7 +1730,7 @@ mod tests {
             .iter()
             .filter(|node| crate::research_catalog::research_node_is_implemented(node))
             .count();
-        assert_eq!(implemented_count, 474);
+        assert_eq!(implemented_count, 487);
         while state.owned_node_ids.len() < implemented_count {
             let next = crate::research_catalog::research_catalog()
                 .nodes()

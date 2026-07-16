@@ -346,7 +346,8 @@ pub fn advance_woodworking(
 /// exactly the building types staffed through `buildings_needing_workers` in
 /// `world_tick.rs`: the auto-staff mop-up for the generic workshop and the P16
 /// raw-material benches (wood-cutter, stone-prep, woodworking), plus the
-/// leader-directed smithy queue (`smithy_queue` in `phase_20`-era planning).
+/// leader-directed smithy queue (`smithy_queue` in `phase_20`-era planning), and the
+/// passive-but-physical mouse farm (one keeper generates station-local food).
 /// Every other building type has no worker-slot concept: dens/storage/walls/etc.
 /// never take an `assigned_cat`. Fields take one farmer so they can be operated
 /// manually while the Farmer office is vacant.
@@ -370,6 +371,7 @@ pub const fn building_staff_cap(building_type: BuildingType) -> u32 {
         | BuildingType::Mill
         | BuildingType::Sawmill
         | BuildingType::AccountingTent
+        | BuildingType::MouseFarm
         | BuildingType::Field => 1,
         BuildingType::Den
         | BuildingType::FoodStorage
@@ -379,7 +381,6 @@ pub const fn building_staff_cap(building_type: BuildingType) -> u32 {
         | BuildingType::Nursery
         | BuildingType::ElderCorner
         | BuildingType::Walls
-        | BuildingType::MouseFarm
         | BuildingType::Shrine
         | BuildingType::Barracks => 0,
     }
@@ -419,8 +420,9 @@ pub const fn building_cycle_sec(building_type: BuildingType) -> Option<f64> {
 /// (five station-local Stone → one local Block),
 /// woodworking → tool (planks + blocks → tools). Smithy's selected physical recipe
 /// is projected dynamically by the snapshot because it produces either a weapon or armor,
-/// never both. Field → food (`field_yield`, passive, no worker/cycle). Every other building
-/// type (den, storage, walls, mouse farm, shrine, barracks, accounting tent, etc.)
+/// never both. Field → food (`field_yield`, passive, no cycle), and mouse farm → food
+/// (continuous staffed production stored at the station). Every other building
+/// type (den, storage, walls, shrine, barracks, accounting tent, etc.)
 /// crafts nothing and reports `None`.
 #[must_use]
 pub const fn building_output_label(building_type: BuildingType) -> Option<&'static str> {
@@ -431,6 +433,7 @@ pub const fn building_output_label(building_type: BuildingType) -> Option<&'stat
         BuildingType::Woodworking => Some("tool"),
         BuildingType::Smithy => Some("forged gear"),
         BuildingType::Field => Some("food"),
+        BuildingType::MouseFarm => Some("food"),
         BuildingType::Clothier => Some("cloth"),
         BuildingType::Tannery => Some("leather"),
         BuildingType::Smelter => Some("metal"),
@@ -444,7 +447,6 @@ pub const fn building_output_label(building_type: BuildingType) -> Option<&'stat
         | BuildingType::Nursery
         | BuildingType::ElderCorner
         | BuildingType::Walls
-        | BuildingType::MouseFarm
         | BuildingType::Shrine
         | BuildingType::Barracks
         | BuildingType::ResearchHut
@@ -896,13 +898,14 @@ mod tests {
         // Producing types: label matches the resource actually credited in
         // `phase_23_production` (workshop -> refined, wood-cutter -> planks,
         // stone-prep -> blocks, woodworking -> tools, smithy -> selected forged gear,
-        // field -> food, clothier -> cloth, tannery -> leather, smelter -> metal).
+        // field/mouse farm -> food, clothier -> cloth, tannery -> leather, smelter -> metal).
         assert_eq!(super::building_output_label(Workshop), Some("refined"));
         assert_eq!(super::building_output_label(WoodCutter), Some("plank"));
         assert_eq!(super::building_output_label(StonePrep), Some("block"));
         assert_eq!(super::building_output_label(Woodworking), Some("tool"));
         assert_eq!(super::building_output_label(Smithy), Some("forged gear"));
         assert_eq!(super::building_output_label(Field), Some("food"));
+        assert_eq!(super::building_output_label(MouseFarm), Some("food"));
         assert_eq!(super::building_output_label(Clothier), Some("cloth"));
         assert_eq!(super::building_output_label(Tannery), Some("leather"));
         assert_eq!(super::building_output_label(Smelter), Some("metal"));
@@ -917,7 +920,6 @@ mod tests {
             Nursery,
             ElderCorner,
             Walls,
-            MouseFarm,
             Shrine,
             Barracks,
             AccountingTent,
@@ -944,6 +946,7 @@ mod tests {
             BuildingType::ResearchHut,
             BuildingType::School,
             BuildingType::AccountingTent,
+            BuildingType::MouseFarm,
             BuildingType::Field,
         ] {
             assert_eq!(
@@ -953,7 +956,7 @@ mod tests {
             );
         }
 
-        // No worker-slot concept, including `Field` (passive, unstaffed yield).
+        // No worker-slot concept: these are passive capacity/service buildings.
         for building_type in [
             BuildingType::Den,
             BuildingType::FoodStorage,
@@ -963,7 +966,6 @@ mod tests {
             BuildingType::Nursery,
             BuildingType::ElderCorner,
             BuildingType::Walls,
-            BuildingType::MouseFarm,
             BuildingType::Shrine,
             BuildingType::Barracks,
         ] {

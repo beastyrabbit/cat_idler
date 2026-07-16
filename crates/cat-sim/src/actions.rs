@@ -1057,14 +1057,21 @@ fn offer_tithe(colony: &mut ColonyRuntime, ctx: &ActionCtx) -> proto::ActionResu
     } else {
         0
     };
-    let blessings = u32::from(food > 0) + u32::from(refined > 0);
-    if blessings == 0 {
+    let base_blessings = u32::from(food > 0) + u32::from(refined > 0);
+    if base_blessings == 0 {
         return fail("No safe food or refined surplus is available.");
     }
+    let shrine_yield = if has_complete_building(colony, BuildingType::Shrine) {
+        upgrade_tree::resolve_effects(colony.upgrade_tree.owned_node_ids.iter())
+            .shrine_blessing_yield_mult
+    } else {
+        1.0
+    };
+    let blessings = f64::from(base_blessings) * shrine_yield;
 
     colony.resources.food -= f64::from(food);
     colony.resources.refined -= f64::from(refined);
-    colony.global_upgrade_points += f64::from(blessings);
+    colony.global_upgrade_points += blessings;
     colony.last_tithe_at = Some(ctx.now_ms);
     reconcile_colony_stockpiles(colony);
     colony.last_player_activity_at = Some(ctx.now_ms);
@@ -8834,6 +8841,46 @@ mod tests {
             before.food + 19.0,
             "accepted goods must occupy real pile headroom"
         );
+    }
+
+    #[test]
+    fn signed_tithe_uses_shrine_service_only_with_the_completed_shrine() {
+        let mut boosted = world_with_one_colony();
+        boosted.colonies[0]
+            .upgrade_tree
+            .owned_node_ids
+            .push("shrine_crews".to_owned());
+        boosted.colonies[0].resources.food = 1_000.0;
+        boosted.colonies[0].resources.refined = 100.0;
+        let mut baseline = boosted.clone();
+        baseline.colonies[0]
+            .upgrade_tree
+            .owned_node_ids
+            .retain(|id| id != "shrine_crews");
+        let action = proto::ClientAction::OfferTithe {
+            session_id: "s1".to_owned(),
+            nickname: "Cat".to_owned(),
+            sig: "signed".to_owned(),
+        };
+        let context = ctx();
+        let mut twin = boosted.clone();
+        assert!(apply_action(&mut baseline, &action, &context).ok);
+        assert!(apply_action(&mut boosted, &action, &context).ok);
+        assert!(apply_action(&mut twin, &action, &context).ok);
+        assert_eq!(boosted, twin, "signed service tithe diverged");
+        assert!(
+            boosted.colonies[0].global_upgrade_points > baseline.colonies[0].global_upgrade_points
+        );
+
+        let mut no_shrine = twin;
+        no_shrine.colonies[0]
+            .buildings
+            .retain(|building| building.building_type != BuildingType::Shrine);
+        no_shrine.colonies[0].resources.food = 1_000.0;
+        no_shrine.colonies[0].resources.refined = 100.0;
+        let before = no_shrine.clone();
+        assert!(!apply_action(&mut no_shrine, &action, &context).ok);
+        assert_eq!(no_shrine, before);
     }
 
     #[test]

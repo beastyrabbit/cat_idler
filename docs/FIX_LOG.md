@@ -58,6 +58,34 @@ physical input/output, exact-ID haul/equip/sale/restart conservation, and SQLite
 restart. Combined with the subsistence/frontier slice, the maintained catalog now has 104 physical
 recipes and no remaining generated recipe or resource payload marked `FUTURE`.
 
+## 2026-07-16 — Every Building study has a truthful runtime consumer
+
+**Problem:** Thirteen passive building families inherited the generic `Crews +1 worker` template
+even though they had no safe concurrent station state. Those cards were disabled as `FUTURE`, and
+several other generated Output, Cycle, or Durability studies resolved into fields that their
+building never read. The Building branch therefore met its numeric one-third target while still
+containing advertised dead ends.
+
+**Fix:** The thirteen false worker promises keep their stable IDs and prerequisite positions but
+now describe building-specific service practice: Den stewardship, Food Store rotation, Water Bowl
+conservation, restful Beds, Herb Garden medicine, Nursery care, Elder protection, wall readiness,
+Mouse Farm husbandry, Shrine ritual yield, Field stewardship, Barracks readiness, and Accounting
+discipline. Every effect is inert until the matching completed building exists. Mouse Farm is the
+one newly staffed physical service: one living keeper creates finite station-local Food, which an
+ordinary carrier must haul into finite storage before aggregate credit. Research Hut and School
+output/cycle studies now affect their matching staffed research service; otherwise-unread passive
+Output/Cycle/Durability stages are mapped to the same truthful service or maintained output.
+
+**Evidence:** Exhaustive catalog tests require all 165 Building-category nodes to be purchasable,
+pin the exact thirteen service mappings, preserve their IDs and legacy prerequisite graph, and
+reject fake worker-slot payloads. Consumer-level tests compare baseline, owned-without-building,
+and owned-with-completed-building behavior for housing, spoilage, water debit, sleep recovery,
+medicine, kitten aging, elder mortality, farm harvests, raid muster, blessings, accounting, and
+research labor. Mouse Farm tests cover no worker, full destination, local output, physical haul,
+death salvage, JSON restart, deterministic twins, and conservation; a signed tithe test covers the
+public action boundary. The interim slice passes 1,351 simulation tests with two intentional skips,
+147 client tests, strict all-target Clippy for both crates, formatting, and diff checks.
+
 ## 2026-07-16 — Useful labor pressure is measured, not inferred from idle labels
 
 **Problem:** The vision's central “more useful work than cats” tension had no quantitative

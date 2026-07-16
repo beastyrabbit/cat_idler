@@ -60,6 +60,7 @@ use crate::{
         walk_path_timed, walk_path_timed_with_elapsed,
     },
     needs::{restore_hunger, restore_rest, restore_thirst},
+    needs_constants::NEEDS_RESTORE_AMOUNTS,
     officers::{OfficerRole, prerequisite_for},
     pathfinding::{
         self, ColonyGridParams, ColonyWalkGrid, FindPathOptions,
@@ -4646,6 +4647,9 @@ fn phase_6_life_simulation(colony: &mut ColonyRuntime, gate: TickGate) {
     }
 
     let mut life_rng_seed = life_seed(colony.test_rng_seed.unwrap_or(1));
+    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let nursery_active = has_complete_building(colony, BuildingType::Nursery);
+    let elder_corner_active = has_complete_building(colony, BuildingType::ElderCorner);
     let leader_id = colony.leader_id.clone();
     let transit_ids = spatial_migrant_ids(colony)
         .into_iter()
@@ -4663,12 +4667,24 @@ fn phase_6_life_simulation(colony: &mut ColonyRuntime, gate: TickGate) {
             continue;
         }
 
-        cat.age_hours += elapsed_game_hours;
+        let growth_mult = if nursery_active && get_life_stage(cat.age_hours) == LifeStage::Kitten {
+            effects.kitten_growth_mult.max(1.0)
+        } else {
+            1.0
+        };
+        cat.age_hours += elapsed_game_hours * growth_mult;
 
         let is_leader_or_healer =
             leader_id.as_ref() == Some(&cat.id) || cat.stats.medicine >= cat.stats.leadership;
+        let protection = if elder_corner_active && get_life_stage(cat.age_hours) == LifeStage::Elder
+        {
+            effects.elder_protection_mult.max(1.0)
+        } else {
+            1.0
+        };
         let death_probability =
-            old_age_death_probability(cat.age_hours, is_leader_or_healer, elapsed_game_hours);
+            old_age_death_probability(cat.age_hours, is_leader_or_healer, elapsed_game_hours)
+                / protection;
         if death_probability > 0.0 {
             let roll = roll_seeded(f64::from(life_rng_seed));
             life_rng_seed = roll.next_seed;
@@ -5036,8 +5052,14 @@ fn phase_7_consumption_spoilage_resource_pre_patch_minute_cadence(
     } else {
         1.0
     };
-    let spoilage_elapsed =
-        elapsed_for_decay * (1.0 - effects.spoilage_resistance) * baking_preservation_mult;
+    let storekeeping = if has_complete_building(colony, BuildingType::FoodStorage) {
+        effects.food_storekeeping
+    } else {
+        0.0
+    };
+    let spoilage_elapsed = elapsed_for_decay
+        * (1.0 - (effects.spoilage_resistance + storekeeping).clamp(0.0, 0.95))
+        * baking_preservation_mult;
     let caps = storage_caps(colony);
 
     // Residents now remove finite servings from a real pile and consume only after
@@ -7916,8 +7938,11 @@ fn phase_18_leader_snapshot_assembly(colony: &mut ColonyRuntime, gate: TickGate)
         .count() as u32;
 
     let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let den_stewardship =
+        completed_building_multiplier(colony, BuildingType::Den, effects.den_stewardship_mult);
     let committed_capacity = (f64::from(committed_den_capacity(colony, effects.housing_per_den))
-        * effects.housing_capacity_mult)
+        * effects.housing_capacity_mult
+        * den_stewardship)
         .floor() as u32;
     let housing_buildings = colony
         .buildings
@@ -7972,7 +7997,8 @@ fn phase_18_leader_snapshot_assembly(colony: &mut ColonyRuntime, gate: TickGate)
             capacity: (crate::housing::housing_capacity(
                 &housing_buildings,
                 effects.housing_per_den,
-            ) * effects.housing_capacity_mult) as u32,
+            ) * effects.housing_capacity_mult
+                * den_stewardship) as u32,
             committed: committed_capacity,
         },
         active_hunts,
@@ -8917,15 +8943,22 @@ fn phase_21_leader_capital_decisions_and_tithe(
                 }
                 colony.resources.food -= f64::from(food);
                 colony.resources.refined -= f64::from(refined);
-                colony.global_upgrade_points += f64::from(blessings);
+                let shrine_yield = if has_complete_building(colony, BuildingType::Shrine) {
+                    resolve_effects(colony.upgrade_tree.owned_node_ids.iter())
+                        .shrine_blessing_yield_mult
+                } else {
+                    1.0
+                };
+                let credited = f64::from(blessings) * shrine_yield;
+                colony.global_upgrade_points += credited;
                 colony.last_tithe_at = Some(gate.processed_through);
                 append_event(
                     colony,
                     gate.processed_through,
                     EventKind::Tithe,
                     format!(
-                        "The leader offered surplus stores to the gods (+{blessings} blessing{}).",
-                        if blessings == 1 { "" } else { "s" }
+                        "The leader offered surplus stores to the gods (+{credited} blessing{}).",
+                        if credited == 1.0 { "" } else { "s" }
                     ),
                 );
             }
@@ -9306,6 +9339,8 @@ fn advance_designated_farms(
         .iter()
         .filter_map(|plot| plot.worker_id.clone())
         .collect();
+    let herb_garden_active = has_complete_building(colony, BuildingType::HerbGarden);
+    let field_active = has_complete_building(colony, BuildingType::Field);
     for index in 0..colony.farms.len() {
         if colony.farms[index].worker_id.is_some() {
             continue;
@@ -9468,7 +9503,18 @@ fn advance_designated_farms(
             CropKind::Catnip if effects.unlocked_resources.contains("brewing_sources") => 1.25,
             _ => 1.0,
         };
-        let farm_yield_mult = effects.farm_yield_mult.max(0.0) * family_source_mult;
+        let herb_care = if plot.crop == CropKind::Herb && herb_garden_active {
+            effects.herb_medicine_efficacy_mult.max(0.0)
+        } else {
+            1.0
+        };
+        let field_stewardship = if field_active {
+            effects.field_stewardship_mult.max(0.0)
+        } else {
+            1.0
+        };
+        let farm_yield_mult =
+            effects.farm_yield_mult.max(0.0) * family_source_mult * herb_care * field_stewardship;
         let basket = plot.harvest_amount() * farm_yield_mult;
         let step = farming::advance_farm(
             &plot,
@@ -10031,6 +10077,7 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
     let production_elapsed = gate.elapsed_sec as f64
         * normalize_time_scale(colony)
         * research_effects.production_rate_mult;
+    advance_mouse_farm_food(colony, gate, production_elapsed, &research_effects);
     ensure_farmer_plots(colony, world_seed, gate.processed_through);
     advance_designated_farms(colony, gate, world_seed, production_elapsed);
     let building_ids = colony
@@ -10072,6 +10119,71 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
     // durable tent → pile(s) → tent round. Without one, the books remain stale. Neither
     // path mutates authoritative resources or pile contents.
     advance_accounting_round(colony, gate, world_seed);
+}
+
+const MOUSE_FARM_FOOD_PER_GAME_HOUR: f64 = 0.25;
+
+fn advance_mouse_farm_food(
+    colony: &mut ColonyRuntime,
+    gate: TickGate,
+    production_elapsed: f64,
+    effects: &crate::upgrade_tree::ResolvedEffects,
+) {
+    if production_elapsed <= 0.0 {
+        return;
+    }
+    let farms = colony
+        .buildings
+        .iter()
+        .enumerate()
+        .filter(|(_, building)| {
+            building.building_type == BuildingType::MouseFarm
+                && building.construction_progress >= 100
+        })
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    let produced = production_elapsed / 3_600.0
+        * MOUSE_FARM_FOOD_PER_GAME_HOUR
+        * effects.mouse_farm_food_mult.max(0.0);
+    for index in farms {
+        ensure_station_stores(colony, index);
+        let building = colony.buildings[index].clone();
+        let Some(cat_id) = building.assigned_cat.as_deref() else {
+            continue;
+        };
+        let Some(cat_index) = colony
+            .cats
+            .iter()
+            .position(|cat| cat.id == cat_id && cat.death_time.is_none())
+        else {
+            continue;
+        };
+        if colony.cats[cat_index].carrying.is_some() {
+            continue;
+        }
+        if begin_station_output_haul(colony, &building, cat_index, ResourceKind::Food, gate) {
+            continue;
+        }
+        let work_point = station_work_point(&building);
+        if !at_world_point(colony, cat_index, work_point) {
+            send_cat_to(colony, cat_index, work_point);
+            continue;
+        }
+        colony.cats[cat_index].activity = CatActivity::Working;
+        let output_id = stockpiles::station_output_id(&building.id);
+        let output_amount =
+            station_inventory_amount(colony, &building.id, true, ResourceKind::Food);
+        let admitted = (building_station_capacity(colony, &building) - output_amount)
+            .max(0.0)
+            .min(produced);
+        if let Some(output) = colony
+            .stockpiles
+            .iter_mut()
+            .find(|pile| pile.id == output_id)
+        {
+            stockpiles::add_resource(&mut output.contents, ResourceKind::Food, admitted);
+        }
+    }
 }
 
 fn swap_primary_and_additional_slot(
@@ -10355,6 +10467,9 @@ fn advance_accounting_round(colony: &mut ColonyRuntime, gate: TickGate, world_se
     };
 
     let tent_point = station_work_point(&tent);
+    let accounting_speed = resolve_effects(colony.upgrade_tree.owned_node_ids.iter())
+        .accounting_speed_mult
+        .max(f64::EPSILON);
     let previous_round = colony.stock_ledger.active_round.take();
     if let Some(previous) = previous_round
         .as_ref()
@@ -10436,7 +10551,8 @@ fn advance_accounting_round(colony: &mut ColonyRuntime, gate: TickGate, world_se
                 } else {
                     round.dwell_elapsed_ms = round.dwell_elapsed_ms.saturating_add(
                         (gate.elapsed_sec.saturating_mul(1_000) as f64
-                            * normalize_time_scale(colony)) as i64,
+                            * normalize_time_scale(colony)
+                            * accounting_speed) as i64,
                     );
                     if round.dwell_elapsed_ms >= PILE_COUNT_DWELL_MS {
                         colony
@@ -10454,9 +10570,9 @@ fn advance_accounting_round(colony: &mut ColonyRuntime, gate: TickGate, world_se
                 round.phase = AccountingPhase::TravelingToTent;
                 send_accountant_to(colony, worker_index, tent_point, true);
             } else {
-                round.dwell_elapsed_ms = round
-                    .dwell_elapsed_ms
-                    .saturating_add(gate.elapsed_sec.saturating_mul(1_000));
+                round.dwell_elapsed_ms = round.dwell_elapsed_ms.saturating_add(
+                    (gate.elapsed_sec.saturating_mul(1_000) as f64 * accounting_speed) as i64,
+                );
                 if round.topology_signature != current_signature
                     || round.dwell_elapsed_ms >= ACCOUNTING_ROUND_INTERVAL_MS
                 {
@@ -10949,7 +11065,12 @@ fn personal_water_serving(colony: &ColonyRuntime) -> f64 {
     )
     .water_use;
     let hours_restored = PERSONAL_DRINK_RESTORE / (3.0 * 0.2 * 6.0);
-    hourly * hours_restored / effects.water_efficiency_mult.max(f64::EPSILON)
+    let stewardship = if has_complete_building(colony, BuildingType::WaterBowl) {
+        effects.water_stewardship_mult
+    } else {
+        1.0
+    };
+    hourly * hours_restored / (effects.water_efficiency_mult * stewardship).max(f64::EPSILON)
 }
 
 fn personal_need_is_critical(cat: &Cat) -> bool {
@@ -11169,6 +11290,8 @@ fn phase_25_survival_deaths_and_carried_yield_salvage(
 ) {
     let elapsed_sec = gate.elapsed_sec as f64 * normalize_resource_decay_multiplier(colony);
     let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let beds_active = has_complete_building(colony, BuildingType::Beds);
+    let herb_garden_active = has_complete_building(colony, BuildingType::HerbGarden);
     let cat_ids: Vec<CatId> = active_resident_cats(colony)
         .map(|cat| cat.id.clone())
         .collect();
@@ -11211,7 +11334,13 @@ fn phase_25_survival_deaths_and_carried_yield_salvage(
             && colony.cats[index].activity == CatActivity::Working
             && colony.cats[index].destination.is_none()
         {
-            colony.cats[index].needs = restore_rest(&colony.cats[index].needs, 0.0, true);
+            let rest_amount = NEEDS_RESTORE_AMOUNTS.sleeping_with_beds
+                * if beds_active {
+                    effects.rest_recovery_mult.max(0.0)
+                } else {
+                    1.0
+                };
+            colony.cats[index].needs = restore_rest(&colony.cats[index].needs, rest_amount, false);
             if colony.cats[index].needs.rest >= PERSONAL_NEED_RELEASE_REST {
                 let marker = colony.cats[index]
                     .carrying
@@ -11234,8 +11363,13 @@ fn phase_25_survival_deaths_and_carried_yield_salvage(
             // cadence-partitioned ticks therefore consume and heal identically.
             let dose = (elapsed_sec / 3_600.0).min(colony.resources.medicine);
             colony.resources.medicine -= dose;
+            let medicine_mult = if herb_garden_active {
+                effects.herb_medicine_efficacy_mult.max(0.0)
+            } else {
+                1.0
+            };
             colony.cats[index].needs.health =
-                (colony.cats[index].needs.health + dose * 5.0).min(100.0);
+                (colony.cats[index].needs.health + dose * 5.0 * medicine_mult).min(100.0);
         }
         if colony.cats[index].needs.hunger > 0.0
             && colony.cats[index].needs.thirst > 0.0
@@ -17326,7 +17460,6 @@ fn resolve_active_raid(
     next_raid_roll: &mut impl FnMut() -> f64,
 ) {
     let combatants = raid_combatants(colony);
-    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
     let loadout = combatants
         .iter()
         .map(|combatant| {
@@ -17343,14 +17476,8 @@ fn resolve_active_raid(
             )
         })
         .collect::<BTreeMap<_, _>>();
-    let muster = muster_defense_with_loadout(
-        &combatants,
-        &loadout,
-        CombatModifiers {
-            combat_power_mult: effects.combat_power_mult,
-            defense_mult: effects.defense_mult,
-        },
-    );
+    let muster =
+        muster_defense_with_loadout(&combatants, &loadout, active_raid_combat_modifiers(colony));
     let raider_power = colony
         .raiders
         .iter()
@@ -17442,6 +17569,26 @@ fn resolve_active_raid(
     }
 
     end_raid(colony, raid_id);
+}
+
+/// Resolve the combat multipliers used by the physical raid muster. Building-family
+/// service studies are deliberately inert until their matching civic structure exists.
+fn active_raid_combat_modifiers(colony: &ColonyRuntime) -> CombatModifiers {
+    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    CombatModifiers {
+        combat_power_mult: effects.combat_power_mult
+            * if has_complete_building(colony, BuildingType::Barracks) {
+                effects.barracks_readiness_mult
+            } else {
+                1.0
+            },
+        defense_mult: effects.defense_mult
+            * if has_complete_building(colony, BuildingType::Walls) {
+                effects.wall_defense_mult
+            } else {
+                1.0
+            },
+    }
 }
 
 fn raid_combatants(colony: &ColonyRuntime) -> Vec<MusterCombatant> {
@@ -17673,6 +17820,7 @@ fn colony_housing_capacity(colony: &ColonyRuntime) -> f64 {
     let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
     crate::housing::housing_capacity(&housing_buildings, effects.housing_per_den)
         * effects.housing_capacity_mult
+        * completed_building_multiplier(colony, BuildingType::Den, effects.den_stewardship_mult)
 }
 
 fn alive_cats(cats: &[Cat]) -> impl Iterator<Item = &Cat> {
@@ -18767,6 +18915,18 @@ fn has_complete_building(colony: &ColonyRuntime, building_type: BuildingType) ->
     colony.buildings.iter().any(|building| {
         building.building_type == building_type && building.construction_progress >= 100
     })
+}
+
+fn completed_building_multiplier(
+    colony: &ColonyRuntime,
+    building_type: BuildingType,
+    researched: f64,
+) -> f64 {
+    if has_complete_building(colony, building_type) {
+        researched
+    } else {
+        1.0
+    }
 }
 
 // NOTE (P17): site *discovery* (`has_quarry_site`/`quarry_sites_near_village`)
@@ -22073,12 +22233,35 @@ fn grant_building_skill(colony: &mut ColonyRuntime, building_id: &str, labor: La
 /// [`phase_24_research`]'s point accrual; a colony with no staffed hut/school yields 0.0 and
 /// is byte-identical to the pre-wiring behaviour.
 fn research_workforce(colony: &ColonyRuntime) -> f64 {
-    research_worker_ids(colony)
-        .into_iter()
-        .filter_map(|cat_id| colony.cats.iter().find(|cat| cat.id == cat_id))
-        .map(|cat| {
+    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    colony
+        .buildings
+        .iter()
+        .filter(|building| {
+            matches!(
+                building.building_type,
+                BuildingType::ResearchHut | BuildingType::School
+            ) && building.construction_progress >= 100
+        })
+        .flat_map(|building| {
+            let modifiers = effects.building(building.building_type.as_str());
+            let service_rate = modifiers.output_mult / modifiers.cycle_time_mult.max(f64::EPSILON);
+            building_worker_ids(building).map(move |cat_id| (cat_id, service_rate))
+        })
+        .filter_map(|(cat_id, service_rate)| {
+            colony
+                .cats
+                .iter()
+                .find(|cat| cat.id == cat_id && cat.death_time.is_none())
+                .map(|cat| (cat, service_rate))
+        })
+        .filter(|(cat, _)| {
+            !migrant_is_in_transit(colony, &cat.id) && can_work(get_life_stage(cat.age_hours))
+        })
+        .map(|(cat, service_rate)| {
             crate::life_sim::workforce_weight(get_life_stage(cat.age_hours))
                 * crate::life_sim::trade_yield_multiplier(cat.skill(Labor::Research))
+                * service_rate
         })
         .sum()
 }
@@ -22889,7 +23072,12 @@ fn complete_ritual(colony: &mut ColonyRuntime, job: &JobRuntime, gate: TickGate)
     let Some(cat_index) = assigned_alive_cat_index(colony, job) else {
         return;
     };
-    let blessings = 1.0 + f64::from(colony.upgrade_levels.ritual_mastery / 3);
+    let shrine_yield = if has_complete_building(colony, BuildingType::Shrine) {
+        resolve_effects(colony.upgrade_tree.owned_node_ids.iter()).shrine_blessing_yield_mult
+    } else {
+        1.0
+    };
+    let blessings = (1.0 + f64::from(colony.upgrade_levels.ritual_mastery / 3)) * shrine_yield;
     let cat = &mut colony.cats[cat_index];
     cat.role_xp.ritualist += 1.0;
     cat.gain_skill(Labor::Ritual, SKILL_GAIN_PER_JOB);
@@ -22942,7 +23130,12 @@ fn complete_offering(colony: &mut ColonyRuntime, job: &JobRuntime, gate: TickGat
             || stockpiles::resource_amount(&pile.contents, ResourceKind::Materials) > f64::EPSILON
     });
     colony.last_offering_at = Some(gate.processed_through);
-    let blessings = 1.0 + f64::from(colony.upgrade_levels.ritual_mastery / 3);
+    let shrine_yield = if has_complete_building(colony, BuildingType::Shrine) {
+        resolve_effects(colony.upgrade_tree.owned_node_ids.iter()).shrine_blessing_yield_mult
+    } else {
+        1.0
+    };
+    let blessings = (1.0 + f64::from(colony.upgrade_levels.ritual_mastery / 3)) * shrine_yield;
     let cat_id = colony.cats[cat_index].id.clone();
     let cat = &mut colony.cats[cat_index];
     cat.role_xp.ritualist += 1.0;
@@ -23393,6 +23586,11 @@ fn station_store_rect(building: &BuildingRuntime) -> ZoneRect {
 pub fn production_station_resource_sets(
     building_type: BuildingType,
 ) -> Option<(&'static [ResourceKind], &'static [ResourceKind])> {
+    const NO_INPUTS: &[ResourceKind] = &[];
+    const MOUSE_FARM_OUTPUTS: &[ResourceKind] = &[ResourceKind::Food];
+    if building_type == BuildingType::MouseFarm {
+        return Some((NO_INPUTS, MOUSE_FARM_OUTPUTS));
+    }
     crate::station_recipes::station_recipe_set(building_type)
         .map(|station| (station.input_resources, station.output_resources))
 }
@@ -24178,7 +24376,7 @@ fn single_input_fetch_budget(colony: &ColonyRuntime, recipe: SingleInputPhysical
 fn is_physical_station(building_type: BuildingType) -> bool {
     matches!(
         building_type,
-        BuildingType::Mill | BuildingType::Sawmill | BuildingType::Smithy
+        BuildingType::Mill | BuildingType::Sawmill | BuildingType::Smithy | BuildingType::MouseFarm
     ) || single_input_physical_recipe(building_type).is_some()
         || twin_input_physical_recipe(building_type).is_some()
 }
@@ -47943,6 +48141,124 @@ mod tests {
     }
 
     #[test]
+    fn accounting_service_speeds_only_a_staffed_completed_tents_physical_round() {
+        let mut baseline = accounting_colony(5.0, true, 1_000);
+        let target = baseline
+            .stockpiles
+            .iter()
+            .find(|pile| !pile.is_station_local())
+            .unwrap();
+        let target_id = target.id.clone();
+        let (x, y) = target.center();
+        baseline.cats[0].position = position_from_world(WorldPos { x, y });
+        baseline.stock_ledger.active_round = Some(AccountingRound {
+            worker_id: "book".to_owned(),
+            tent_id: "tent-1".to_owned(),
+            phase: AccountingPhase::Counting,
+            target_stockpile_id: Some(target_id),
+            ..AccountingRound::default()
+        });
+        let mut boosted = baseline.clone();
+        grant_fixture_node_chain(&mut boosted.upgrade_tree, "accounting_tent_crews");
+        advance_accounting_round(&mut baseline, production_gate(1, 4_000), 123);
+        advance_accounting_round(&mut boosted, production_gate(1, 4_000), 123);
+        assert!(
+            boosted
+                .stock_ledger
+                .active_round
+                .as_ref()
+                .unwrap()
+                .dwell_elapsed_ms
+                > baseline
+                    .stock_ledger
+                    .active_round
+                    .as_ref()
+                    .unwrap()
+                    .dwell_elapsed_ms
+        );
+
+        let mut no_tent = accounting_colony(5.0, false, 1_000);
+        grant_fixture_node_chain(&mut no_tent.upgrade_tree, "accounting_tent_crews");
+        phase_23_production(&mut no_tent, production_gate(10, 11_000), 123);
+        assert!(no_tent.stock_ledger.active_round.is_none());
+        assert_eq!(no_tent.stock_ledger.reported.food, 5.0);
+    }
+
+    #[test]
+    fn mouse_farm_service_uses_local_output_and_a_living_physical_hauler() {
+        let mut colony = accounting_colony(0.0, true, 0);
+        colony.buildings[0].id = "mice".to_owned();
+        colony.buildings[0].building_type = BuildingType::MouseFarm;
+        colony.resources.food = 0.0;
+        for pile in &mut colony.stockpiles {
+            pile.contents.food = 0.0;
+        }
+        grant_fixture_node_chain(&mut colony.upgrade_tree, "mouse_farm_crews");
+        let work = station_work_point(&colony.buildings[0]);
+        colony.cats[0].position = position_from_world(work);
+
+        let mut no_worker = colony.clone();
+        no_worker.buildings[0].assigned_cat = None;
+        phase_23_production(&mut no_worker, production_gate(3_600, 3_600_000), 123);
+        assert_eq!(no_worker.resources.food, 0.0);
+        assert!(building_station_inventory(&no_worker, &no_worker.buildings[0], true).is_empty());
+
+        phase_23_production(&mut colony, production_gate(3_600, 3_600_000), 123);
+        let expected = MOUSE_FARM_FOOD_PER_GAME_HOUR
+            * resolve_effects(colony.upgrade_tree.owned_node_ids.iter()).mouse_farm_food_mult;
+        assert_eq!(
+            colony.resources.food, 0.0,
+            "local output is not yet edible stock"
+        );
+        assert_eq!(
+            building_station_inventory(&colony, &colony.buildings[0], true),
+            [(ResourceKind::Food, expected)]
+        );
+        let mut full = colony.clone();
+        let cap = storage_caps(&full).food;
+        full.resources.food = cap;
+        for pile in &mut full.stockpiles {
+            if !pile.is_station_local() {
+                pile.contents.food = cap;
+            }
+        }
+        phase_23_production(&mut full, production_gate(1, 3_601_000), 123);
+        assert!(full.cats[0].carrying.is_none());
+        assert_eq!(
+            building_station_inventory(&full, &full.buildings[0], true),
+            [(ResourceKind::Food, expected)],
+            "a full destination leaves physical food at the farm"
+        );
+        let saved = serde_json::to_string(&colony.stockpiles).unwrap();
+        let stockpiles: Vec<Stockpile> = serde_json::from_str(&saved).unwrap();
+        let mut restarted = colony.clone();
+        restarted.stockpiles = stockpiles;
+        assert_eq!(restarted, colony, "local mouse output survives restart");
+
+        phase_23_production(&mut restarted, production_gate(1, 3_601_000), 123);
+        let cargo = restarted.cats[0].carrying.clone().expect("living hauler");
+        assert_eq!(cargo.kind, CarryingKind::Food);
+        assert!(building_station_inventory(&restarted, &restarted.buildings[0], true).is_empty());
+
+        let mut died = restarted.clone();
+        let death_site = position_to_world(died.anchor, died.cats[0].position);
+        assert!(salvage_carried_cargo(&mut died, "book", &cargo, death_site).is_none());
+        assert_eq!(
+            building_station_inventory(&died, &died.buildings[0], true),
+            [(ResourceKind::Food, expected)],
+            "a dead hauler returns conserved cargo to the local output"
+        );
+
+        let destination = restarted.cats[0].destination.expect("physical destination");
+        let destination_world = position_to_world(restarted.anchor, destination);
+        assert_eq!(
+            credit_carrying(&mut restarted, &cargo, destination_world),
+            0.0
+        );
+        assert_eq!(restarted.resources.food, expected);
+    }
+
+    #[test]
     fn manual_accountant_with_vacant_office_plans_nearest_then_id_once_per_topology() {
         let mut colony = accounting_colony(5.0, true, 1_000);
         assert!(!colony.officers.contains_key(&OfficerRole::Accountant));
@@ -60954,6 +61270,421 @@ mod tests {
             village_anchor_world(VILLAGE_ANCHOR_TILE),
         );
         assert_eq!(colony.global_upgrade_points, before + carrying.amount);
+    }
+
+    #[test]
+    fn shrine_service_boosts_physical_blessings_only_with_a_completed_shrine() {
+        let mut colony = offering_colony(0.0);
+        grant_fixture_node_chain(&mut colony.upgrade_tree, "shrine_crews");
+        let job = JobRuntime {
+            kind: JobKind::Ritual,
+            assigned_cat: Some(colony.cats[0].id.clone()),
+            ..JobRuntime::default()
+        };
+
+        complete_ritual(&mut colony, &job, production_gate(1, 1_000));
+        assert_eq!(colony.cats[0].carrying.as_ref().unwrap().amount, 1.0);
+
+        colony.cats[0].carrying = None;
+        colony.buildings.push(BuildingRuntime {
+            id: "shrine".to_owned(),
+            building_type: BuildingType::Shrine,
+            is_complete: true,
+            construction_progress: 100,
+            ..BuildingRuntime::default()
+        });
+        complete_ritual(&mut colony, &job, production_gate(1, 2_000));
+        assert_eq!(
+            colony.cats[0].carrying.as_ref().unwrap().amount,
+            resolve_effects(colony.upgrade_tree.owned_node_ids.iter()).shrine_blessing_yield_mult
+        );
+    }
+
+    #[test]
+    fn herb_garden_service_improves_medicine_only_with_the_completed_garden() {
+        let run = |with_garden: bool| {
+            let mut colony = ColonyRuntime {
+                cats: vec![adult_idle_cat("patient", "colony-1")],
+                resources: Resources {
+                    medicine: 1.0,
+                    food: 100.0,
+                    water: 100.0,
+                    ..Resources::default()
+                },
+                ..ColonyRuntime::default()
+            };
+            colony.cats[0].needs.health = 50.0;
+            grant_fixture_node_chain(&mut colony.upgrade_tree, "herb_garden_crews");
+            if with_garden {
+                colony.buildings.push(BuildingRuntime {
+                    building_type: BuildingType::HerbGarden,
+                    is_complete: true,
+                    construction_progress: 100,
+                    ..BuildingRuntime::default()
+                });
+            }
+            phase_25_survival_deaths_and_carried_yield_salvage(
+                &mut colony,
+                production_gate(3_600, 3_600_000),
+                normal_policy(),
+            );
+            colony.cats[0].needs.health
+        };
+        assert_eq!(run(false), 55.0);
+        let mut effects = create_upgrade_tree_state();
+        grant_fixture_node_chain(&mut effects, "herb_garden_crews");
+        assert_eq!(
+            run(true),
+            50.0 + 5.0 * resolve_effects(effects.owned_node_ids.iter()).herb_medicine_efficacy_mult
+        );
+    }
+
+    #[test]
+    fn nursery_service_accelerates_only_kittens_with_a_completed_nursery() {
+        let run = |with_nursery: bool| {
+            let mut kitten = adult_idle_cat("kitten", "colony-1");
+            kitten.age_hours = 1.0;
+            let mut colony = ColonyRuntime {
+                cats: vec![kitten],
+                test_rng_seed: Some(7),
+                ..ColonyRuntime::default()
+            };
+            grant_fixture_node_chain(&mut colony.upgrade_tree, "nursery_crews");
+            if with_nursery {
+                colony.buildings.push(BuildingRuntime {
+                    building_type: BuildingType::Nursery,
+                    is_complete: true,
+                    construction_progress: 100,
+                    ..BuildingRuntime::default()
+                });
+            }
+            phase_6_life_simulation(&mut colony, production_gate(3_600, 3_600_000));
+            colony.cats[0].age_hours
+        };
+        assert_eq!(run(false), 2.0);
+        let mut effects = create_upgrade_tree_state();
+        grant_fixture_node_chain(&mut effects, "nursery_crews");
+        assert_eq!(
+            run(true),
+            1.0 + resolve_effects(effects.owned_node_ids.iter()).kitten_growth_mult
+        );
+    }
+
+    #[test]
+    fn elder_corner_service_reduces_old_age_risk_only_with_the_completed_corner() {
+        let seed = (1..10_000)
+            .find(|seed| roll_seeded(f64::from(life_seed(*seed))).value > 1.0 / 1.05)
+            .expect("LCG supplies a high deterministic roll");
+        let run = |with_corner: bool| {
+            let mut elder = adult_idle_cat("elder", "colony-1");
+            elder.age_hours = 439.0;
+            elder.stats.leadership = 100.0;
+            elder.stats.medicine = 0.0;
+            let mut colony = ColonyRuntime {
+                cats: vec![elder],
+                test_rng_seed: Some(seed),
+                ..ColonyRuntime::default()
+            };
+            grant_fixture_node_chain(&mut colony.upgrade_tree, "elder_corner_crews");
+            if with_corner {
+                colony.buildings.push(BuildingRuntime {
+                    building_type: BuildingType::ElderCorner,
+                    is_complete: true,
+                    construction_progress: 100,
+                    ..BuildingRuntime::default()
+                });
+            }
+            phase_6_life_simulation(&mut colony, production_gate(3_600, 3_600_000));
+            colony.cats[0].death_time
+        };
+        assert!(run(false).is_some());
+        assert_eq!(run(true), None);
+    }
+
+    #[test]
+    fn food_storekeeping_reduces_actual_spoilage_only_with_completed_storage() {
+        let run = |owned: bool, completed_storage: bool| {
+            let mut colony = ColonyRuntime {
+                resources: Resources {
+                    food: 100.0,
+                    ..Resources::default()
+                },
+                ..ColonyRuntime::default()
+            };
+            if owned {
+                colony
+                    .upgrade_tree
+                    .owned_node_ids
+                    .push("food_storage_crews".to_owned());
+            }
+            if completed_storage {
+                colony.buildings.push(BuildingRuntime {
+                    building_type: BuildingType::FoodStorage,
+                    is_complete: true,
+                    construction_progress: 100,
+                    ..BuildingRuntime::default()
+                });
+            }
+            phase_7_consumption_spoilage_resource_pre_patch_minute_cadence(
+                &mut colony,
+                production_gate(3_600, 3_600_000),
+            );
+            colony.resources.food
+        };
+
+        let baseline_without_building = run(false, false);
+        let baseline_with_building = run(false, true);
+        assert_eq!(baseline_without_building, baseline_with_building);
+        assert_eq!(run(true, false), baseline_without_building);
+        assert!(run(true, true) > baseline_with_building);
+    }
+
+    #[test]
+    fn water_stewardship_reduces_the_physical_serving_debit_only_with_a_bowl() {
+        let run = |owned: bool, completed_bowl: bool| {
+            let mut colony = ColonyRuntime::default();
+            if owned {
+                colony
+                    .upgrade_tree
+                    .owned_node_ids
+                    .push("water_bowl_crews".to_owned());
+            }
+            if completed_bowl {
+                colony.buildings.push(BuildingRuntime {
+                    building_type: BuildingType::WaterBowl,
+                    is_complete: true,
+                    construction_progress: 100,
+                    ..BuildingRuntime::default()
+                });
+            }
+            personal_water_serving(&colony)
+        };
+
+        let baseline = run(false, false);
+        assert_eq!(run(false, true), baseline);
+        assert_eq!(run(true, false), baseline);
+        assert!(run(true, true) < baseline);
+    }
+
+    #[test]
+    fn bed_service_restores_actual_sleep_only_with_completed_beds() {
+        let run = |owned: bool, completed_beds: bool| {
+            let mut cat = adult_idle_cat("sleeper", "colony-1");
+            cat.needs.rest = 0.0;
+            cat.current_task = Some(TaskType::Sleep);
+            cat.activity = CatActivity::Working;
+            cat.carrying = Some(Carrying {
+                kind: CarryingKind::Food,
+                amount: 0.0,
+                job_ended_at: 0,
+                source_gather_spot: Some(personal_need_marker(&PersonalNeedMarker {
+                    task: TaskType::Sleep,
+                    stage: PersonalNeedStage::Carrying,
+                    source_pile_id: None,
+                    resume: PersonalNeedResume::default(),
+                    brew_used: false,
+                })),
+            });
+            let mut colony = ColonyRuntime {
+                cats: vec![cat],
+                ..ColonyRuntime::default()
+            };
+            if owned {
+                colony
+                    .upgrade_tree
+                    .owned_node_ids
+                    .push("beds_crews".to_owned());
+            }
+            if completed_beds {
+                colony.buildings.push(BuildingRuntime {
+                    building_type: BuildingType::Beds,
+                    is_complete: true,
+                    construction_progress: 100,
+                    ..BuildingRuntime::default()
+                });
+            }
+            phase_25_survival_deaths_and_carried_yield_salvage(
+                &mut colony,
+                production_gate(0, 1_000),
+                normal_policy(),
+            );
+            colony.cats[0].needs.rest
+        };
+
+        let baseline = run(false, false);
+        assert_eq!(run(false, true), baseline);
+        assert_eq!(run(true, false), baseline);
+        assert!(run(true, true) > baseline);
+    }
+
+    #[test]
+    fn wall_and_barracks_services_change_the_actual_raid_muster_only_when_built() {
+        let run = |node_id: &str, building_type: BuildingType, completed: bool| {
+            let mut colony = ColonyRuntime::default();
+            if !node_id.is_empty() {
+                colony.upgrade_tree.owned_node_ids.push(node_id.to_owned());
+            }
+            if completed {
+                colony.buildings.push(BuildingRuntime {
+                    building_type,
+                    is_complete: true,
+                    construction_progress: 100,
+                    ..BuildingRuntime::default()
+                });
+            }
+            active_raid_combat_modifiers(&colony)
+        };
+
+        let baseline = run("", BuildingType::Walls, false);
+        assert_eq!(run("walls_crews", BuildingType::Walls, false), baseline);
+        let walled = run("walls_crews", BuildingType::Walls, true);
+        assert_eq!(walled.combat_power_mult, baseline.combat_power_mult);
+        assert!(walled.defense_mult > baseline.defense_mult);
+
+        assert_eq!(
+            run("barracks_crews", BuildingType::Barracks, false),
+            baseline
+        );
+        let barracks = run("barracks_crews", BuildingType::Barracks, true);
+        assert!(barracks.combat_power_mult > baseline.combat_power_mult);
+        assert_eq!(barracks.defense_mult, baseline.defense_mult);
+    }
+
+    #[test]
+    fn field_stewardship_increases_the_physical_harvest_only_with_a_completed_field() {
+        let run = |owned: bool, completed_field: bool| {
+            let mut colony = single_field_colony(TilePos { x: 12, y: 12 });
+            colony.farms[0].fertility = 1.0;
+            if owned {
+                colony
+                    .upgrade_tree
+                    .owned_node_ids
+                    .push("field_crews".to_owned());
+            }
+            if !completed_field {
+                colony.buildings.clear();
+            }
+            phase_23_production(
+                &mut colony,
+                production_gate(24 * 3_600, 24 * 3_600_000),
+                123,
+            );
+            colony.farms[0].pending_output
+        };
+
+        let baseline = run(false, true);
+        assert!(baseline > 0.0);
+        assert_eq!(run(true, false), 0.0);
+        assert!(run(true, true) > baseline);
+    }
+
+    #[test]
+    fn research_building_workflow_studies_raise_only_the_matching_staffed_service() {
+        let run = |node_id: Option<&str>, building_type: BuildingType| {
+            let scholar = adult_idle_cat("scholar", "colony-1");
+            let mut colony = ColonyRuntime {
+                cats: vec![scholar],
+                buildings: vec![BuildingRuntime {
+                    id: "research-building".to_owned(),
+                    building_type,
+                    is_complete: true,
+                    construction_progress: 100,
+                    assigned_cat: Some("scholar".to_owned()),
+                    ..BuildingRuntime::default()
+                }],
+                ..ColonyRuntime::default()
+            };
+            if let Some(node_id) = node_id {
+                colony.upgrade_tree.owned_node_ids.push(node_id.to_owned());
+            }
+            research_workforce(&colony)
+        };
+
+        assert_eq!(run(None, BuildingType::ResearchHut), 1.0);
+        assert_eq!(
+            run(Some("research_hut_workflow"), BuildingType::School),
+            1.0
+        );
+        assert!(run(Some("research_hut_workflow"), BuildingType::ResearchHut) > 1.0);
+
+        assert_eq!(run(None, BuildingType::School), 1.0);
+        assert_eq!(run(Some("school_workflow"), BuildingType::ResearchHut), 1.0);
+        assert!(run(Some("school_workflow"), BuildingType::School) > 1.0);
+    }
+
+    #[test]
+    fn all_thirteen_service_studies_require_their_completed_building() {
+        for (node_id, building_type) in [
+            ("den_crews", BuildingType::Den),
+            ("food_storage_crews", BuildingType::FoodStorage),
+            ("water_bowl_crews", BuildingType::WaterBowl),
+            ("beds_crews", BuildingType::Beds),
+            ("herb_garden_crews", BuildingType::HerbGarden),
+            ("nursery_crews", BuildingType::Nursery),
+            ("elder_corner_crews", BuildingType::ElderCorner),
+            ("walls_crews", BuildingType::Walls),
+            ("mouse_farm_crews", BuildingType::MouseFarm),
+            ("shrine_crews", BuildingType::Shrine),
+            ("field_crews", BuildingType::Field),
+            ("barracks_crews", BuildingType::Barracks),
+            ("accounting_tent_crews", BuildingType::AccountingTent),
+        ] {
+            let mut colony = ColonyRuntime::default();
+            colony.upgrade_tree.owned_node_ids.push(node_id.to_owned());
+            let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+            let promised = match building_type {
+                BuildingType::Den => effects.den_stewardship_mult,
+                BuildingType::FoodStorage => 1.0 + effects.food_storekeeping,
+                BuildingType::WaterBowl => effects.water_stewardship_mult,
+                BuildingType::Beds => effects.rest_recovery_mult,
+                BuildingType::HerbGarden => effects.herb_medicine_efficacy_mult,
+                BuildingType::Nursery => effects.kitten_growth_mult,
+                BuildingType::ElderCorner => effects.elder_protection_mult,
+                BuildingType::Walls => effects.wall_defense_mult,
+                BuildingType::MouseFarm => effects.mouse_farm_food_mult,
+                BuildingType::Shrine => effects.shrine_blessing_yield_mult,
+                BuildingType::Field => effects.field_stewardship_mult,
+                BuildingType::Barracks => effects.barracks_readiness_mult,
+                BuildingType::AccountingTent => effects.accounting_speed_mult,
+                _ => unreachable!(),
+            };
+            assert_eq!(
+                completed_building_multiplier(&colony, building_type, promised),
+                1.0,
+                "{node_id} leaked without its building"
+            );
+            colony.buildings.push(BuildingRuntime {
+                building_type,
+                is_complete: true,
+                construction_progress: 100,
+                ..BuildingRuntime::default()
+            });
+            assert!(
+                completed_building_multiplier(&colony, building_type, promised) > 1.0,
+                "{node_id} did not change its promised metric"
+            );
+        }
+    }
+
+    #[test]
+    fn den_stewardship_keeps_leader_and_life_housing_authorities_in_sync() {
+        let mut colony = found_colony(42, "housing", 0, 77);
+        colony
+            .upgrade_tree
+            .owned_node_ids
+            .push("den_crews".to_owned());
+        let snapshot = phase_18_leader_snapshot_assembly(&mut colony, production_gate(60, 60_000));
+        assert_eq!(
+            f64::from(snapshot.housing.capacity),
+            colony_housing_capacity(&colony).floor()
+        );
+        assert!(snapshot.housing.committed <= snapshot.housing.capacity);
+        assert!(
+            !automated_plan(&snapshot)
+                .decisions
+                .contains(&LeaderDecision::BuildDen),
+            "the director must not commission a den from stale pre-research capacity"
+        );
     }
 
     #[test]
