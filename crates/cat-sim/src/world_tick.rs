@@ -11173,10 +11173,19 @@ fn phase_25_survival_deaths_and_carried_yield_salvage(
             if marker.stage == PersonalNeedStage::Seeking
                 && !personal_need_is_available(colony, &cat_id, marker.task)
             {
-                // Do not deadlock a starving village by parking its hunters on an
-                // impossible meal route. No resource was reserved in Seeking state,
-                // so abandoning it is lossless; the cat retries as soon as food exists.
-                finish_personal_need(&mut colony.cats[index], &marker);
+                if marker.task == TaskType::Drink && marker.brew_used {
+                    // Brew is only the physical quarter-serving first leg. If clean
+                    // Water disappears before the follow-up pickup (including across
+                    // restart), retain this marker: releasing it would let Brew finish
+                    // a drink need and the next decision could consume Brew again.
+                    colony.cats[index].current_task = Some(TaskType::Drink);
+                } else {
+                    // Do not deadlock a starving village by parking its hunters on an
+                    // impossible meal route. No resource was reserved in ordinary
+                    // Seeking state, so abandoning it is lossless; the cat retries as
+                    // soon as food or water exists.
+                    finish_personal_need(&mut colony.cats[index], &marker);
+                }
             } else {
                 colony.cats[index].current_task = Some(marker.task);
             }
@@ -13560,10 +13569,16 @@ fn complete_personal_need_arrival(
         (100.0 - colony.cats[cat_index].needs.thirst).clamp(0.0, PERSONAL_DRINK_RESTORE)
             / PERSONAL_DRINK_RESTORE
     };
-    let serving_share = if kind == ResourceKind::Brew {
-        0.25
-    } else {
-        1.0
+    let serving_share = match kind {
+        ResourceKind::Brew => 0.25,
+        ResourceKind::Water
+            if prior_marker
+                .as_ref()
+                .is_some_and(|marker| marker.task == TaskType::Drink && marker.brew_used) =>
+        {
+            0.75
+        }
+        _ => 1.0,
     };
     let wanted = base_serving * restore_capacity * serving_share;
     let available = stockpiles::resource_amount(&colony.stockpiles[pile_index].contents, kind);
@@ -50199,6 +50214,256 @@ mod tests {
         assert!(colony.cats[0].carrying.is_none());
         assert_eq!(colony.cats[0].current_task, None);
         assert_eq!(colony.resources.water, before_water - carried);
+    }
+
+    #[test]
+    fn preserves_are_carried_from_a_real_pile_and_feed_only_at_dining() {
+        let mut colony = found_colony(42, "colony-1", 10_000, 42);
+        reconcile_colony_stockpiles(&mut colony);
+        for pile in &mut colony.stockpiles {
+            pile.contents.food = 0.0;
+            pile.contents.fish = 0.0;
+            pile.contents.preserves = 0.0;
+        }
+        colony.resources.food = 0.0;
+        colony.resources.fish = 0.0;
+        colony.resources.preserves = 8.0;
+        let source_tile = TilePos {
+            x: colony.anchor.x - 5,
+            y: colony.anchor.y - 5,
+        };
+        let mut source = designated_pile(
+            "preserves-pantry",
+            ZoneRect {
+                x1: source_tile.x,
+                y1: source_tile.y,
+                x2: source_tile.x,
+                y2: source_tile.y,
+            },
+            &[ResourceKind::Preserves],
+        );
+        source.contents.preserves = colony.resources.preserves;
+        colony.stockpiles.push(source);
+        let source_index = colony.stockpiles.len() - 1;
+        assert!(!colony.stockpiles[source_index].is_station_local());
+
+        let before_phase = colony.resources.preserves;
+        phase_7_consumption_spoilage_resource_pre_patch_minute_cadence(
+            &mut colony,
+            production_gate(3_600, 3_610_000),
+        );
+        assert_eq!(
+            colony.resources.preserves, before_phase,
+            "phase 7 must not invisibly consume preserved meals"
+        );
+
+        let (source_x, source_y) = colony.stockpiles[source_index].center();
+        let dining = personal_need_meal_target(&colony, TaskType::Eat);
+        assert_ne!((source_x, source_y), (dining.x, dining.y));
+        colony.cats[0].needs.hunger = 20.0;
+        colony.cats[0].needs.thirst = 100.0;
+        colony.cats[0].current_task = Some(TaskType::Eat);
+        colony.cats[0].position = position_from_world(WorldPos {
+            x: source_x,
+            y: source_y,
+        });
+
+        assert!(complete_personal_need_arrival(&mut colony, 0, 3_611_000));
+        let cargo = colony.cats[0]
+            .carrying
+            .as_ref()
+            .expect("the cat must carry the removed preserves");
+        assert_eq!(cargo.kind, CarryingKind::Preserves);
+        assert!(cargo.amount > 0.0);
+        let marker = parse_personal_need_marker(cargo.source_gather_spot.as_deref())
+            .expect("preserves use the durable personal-needs route marker");
+        assert_eq!(marker.stage, PersonalNeedStage::Carrying);
+        assert_eq!(marker.source_pile_id.as_deref(), Some("preserves-pantry"));
+        let carried = cargo.amount;
+        assert_eq!(colony.cats[0].needs.hunger, 20.0);
+        assert_eq!(colony.resources.preserves, before_phase - carried);
+        assert_eq!(
+            colony.stockpiles[source_index].contents.preserves,
+            before_phase - carried
+        );
+
+        let persisted =
+            serde_json::to_string(&colony.cats[0]).expect("serialize cat mid-meal route");
+        let mut restarted = colony.clone();
+        restarted.cats[0] = serde_json::from_str(&persisted).expect("restart cat mid-meal route");
+        assert_eq!(restarted.cats[0], colony.cats[0]);
+        restarted.cats[0].position = position_from_world(dining);
+        assert!(complete_personal_need_arrival(&mut restarted, 0, 3_612_000));
+        assert_eq!(restarted.cats[0].needs.hunger, 50.0);
+        assert!(restarted.cats[0].carrying.is_none());
+        assert_eq!(restarted.cats[0].current_task, None);
+        assert_eq!(restarted.resources.preserves, before_phase - carried);
+    }
+
+    #[test]
+    fn brew_is_one_restart_safe_quarter_leg_and_clean_water_finishes_the_drink() {
+        let mut colony = found_colony(42, "colony-1", 10_000, 42);
+        reconcile_colony_stockpiles(&mut colony);
+        for pile in &mut colony.stockpiles {
+            pile.contents.brew = 0.0;
+        }
+        colony.resources.brew = 8.0;
+        let source_tile = TilePos {
+            x: colony.anchor.x - 5,
+            y: colony.anchor.y - 5,
+        };
+        let mut source = designated_pile(
+            "brew-cellar",
+            ZoneRect {
+                x1: source_tile.x,
+                y1: source_tile.y,
+                x2: source_tile.x,
+                y2: source_tile.y,
+            },
+            &[ResourceKind::Brew],
+        );
+        source.contents.brew = colony.resources.brew;
+        colony.stockpiles.push(source);
+        let brew_index = colony.stockpiles.len() - 1;
+        let (brew_x, brew_y) = colony.stockpiles[brew_index].center();
+        let before_brew = colony.resources.brew;
+        let before_water = colony.resources.water;
+
+        phase_7_consumption_spoilage_resource_pre_patch_minute_cadence(
+            &mut colony,
+            production_gate(3_600, 3_610_000),
+        );
+        assert_eq!(colony.resources.brew, before_brew);
+        assert_eq!(colony.resources.water, before_water);
+
+        colony.cats[0].needs.hunger = 100.0;
+        colony.cats[0].needs.thirst = 20.0;
+        colony.cats[0].current_task = Some(TaskType::Drink);
+        colony.cats[0].position = position_from_world(WorldPos {
+            x: brew_x,
+            y: brew_y,
+        });
+        let full_serving = personal_water_serving(&colony);
+        assert!(complete_personal_need_arrival(&mut colony, 0, 3_611_000));
+        let brew_cargo = colony.cats[0]
+            .carrying
+            .as_ref()
+            .expect("the drink begins with a physical Brew leg");
+        assert_eq!(brew_cargo.kind, CarryingKind::Brew);
+        assert_eq!(brew_cargo.amount, full_serving * 0.25);
+        assert_eq!(colony.cats[0].needs.thirst, 20.0);
+        assert_eq!(colony.resources.brew, before_brew - brew_cargo.amount);
+        assert_eq!(colony.resources.water, before_water);
+
+        let dining = personal_need_meal_target(&colony, TaskType::Drink);
+        colony.cats[0].position = position_from_world(dining);
+        assert!(complete_personal_need_arrival(&mut colony, 0, 3_612_000));
+        assert_eq!(
+            colony.cats[0].needs.thirst, 30.0,
+            "Brew restores exactly one quarter of the forty-point drink"
+        );
+        let first_leg_marker = colony.cats[0]
+            .carrying
+            .as_ref()
+            .and_then(|cargo| parse_personal_need_marker(cargo.source_gather_spot.as_deref()))
+            .expect("the clean-water follow-up survives as durable route state");
+        assert_eq!(first_leg_marker.stage, PersonalNeedStage::Seeking);
+        assert!(first_leg_marker.brew_used);
+        assert_eq!(colony.cats[0].current_task, Some(TaskType::Drink));
+
+        let persisted =
+            serde_json::to_string(&colony.cats[0]).expect("serialize cat after Brew leg");
+        let mut restarted = colony.clone();
+        restarted.cats[0] = serde_json::from_str(&persisted).expect("restart cat after Brew leg");
+        assert_eq!(restarted.cats[0], colony.cats[0]);
+        for pile in &mut restarted.stockpiles {
+            pile.contents.water = 0.0;
+        }
+        restarted.resources.water = 0.0;
+        restarted.cats[0].position = position_from_world(WorldPos {
+            x: brew_x,
+            y: brew_y,
+        });
+        let after_first_leg_brew = restarted.resources.brew;
+
+        assert!(complete_personal_need_arrival(&mut restarted, 0, 3_613_000));
+        assert_eq!(
+            restarted.resources.brew, after_first_leg_brew,
+            "restart must not permit a second Brew pickup for the same need"
+        );
+        assert_eq!(restarted.cats[0].needs.thirst, 30.0);
+        phase_25_survival_deaths_and_carried_yield_salvage(
+            &mut restarted,
+            production_gate(0, 3_614_000),
+            normal_policy(),
+        );
+        assert_eq!(restarted.cats[0].current_task, Some(TaskType::Drink));
+        let waiting_marker = restarted.cats[0]
+            .carrying
+            .as_ref()
+            .and_then(|cargo| parse_personal_need_marker(cargo.source_gather_spot.as_deref()))
+            .expect("missing Water cannot complete or discard the Brew follow-up");
+        assert!(waiting_marker.brew_used);
+
+        let water_index = restarted
+            .stockpiles
+            .iter()
+            .position(Stockpile::is_general_storehouse)
+            .expect("founding general storehouse");
+        let clean_water = full_serving * 2.0;
+        restarted.stockpiles[water_index].contents.water = clean_water;
+        restarted.resources.water = clean_water;
+        let before_clean_pickup = restarted.resources.water;
+        phase_7_consumption_spoilage_resource_pre_patch_minute_cadence(
+            &mut restarted,
+            production_gate(60, 3_674_000),
+        );
+        assert_eq!(restarted.resources.water, before_clean_pickup);
+        assert_eq!(restarted.resources.brew, after_first_leg_brew);
+
+        let (water_x, water_y) = restarted.stockpiles[water_index].center();
+        restarted.cats[0].position = position_from_world(WorldPos {
+            x: water_x,
+            y: water_y,
+        });
+        assert!(complete_personal_need_arrival(&mut restarted, 0, 3_675_000));
+        let water_cargo = restarted.cats[0]
+            .carrying
+            .as_ref()
+            .expect("clean Water is physically picked up after Brew");
+        assert_eq!(water_cargo.kind, CarryingKind::Water);
+        assert_eq!(water_cargo.amount, full_serving * 0.75);
+        let carried_water = water_cargo.amount;
+        let thirst_before_water = restarted.cats[0].needs.thirst;
+        assert_eq!(
+            restarted.resources.water,
+            before_clean_pickup - carried_water
+        );
+
+        let second_persisted = serde_json::to_string(&restarted.cats[0])
+            .expect("serialize cat on clean-water return leg");
+        let mut second_restart = restarted.clone();
+        second_restart.cats[0] =
+            serde_json::from_str(&second_persisted).expect("restart cat on clean-water return leg");
+        second_restart.cats[0].position = position_from_world(dining);
+        assert!(complete_personal_need_arrival(
+            &mut second_restart,
+            0,
+            3_676_000
+        ));
+        assert_eq!(
+            second_restart.cats[0].needs.thirst,
+            thirst_before_water + PERSONAL_DRINK_RESTORE * 0.75
+        );
+        assert_eq!(second_restart.cats[0].needs.thirst, 60.0);
+        assert!(second_restart.cats[0].carrying.is_none());
+        assert_eq!(second_restart.cats[0].current_task, None);
+        assert_eq!(
+            second_restart.resources.water,
+            before_clean_pickup - carried_water,
+            "clean Water is debited at pickup, never invisibly at arrival"
+        );
+        assert_eq!(second_restart.resources.brew, after_first_leg_brew);
     }
 
     #[test]
