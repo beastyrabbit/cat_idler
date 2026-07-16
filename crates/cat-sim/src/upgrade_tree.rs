@@ -1835,8 +1835,10 @@ mod tests {
     }
 
     #[test]
-    fn generated_recipe_resources_are_live_while_unbacked_crews_remain_future() {
+    fn every_generated_recipe_resource_and_building_service_is_live() {
         let catalog = crate::research_catalog::research_catalog();
+        assert_eq!(catalog.nodes().len(), 487);
+        assert!(catalog.nodes().iter().all(|node| !node.is_future_content()));
         let textile_sources = catalog.get("textile_work_sources").unwrap();
         let state = state_with(
             &textile_sources
@@ -1851,23 +1853,20 @@ mod tests {
         assert!(result.ok);
         assert!(is_owned(&result.state, "textile_work_sources"));
 
-        let future_crews = catalog.get("den_crews").unwrap();
-        assert!(future_crews.is_future_content());
-        let future_state = state_with(
-            &future_crews
+        let den_service = catalog.get("den_crews").unwrap();
+        assert!(!den_service.is_future_content());
+        let service_state = state_with(
+            &den_service
                 .prerequisites
                 .iter()
                 .map(String::as_str)
                 .collect::<Vec<_>>(),
             100.0,
         );
-        assert!(!can_unlock(&future_state, "den_crews"));
-        let denied = cat_purchase(&future_state, "den_crews");
-        assert!(!denied.ok);
-        assert_eq!(
-            denied.state.research_points.to_bits(),
-            future_state.research_points.to_bits()
-        );
+        assert!(can_unlock(&service_state, "den_crews"));
+        let purchased = cat_purchase(&service_state, "den_crews");
+        assert!(purchased.ok);
+        assert!(is_owned(&purchased.state, "den_crews"));
 
         let supported = state_with(
             &[
