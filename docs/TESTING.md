@@ -51,16 +51,17 @@ it or when diagnosing a failure that cannot be reproduced with a focused test.
 Every pushed commit triggers `.forgejo/workflows/quality.yaml`. Forgejo performs the exhaustive gate
 on the Kubernetes runner pool:
 
-- format/workspace Clippy and the dependency-policy check form the first stage;
-- the test suite is compiled once into a Nextest archive only after both first-stage gates pass;
+- formatting, the dependency-policy check, and workspace Clippy run serially in the first job;
+- the test suite is compiled once into a Nextest archive only after that quality job passes;
 - the four test shards download that same archive instead of compiling the Rust/Bevy workspace
-  four times; the browser build also waits for the first-stage gates;
+  four times;
 - the complete workspace Nextest inventory is divided into four deterministic hash partitions;
 - at most two `personal` runner jobs execute at once, with one test thread each, so the shared
   Kubernetes nodes stay responsive even though the complete suite takes longer;
 - Cargo compilation is capped at two jobs per runner;
 - the four partitions must contain every test exactly once;
-- the browser/WASM build remains a separate downstream job.
+- the browser/WASM build starts only after every Rust shard passes, so it cannot compete with the
+  test stages for cluster capacity.
 
 The archive build and the command used by shard `N` are:
 

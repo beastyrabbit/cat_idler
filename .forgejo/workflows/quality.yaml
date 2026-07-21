@@ -56,12 +56,24 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+      - name: Install cargo-deny
+        run: |
+          set -euo pipefail
+          deny_install_dir="$(mktemp -d)"
+          curl -LsSf \
+            https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/cargo-deny-0.20.2-x86_64-unknown-linux-musl.tar.gz \
+            | tar zxf - --strip-components=1 -C "$deny_install_dir"
+          install -m 0755 "$deny_install_dir/cargo-deny" /usr/local/bin/cargo-deny
+
+      - name: Check advisories, bans, and dependency sources
+        run: cargo-deny check advisories bans sources
+
       - name: Deny Clippy warnings
         run: cargo clippy --workspace --all-targets -- -D warnings
 
   rust-test-build:
     name: Build test archive once
-    needs: [rust-quality, supply-chain]
+    needs: rust-quality
     runs-on: personal
     timeout-minutes: 90
     steps:
@@ -151,7 +163,7 @@ jobs:
 
   wasm:
     name: Build browser client
-    needs: [rust-quality, supply-chain]
+    needs: rust-tests
     runs-on: personal
     timeout-minutes: 90
     steps:
@@ -193,25 +205,3 @@ jobs:
         run: |
           set -euo pipefail
           du -ah crates/cat-web/dist | sort -h | tail -20
-
-  supply-chain:
-    name: Dependency advisories and sources
-    runs-on: personal
-    timeout-minutes: 20
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-
-      - name: Install cargo-deny
-        run: |
-          set -euo pipefail
-          apt-get update
-          apt-get install -y --no-install-recommends ca-certificates curl
-          deny_install_dir="$(mktemp -d)"
-          curl -LsSf \
-            https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/cargo-deny-0.20.2-x86_64-unknown-linux-musl.tar.gz \
-            | tar zxf - --strip-components=1 -C "$deny_install_dir"
-          install -m 0755 "$deny_install_dir/cargo-deny" /usr/local/bin/cargo-deny
-
-      - name: Check advisories, bans, and dependency sources
-        run: cargo-deny check advisories bans sources
