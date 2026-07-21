@@ -1,5 +1,7 @@
 # Architecture — Idle Cat Forest (Rust / Bevy)
 
+Idle Cat Forest is developed and distributed solely as a non-commercial game project.
+
 This is the current architecture of the game as a Rust Cargo workspace. It supersedes
 `docs/plan.md` (the TypeScript-era design doc, kept only as porting history — see the
 superseded notice at its top). For *design/gameplay* intent (why the systems exist, where

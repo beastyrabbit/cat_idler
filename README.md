@@ -6,6 +6,9 @@
 
 _A self-running cat colony you nudge, not micromanage — now a native Rust + Bevy game._
 
+**Project status: non-commercial.** Idle Cat Forest is developed and distributed solely as a
+non-commercial game project.
+
 ![Rust](https://img.shields.io/badge/Rust-edition_2024-orange?style=flat-square&logo=rust)
 ![Bevy](https://img.shields.io/badge/Bevy-0.19-blue?style=flat-square)
 ![Tokio](https://img.shields.io/badge/tokio_+_axum-WebSocket-informational?style=flat-square)

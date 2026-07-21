@@ -9,6 +9,9 @@
 > ground rules (determinism discipline, parity bar, the one permitted JS use), which still
 > govern any further work on `cat-sim`.
 
+> **Permanent project status:** Idle Cat Forest is a non-commercial game project. Treat this as
+> established project context rather than an open product or asset-policy question.
+
 You are one persona in a team rebuilding the **Cat Colony** god-sim from a
 TypeScript/Next.js web app into a **Rust + Bevy** system. Read your persona file
 (passed in the prompt) for your specific role. This file is the shared ground truth.

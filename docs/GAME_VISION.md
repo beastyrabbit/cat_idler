@@ -2,6 +2,8 @@
 
 **"An idle version of Dwarf Fortress, played by cats, in a forest."**
 
+Idle Cat Forest is developed and distributed solely as a non-commercial game project.
+
 ## Pillars
 1. **Top-down, single level.** A flat 2D grid world (no isometric, no z-layers). Read
    the map like DF: everything is a *place* — tiles, workshops, stockpiles, cats.

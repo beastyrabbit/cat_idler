@@ -1,5 +1,8 @@
 # Handoff — continue the Idle Cat Forest build
 
+**Permanent project status:** Idle Cat Forest is a non-commercial game project. This is settled
+project context and not an open implementation or product decision.
+
 You are picking up **Idle Cat Forest** — "an idle Dwarf Fortress, played by cats, in a
 forest": a top-down god-sim where a cat colony lives, works, breeds, researches, and fights
 on its own, ticked once a second by an authoritative server. Read this file, then

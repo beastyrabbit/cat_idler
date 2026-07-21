@@ -1,6 +1,9 @@
 # Idle Cat Forest implementation audit and fix tracker
 
-Last updated: 2026-07-16
+Last updated: 2026-07-21
+
+Idle Cat Forest is a non-commercial game project; that status is established and not an open
+audit item.
 
 This is the working ledger for the post-cutover design audit and exhaustive playtest pass.
 It records only the current Rust/Bevy game's promises and gaps. Documents explicitly marked
