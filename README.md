@@ -257,8 +257,9 @@ reserved-bed pregnancy, prosperity migration with 36 game-hours to house each ar
 deterministic reset, physical emergency water hauling, and 240/288-game-hour ordinary versus
 leader/healer old-age thresholds.
 [`docs/IMPLEMENTATION_AUDIT.md`](docs/IMPLEMENTATION_AUDIT.md) is the living evidence ledger.
-The first pushed Forgejo workflow run and optional WASM transfer tuning are the maintained
-follow-ups; newly reproduced defects go in [`docs/FIX_LOG.md`](docs/FIX_LOG.md).
+The tiered local-smoke/remote-full workflow is documented in
+[`docs/TESTING.md`](docs/TESTING.md); newly reproduced defects go in
+[`docs/FIX_LOG.md`](docs/FIX_LOG.md).
 
 ---
 

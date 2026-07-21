@@ -1,477 +1,100 @@
 # Testing Guide
 
-> **SUPERSEDED.** Vitest/Selenium testing guide for the TypeScript web game (frozen on branch
-> `archive/web-game`). For the Rust rebuild's testing approach (cargo test/nextest, golden-master
-> fixtures, determinism), see [`docs/ARCHITECTURE.md`](ARCHITECTURE.md#testing-strategy) and
-> `AGENTS.md`. Kept as history — the TDD *philosophy* carried over, the tooling did not.
+This document defines the maintained Rust/Bevy test workflow. The former TypeScript/Vitest game
+is frozen on `archive/web-game`; do not use its test commands on `main`.
 
-This project uses **Test-Driven Development (TDD)**. Write tests FIRST, then implement.
+## Test tiers
 
-## TDD Workflow
+Testing is deliberately split so development stays responsive while every pushed revision still
+receives complete coverage.
 
-```
-1. Write a failing test
-2. Run tests → RED (fail)
-3. Write minimum code to pass
-4. Run tests → GREEN (pass)
-5. Refactor if needed
-6. Repeat
-```
+### 1. Focused regression test — local
 
-## Testing Stack
-
-| Tool | Purpose |
-|------|---------|
-| Vitest | Test runner |
-| @testing-library/react | React component testing |
-| @testing-library/jest-dom | DOM matchers |
-| jsdom | Browser environment simulation |
-
-## Running Tests
+Run the smallest test that proves the behavior being changed. Prefer one exact test name or one
+integration-test binary instead of an entire crate:
 
 ```bash
-# Run all tests once
-npm test
-
-# Run tests in watch mode (recommended during development)
-npm run test:watch
-
-# Run specific test file
-npm test -- tests/unit/game/needs.test.ts
-
-# Run tests matching a pattern
-npm test -- --grep "decayNeeds"
-
-# Run with coverage report
-npm run test:coverage
-
-# Run only changed tests
-npm run test:changed
+cargo nextest run -p cat-client focused_start_input_has_a_visible_cursor
+cargo nextest run -p cat-sim regular_cat_walking_permanently_reveals_a_three_by_three_trail
+cargo nextest run -p cat-server player_name_history_is_global_and_updates_last_seen
 ```
 
-## Test File Organization
+New behavior still follows TDD: reproduce the bug or boundary in a failing focused test, implement
+the change, then make that test green. Deterministic simulation changes need a deterministic twin
+or exact boundary assertion where appropriate.
 
-```
-tests/
-├── unit/                     # Unit tests (no external deps)
-│   ├── game/                 # Game logic tests
-│   │   ├── needs.test.ts
-│   │   ├── age.test.ts
-│   │   ├── skills.test.ts
-│   │   ├── combat.test.ts
-│   │   ├── catAI.test.ts
-│   │   ├── tasks.test.ts
-│   │   ├── paths.test.ts
-│   │   └── worldResources.test.ts
-│   │
-│   └── components/           # Component tests
-│       ├── CatSprite.test.tsx
-│       ├── ResourceBar.test.tsx
-│       ├── TaskCard.test.tsx
-│       └── ...
-│
-├── integration/              # Integration tests
-│   ├── convex/               # Backend integration
-│   │   ├── colonies.test.ts
-│   │   ├── cats.test.ts
-│   │   └── workerTick.test.ts
-│   │
-│   └── features/             # Feature integration
-│       ├── feedColony.test.ts
-│       └── encounterResolution.test.ts
-│
-└── e2e/                      # End-to-end tests (optional)
-    └── colonyLifecycle.test.ts
-```
+### 2. Smoke profile — local before commit
 
-## Writing Unit Tests
+Run the maintained cross-crate smoke profile before committing Rust changes:
 
-### Game Logic Tests (Pure Functions)
-
-These are the easiest to test. Functions take input, return output, no side effects.
-
-```typescript
-// tests/unit/game/needs.test.ts
-import { describe, it, expect } from 'vitest'
-import { decayNeeds } from '@/lib/game/needs'
-
-describe('decayNeeds', () => {
-  // Describe what the function should do
-  it('should decay hunger by 5 per tick', () => {
-    // Arrange: set up test data
-    const needs = { hunger: 100, thirst: 100, rest: 100, health: 100 }
-    
-    // Act: call the function
-    const result = decayNeeds(needs, 1)
-    
-    // Assert: check the result
-    expect(result.hunger).toBe(95)
-  })
-
-  // Test edge cases
-  it('should not go below 0', () => {
-    const needs = { hunger: 3, thirst: 1, rest: 1, health: 100 }
-    const result = decayNeeds(needs, 1)
-    expect(result.hunger).toBe(0)
-  })
-
-  // Test multiple scenarios
-  it('should handle multiple ticks', () => {
-    const needs = { hunger: 100, thirst: 100, rest: 100, health: 100 }
-    const result = decayNeeds(needs, 3)
-    expect(result.hunger).toBe(85)
-  })
-})
-```
-
-### Component Tests
-
-Test React components in isolation.
-
-```typescript
-// tests/unit/components/ResourceBar.test.tsx
-import { describe, it, expect } from 'vitest'
-import { render, screen } from '@testing-library/react'
-import { ResourceBar } from '@/components/ui/ResourceBar'
-
-describe('ResourceBar', () => {
-  it('should render with correct width', () => {
-    render(<ResourceBar value={50} max={100} />)
-    
-    const bar = screen.getByRole('progressbar')
-    expect(bar).toHaveStyle({ width: '50%' })
-  })
-
-  it('should show label when provided', () => {
-    render(<ResourceBar value={50} max={100} label="Food" showLabel />)
-    
-    expect(screen.getByText('Food: 50/100')).toBeInTheDocument()
-  })
-
-  it('should apply warning color when low', () => {
-    render(<ResourceBar value={10} max={100} />)
-    
-    const bar = screen.getByRole('progressbar')
-    expect(bar).toHaveClass('bg-red-500')
-  })
-})
-```
-
-### Testing User Interactions
-
-```typescript
-// tests/unit/components/FeedButton.test.tsx
-import { describe, it, expect, vi } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
-import { FeedButton } from '@/components/colony/FeedButton'
-
-describe('FeedButton', () => {
-  it('should call onFeed when clicked', () => {
-    const handleFeed = vi.fn()
-    render(<FeedButton onFeed={handleFeed} />)
-    
-    fireEvent.click(screen.getByRole('button', { name: /feed/i }))
-    
-    expect(handleFeed).toHaveBeenCalledTimes(1)
-  })
-
-  it('should be disabled during cooldown', () => {
-    render(<FeedButton onFeed={() => {}} cooldownActive />)
-    
-    const button = screen.getByRole('button', { name: /feed/i })
-    expect(button).toBeDisabled()
-  })
-
-  it('should show cooldown timer', () => {
-    render(<FeedButton onFeed={() => {}} cooldownActive cooldownSeconds={5} />)
-    
-    expect(screen.getByText('5s')).toBeInTheDocument()
-  })
-})
-```
-
-## Testing Patterns
-
-### Pattern 1: Testing Functions with Randomness
-
-Some game functions involve randomness. Test ranges and probabilities:
-
-```typescript
-describe('calculateCombatResult', () => {
-  it('should favor high stat cats most of the time', () => {
-    let catWins = 0
-    
-    // Run many times to test probability
-    for (let i = 0; i < 100; i++) {
-      const result = calculateCombatResult(80, 80, 20)
-      if (result.won) catWins++
-    }
-    
-    // High stat cat should win ~80% of the time
-    expect(catWins).toBeGreaterThan(60)
-    expect(catWins).toBeLessThan(95)
-  })
-})
-```
-
-### Pattern 2: Testing State Over Time
-
-Test how state changes through multiple operations:
-
-```typescript
-describe('Cat aging', () => {
-  it('should progress through life stages', () => {
-    const birthTime = Date.now()
-    
-    // At birth
-    expect(getLifeStage(getAgeInHours(birthTime, birthTime))).toBe('kitten')
-    
-    // After 6 hours
-    const sixHoursLater = birthTime + (6 * 60 * 60 * 1000)
-    expect(getLifeStage(getAgeInHours(birthTime, sixHoursLater))).toBe('young')
-    
-    // After 24 hours
-    const dayLater = birthTime + (24 * 60 * 60 * 1000)
-    expect(getLifeStage(getAgeInHours(birthTime, dayLater))).toBe('adult')
-  })
-})
-```
-
-### Pattern 3: Testing Edge Cases
-
-Always test boundaries:
-
-```typescript
-describe('Skill cap', () => {
-  it('should not exceed 100', () => {
-    expect(calculateSkillGain(99, 'hunt', true, 'young')).toBe(100)
-    expect(calculateSkillGain(100, 'hunt', true, 'young')).toBe(100)
-  })
-
-  it('should not go below 0', () => {
-    expect(calculateSkillLoss(2, 5)).toBe(0)
-    expect(calculateSkillLoss(0, 5)).toBe(0)
-  })
-})
-```
-
-### Pattern 4: Testing Complex Objects
-
-Use factories for complex test data:
-
-```typescript
-// tests/factories/cat.ts
-export function createMockCat(overrides: Partial<Cat> = {}): Cat {
-  return {
-    _id: 'cat_123',
-    colonyId: 'colony_1',
-    name: 'Test Cat',
-    parentIds: [null, null],
-    birthTime: Date.now(),
-    deathTime: null,
-    stats: {
-      attack: 50,
-      defense: 50,
-      hunting: 50,
-      medicine: 50,
-      cleaning: 50,
-      building: 50,
-      leadership: 50,
-      vision: 50,
-    },
-    needs: {
-      hunger: 100,
-      thirst: 100,
-      rest: 100,
-      health: 100,
-    },
-    currentTask: null,
-    position: { map: 'colony', x: 0, y: 0 },
-    isPregnant: false,
-    pregnancyDueTime: null,
-    spriteParams: null,
-    ...overrides,
-  }
-}
-
-// In tests:
-import { createMockCat } from '@/tests/factories/cat'
-
-it('should return to colony when hungry', () => {
-  const hungyCat = createMockCat({
-    needs: { hunger: 10, thirst: 100, rest: 100, health: 100 },
-    position: { map: 'world', x: 5, y: 5 }
-  })
-  
-  const action = getAutonomousAction(hungryCat, resources, () => false)
-  expect(action?.type).toBe('return_to_colony')
-})
-```
-
-## Integration Tests
-
-### Testing Convex Functions
-
-Convex integration tests require the dev backend running:
-
-```typescript
-// tests/integration/convex/colonies.test.ts
-import { ConvexReactClient } from "convex/react"
-import { api } from "@/convex/_generated/api"
-
-// These tests run against the Convex dev backend
-// Start with: npx convex dev
-
-describe('Colony mutations', () => {
-  let client: ConvexReactClient
-
-  beforeAll(() => {
-    client = new ConvexReactClient(process.env.NEXT_PUBLIC_CONVEX_URL!)
-  })
-
-  afterAll(() => {
-    client.close()
-  })
-
-  it('should create a colony', async () => {
-    const colonyId = await client.mutation(api.colonies.createColony, {
-      name: 'Test Colony'
-    })
-    
-    expect(colonyId).toBeDefined()
-    
-    const colony = await client.query(api.colonies.getColony, { colonyId })
-    expect(colony?.name).toBe('Test Colony')
-  })
-})
-```
-
-## Mocking
-
-### Mocking Convex Hooks
-
-```typescript
-import { vi } from 'vitest'
-import { useQuery, useMutation } from 'convex/react'
-
-vi.mock('convex/react', () => ({
-  useQuery: vi.fn(),
-  useMutation: vi.fn(),
-}))
-
-describe('ColonyView', () => {
-  beforeEach(() => {
-    vi.mocked(useQuery).mockReturnValue({
-      name: 'Test Colony',
-      resources: { food: 50, water: 50, herbs: 10, materials: 5, blessings: 0 }
-    })
-  })
-
-  it('should display colony name', () => {
-    render(<ColonyView colonyId="colony_1" />)
-    expect(screen.getByText('Test Colony')).toBeInTheDocument()
-  })
-})
-```
-
-### Mocking External Services
-
-```typescript
-import { vi } from 'vitest'
-
-// Mock the renderer service
-vi.mock('@/lib/renderer', () => ({
-  fetchCatSprite: vi.fn().mockRejectedValue(new Error('Service unavailable')),
-}))
-
-describe('CatSprite with fallback', () => {
-  it('should show CSS fallback when renderer fails', async () => {
-    const cat = createMockCat()
-    render(<CatSprite cat={cat} />)
-    
-    // Wait for async fallback
-    await screen.findByTestId('fallback-sprite')
-  })
-})
-```
-
-## Test Coverage
-
-We aim for:
-- **Game logic (lib/game/)**: 90%+ coverage
-- **Components**: 80%+ coverage
-- **Convex functions**: 70%+ coverage (integration tests)
-
-Run coverage report:
 ```bash
-npm run test:coverage
+cargo nextest run --workspace --profile smoke
 ```
 
-## Debugging Tests
+The profile lives in `.config/nextest.toml`. It covers protocol compatibility plus selected client,
+server, persistence, movement, road, fog, and scout regressions. It is capped at two test threads
+to keep the workstation usable. `lefthook` runs the same smoke profile on pre-push.
 
-### Run a single test
+Also run formatting and strict Clippy for the crates touched by the change:
+
 ```bash
-npm test -- tests/unit/game/needs.test.ts
+cargo fmt --all -- --check
+cargo clippy -p <crate> --all-targets -- -D warnings
 ```
 
-### Run with verbose output
+Do not run `cargo nextest run --workspace` locally as a routine gate. The long simulation campaigns
+belong to the remote tier. A local full-suite run should happen only when a user explicitly requests
+it or when diagnosing a failure that cannot be reproduced with a focused test.
+
+### 3. Complete suite — Forgejo after push
+
+Every pushed commit triggers `.forgejo/workflows/quality.yaml`. Forgejo performs the exhaustive gate
+on the Kubernetes runner pool:
+
+- format and workspace Clippy run first;
+- the complete workspace Nextest inventory is divided into four deterministic hash partitions;
+- four `personal` runner jobs execute those partitions in parallel;
+- the four partitions must contain every test exactly once;
+- the browser/WASM build and dependency-policy check run as independent jobs.
+
+The remote command used by shard `N` is:
+
 ```bash
-npm test -- --reporter=verbose
+cargo nextest run --workspace --partition "hash:N/4"
 ```
 
-### Debug in VS Code
-Add to `.vscode/launch.json`:
-```json
-{
-  "type": "node",
-  "request": "launch",
-  "name": "Debug Current Test",
-  "program": "${workspaceFolder}/node_modules/vitest/vitest.mjs",
-  "args": ["run", "${relativeFile}"],
-  "cwd": "${workspaceFolder}"
-}
+The workflow, not the local smoke profile, is the release-quality source of truth. A change is not
+fully verified until all four remote test shards and the other required Forgejo jobs are green.
+
+## Normal development sequence
+
+1. Add or identify one focused regression test.
+2. Run that focused test locally.
+3. Implement the change and rerun the focused test.
+4. Run the local smoke profile, formatting, and touched-crate Clippy.
+5. Commit and push.
+6. Let Forgejo run the complete suite in four parallel shards.
+7. If a shard fails, reproduce only the reported test locally; do not rerun the whole workspace.
+8. Push the fix and require a clean Forgejo run.
+
+## Adding tests to a tier
+
+- Every new behavior belongs in its owning crate regardless of tier.
+- Add a test to the smoke filter only when it protects a short, foundational cross-cutting contract.
+- Keep long-horizon economy, population, research, persistence, and campaign tests out of smoke;
+  they remain part of the complete remote suite automatically.
+- Never weaken or skip a long test merely to shorten CI. Optimize the test or rebalance shards if
+  remote duration becomes unacceptable.
+
+## Useful inspection commands
+
+These commands list tests without executing them:
+
+```bash
+cargo nextest list --workspace
+cargo nextest list --workspace --profile smoke
+cargo nextest list --workspace --partition "hash:1/4"
 ```
 
-## Common Issues
-
-### "Cannot find module"
-Make sure path aliases are configured in `vitest.config.ts`:
-```typescript
-resolve: {
-  alias: {
-    '@': path.resolve(__dirname, './'),
-  },
-}
-```
-
-### "document is not defined"
-You're testing React components without jsdom. Add to `vitest.config.ts`:
-```typescript
-test: {
-  environment: 'jsdom',
-}
-```
-
-### "act() warnings"
-Wrap state updates in act():
-```typescript
-import { act } from '@testing-library/react'
-
-await act(async () => {
-  fireEvent.click(button)
-})
-```
-
-### Async test not waiting
-Use `findBy` instead of `getBy` for async content:
-```typescript
-// BAD: might fail if content loads async
-const element = screen.getByText('Loading...')
-
-// GOOD: waits for element to appear
-const element = await screen.findByText('Loaded!')
-```
-
-
-
-
+Use `fj actions tasks -R origin` to inspect the current Forgejo run. Avoid continuous local polling;
+the work is remote and can be checked when a result is needed.

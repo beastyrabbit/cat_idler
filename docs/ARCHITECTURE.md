@@ -149,8 +149,8 @@ ledger is `docs/IMPLEMENTATION_AUDIT.md`; the migration board retains dated impl
   `FUTURE` state. The integrated road, single-cat-body, resolved-decoration, and compact-UI
   corrections pass their generalized native visual and guided-play gate.
 - **Deployment.** The same-origin, non-root production image serves the client, assets, probes, and
-  WebSocket with compression and Origin checks. Optional WASM transfer tuning and the first pushed
-  Forgejo workflow run remain external follow-ups.
+  WebSocket with compression and Origin checks. Local verification uses focused regressions and
+  the smoke profile; Forgejo owns the complete four-shard workspace suite.
 
 ### Maintained founding and life pacing
 
@@ -304,11 +304,12 @@ attaching a fresh client to a stale, pre-rebuild server.
   `docs/HANDOFF.md`), since "it compiles" has previously hidden a black-screen regression.
 
 Local quality gate before any commit (per `AGENTS.md`): the focused test for touched behavior,
-`cargo nextest run --workspace --profile smoke`, `cargo clippy -p <crate> --all-targets --
--D warnings`, and `cargo fmt`. Lefthook wires formatting on pre-commit and Clippy plus the smoke
-profile on pre-push (`lefthook.yml`). Forgejo is the exhaustive gate: the full workspace suite is
-split into four deterministic Nextest hash partitions across the personal runner pool. The JS
-lint/typecheck/test hooks that used to gate the TypeScript game are no longer relevant.
+`cargo nextest run --workspace --profile smoke`,
+`cargo clippy -p <crate> --all-targets -- -D warnings`, and `cargo fmt`. Lefthook wires formatting
+on pre-commit and Clippy plus the smoke profile on pre-push (`lefthook.yml`). Forgejo is the
+exhaustive gate: the full workspace suite is split into four deterministic Nextest hash partitions
+across the personal runner pool. The JS lint/typecheck/test hooks that used to gate the TypeScript
+game are no longer relevant.
 
 ## Maintained follow-ups
 
@@ -316,6 +317,7 @@ The P11 cutover and maintained gameplay implementation are complete. The integra
 listed in `docs/FIX_LOG.md` pass one generalized passive, signed player-guided, persistence, and
 multi-frame visual verification campaign with combined evidence recorded there. The TypeScript
 implementation lives only on `archive/web-game` (`web-final`), and the
-browser bundle plus combined production host run end-to-end. The first pushed Forgejo workflow run
-and optional WASM transfer tuning remain external follow-ups; new defects must be reproduced and
-recorded in `docs/FIX_LOG.md` rather than inferred from old phases.
+browser bundle plus combined production host run end-to-end. Optional WASM transfer tuning remains
+an external follow-up; new defects must be reproduced and recorded in `docs/FIX_LOG.md` rather than
+inferred from old phases. The maintained local-smoke/remote-full process is defined in
+`docs/TESTING.md`.

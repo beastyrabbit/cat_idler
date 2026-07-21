@@ -159,6 +159,6 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Check advisories, bans, and dependency sources
-        uses: EmbarkStudios/cargo-deny-action@v2
+        uses: https://github.com/EmbarkStudios/cargo-deny-action@v2
         with:
           command: check advisories bans sources

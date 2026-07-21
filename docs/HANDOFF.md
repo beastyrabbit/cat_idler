@@ -79,8 +79,9 @@ for a player-established economy; they must dispatch real `ClientAction`s from o
 
 ## NEXT STEPS
 
-1. **Run the first pushed Forgejo quality workflow.** The workflow is committed, but its first run
-   cannot be verified locally and remains pending until a push is authorized.
+1. **Keep the tiered test workflow healthy.** Run focused regressions and the two-thread smoke
+   profile locally; every push must leave the four full Forgejo test shards green. See
+   `docs/TESTING.md`.
 2. **Optionally tune WASM transfer weight.** Browser boot, reconnect, action feedback, responsive
    layout, caching, and the production image are verified. Further bundle-size/thread work is an
    optimization campaign, not a gameplay blocker; see `docs/migration/WASM.md`.
@@ -106,9 +107,10 @@ implementation. Do not resurrect completed work from the historical migration bo
 - **Dependencies:** use `cargo add`/`cargo remove`; never edit dependency versions by hand.
 - **Commits:** hooks are Rust-only. End commit bodies with
   `Powered by human calories and mass GPU cycles.`
-- **Quality gate:** run the focused `cargo nextest`, strict Clippy, and `cargo fmt --all -- --check`
-  for touched Rust crates. Documentation-only changes require targeted link/content scans and
-  whitespace validation.
+- **Quality gate:** run the focused regression, the local smoke profile, strict touched-crate
+  Clippy, and `cargo fmt --all -- --check`. The complete workspace suite runs only after push in
+  four parallel Forgejo shards. Documentation-only changes require targeted link/content scans and
+  whitespace validation. See `docs/TESTING.md`.
 
 ## RUN / VERIFY
 
@@ -122,7 +124,7 @@ curl http://127.0.0.1:8787/health    # -> ok
 
 rm data/cat.db                       # reset to a fresh founding
 
-cargo nextest run --workspace
+cargo nextest run --workspace --profile smoke
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
 ```

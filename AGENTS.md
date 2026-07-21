@@ -55,8 +55,11 @@ only as the reference during migration.
    `crates/`, `docs/migration/`, `codex/` unless your card says so.
 6. **Newest versions.** Add deps with `cargo add` (never hand-edit versions).
    Edition 2024. Bevy 0.19.
-7. **Green before done.** `cargo nextest run -p <crate>` and
-   `cargo clippy -p <crate> --all-targets -- -D warnings` must pass. `cargo fmt`.
+7. **Tiered quality gates.** Before commit, run the focused regression test plus
+   `cargo nextest run --workspace --profile smoke`, touched-crate Clippy with `-D warnings`,
+   and `cargo fmt`. Do not routinely run the complete workspace suite locally. After push,
+   Forgejo must run the full workspace inventory in four parallel Nextest hash partitions;
+   all shards must pass. See `docs/TESTING.md`.
 8. **Out of scope:** the Catford Examiner newspaper and its ~35 flavor generators
    (horoscope, obituaries, gossip, sports…) are DROPPED. Don't port them. The
    client gets a dashboard + event-log page instead.
