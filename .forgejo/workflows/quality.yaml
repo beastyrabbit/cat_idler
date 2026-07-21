@@ -17,8 +17,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  rust:
-    name: Test, lint, and format
+  rust-quality:
+    name: Rust format and Clippy
     runs-on: personal
     timeout-minutes: 90
     steps:
@@ -52,20 +52,59 @@ jobs:
           key: rust-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: rust-${{ runner.os }}-
 
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Deny Clippy warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  rust-tests:
+    name: Rust tests (shard ${{ matrix.shard }}/4)
+    needs: rust-quality
+    runs-on: personal
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install native build dependencies
+        run: |
+          set -euo pipefail
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates curl build-essential pkg-config libssl-dev \
+            libasound2-dev libudev-dev libx11-dev libxcursor-dev libxi-dev \
+            libxrandr-dev libwayland-dev libxkbcommon-dev libvulkan-dev
+
+      - name: Install Rust
+        run: |
+          set -euo pipefail
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --profile minimal --default-toolchain 1.96
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Restore Cargo cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rust-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: rust-${{ runner.os }}-
+
       - name: Install cargo-nextest
         run: |
           set -euo pipefail
           curl -LsSf https://get.nexte.st/latest/linux \
             | tar zxf - -C "$HOME/.cargo/bin"
 
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
-      - name: Run workspace tests
-        run: cargo nextest run --workspace
-
-      - name: Deny Clippy warnings
-        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Run workspace test shard
+        run: cargo nextest run --workspace --partition "hash:${{ matrix.shard }}/4"
 
   wasm:
     name: Build browser client

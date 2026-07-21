@@ -5141,6 +5141,7 @@ fn events_snapshot(colony: &ColonyRuntime) -> Vec<proto::EventSnapshot> {
         .map(|event| proto::EventSnapshot {
             message: event.message.clone(),
             timestamp: event.at_ms,
+            actor_name: event.actor_name.clone(),
             kind: event.kind.wire_kind(),
         })
         .collect()
@@ -5685,6 +5686,7 @@ fn append_event(
         at_ms: now_ms,
         kind,
         message: message.into(),
+        actor_name: None,
     });
 }
 

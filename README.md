@@ -181,13 +181,17 @@ raids, so a given seed reproduces the same run bit-for-bit. This is what makes t
 **unit-testable without a server or client**:
 
 ```bash
-cargo test -p cat-sim        # 770+ unit/integration tests, pure logic, no I/O — fast
-cargo test -p cat-protocol   # wire-type round-trip tests
-cargo test -p cat-server     # WS/action integration tests (in-process, no real network needed)
-cargo nextest run -p <crate> # preferred runner if cargo-nextest is installed
+cargo nextest run --workspace --profile smoke # small local cross-crate safety net
+cargo nextest run -p <crate> <test-filter>     # focused tests for the code being changed
 cargo clippy --all-targets -- -D warnings
 cargo fmt --all -- --check
 ```
+
+The full workspace suite is intentionally a Forgejo responsibility: four `personal` runner jobs
+execute deterministic Nextest hash partitions in parallel, so long simulation campaigns do not
+consume the development workstation. The smoke profile is not a replacement for focused tests;
+run the relevant module or regression test locally, then let the pushed Forgejo workflow provide
+complete coverage.
 
 Where a Rust module ports TS behavior, it's checked against **golden-master fixtures**
 generated from the original TypeScript sim under `docs/migration/fixtures/` (seed → N ticks →

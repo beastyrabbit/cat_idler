@@ -1997,6 +1997,9 @@ pub struct EventLog {
     pub at_ms: i64,
     pub kind: EventKind,
     pub message: String,
+    /// Display name of the player who initiated this event. This is never a
+    /// session, installation, or hardware identifier.
+    pub actor_name: Option<String>,
 }
 
 /// The cause of a cat's death, carried on [`EventKind::Death`] so the taxonomy
@@ -4516,7 +4519,7 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
         phase_34_movement_travel_job_acceptance_reveal_path_wear(colony, gate, &movement);
         phase_steward_stockpile_logistics(colony, gate, world_seed);
         phase_p16_gather_spot_logistics(colony, gate, world_seed);
-        phase_35_deliberate_roads(colony, gate);
+        phase_35_deliberate_roads(colony, gate, world_seed);
         phase_35b_road_accessibility(colony, gate, world_seed);
         if let Some(reset_reason) = phase_36_threat_and_raid_director(colony, gate) {
             reconcile_colony_stockpiles(colony);
@@ -8577,10 +8580,10 @@ fn leader_scout_mission(colony: &ColonyRuntime, world_seed: u32) -> ScoutMission
     ScoutMission::Explore
 }
 
-/// General leader exploration is strategic background work, not a survival job to
-/// enqueue again every tick. Resource missions remain immediate; player-dispatched
-/// scouts are never throttled.
-const LEADER_GENERAL_SCOUT_COOLDOWN_MS: i64 = 6 * 3_600_000;
+/// Keep a visible exploration cadence in a populated village. Missions are already
+/// long physical journeys; a short rest after return avoids duplicate dispatches
+/// without leaving the map scout-free for six game-hours.
+const LEADER_GENERAL_SCOUT_COOLDOWN_MS: i64 = 10 * 60_000;
 
 fn leader_general_scout_due(colony: &ColonyRuntime, now_ms: i64) -> bool {
     colony
@@ -12620,7 +12623,10 @@ fn phase_32_movement_setup_and_village_expansion_queue(
 ) -> MovementPassContext {
     let mut movement_seed = movement_seed(colony.test_rng_seed.unwrap_or(1));
     let movement_elapsed = gate.elapsed_sec as f64 * normalize_time_scale(colony);
-    let wander_chance = (0.02 * gate.elapsed_sec as f64).min(0.08);
+    // City life should read as continuous traffic. Longer trips below keep this
+    // from becoming jitter while a higher dispatch chance means a healthy idle
+    // population does not look frozen between productive jobs.
+    let wander_chance = (0.03 * gate.elapsed_sec as f64).min(0.12);
     let ring_radius = village_ring_radius(colony.buildings.len() as i32);
     let claimed_area = claimed_area(colony);
     let linked_expansion_in_flight = colony.jobs.iter().any(|job| {
@@ -13102,9 +13108,11 @@ fn phase_33_movement_deposits_and_no_destination_wander(
                     x: target_zone_pos.x,
                     y: target_zone_pos.y,
                 };
+                let travel_distance =
+                    (target.x - world_pos.x).abs() + (target.y - world_pos.y).abs();
                 if filter_targets_by_zones(&[target_zone_pos], &movement.zones, false).is_empty()
                     || !colony.claimed_tiles.contains(&target_tile)
-                    || target == world_pos
+                    || travel_distance < 3.0
                 {
                     continue;
                 }
@@ -14274,7 +14282,7 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
             colony.cats[cat_index].position = position_from_world(walk.position);
             colony.cats[cat_index].destination = None;
             colony.cats[cat_index].activity = CatActivity::Working;
-            reveal_and_wear_walked_tiles(colony, movement, &walk.tiles, &cat_id, current_task);
+            reveal_and_wear_walked_tiles(colony, movement, &walk.tiles, &cat_id);
             complete_personal_need_arrival(colony, cat_index, gate.processed_through);
             let remaining = (movement.movement_elapsed - movement_used).max(0.0);
             let Some(next_destination) = colony.cats[cat_index]
@@ -14333,7 +14341,7 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
                 },
             );
             colony.cats[cat_index].position = position_from_world(next_walk.position);
-            reveal_and_wear_walked_tiles(colony, movement, &next_walk.tiles, &cat_id, current_task);
+            reveal_and_wear_walked_tiles(colony, movement, &next_walk.tiles, &cat_id);
             if next_walk.arrived {
                 colony.cats[cat_index].destination = None;
                 colony.cats[cat_index].activity = CatActivity::Working;
@@ -14382,7 +14390,7 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
         }
 
         if moved {
-            reveal_and_wear_walked_tiles(colony, movement, &walk.tiles, &cat_id, current_task);
+            reveal_and_wear_walked_tiles(colony, movement, &walk.tiles, &cat_id);
         }
 
         if arrived && complete_personal_need_arrival(colony, cat_index, gate.processed_through) {
@@ -15097,7 +15105,7 @@ fn dispatch_gather_haul_movers(colony: &mut ColonyRuntime, now_ms: i64) {
 
 /// Phase 35: let a staffed Steward designate one worn corridor at a time. The
 /// ordinary physical road job owns all pickup, travel, work, debit, and recovery.
-fn phase_35_deliberate_roads(colony: &mut ColonyRuntime, gate: TickGate) {
+fn phase_35_deliberate_roads(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u32) {
     if !has_officer(colony, OfficerRole::Steward)
         || !gate.minute_rolled
         || construction_spendable_resource(colony, ResourceKind::Materials)
@@ -15123,6 +15131,7 @@ fn phase_35_deliberate_roads(colony: &mut ColonyRuntime, gate: TickGate) {
         .world_tiles
         .values()
         .filter(|tile| tile.path_wear >= crate::roads::ROAD_PAVE_WEAR as u32)
+        .filter(|tile| road_placement_error(colony, tile.pos, world_seed).is_none())
         .map(|tile| RoadTile {
             x: tile.pos.x,
             y: tile.pos.y,
@@ -18472,6 +18481,7 @@ fn append_event(
         at_ms,
         kind,
         message: message.into(),
+        actor_name: None,
     });
 }
 
@@ -20139,37 +20149,59 @@ fn accept_job(colony: &mut ColonyRuntime, job_index: usize, now_ms: i64) {
     };
 }
 
+const BASE_SCOUT_VISION_SIDE: i32 = 5;
+const MAX_SCOUT_VISION_SIDE: i32 = 12;
+const SCOUT_XP_PER_VISION_TILE: f64 = 5.0;
+
+/// Active scouts begin with a 5×5 provisional view. Every five completed scout
+/// jobs adds one tile to the square, capped at the requested 12×12 expert view.
+fn scout_vision_side(skill_xp: f64) -> i32 {
+    let earned = (skill_xp.max(0.0) / SCOUT_XP_PER_VISION_TILE).floor() as i32;
+    (BASE_SCOUT_VISION_SIDE + earned).min(MAX_SCOUT_VISION_SIDE)
+}
+
+fn sight_offsets(side: i32) -> (i32, i32) {
+    let before = (side - 1) / 2;
+    let after = side / 2;
+    (before, after)
+}
+
 fn reveal_and_wear_walked_tiles(
     colony: &mut ColonyRuntime,
     movement: &MovementPassContext,
     walked: &[WorldPos],
     cat_id: &str,
-    current_task: Option<TaskType>,
 ) {
     if walked.is_empty() {
         return;
     }
 
-    // Only a registered scout may lift fog, and even then only into its
-    // transient provisional notebook. Ordinary worker/wander movement still
-    // wears paths, but never teaches the whole village about unseen wilds.
-    // Claimed expansion ground is revealed explicitly when its claim succeeds.
+    // Ordinary cats permanently clear a 3x3 neighborhood as they travel. A
+    // registered scout instead writes its larger skill-scaled view into the
+    // transient notebook, which commits only after the scout reaches the shrine.
     let is_scout = colony.provisional_tiles.contains_key(cat_id);
-
-    let reveal_radius = if current_task == Some(TaskType::Explore) {
-        2
+    let vision_side = if is_scout {
+        let scout_xp = colony
+            .cats
+            .iter()
+            .find(|cat| cat.id == cat_id)
+            .and_then(|cat| cat.skills.get(&Labor::Scout))
+            .copied()
+            .unwrap_or(0.0);
+        scout_vision_side(scout_xp)
     } else {
-        1
+        3
     };
+    let (vision_before, vision_after) = sight_offsets(vision_side);
     let walked_tiles = walked
         .iter()
         .map(|pos| world_pos_to_tile(*pos))
         .collect::<Vec<_>>();
     let walked_keys = walked_tiles.iter().copied().collect::<HashSet<_>>();
-    let min_x = walked_tiles.iter().map(|pos| pos.x).min().unwrap_or(0) - reveal_radius;
-    let max_x = walked_tiles.iter().map(|pos| pos.x).max().unwrap_or(0) + reveal_radius;
-    let min_y = walked_tiles.iter().map(|pos| pos.y).min().unwrap_or(0) - reveal_radius;
-    let max_y = walked_tiles.iter().map(|pos| pos.y).max().unwrap_or(0) + reveal_radius;
+    let min_x = walked_tiles.iter().map(|pos| pos.x).min().unwrap_or(0) - vision_before;
+    let max_x = walked_tiles.iter().map(|pos| pos.x).max().unwrap_or(0) + vision_after;
+    let min_y = walked_tiles.iter().map(|pos| pos.y).min().unwrap_or(0) - vision_before;
+    let max_y = walked_tiles.iter().map(|pos| pos.y).max().unwrap_or(0) + vision_after;
 
     for x in min_x..=max_x {
         for y in min_y..=max_y {
@@ -20180,7 +20212,10 @@ fn reveal_and_wear_walked_tiles(
             let walked_on = walked_keys.contains(&pos);
             let in_halo = !walked_on
                 && walked_tiles.iter().any(|walked| {
-                    (walked.x - pos.x).abs().max((walked.y - pos.y).abs()) <= reveal_radius
+                    let dx = pos.x - walked.x;
+                    let dy = pos.y - walked.y;
+                    (-vision_before..=vision_after).contains(&dx)
+                        && (-vision_before..=vision_after).contains(&dy)
                 });
             if !walked_on && !in_halo {
                 continue;
@@ -20197,6 +20232,8 @@ fn reveal_and_wear_walked_tiles(
                         .or_default()
                         .insert(pos);
                 }
+            } else {
+                colony.revealed_tiles.insert(pos);
             }
             if let Some(tile) = colony.world_tiles.get_mut(&pos) {
                 if walked_on {
@@ -30208,6 +30245,7 @@ mod tests {
                 at_ms: index,
                 kind: EventKind::Other("test".to_owned()),
                 message: format!("event {index}"),
+                actor_name: None,
             })
             .collect();
         let mut colony = ColonyRuntime {
@@ -31080,7 +31118,7 @@ mod tests {
         // threshold automatically. Paving that same trafficked tile still wins:
         // stone remains 1.75x rather than being misclassified as 1.05x dirt.
         let walked_again = [WorldPos { x: 11.0, y: 6.0 }];
-        reveal_and_wear_walked_tiles(&mut colony, &movement, &walked_again, "walker", None);
+        reveal_and_wear_walked_tiles(&mut colony, &movement, &walked_again, "walker");
         let trafficked = &mut colony.world_tiles.get_mut(&pos(11, 6)).unwrap();
         assert_eq!(trafficked.path_wear, 72);
         assert_eq!(
@@ -31670,6 +31708,7 @@ mod tests {
                 minute_rolled: true,
                 previous_water: 0,
             },
+            42,
         );
 
         let colony = &world.colonies[0];
@@ -49335,7 +49374,7 @@ mod tests {
     }
 
     #[test]
-    fn leader_general_scouting_has_a_stable_six_hour_cooldown() {
+    fn leader_general_scouting_has_a_short_visible_cadence() {
         let completed_at = 1_000;
         let colony = ColonyRuntime {
             jobs: vec![JobRuntime {
@@ -49572,9 +49611,9 @@ mod tests {
     }
 
     #[test]
-    fn regular_cat_walking_wears_paths_but_never_reveals_wilds() {
-        // A non-scout cat (no `provisional_tiles` entry) can still create a
-        // traffic trail, but must not permanently lift unexplored fog.
+    fn regular_cat_walking_permanently_reveals_a_three_by_three_trail() {
+        // Ordinary cats are reliable local observers: every walked tile clears
+        // a permanent one-tile halo, while never creating scout-only notes.
         let mut cat = adult_idle_cat("walker", "colony-1");
         cat.position = Position {
             map: MapType::World,
@@ -49613,12 +49652,26 @@ mod tests {
             colony.provisional_tiles.is_empty(),
             "a plain walking cat must never create a provisional entry"
         );
-        assert!(
-            colony.revealed_tiles.is_empty(),
-            "ordinary walking must not reveal any wild tile"
-        );
+        for x in 19..=23 {
+            for y in 5..=7 {
+                assert!(
+                    colony.revealed_tiles.contains(&pos(x, y)),
+                    "ordinary cat omitted permanent sight tile {x},{y}"
+                );
+            }
+        }
         assert!(colony.world_tiles[&pos(20, 6)].path_wear >= 64);
         assert!(colony.world_tiles[&pos(22, 6)].path_wear >= 64);
+    }
+
+    #[test]
+    fn scout_vision_starts_at_five_and_caps_at_twelve_tiles() {
+        assert_eq!(scout_vision_side(0.0), 5);
+        assert_eq!(scout_vision_side(4.99), 5);
+        assert_eq!(scout_vision_side(5.0), 6);
+        assert_eq!(scout_vision_side(20.0), 9);
+        assert_eq!(scout_vision_side(35.0), 12);
+        assert_eq!(scout_vision_side(10_000.0), 12);
     }
 
     #[test]
@@ -49674,6 +49727,11 @@ mod tests {
             .expect("the scout's provisional entry must survive the walk");
         assert!(provisional.contains(&pos(20, 6)));
         assert!(provisional.contains(&pos(22, 6)));
+        assert!(
+            provisional.contains(&pos(18, 4)) && provisional.contains(&pos(23, 8)),
+            "a novice scout must keep a full 5x5 view around every walked tile"
+        );
+        assert_eq!(provisional.len(), 30);
         assert!(
             colony
                 .events
@@ -49740,10 +49798,19 @@ mod tests {
                 && colony.revealed_tiles.contains(&pos(51, 50)),
             "discoveries banked earlier in the excursion must commit on shrine arrival"
         );
+        assert!(
+            colony
+                .pending_scout_delivery_tiles
+                .is_superset(&BTreeSet::from([pos(50, 50), pos(51, 50)])),
+            "village contact must retain discoveries from the whole mission"
+        );
+        assert!(
+            colony.pending_scout_delivery_tiles.len() > 2,
+            "the scout's final 5x5 return-route view must be delivered too"
+        );
         assert_eq!(
-            colony.pending_scout_delivery_tiles,
-            BTreeSet::from([pos(50, 50), pos(51, 50)]),
-            "village contact must retain explicit shrine-delivery provenance until end-of-tick reconciliation"
+            colony.pending_scout_delivery_tiles, colony.revealed_tiles,
+            "every tile delivered at the shrine must retain explicit provenance until end-of-tick reconciliation"
         );
         assert_eq!(
             colony.cats[0].activity,
@@ -62875,6 +62942,7 @@ mod tests {
                 at_ms: index as i64,
                 kind: EventKind::Other("flood".to_owned()),
                 message: "flood".to_owned(),
+                actor_name: None,
             })
             .collect();
 

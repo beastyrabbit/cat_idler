@@ -1179,6 +1179,11 @@ pub enum UpgradeKey {
 pub struct EventSnapshot {
     pub message: String,
     pub timestamp: i64,
+    /// Player-facing attribution for actions initiated by a person. Simulation
+    /// events remain unattributed. Stable installation/session identifiers are
+    /// deliberately never included in the wire snapshot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor_name: Option<String>,
     /// Stable lowercase `snake_case` event category (e.g. `"birth"`,
     /// `"death_raid"`, `"tithe"`) — see `cat_sim::world_tick::EventKind::wire_kind`.
     /// Classify on this instead of pattern-matching `message` text. Defaults to
@@ -2840,6 +2845,7 @@ mod tests {
         let event = EventSnapshot {
             message: "Pebble was born to Ash and Bramble.".to_string(),
             timestamp: 1_700_000_000_500,
+            actor_name: Some("Mara".to_string()),
             kind: "birth".to_string(),
         };
         let encoded = serde_json::to_value(&event).expect("serialize event");
@@ -2856,6 +2862,7 @@ mod tests {
         let decoded: EventSnapshot =
             serde_json::from_value(legacy).expect("deserialize legacy event payload");
         assert_eq!(decoded.kind, "");
+        assert_eq!(decoded.actor_name, None);
         assert_eq!(decoded.message, "A quiet day in the forest");
     }
 
@@ -3049,6 +3056,7 @@ mod tests {
                     message: "Moss brought back food.".to_string(),
                     kind: "job_completed".to_string(),
                     timestamp: 1_700_000_000_500,
+                    actor_name: None,
                 }],
                 housing: HousingSnapshot {
                     population: 1,

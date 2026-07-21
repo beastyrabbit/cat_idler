@@ -233,8 +233,20 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             timestamp INTEGER NOT NULL,
             type TEXT NOT NULL,
             message TEXT NOT NULL,
+            actorName TEXT,
             involvedCatIds TEXT NOT NULL,
             metadata TEXT NOT NULL
+        );
+
+        -- A server-issued pseudonymous installation identity may use more than
+        -- one display name over time. This table stores that relationship
+        -- globally without collecting hardware characteristics.
+        CREATE TABLE IF NOT EXISTS player_names (
+            playerId TEXT NOT NULL,
+            nickname TEXT NOT NULL,
+            firstSeenAt INTEGER NOT NULL,
+            lastSeenAt INTEGER NOT NULL,
+            PRIMARY KEY (playerId, nickname)
         );
 
         CREATE TABLE IF NOT EXISTS zones (
@@ -299,6 +311,7 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
          CREATE INDEX IF NOT EXISTS cats_colony_id ON cats(colonyId);
          CREATE INDEX IF NOT EXISTS jobs_colony_id ON jobs(colonyId);
          CREATE INDEX IF NOT EXISTS events_colony_id ON events(colonyId);
+         CREATE INDEX IF NOT EXISTS player_names_nickname ON player_names(nickname);
          CREATE INDEX IF NOT EXISTS zones_colony_id ON zones(colonyId);
          CREATE INDEX IF NOT EXISTS elections_colony_id ON elections(colonyId);
          CREATE INDEX IF NOT EXISTS votes_colony_id ON votes(colonyId);
@@ -366,6 +379,7 @@ fn migrate_add_missing_columns(conn: &Connection) -> rusqlite::Result<()> {
         ("cats", "boosted", "INTEGER NOT NULL DEFAULT 0"),
         ("cats", "preferredLabors", "TEXT"),
         ("world_tiles", "revealed", "INTEGER NOT NULL DEFAULT 0"),
+        ("events", "actorName", "TEXT"),
         ("buildings", "automatedOfficerRole", "TEXT"),
         ("buildings", "additionalWorkSlots", "TEXT"),
         ("buildings", "productionQueue", "TEXT"),
@@ -1609,14 +1623,15 @@ fn load_world_tiles(
 fn save_event(conn: &Connection, colony_id: &str, event: &EventLog) -> rusqlite::Result<()> {
     conn.execute(
         "INSERT INTO events (
-            id, colonyId, timestamp, type, message, involvedCatIds, metadata
-        ) VALUES (?1, ?2, ?3, ?4, ?5, '[]', '{}')",
+            id, colonyId, timestamp, type, message, actorName, involvedCatIds, metadata
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, '[]', '{}')",
         params![
             scoped_storage_id(colony_id, &event.id),
             colony_id,
             event.at_ms,
             event_kind_str(&event.kind),
             event.message,
+            event.actor_name,
         ],
     )?;
     Ok(())
@@ -1624,7 +1639,7 @@ fn save_event(conn: &Connection, colony_id: &str, event: &EventLog) -> rusqlite:
 
 fn load_events(conn: &Connection, colony_id: &str) -> rusqlite::Result<Vec<EventLog>> {
     let mut stmt = conn.prepare(
-        "SELECT id, timestamp, type, message FROM events
+        "SELECT id, timestamp, type, message, actorName FROM events
          WHERE colonyId = ?1 ORDER BY rowid",
     )?;
     let rows = stmt.query_map([colony_id], |row| {
@@ -1633,9 +1648,28 @@ fn load_events(conn: &Connection, colony_id: &str) -> rusqlite::Result<Vec<Event
             at_ms: row.get("timestamp")?,
             kind: parse_event_kind(&row.get::<_, String>("type")?),
             message: row.get("message")?,
+            actor_name: row.get("actorName")?,
         })
     })?;
     rows.collect()
+}
+
+/// Remember each display name used by a stable, server-issued player id. The id
+/// comes from the locally persisted signed session; no device characteristics
+/// are read or fingerprinted.
+pub fn record_player_name(
+    conn: &Connection,
+    player_id: &str,
+    nickname: &str,
+    now_ms: i64,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO player_names (playerId, nickname, firstSeenAt, lastSeenAt)
+         VALUES (?1, ?2, ?3, ?3)
+         ON CONFLICT(playerId, nickname) DO UPDATE SET lastSeenAt = excluded.lastSeenAt",
+        params![player_id, nickname, now_ms],
+    )?;
+    Ok(())
 }
 
 fn save_zone(
@@ -7412,6 +7446,7 @@ mod tests {
             at_ms: 5_450_000,
             kind: EventKind::Raid(RaidPhase::Repelled),
             message: "A raid was repelled".to_owned(),
+            actor_name: Some("Mara".to_owned()),
         });
         colony.zones.push(ZoneRuntime {
             rect: ZoneRect {
@@ -7705,5 +7740,35 @@ mod tests {
         );
         assert_eq!(migrated.shared_spatial.fish_habitats[&habitat].stock, 2.25);
         assert!(!migrated.colonies[0].revealed_tiles.contains(&shared_tile));
+    }
+
+    #[test]
+    fn player_name_history_is_global_and_updates_last_seen() {
+        let conn = Connection::open_in_memory().expect("open sqlite");
+        init_schema(&conn).expect("schema");
+        record_player_name(&conn, "player-install-a", "Mara", 100).expect("record first name");
+        record_player_name(&conn, "player-install-a", "Mara", 300).expect("refresh name");
+        record_player_name(&conn, "player-install-a", "Moos", 400).expect("record alias");
+
+        let rows = conn
+            .prepare(
+                "SELECT nickname, firstSeenAt, lastSeenAt FROM player_names
+                 WHERE playerId = ?1 ORDER BY nickname",
+            )
+            .expect("prepare alias query")
+            .query_map(["player-install-a"], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })
+            .expect("query aliases")
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .expect("collect aliases");
+        assert_eq!(
+            rows,
+            vec![("Mara".to_owned(), 100, 300), ("Moos".to_owned(), 400, 400)]
+        );
     }
 }

@@ -33,8 +33,8 @@ use cat_protocol::{
 use cat_sim::{
     actions::{ActionCtx, apply_action, build_snapshot},
     world_tick::{
-        TilePos, VillageKind, VillageScale, WorldState, found_global_colony, new_world,
-        register_colony_spatial, world_tick,
+        EventKind, EventLog, TilePos, VillageKind, VillageScale, WorldState, found_global_colony,
+        new_world, register_colony_spatial, world_tick,
     },
 };
 use hosting::ServerConfig;
@@ -76,6 +76,7 @@ const MAX_WEBSOCKET_MESSAGE_BYTES: usize = 64 * 1_024;
 const SAVE_FAILURES_BEFORE_NOT_READY: u32 = 3;
 const SAVE_EVERY_TICKS: u64 = 5;
 const TEST_ACTIONS_ENV: &str = "CAT_SERVER_ENABLE_TEST_ACTIONS";
+const PLAYER_NAME_MAX_CHARS: usize = 24;
 
 #[derive(Clone)]
 struct AppState {
@@ -950,6 +951,9 @@ struct ConnectionContext {
     limiter_fallback: String,
     peer_ip: Option<IpAddr>,
     identity: Option<SignedSession>,
+    /// Authenticated display name selected by the player for this connection.
+    /// Player/install ids never enter snapshots or player-facing logs.
+    nickname: Option<String>,
     colony_id: String,
 }
 
@@ -960,6 +964,7 @@ impl ConnectionContext {
             limiter_fallback,
             peer_ip: None,
             identity: None,
+            nickname: None,
             colony_id: global_colony_id,
         }
     }
@@ -969,6 +974,7 @@ impl ConnectionContext {
             limiter_fallback: peer_ip.to_string(),
             peer_ip: Some(peer_ip),
             identity: None,
+            nickname: None,
             colony_id: global_colony_id,
         }
     }
@@ -1073,6 +1079,13 @@ async fn handle_client_text(
 
     let authentication = action_authentication(&action);
     if let ActionAuthentication::Presence { session_id, sig } = authentication {
+        let nickname = match &action {
+            ClientAction::Presence { nickname, .. } => match normalized_player_name(nickname) {
+                Ok(nickname) => nickname,
+                Err(message) => return ServerActionResult::fail(message),
+            },
+            _ => unreachable!("presence authentication belongs to Presence"),
+        };
         let peer = connection.peer_ip.map(|ip| ip.to_string());
         let valid_existing = verify_session_at(session_id, sig, state.session_secret.as_str(), now);
         let signed = if valid_existing {
@@ -1107,13 +1120,25 @@ async fn handle_client_text(
             }
             signed
         };
-        if connection
+        let identity_changed = connection
             .identity
             .as_ref()
             .is_some_and(|identity| identity.session_id != signed.session_id)
-        {
+            || connection.identity.is_none();
+        if identity_changed {
             let directory = state.village_directory.read().await;
             connection.colony_id = global_village_id(&directory);
+            connection.nickname = None;
+        }
+        if let Some(nickname) = nickname {
+            let db = state.db.lock().await;
+            if let Err(err) =
+                persistence::record_player_name(&db, &signed.player_id, &nickname, now)
+            {
+                error!(error = %err, "failed to persist player display name");
+                return ServerActionResult::fail("Player name could not be saved.");
+            }
+            connection.nickname = Some(nickname);
         }
         connection.identity = Some(signed.clone());
         return ServerActionResult::ok().with_signed_session(signed);
@@ -1151,6 +1176,28 @@ async fn handle_client_text(
                 );
             }
         }
+    }
+
+    // Older clients put their display name only on signed actions. Accept that
+    // shape as a compatibility fallback, bind it to the authenticated player,
+    // and persist it exactly like the newer named Presence handshake.
+    let embedded_name = embedded_action_nickname(&action)
+        .as_deref()
+        .and_then(|name| normalized_player_name(name).ok().flatten());
+    let actor_name = if matches!(authentication, ActionAuthentication::TestOnly) {
+        None
+    } else {
+        connection.nickname.clone().or(embedded_name)
+    };
+    if connection.nickname.is_none()
+        && let Some(nickname) = actor_name.as_deref()
+    {
+        let db = state.db.lock().await;
+        if let Err(err) = persistence::record_player_name(&db, &identity.player_id, nickname, now) {
+            error!(error = %err, "failed to persist player display name from signed action");
+            return ServerActionResult::fail("Player name could not be saved.");
+        }
+        connection.nickname = Some(nickname.to_owned());
     }
 
     let ctx = ActionCtx {
@@ -1202,6 +1249,11 @@ async fn handle_client_text(
             }
             _ => {}
         }
+        if let (Some(actor_name), Some(message)) =
+            (actor_name.as_deref(), action_audit_message(&action))
+        {
+            append_player_action_event(&mut world, &connection.colony_id, actor_name, message, now);
+        }
     }
     let refreshed_directory =
         matches!(action, ClientAction::FoundVillage { .. }).then(|| village_directory(&world));
@@ -1217,6 +1269,88 @@ async fn handle_client_text(
         let _ = state.snapshots.send(snapshot);
     }
     ServerActionResult::from_result(result)
+}
+
+fn normalized_player_name(raw: &str) -> Result<Option<String>, String> {
+    let normalized = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.is_empty() {
+        // A nameless Presence may only bootstrap a signed session. Mutating
+        // actions below require a later named Presence on the same socket.
+        return Ok(None);
+    }
+    let count = normalized.chars().count();
+    if count < 2 {
+        return Err("Player name must be at least 2 characters long.".to_owned());
+    }
+    if count > PLAYER_NAME_MAX_CHARS {
+        return Err(format!(
+            "Player name must be at most {PLAYER_NAME_MAX_CHARS} characters long."
+        ));
+    }
+    if normalized.chars().any(char::is_control) {
+        return Err("Player name contains invalid characters.".to_owned());
+    }
+    Ok(Some(normalized))
+}
+
+fn embedded_action_nickname(action: &ClientAction) -> Option<String> {
+    serde_json::to_value(action)
+        .ok()?
+        .get("nickname")?
+        .as_str()
+        .map(str::to_owned)
+}
+
+fn action_audit_message(action: &ClientAction) -> Option<String> {
+    let value = serde_json::to_value(action).ok()?;
+    let tag = value.get("action")?.as_str()?;
+    if matches!(
+        tag,
+        "presence" | "ensure" | "setTestAcceleration" | "advanceTime" | "setTestRngSeed"
+    ) {
+        return None;
+    }
+    Some(humanize_camel_case(tag))
+}
+
+fn humanize_camel_case(value: &str) -> String {
+    let mut label = String::with_capacity(value.len() + 8);
+    for (index, character) in value.chars().enumerate() {
+        if character.is_ascii_uppercase() {
+            if index > 0 {
+                label.push(' ');
+            }
+            label.push(character.to_ascii_lowercase());
+        } else if index == 0 {
+            label.push(character.to_ascii_uppercase());
+        } else {
+            label.push(character);
+        }
+    }
+    label
+}
+
+fn append_player_action_event(
+    world: &mut WorldState,
+    colony_id: &str,
+    actor_name: &str,
+    message: String,
+    now_ms: i64,
+) {
+    let Some(colony) = world
+        .colonies
+        .iter_mut()
+        .find(|colony| colony.id == colony_id)
+    else {
+        return;
+    };
+    colony.events.push(EventLog {
+        id: format!("event-{}-{}", now_ms, colony.events.len() + 1),
+        at_ms: now_ms,
+        kind: EventKind::Other("player_action".to_owned()),
+        message,
+        actor_name: Some(actor_name.to_owned()),
+    });
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2623,6 +2757,7 @@ mod tests {
         let mut connection =
             ConnectionContext::new("test-connection".to_owned(), STARTER_COLONY_ID.to_owned());
         connection.identity = Some(signed.clone());
+        connection.nickname = Some("Test Player".to_owned());
         (connection, signed)
     }
 
@@ -6954,5 +7089,16 @@ mod tests {
             dev_state.world.lock().await.colonies[0].test_rng_seed,
             Some(9)
         );
+    }
+
+    #[test]
+    fn player_names_are_normalized_and_action_tags_are_readable() {
+        assert_eq!(
+            normalized_player_name("  Mara   Moos "),
+            Ok(Some("Mara Moos".to_owned()))
+        );
+        assert_eq!(normalized_player_name("   "), Ok(None));
+        assert!(normalized_player_name("x").is_err());
+        assert_eq!(humanize_camel_case("planBuilding"), "Plan building");
     }
 }

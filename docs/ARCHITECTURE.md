@@ -303,10 +303,12 @@ attaching a fresh client to a stale, pre-rebuild server.
   by capturing the client's own framebuffer to a PNG and reading it back (method documented in
   `docs/HANDOFF.md`), since "it compiles" has previously hidden a black-screen regression.
 
-Quality gate before any commit (per `AGENTS.md`): `cargo nextest run -p <crate>`,
-`cargo clippy -p <crate> --all-targets -- -D warnings`, `cargo fmt`. Lefthook wires `cargo fmt`
-on pre-commit and clippy + nextest on pre-push (`lefthook.yml`) — the JS lint/typecheck/test
-hooks that used to gate the TypeScript game are no longer relevant to this workspace.
+Local quality gate before any commit (per `AGENTS.md`): the focused test for touched behavior,
+`cargo nextest run --workspace --profile smoke`, `cargo clippy -p <crate> --all-targets --
+-D warnings`, and `cargo fmt`. Lefthook wires formatting on pre-commit and Clippy plus the smoke
+profile on pre-push (`lefthook.yml`). Forgejo is the exhaustive gate: the full workspace suite is
+split into four deterministic Nextest hash partitions across the personal runner pool. The JS
+lint/typecheck/test hooks that used to gate the TypeScript game are no longer relevant.
 
 ## Maintained follow-ups
 

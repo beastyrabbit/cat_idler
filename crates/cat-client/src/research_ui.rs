@@ -686,7 +686,10 @@ pub(super) fn spawn_research_ui(commands: &mut Commands) {
                     inspector.spawn(ui_text("SELECTED STUDY", FS_SMALL, LEDGER_MUTED));
                     inspector.spawn((ui_text("Research Hut", 19.0, LEDGER_INK), InspectorTitle));
                     inspector.spawn((ui_text("", FS_SMALL, BUILDING_INK), InspectorMeta));
-                    inspector.spawn((ui_text("", FS_BODY, LEDGER_INK), InspectorDescription));
+                    inspector.spawn((
+                        ui_text_wrapped("", FS_BODY, LEDGER_INK),
+                        InspectorDescription,
+                    ));
                     inspector.spawn(Node {
                         width: Val::Percent(100.0),
                         height: Val::Px(1.0),
@@ -1445,6 +1448,7 @@ mod tests {
             sig: "signed".to_owned(),
             presence_sent: true,
             ready: true,
+            ..default()
         }
     }
 

@@ -17,7 +17,11 @@
 
 use bevy::asset::{AssetMetaCheck, RenderAssetUsages};
 use bevy::ecs::system::SystemParam;
-use bevy::input::mouse::{MouseMotion, MouseWheel};
+use bevy::input::{
+    ButtonState,
+    keyboard::KeyboardInput,
+    mouse::{MouseMotion, MouseWheel},
+};
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::sprite::Anchor;
@@ -140,6 +144,9 @@ const CAMERA_RESET_SHORTCUT: KeyCode = KeyCode::KeyR;
 /// Human-readable actor attached to actions from this generic client surface.
 /// It identifies the controller, rather than inventing a cat name.
 const CLIENT_ACTOR_LABEL: &str = "Idle Cat Forest player";
+const PLAYER_NAME_MAX_CHARS: usize = 24;
+const VILLAGE_NAME_MAX_CHARS: usize = 32;
+const TEXT_SCALES: [f32; 3] = [1.0, 1.15, 1.3];
 
 /// Flat top-down projection: tile `(x, y)` → world space. Y is negated so the
 /// grid reads top-down with north up.
@@ -323,19 +330,47 @@ struct LatestSnapshot(Option<WorldSnapshot>);
 
 /// Signed session issued by the server after a `Presence` handshake; required
 /// to send authenticated actions.
-#[derive(Resource, Default)]
+#[derive(Resource)]
 struct Session {
     session_id: String,
     sig: String,
+    nickname: String,
+    text_scale: f32,
     presence_sent: bool,
     ready: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl Default for Session {
+    fn default() -> Self {
+        Self {
+            session_id: String::new(),
+            sig: String::new(),
+            nickname: String::new(),
+            text_scale: 1.0,
+            presence_sent: false,
+            ready: false,
+        }
+    }
+}
+
+impl Session {
+    fn nickname(&self) -> &str {
+        let nickname = self.nickname.trim();
+        if nickname.is_empty() {
+            CLIENT_ACTOR_LABEL
+        } else {
+            nickname
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 struct StoredSession {
     session_id: String,
     sig: String,
     selected_colony_id: Option<String>,
+    nickname: String,
+    text_scale: f32,
 }
 
 fn stored_session_json(session: &Session, selection: &VillageSelection) -> Option<String> {
@@ -344,6 +379,8 @@ fn stored_session_json(session: &Session, selection: &VillageSelection) -> Optio
             "sessionId": session.session_id,
             "sig": session.sig,
             "selectedColonyId": selection.selected_id,
+            "nickname": session.nickname,
+            "textScale": session.text_scale,
         })
         .to_string()
     })
@@ -362,10 +399,25 @@ fn parse_stored_session(raw: &str) -> Option<StoredSession> {
         .map(str::trim)
         .filter(|id| !id.is_empty() && id.len() <= 128 && !id.chars().any(char::is_control))
         .map(str::to_owned);
+    let nickname = value
+        .get("nickname")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(|name| name.chars().take(PLAYER_NAME_MAX_CHARS).collect())
+        .unwrap_or_default();
+    let text_scale = value
+        .get("textScale")
+        .and_then(serde_json::Value::as_f64)
+        .map(|scale| scale as f32)
+        .filter(|scale| TEXT_SCALES.contains(scale))
+        .unwrap_or(1.0);
     Some(StoredSession {
         session_id: session_id.to_owned(),
         sig: sig.to_owned(),
         selected_colony_id,
+        nickname,
+        text_scale,
     })
 }
 
@@ -457,6 +509,8 @@ fn restore_stored_session(
     };
     session.session_id = stored.session_id;
     session.sig = stored.sig;
+    session.nickname = stored.nickname;
+    session.text_scale = stored.text_scale;
     selection.selected_id = stored.selected_colony_id;
     selection.join_required = selection.selected_id.is_some();
 }
@@ -497,6 +551,59 @@ struct VillageSelection {
     join_required: bool,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum StartMode {
+    Global,
+    Personal,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum StartInput {
+    PlayerName,
+    VillageName,
+}
+
+/// Full-window entry flow. The player deliberately chooses the shared commons
+/// or their private village on every launch; the persisted signed session only
+/// proves which private village this installation may access.
+#[derive(Resource, Debug)]
+struct StartScreen {
+    visible: bool,
+    mode: Option<StartMode>,
+    focused_input: StartInput,
+    player_name: String,
+    village_name: String,
+    pending_foundation: bool,
+    error: Option<String>,
+}
+
+impl Default for StartScreen {
+    fn default() -> Self {
+        Self {
+            visible: true,
+            mode: None,
+            focused_input: StartInput::PlayerName,
+            player_name: String::new(),
+            village_name: String::new(),
+            pending_foundation: false,
+            error: None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+enum PausePage {
+    #[default]
+    Main,
+    Settings,
+}
+
+#[derive(Resource, Default, Debug)]
+struct PauseMenu {
+    visible: bool,
+    page: PausePage,
+}
+
 /// Current transport lifecycle. A failed connection waits for a capped
 /// exponential delay, then tries again for as long as the idle client runs.
 #[derive(Clone, Copy, PartialEq, Debug, Default)]
@@ -518,15 +625,9 @@ struct ConnectionState {
 
 /// First-run guidance and the shortcut reference share one deliberately compact
 /// overlay. It starts open, can be dismissed, and remains reachable with H/? .
-#[derive(Resource)]
+#[derive(Resource, Default)]
 struct HelpUi {
     visible: bool,
-}
-
-impl Default for HelpUi {
-    fn default() -> Self {
-        Self { visible: true }
-    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -1405,7 +1506,7 @@ const BUTTON_SLICE_X_PX: f32 = 16.0;
 const BUTTON_SLICE_Y_PX: f32 = 12.0;
 const PROGRESS_SLICE_PX: f32 = 12.0;
 
-// -- Type scale (integer px keeps the pixel font crisp) ---------------------
+// -- Type scale -------------------------------------------------------------
 const FS_TITLE: f32 = 16.0;
 const FS_SECTION: f32 = 13.0;
 const FS_BODY: f32 = 12.0;
@@ -1571,7 +1672,9 @@ fn skin_adventure_panels(
     }
 }
 
-/// A text bundle at a kit size + colour (one font everywhere, via the default).
+/// A single-line text bundle at a kit size + colour. Most game labels are
+/// controls or compact readouts and must not acquire accidental soft wraps.
+/// Deliberately prose-like copy uses [`ui_text_wrapped`] instead.
 fn ui_text(s: impl Into<String>, size: f32, color: Color) -> impl Bundle {
     (
         Text::new(s),
@@ -1580,6 +1683,20 @@ fn ui_text(s: impl Into<String>, size: f32, color: Color) -> impl Bundle {
             ..default()
         },
         TextColor(color),
+        UiFontSize(size),
+    )
+}
+
+fn ui_text_wrapped(s: impl Into<String>, size: f32, color: Color) -> impl Bundle {
+    (
+        Text::new(s),
+        TextFont {
+            font_size: FontSize::Px(size),
+            ..default()
+        },
+        TextColor(color),
+        UiFontSize(size),
+        UiWrappedText,
     )
 }
 
@@ -2440,6 +2557,123 @@ struct ClientFeedbackText;
 struct ConnectionStatusPanel;
 #[derive(Component)]
 struct ConnectionStatusText;
+
+#[derive(Component)]
+struct StartScreenRoot;
+#[derive(Component)]
+struct StartPlayerInput;
+#[derive(Component)]
+struct StartVillageInput;
+#[derive(Component)]
+struct StartPlayerInputText;
+#[derive(Component)]
+struct StartVillageInputText;
+#[derive(Component)]
+struct StartGlobalButton;
+#[derive(Component)]
+struct StartPersonalButton;
+#[derive(Component)]
+struct StartContinueButton;
+#[derive(Component)]
+struct StartContinueText;
+#[derive(Component)]
+struct StartVillageField;
+#[derive(Component)]
+struct StartErrorText;
+
+#[derive(Component)]
+struct PauseMenuRoot;
+#[derive(Component)]
+struct PauseMainPage;
+#[derive(Component)]
+struct PauseSettingsPage;
+#[derive(Component)]
+struct PauseResumeButton;
+#[derive(Component)]
+struct PauseSettingsButton;
+#[derive(Component)]
+struct PauseSettingsBackButton;
+#[derive(Component)]
+struct PauseTextSmallerButton;
+#[derive(Component)]
+struct PauseTextLargerButton;
+#[derive(Component)]
+struct PauseTextScaleText;
+#[derive(Component)]
+struct PauseQuitButton;
+
+/// Original, unscaled point size for text whose accessibility scale is driven
+/// by the full-screen Settings page.
+#[derive(Component, Clone, Copy)]
+struct UiFontSize(f32);
+
+/// Opts prose into soft wrapping. Compact labels use no-wrap by default.
+#[derive(Component)]
+struct UiWrappedText;
+
+#[derive(SystemParam)]
+#[allow(clippy::type_complexity)]
+struct StartScreenUi<'w, 's> {
+    player_input:
+        Query<'w, 's, &'static Interaction, (Changed<Interaction>, With<StartPlayerInput>)>,
+    village_input:
+        Query<'w, 's, &'static Interaction, (Changed<Interaction>, With<StartVillageInput>)>,
+    global_button:
+        Query<'w, 's, &'static Interaction, (Changed<Interaction>, With<StartGlobalButton>)>,
+    personal_button:
+        Query<'w, 's, &'static Interaction, (Changed<Interaction>, With<StartPersonalButton>)>,
+    continue_button:
+        Query<'w, 's, &'static Interaction, (Changed<Interaction>, With<StartContinueButton>)>,
+    root: Query<'w, 's, &'static mut Node, With<StartScreenRoot>>,
+    village_field:
+        Query<'w, 's, &'static mut Node, (With<StartVillageField>, Without<StartScreenRoot>)>,
+    player_text: Query<'w, 's, &'static mut Text, With<StartPlayerInputText>>,
+    village_text: Query<
+        'w,
+        's,
+        &'static mut Text,
+        (With<StartVillageInputText>, Without<StartPlayerInputText>),
+    >,
+    continue_text: Query<
+        'w,
+        's,
+        &'static mut Text,
+        (
+            With<StartContinueText>,
+            Without<StartPlayerInputText>,
+            Without<StartVillageInputText>,
+        ),
+    >,
+    error_text: Query<
+        'w,
+        's,
+        &'static mut Text,
+        (
+            With<StartErrorText>,
+            Without<StartPlayerInputText>,
+            Without<StartVillageInputText>,
+            Without<StartContinueText>,
+        ),
+    >,
+    borders: ParamSet<
+        'w,
+        's,
+        (
+            Query<'w, 's, &'static mut BorderColor, With<StartGlobalButton>>,
+            Query<'w, 's, &'static mut BorderColor, With<StartPersonalButton>>,
+            Query<'w, 's, &'static mut BorderColor, With<StartPlayerInput>>,
+            Query<'w, 's, &'static mut BorderColor, With<StartVillageInput>>,
+        ),
+    >,
+    input_backgrounds: ParamSet<
+        'w,
+        's,
+        (
+            Query<'w, 's, &'static mut BackgroundColor, With<StartPlayerInput>>,
+            Query<'w, 's, &'static mut BackgroundColor, With<StartVillageInput>>,
+        ),
+    >,
+}
 /// Dismissible first-run guide / keyboard reference.
 #[derive(Component)]
 struct HelpPanel;
@@ -3676,6 +3910,8 @@ pub fn run() {
         .insert_resource(LatestSnapshot::default())
         .insert_resource(Session::default())
         .insert_resource(VillageSelection::default())
+        .insert_resource(StartScreen::default())
+        .insert_resource(PauseMenu::default())
         .insert_resource(VillageTradeDraft::default())
         .insert_resource(ConnectionState::default())
         .insert_resource(HelpUi::default())
@@ -3707,7 +3943,16 @@ pub fn run() {
         // Match the unloaded world to full fog so zooming out never exposes a
         // hard rectangle around the bounded chunk cache.
         .insert_resource(ClearColor(FOG_COLOR))
-        .add_systems(Startup, (load_persisted_session, setup, connect_ws).chain())
+        .add_systems(
+            Startup,
+            (
+                load_persisted_session,
+                initialize_start_screen,
+                setup,
+                connect_ws,
+            )
+                .chain(),
+        )
         // Grouped into sub-tuples to stay within Bevy's 20-per-tuple system arity.
         .add_systems(
             Update,
@@ -3744,6 +3989,13 @@ pub fn run() {
                 ),
                 // input, tools + HUD
                 (
+                    (
+                        handle_start_screen,
+                        toggle_pause_menu.before(close_inspectors_on_esc),
+                        handle_pause_menu.after(toggle_pause_menu),
+                        apply_text_layout_defaults,
+                        apply_text_scale,
+                    ),
                     camera_controls.after(research_ui::toggle_upgrade_tree),
                     select_cat,
                     select_building,
@@ -4226,11 +4478,10 @@ fn setup(
     mut images: ResMut<Assets<Image>>,
     mut fonts: ResMut<Assets<Font>>,
 ) {
-    // Swap Bevy's embedded default sans for a crisp Kenney pixel face. Every
-    // TextFont uses the default font handle, so overwriting that asset restyles
-    // the whole UI with no per-call-site change. Embedded (not asset-loaded) so
-    // it also works on wasm and can't 404. CC0 (Kenney).
-    const UI_FONT: &[u8] = include_bytes!("../../../public/fonts/kenney-future-narrow.ttf");
+    // Use a calm, highly legible UI face rather than the former narrow pixel
+    // display font. Every TextFont uses the default handle, so one embedded OFL
+    // font stays identical on desktop and wasm and cannot 404 at runtime.
+    const UI_FONT: &[u8] = include_bytes!("../../../public/fonts/noto-sans-regular.ttf");
     if let Err(err) = fonts.insert(
         &Handle::<Font>::default(),
         Font::from_bytes(UI_FONT.to_vec()),
@@ -4274,6 +4525,299 @@ fn setup(
         Transform::from_xyz(center.x, center.y, CAMERA_Z),
         WorldCamera,
     ));
+
+    // Full-window entry surface. It owns identity naming and the shared/private
+    // world choice before any game controls become relevant.
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(0.0),
+                right: Val::Px(0.0),
+                top: Val::Px(0.0),
+                bottom: Val::Px(0.0),
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                padding: UiRect::all(Val::Px(24.0)),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            GlobalZIndex(1_000),
+            BackgroundColor(Color::srgb(0.055, 0.075, 0.055)),
+            StartScreenRoot,
+            WorldInputBlocker,
+        ))
+        .with_children(|screen| {
+            screen
+                .spawn((
+                    Node {
+                        width: Val::Px(720.0),
+                        max_width: Val::Percent(96.0),
+                        max_height: Val::Percent(96.0),
+                        padding: UiRect::all(Val::Px(28.0)),
+                        flex_direction: FlexDirection::Column,
+                        row_gap: Val::Px(16.0),
+                        border: UiRect::all(Val::Px(UI_BORDER_W)),
+                        overflow: Overflow::clip_y(),
+                        ..default()
+                    },
+                    ui_panel_frame(),
+                ))
+                .with_children(|panel| {
+                    panel.spawn(ui_text("IDLE CAT FOREST", 30.0, UI_ACCENT));
+                    panel.spawn(ui_text_wrapped(
+                        "Wähle, wo du heute spielen möchtest. Deine private Siedlung bleibt über einen lokal gespeicherten, signierten Zugang mit diesem Gerät verbunden.",
+                        14.0,
+                        UI_MUTED,
+                    ));
+                    panel.spawn(ui_text_wrapped(
+                        "Datenschutz: Name und eine zufällige Installationskennung werden serverseitig gespeichert. Es werden keine Hardwaremerkmale ausgelesen.",
+                        FS_SMALL,
+                        UI_MUTED,
+                    ));
+                    panel.spawn(ui_text("Dein Name", FS_SECTION, UI_INK));
+                    panel.spawn((
+                        Button,
+                        Node {
+                            width: Val::Percent(100.0),
+                            height: Val::Px(48.0),
+                            padding: UiRect::horizontal(Val::Px(14.0)),
+                            align_items: AlignItems::Center,
+                            border: UiRect::all(Val::Px(2.0)),
+                            ..default()
+                        },
+                        BackgroundColor(Color::srgb(0.89, 0.83, 0.68)),
+                        BorderColor::all(UI_DIVIDER),
+                        StartPlayerInput,
+                        children![(
+                            ui_text("Name eingeben …", 15.0, UI_MUTED),
+                            StartPlayerInputText,
+                        )],
+                    ));
+                    panel.spawn(ui_text("Spielwelt", FS_SECTION, UI_INK));
+                    panel
+                        .spawn(Node {
+                            width: Val::Percent(100.0),
+                            flex_direction: FlexDirection::Row,
+                            flex_wrap: FlexWrap::Wrap,
+                            column_gap: Val::Px(12.0),
+                            row_gap: Val::Px(12.0),
+                            ..default()
+                        })
+                        .with_children(|row| {
+                            row.spawn((
+                                Button,
+                                Node {
+                                    width: Val::Px(316.0),
+                                    min_height: Val::Px(92.0),
+                                    flex_grow: 1.0,
+                                    padding: UiRect::all(Val::Px(14.0)),
+                                    flex_direction: FlexDirection::Column,
+                                    row_gap: Val::Px(7.0),
+                                    border: UiRect::all(Val::Px(2.0)),
+                                    ..default()
+                                },
+                                BackgroundColor(UI_BUTTON_BROWN),
+                                BorderColor::all(Color::NONE),
+                                ImageNode::default(),
+                                AdventurePanel::Dark,
+                                StartGlobalButton,
+                                children![
+                                    ui_text("Global spielen", 16.0, UI_TITLE_INK),
+                                    ui_text_wrapped(
+                                        "Gemeinsam in den Grand Commons spielen.",
+                                        FS_BODY,
+                                        Color::srgb(0.87, 0.79, 0.65),
+                                    ),
+                                ],
+                            ));
+                            row.spawn((
+                                Button,
+                                Node {
+                                    width: Val::Px(316.0),
+                                    min_height: Val::Px(92.0),
+                                    flex_grow: 1.0,
+                                    padding: UiRect::all(Val::Px(14.0)),
+                                    flex_direction: FlexDirection::Column,
+                                    row_gap: Val::Px(7.0),
+                                    border: UiRect::all(Val::Px(2.0)),
+                                    ..default()
+                                },
+                                BackgroundColor(UI_BUTTON_BROWN),
+                                BorderColor::all(Color::NONE),
+                                ImageNode::default(),
+                                AdventurePanel::Dark,
+                                StartPersonalButton,
+                                children![
+                                    ui_text("Eigene Siedlung", 16.0, UI_TITLE_INK),
+                                    ui_text_wrapped(
+                                        "Deine private Siedlung gründen oder fortsetzen.",
+                                        FS_BODY,
+                                        Color::srgb(0.87, 0.79, 0.65),
+                                    ),
+                                ],
+                            ));
+                        });
+                    panel
+                        .spawn((
+                            Node {
+                                width: Val::Percent(100.0),
+                                flex_direction: FlexDirection::Column,
+                                row_gap: Val::Px(7.0),
+                                display: Display::None,
+                                ..default()
+                            },
+                            StartVillageField,
+                        ))
+                        .with_children(|field| {
+                            field.spawn(ui_text("Name deiner Siedlung", FS_SECTION, UI_INK));
+                            field.spawn((
+                                Button,
+                                Node {
+                                    width: Val::Percent(100.0),
+                                    height: Val::Px(48.0),
+                                    padding: UiRect::horizontal(Val::Px(14.0)),
+                                    align_items: AlignItems::Center,
+                                    border: UiRect::all(Val::Px(2.0)),
+                                    ..default()
+                                },
+                                BackgroundColor(Color::srgb(0.89, 0.83, 0.68)),
+                                BorderColor::all(UI_DIVIDER),
+                                StartVillageInput,
+                                children![(
+                                    ui_text("Siedlungsname eingeben …", 15.0, UI_MUTED),
+                                    StartVillageInputText,
+                                )],
+                            ));
+                        });
+                    panel.spawn((
+                        ui_text("", FS_BODY, UI_WARNING),
+                        StartErrorText,
+                    ));
+                    panel.spawn((
+                        ui_button(),
+                        StartContinueButton,
+                        children![(
+                            ui_text("Auswahl treffen", 15.0, UI_INK),
+                            StartContinueText,
+                        )],
+                    ));
+                });
+        });
+
+    // Esc owns a second full-window surface. Settings deliberately replace the
+    // menu rather than nesting a small modal, keeping accessibility controls
+    // calm and readable at every supported text scale.
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(0.0),
+                right: Val::Px(0.0),
+                top: Val::Px(0.0),
+                bottom: Val::Px(0.0),
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                padding: UiRect::all(Val::Px(24.0)),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                display: Display::None,
+                ..default()
+            },
+            GlobalZIndex(900),
+            BackgroundColor(Color::srgb(0.045, 0.055, 0.045)),
+            PauseMenuRoot,
+            WorldInputBlocker,
+        ))
+        .with_children(|screen| {
+            screen
+                .spawn((
+                    Node {
+                        width: Val::Px(600.0),
+                        max_width: Val::Percent(94.0),
+                        padding: UiRect::all(Val::Px(32.0)),
+                        flex_direction: FlexDirection::Column,
+                        row_gap: Val::Px(14.0),
+                        border: UiRect::all(Val::Px(UI_BORDER_W)),
+                        ..default()
+                    },
+                    ui_panel_frame(),
+                    PauseMainPage,
+                ))
+                .with_children(|panel| {
+                    panel.spawn(ui_text("SPIELMENÜ", 28.0, UI_ACCENT));
+                    panel.spawn(ui_text("Idle Cat Forest", 15.0, UI_MUTED));
+                    panel.spawn((
+                        ui_button(),
+                        PauseResumeButton,
+                        children![ui_text("Weiterspielen", 15.0, UI_INK)],
+                    ));
+                    panel.spawn((
+                        ui_button(),
+                        PauseSettingsButton,
+                        children![ui_text("Einstellungen", 15.0, UI_INK)],
+                    ));
+                    panel.spawn((
+                        ui_button(),
+                        PauseQuitButton,
+                        children![ui_text("Spiel beenden", 15.0, UI_INK)],
+                    ));
+                });
+            screen
+                .spawn((
+                    Node {
+                        width: Val::Px(600.0),
+                        max_width: Val::Percent(94.0),
+                        padding: UiRect::all(Val::Px(32.0)),
+                        flex_direction: FlexDirection::Column,
+                        row_gap: Val::Px(18.0),
+                        border: UiRect::all(Val::Px(UI_BORDER_W)),
+                        display: Display::None,
+                        ..default()
+                    },
+                    ui_panel_frame(),
+                    PauseSettingsPage,
+                ))
+                .with_children(|panel| {
+                    panel.spawn(ui_text("EINSTELLUNGEN", 28.0, UI_ACCENT));
+                    panel.spawn(ui_text_wrapped(
+                        "Textgröße verändert sämtliche Beschriftungen. Die Auswahl wird auf diesem Gerät gespeichert.",
+                        FS_BODY,
+                        UI_MUTED,
+                    ));
+                    panel.spawn(ui_text("Textgröße", FS_SECTION, UI_INK));
+                    panel
+                        .spawn(Node {
+                            width: Val::Percent(100.0),
+                            align_items: AlignItems::Center,
+                            justify_content: JustifyContent::SpaceBetween,
+                            column_gap: Val::Px(12.0),
+                            ..default()
+                        })
+                        .with_children(|row| {
+                            row.spawn((
+                                ui_button(),
+                                PauseTextSmallerButton,
+                                children![ui_text("Kleiner", FS_BODY, UI_INK)],
+                            ));
+                            row.spawn((
+                                ui_text("Normal · 100 %", 15.0, UI_INK),
+                                PauseTextScaleText,
+                            ));
+                            row.spawn((
+                                ui_button(),
+                                PauseTextLargerButton,
+                                children![ui_text("Größer", FS_BODY, UI_INK)],
+                            ));
+                        });
+                    panel.spawn((
+                        ui_button(),
+                        PauseSettingsBackButton,
+                        children![ui_text("Zurück", 15.0, UI_INK)],
+                    ));
+                });
+        });
 
     // Transport and rejected-action feedback must not disappear into the log.
     // Keep a compact banner above the world; it is hidden until feedback exists.
@@ -4617,7 +5161,7 @@ fn setup(
         .with_children(|panel| {
             panel.spawn(ui_title_bar("Welcome to Idle Cat Forest"));
             panel.spawn(ui_panel_body()).with_children(|body| {
-                body.spawn(ui_text(
+                body.spawn(ui_text_wrapped(
                     "Start here: keep Food and Water safe, gather nearby Wood, build housing, then send a scout. The leader keeps the colony moving while you shape its priorities.",
                     FS_BODY,
                     UI_INK,
@@ -4914,7 +5458,7 @@ fn setup(
         ui_panel_frame(),
         GlobalZIndex(100),
         TooltipPanel,
-        children![(ui_text("", FS_BODY, UI_INK), TooltipText)],
+        children![(ui_text_wrapped("", FS_BODY, UI_INK), TooltipText)],
     ));
 
     // Cat inspector (top-right), hidden until a cat is selected. Includes a row
@@ -5479,6 +6023,489 @@ fn server_ws_url() -> String {
     }
 }
 
+fn initialize_start_screen(session: Res<Session>, mut start: ResMut<StartScreen>) {
+    start.player_name.clone_from(&session.nickname);
+}
+
+fn normalized_required_name(raw: &str, label: &str, max_chars: usize) -> Result<String, String> {
+    let normalized = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    let count = normalized.chars().count();
+    if count < 2 {
+        return Err(format!("{label} muss mindestens 2 Zeichen lang sein."));
+    }
+    if count > max_chars {
+        return Err(format!(
+            "{label} darf höchstens {max_chars} Zeichen lang sein."
+        ));
+    }
+    if normalized.chars().any(char::is_control) {
+        return Err(format!("{label} enthält ungültige Zeichen."));
+    }
+    Ok(normalized)
+}
+
+fn append_input_text(target: &mut String, text: &str, max_chars: usize) {
+    for character in text.chars().filter(|character| !character.is_control()) {
+        if target.chars().count() >= max_chars {
+            break;
+        }
+        target.push(character);
+    }
+}
+
+fn start_input_label(value: &str, placeholder: &str, focused: bool) -> String {
+    match (value.is_empty(), focused) {
+        (true, true) => format!("▌ {placeholder}"),
+        (true, false) => placeholder.to_owned(),
+        (false, true) => format!("{value} ▌"),
+        (false, false) => value.to_owned(),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handle_start_screen(
+    mut keyboard: MessageReader<KeyboardInput>,
+    mut start: ResMut<StartScreen>,
+    mut session: ResMut<Session>,
+    mut latest: ResMut<LatestSnapshot>,
+    mut selection: ResMut<VillageSelection>,
+    mut outgoing: ResMut<OutgoingActions>,
+    mut ui: StartScreenUi,
+) {
+    let Ok(mut root) = ui.root.single_mut() else {
+        return;
+    };
+    root.display = if start.visible {
+        Display::Flex
+    } else {
+        Display::None
+    };
+    if !start.visible {
+        keyboard.clear();
+        return;
+    }
+
+    if ui
+        .player_input
+        .iter()
+        .any(|interaction| *interaction == Interaction::Pressed)
+    {
+        start.focused_input = StartInput::PlayerName;
+    }
+    if ui
+        .village_input
+        .iter()
+        .any(|interaction| *interaction == Interaction::Pressed)
+    {
+        start.focused_input = StartInput::VillageName;
+    }
+    if ui
+        .global_button
+        .iter()
+        .any(|interaction| *interaction == Interaction::Pressed)
+    {
+        start.mode = Some(StartMode::Global);
+        start.error = None;
+    }
+    if ui
+        .personal_button
+        .iter()
+        .any(|interaction| *interaction == Interaction::Pressed)
+    {
+        start.mode = Some(StartMode::Personal);
+        start.focused_input = if start.player_name.trim().is_empty() {
+            StartInput::PlayerName
+        } else {
+            StartInput::VillageName
+        };
+        start.error = None;
+    }
+
+    let mut submit = ui
+        .continue_button
+        .iter()
+        .any(|interaction| *interaction == Interaction::Pressed);
+    for event in keyboard.read() {
+        if event.state != ButtonState::Pressed {
+            continue;
+        }
+        match event.key_code {
+            KeyCode::Backspace => match start.focused_input {
+                StartInput::PlayerName => {
+                    start.player_name.pop();
+                }
+                StartInput::VillageName => {
+                    start.village_name.pop();
+                }
+            },
+            KeyCode::Tab => {
+                start.focused_input = match start.focused_input {
+                    StartInput::PlayerName if start.mode == Some(StartMode::Personal) => {
+                        StartInput::VillageName
+                    }
+                    _ => StartInput::PlayerName,
+                };
+            }
+            KeyCode::Enter | KeyCode::NumpadEnter => submit = true,
+            _ => {
+                if let Some(text) = event.text.as_deref() {
+                    match start.focused_input {
+                        StartInput::PlayerName => {
+                            append_input_text(&mut start.player_name, text, PLAYER_NAME_MAX_CHARS)
+                        }
+                        StartInput::VillageName => {
+                            append_input_text(&mut start.village_name, text, VILLAGE_NAME_MAX_CHARS)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let owned_personal = latest.0.as_ref().and_then(|snapshot| {
+        snapshot
+            .colonies
+            .iter()
+            .find(|colony| colony.kind == VillageKind::Personal && colony.capabilities.is_owner)
+            .map(|colony| colony.id.clone())
+    });
+    let needs_village_name = start.mode == Some(StartMode::Personal) && owned_personal.is_none();
+
+    if submit && !start.pending_foundation {
+        let result = (|| -> Result<(), String> {
+            let nickname =
+                normalized_required_name(&start.player_name, "Dein Name", PLAYER_NAME_MAX_CHARS)?;
+            let mode = start
+                .mode
+                .ok_or_else(|| "Bitte wähle Global oder Eigene Siedlung.".to_owned())?;
+            if !session.ready {
+                return Err("Die Verbindung wird noch hergestellt …".to_owned());
+            }
+            let snapshot = latest
+                .0
+                .as_mut()
+                .ok_or_else(|| "Die Spielwelt wird noch geladen …".to_owned())?;
+            session.nickname = nickname;
+            // Presence is also the authenticated display-name handshake. Queue
+            // it before entering/founding so the server can attribute every
+            // following action to the name chosen on this screen.
+            outgoing.0.push(presence_action(&session));
+            match mode {
+                StartMode::Global => {
+                    let global_id = snapshot
+                        .colonies
+                        .iter()
+                        .find(|colony| colony.kind == VillageKind::Global)
+                        .map(|colony| colony.id.clone())
+                        .ok_or_else(|| "Die globale Siedlung ist nicht verfügbar.".to_owned())?;
+                    if let Some(action) =
+                        choose_village(&global_id, snapshot, &mut selection, &session)
+                    {
+                        outgoing.0.push(action);
+                    }
+                    start.visible = false;
+                }
+                StartMode::Personal => {
+                    if let Some(personal_id) = owned_personal.as_deref() {
+                        if let Some(action) =
+                            choose_village(personal_id, snapshot, &mut selection, &session)
+                        {
+                            outgoing.0.push(action);
+                        }
+                        start.visible = false;
+                    } else {
+                        let name = normalized_required_name(
+                            &start.village_name,
+                            "Der Siedlungsname",
+                            VILLAGE_NAME_MAX_CHARS,
+                        )?;
+                        outgoing.0.push(ClientAction::FoundVillage {
+                            name,
+                            session_id: session.session_id.clone(),
+                            sig: Some(session.sig.clone()),
+                        });
+                        start.pending_foundation = true;
+                    }
+                }
+            }
+            persist_session(&session, &selection)
+                .map_err(|err| format!("Zugang konnte nicht gespeichert werden: {err}"))?;
+            Ok(())
+        })();
+        start.error = result.err();
+    }
+
+    if let Ok(mut node) = ui.village_field.single_mut() {
+        node.display = if needs_village_name {
+            Display::Flex
+        } else {
+            Display::None
+        };
+    }
+    if let Ok(mut text) = ui.player_text.single_mut() {
+        text.0 = start_input_label(
+            &start.player_name,
+            "Name eingeben …",
+            start.focused_input == StartInput::PlayerName,
+        );
+    }
+    if let Ok(mut text) = ui.village_text.single_mut() {
+        text.0 = start_input_label(
+            &start.village_name,
+            "Siedlungsname eingeben …",
+            start.focused_input == StartInput::VillageName,
+        );
+    }
+    if let Ok(mut text) = ui.continue_text.single_mut() {
+        text.0 = if start.pending_foundation {
+            "Siedlung wird gegründet …"
+        } else {
+            match (start.mode, owned_personal.is_some()) {
+                (Some(StartMode::Global), _) => "Grand Commons betreten",
+                (Some(StartMode::Personal), true) => "Eigene Siedlung fortsetzen",
+                (Some(StartMode::Personal), false) => "Eigene Siedlung gründen",
+                (None, _) => "Auswahl treffen",
+            }
+        }
+        .to_owned();
+    }
+    if let Ok(mut text) = ui.error_text.single_mut() {
+        text.0 = start.error.clone().unwrap_or_default();
+    }
+    if let Ok(mut border) = ui.borders.p0().single_mut() {
+        *border = BorderColor::all(if start.mode == Some(StartMode::Global) {
+            UI_ACCENT
+        } else {
+            Color::NONE
+        });
+    }
+    if let Ok(mut border) = ui.borders.p1().single_mut() {
+        *border = BorderColor::all(if start.mode == Some(StartMode::Personal) {
+            UI_ACCENT
+        } else {
+            Color::NONE
+        });
+    }
+    if let Ok(mut border) = ui.borders.p2().single_mut() {
+        *border = BorderColor::all(if start.focused_input == StartInput::PlayerName {
+            UI_ACCENT
+        } else {
+            UI_DIVIDER
+        });
+    }
+    if let Ok(mut border) = ui.borders.p3().single_mut() {
+        *border = BorderColor::all(if start.focused_input == StartInput::VillageName {
+            UI_ACCENT
+        } else {
+            UI_DIVIDER
+        });
+    }
+    if let Ok(mut background) = ui.input_backgrounds.p0().single_mut() {
+        background.0 = if start.focused_input == StartInput::PlayerName {
+            Color::srgb(1.0, 0.93, 0.72)
+        } else {
+            Color::srgb(0.89, 0.83, 0.68)
+        };
+    }
+    if let Ok(mut background) = ui.input_backgrounds.p1().single_mut() {
+        background.0 = if start.focused_input == StartInput::VillageName {
+            Color::srgb(1.0, 0.93, 0.72)
+        } else {
+            Color::srgb(0.89, 0.83, 0.68)
+        };
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn toggle_pause_menu(
+    keys: Res<ButtonInput<KeyCode>>,
+    start: Res<StartScreen>,
+    mut pause: ResMut<PauseMenu>,
+    help: Res<HelpUi>,
+    announcements: Res<AnnouncementsUi>,
+    goods: Res<GoodsUi>,
+    census: Res<CensusUi>,
+    tree: Res<UpgradeTreeUi>,
+    selection: Res<Selection>,
+    building: Res<BuildingSelection>,
+    stockpile: Res<StockpileSelection>,
+) {
+    if start.visible || !keys.just_pressed(KeyCode::Escape) {
+        return;
+    }
+    if pause.visible {
+        if pause.page == PausePage::Settings {
+            pause.page = PausePage::Main;
+        } else {
+            pause.visible = false;
+        }
+        return;
+    }
+    let another_surface_is_open = help.visible
+        || announcements.visible
+        || goods.visible
+        || census.visible
+        || tree.visible
+        || selection.selected.is_some()
+        || building.selected.is_some()
+        || stockpile.selected.is_some()
+        || stockpile.selected_farm.is_some();
+    if !another_surface_is_open {
+        pause.visible = true;
+        pause.page = PausePage::Main;
+    }
+}
+
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn handle_pause_menu(
+    mut pause: ResMut<PauseMenu>,
+    mut session: ResMut<Session>,
+    selection: Res<VillageSelection>,
+    resume: Query<&Interaction, (Changed<Interaction>, With<PauseResumeButton>)>,
+    settings: Query<&Interaction, (Changed<Interaction>, With<PauseSettingsButton>)>,
+    settings_back: Query<&Interaction, (Changed<Interaction>, With<PauseSettingsBackButton>)>,
+    smaller: Query<&Interaction, (Changed<Interaction>, With<PauseTextSmallerButton>)>,
+    larger: Query<&Interaction, (Changed<Interaction>, With<PauseTextLargerButton>)>,
+    quit: Query<&Interaction, (Changed<Interaction>, With<PauseQuitButton>)>,
+    mut root: Query<
+        &mut Node,
+        (
+            With<PauseMenuRoot>,
+            Without<PauseMainPage>,
+            Without<PauseSettingsPage>,
+        ),
+    >,
+    mut main_page: Query<
+        &mut Node,
+        (
+            With<PauseMainPage>,
+            Without<PauseMenuRoot>,
+            Without<PauseSettingsPage>,
+        ),
+    >,
+    mut settings_page: Query<
+        &mut Node,
+        (
+            With<PauseSettingsPage>,
+            Without<PauseMenuRoot>,
+            Without<PauseMainPage>,
+        ),
+    >,
+    mut app_exit: MessageWriter<AppExit>,
+) {
+    let pressed = |query: &Query<&Interaction, (Changed<Interaction>, With<PauseResumeButton>)>| {
+        query
+            .iter()
+            .any(|interaction| *interaction == Interaction::Pressed)
+    };
+    if pressed(&resume) {
+        pause.visible = false;
+    }
+    if settings
+        .iter()
+        .any(|interaction| *interaction == Interaction::Pressed)
+    {
+        pause.page = PausePage::Settings;
+    }
+    if settings_back
+        .iter()
+        .any(|interaction| *interaction == Interaction::Pressed)
+    {
+        pause.page = PausePage::Main;
+    }
+
+    let scale_index = TEXT_SCALES
+        .iter()
+        .position(|scale| (*scale - session.text_scale).abs() < f32::EPSILON)
+        .unwrap_or(0);
+    let mut next_scale = scale_index;
+    if smaller
+        .iter()
+        .any(|interaction| *interaction == Interaction::Pressed)
+    {
+        next_scale = next_scale.saturating_sub(1);
+    }
+    if larger
+        .iter()
+        .any(|interaction| *interaction == Interaction::Pressed)
+    {
+        next_scale = (next_scale + 1).min(TEXT_SCALES.len() - 1);
+    }
+    if next_scale != scale_index {
+        session.text_scale = TEXT_SCALES[next_scale];
+        if session.ready
+            && let Err(err) = persist_session(&session, &selection)
+        {
+            warn!("could not persist text scale: {err}");
+        }
+    }
+    if quit
+        .iter()
+        .any(|interaction| *interaction == Interaction::Pressed)
+    {
+        app_exit.write(AppExit::Success);
+    }
+
+    if let Ok(mut root) = root.single_mut() {
+        root.display = if pause.visible {
+            Display::Flex
+        } else {
+            Display::None
+        };
+    }
+    if let Ok(mut page) = main_page.single_mut() {
+        page.display = if pause.page == PausePage::Main {
+            Display::Flex
+        } else {
+            Display::None
+        };
+    }
+    if let Ok(mut page) = settings_page.single_mut() {
+        page.display = if pause.page == PausePage::Settings {
+            Display::Flex
+        } else {
+            Display::None
+        };
+    }
+}
+
+fn apply_text_scale(
+    session: Res<Session>,
+    mut text: Query<(Ref<UiFontSize>, &mut TextFont)>,
+    mut label: Query<&mut Text, With<PauseTextScaleText>>,
+    mut last_scale: Local<f32>,
+) {
+    let scale_changed = (*last_scale - session.text_scale).abs() > f32::EPSILON;
+    for (base, mut font) in &mut text {
+        if scale_changed || base.is_added() {
+            font.font_size = FontSize::Px(base.0 * session.text_scale);
+        }
+    }
+    if (scale_changed || session.is_changed())
+        && let Ok(mut text) = label.single_mut()
+    {
+        let name = match TEXT_SCALES
+            .iter()
+            .position(|scale| (*scale - session.text_scale).abs() < f32::EPSILON)
+            .unwrap_or(0)
+        {
+            0 => "Normal",
+            1 => "Groß",
+            _ => "Sehr groß",
+        };
+        text.0 = format!("{name} · {:.0} %", session.text_scale * 100.0);
+    }
+    *last_scale = session.text_scale;
+}
+
+fn apply_text_layout_defaults(
+    mut compact_text: Query<&mut TextLayout, (Added<UiFontSize>, Without<UiWrappedText>)>,
+) {
+    for mut layout in &mut compact_text {
+        layout.linebreak = LineBreak::NoWrap;
+    }
+}
+
 fn connect_ws(world: &mut World) {
     begin_connection(world);
 }
@@ -5574,6 +6601,34 @@ fn poll_ws(world: &mut World) {
                         if let Some(err) = persist_error {
                             warn!("could not persist player session: {err}");
                         }
+                    }
+                    let founding_pending = world.resource::<StartScreen>().pending_foundation;
+                    if founding_pending && result.ok {
+                        if let Some(colony_id) = result.colony_id.clone() {
+                            {
+                                let mut selection = world.resource_mut::<VillageSelection>();
+                                selection.selected_id = Some(colony_id);
+                                selection.join_required = false;
+                            }
+                            {
+                                let mut start = world.resource_mut::<StartScreen>();
+                                start.pending_foundation = false;
+                                start.visible = false;
+                                start.error = None;
+                            }
+                            let session = world.resource::<Session>();
+                            let selection = world.resource::<VillageSelection>();
+                            if let Err(err) = persist_session(session, selection) {
+                                warn!("could not persist founded village: {err}");
+                            }
+                        }
+                    } else if founding_pending && !result.ok {
+                        let message = result.message.clone().unwrap_or_else(|| {
+                            "Die Siedlung konnte nicht gegründet werden.".to_owned()
+                        });
+                        let mut start = world.resource_mut::<StartScreen>();
+                        start.pending_foundation = false;
+                        start.error = Some(message);
                     }
                     if !result.ok {
                         let message = result
@@ -5881,7 +6936,10 @@ fn presence_action(session: &Session) -> ClientAction {
         } else {
             session.session_id.clone()
         },
-        nickname: CLIENT_ACTOR_LABEL.to_owned(),
+        // An empty nickname is valid only for the first session bootstrap. The
+        // start screen sends a second Presence with the player's chosen name
+        // before it queues any game action.
+        nickname: session.nickname.trim().to_owned(),
         sig: (!session.sig.is_empty()).then(|| session.sig.clone()),
     }
 }
@@ -6268,12 +7326,18 @@ fn render_tree_lifecycle(
 /// future rural work remain exterior territory rather than moving the wall.
 fn settlement_tile_lookup(colony: &ColonySnapshot) -> HashSet<(i32, i32)> {
     let agricultural = revealed_lookup(&colony.agricultural_tiles);
-    colony
+    let mut cleared = colony
         .claimed_tiles
         .iter()
         .map(|tile| (tile.x, tile.y))
         .filter(|tile| !agricultural.contains(tile))
-        .collect()
+        .collect::<HashSet<_>>();
+    // The simulation converts every paved coordinate to walkable ground and
+    // rejects real water placement. Include roads outside the wall in the same
+    // authoritative terrain override so procedural climate art cannot paint a
+    // blue river underneath an otherwise valid road.
+    cleared.extend(colony.road_tiles.iter().map(|tile| (tile.x, tile.y)));
+    cleared
 }
 
 fn procedural_decoration_visible(
@@ -7403,7 +8467,7 @@ fn build_remove_action(
     is_gather: bool,
 ) -> ClientAction {
     let session_id = session.session_id.clone();
-    let nickname = CLIENT_ACTOR_LABEL.to_owned();
+    let nickname = session.nickname().to_owned();
     let sig = session.sig.clone();
     if let Some(plot_id) = farm_id {
         ClientAction::ClearFarm {
@@ -7663,7 +8727,7 @@ fn handle_governance_buttons(
     {
         outgoing.0.push(ClientAction::CastVote {
             session_id: session.session_id.clone(),
-            nickname: CLIENT_ACTOR_LABEL.to_owned(),
+            nickname: session.nickname().to_owned(),
             sig: session.sig.clone(),
             election_id: election.id.clone(),
             cat_id: candidate.id.clone(),
@@ -7676,7 +8740,7 @@ fn handle_governance_buttons(
     {
         outgoing.0.push(ClientAction::RequestVoteKick {
             session_id: session.session_id.clone(),
-            nickname: CLIENT_ACTOR_LABEL.to_owned(),
+            nickname: session.nickname().to_owned(),
             sig: session.sig.clone(),
         });
     }
@@ -7695,7 +8759,7 @@ fn build_order_action(
     }
     let session_id = session.session_id.clone();
     let sig = session.sig.clone();
-    let nickname = CLIENT_ACTOR_LABEL.to_owned();
+    let nickname = session.nickname().to_owned();
     let request = |kind| ClientAction::RequestJob {
         session_id: session_id.clone(),
         nickname: nickname.clone(),
@@ -7841,7 +8905,7 @@ fn handle_appoint_buttons(
         {
             outgoing.0.push(ClientAction::AssignOfficer {
                 session_id: session.session_id.clone(),
-                nickname: CLIENT_ACTOR_LABEL.to_owned(),
+                nickname: session.nickname().to_owned(),
                 sig: session.sig.clone(),
                 role: appoint.0,
                 cat_id: cat,
@@ -7883,7 +8947,7 @@ fn handle_boost_button(
             let current = selected_cat(&latest, &selection).is_some_and(|c| c.boosted);
             outgoing.0.push(ClientAction::BoostCat {
                 session_id: session.session_id.clone(),
-                nickname: CLIENT_ACTOR_LABEL.to_owned(),
+                nickname: session.nickname().to_owned(),
                 sig: session.sig.clone(),
                 cat_id,
                 boosted: !current,
@@ -8119,7 +9183,7 @@ fn labor_preference_action(
 ) -> Option<ClientAction> {
     session.ready.then(|| ClientAction::SetCatLaborPreference {
         session_id: session.session_id.clone(),
-        nickname: CLIENT_ACTOR_LABEL.to_owned(),
+        nickname: session.nickname().to_owned(),
         sig: session.sig.clone(),
         cat_id: cat.id.clone(),
         labor,
@@ -8336,7 +9400,7 @@ fn station_queue_action_for_worker_selected(
     Some(if let Some(slot) = slot {
         ClientAction::EditProductionWorkSlot {
             session_id: session.session_id.clone(),
-            nickname: CLIENT_ACTOR_LABEL.to_owned(),
+            nickname: session.nickname().to_owned(),
             sig: session.sig.clone(),
             building_id: building.id.clone(),
             cat_id: slot.cat_id.clone(),
@@ -8345,7 +9409,7 @@ fn station_queue_action_for_worker_selected(
     } else {
         ClientAction::EditProductionQueue {
             session_id: session.session_id.clone(),
-            nickname: CLIENT_ACTOR_LABEL.to_owned(),
+            nickname: session.nickname().to_owned(),
             sig: session.sig.clone(),
             building_id: building.id.clone(),
             edit,
@@ -8383,7 +9447,7 @@ fn handle_vacate_buttons(
         if *interaction == Interaction::Pressed && session.ready {
             outgoing.0.push(ClientAction::UnassignOfficer {
                 session_id: session.session_id.clone(),
-                nickname: CLIENT_ACTOR_LABEL.to_owned(),
+                nickname: session.nickname().to_owned(),
                 sig: session.sig.clone(),
                 role: vacate.0,
             });
@@ -9842,7 +10906,7 @@ fn zone_paint(
         outgoing.0.push(match kind {
             PaintKind::Avoid | PaintKind::Gather => ClientAction::CreateZone {
                 session_id: session.session_id.clone(),
-                nickname: CLIENT_ACTOR_LABEL.to_owned(),
+                nickname: session.nickname().to_owned(),
                 sig: session.sig.clone(),
                 kind: if kind == PaintKind::Avoid {
                     ZoneKind::Avoid
@@ -9855,7 +10919,7 @@ fn zone_paint(
             },
             PaintKind::Stockpile => ClientAction::DesignateStockpile {
                 session_id: session.session_id.clone(),
-                nickname: CLIENT_ACTOR_LABEL.to_owned(),
+                nickname: session.nickname().to_owned(),
                 sig: session.sig.clone(),
                 a,
                 b,
@@ -9863,7 +10927,7 @@ fn zone_paint(
             },
             PaintKind::Farm => ClientAction::DesignateFarm {
                 session_id: session.session_id.clone(),
-                nickname: CLIENT_ACTOR_LABEL.to_owned(),
+                nickname: session.nickname().to_owned(),
                 sig: session.sig.clone(),
                 a,
                 b,
@@ -9871,7 +10935,7 @@ fn zone_paint(
             },
             PaintKind::GatherSpot => ClientAction::DesignateGatherSpot {
                 session_id: session.session_id.clone(),
-                nickname: CLIENT_ACTOR_LABEL.to_owned(),
+                nickname: session.nickname().to_owned(),
                 sig: session.sig.clone(),
                 a,
                 b,
@@ -9879,13 +10943,13 @@ fn zone_paint(
             },
             PaintKind::FishingSpot => ClientAction::DesignateFishingSpot {
                 session_id: session.session_id.clone(),
-                nickname: CLIENT_ACTOR_LABEL.to_owned(),
+                nickname: session.nickname().to_owned(),
                 sig: session.sig.clone(),
                 at: a,
             },
             PaintKind::Road => ClientAction::BuildRoad {
                 session_id: session.session_id.clone(),
-                nickname: CLIENT_ACTOR_LABEL.to_owned(),
+                nickname: session.nickname().to_owned(),
                 sig: session.sig.clone(),
                 a,
                 b,
@@ -9947,7 +11011,7 @@ fn build_exact_building_action(
 ) -> ClientAction {
     ClientAction::PlanBuilding {
         session_id: session.session_id.clone(),
-        nickname: CLIENT_ACTOR_LABEL.to_owned(),
+        nickname: session.nickname().to_owned(),
         sig: session.sig.clone(),
         building_type,
         site: Some(site),
@@ -10745,7 +11809,7 @@ fn village_trade_proposal_action(
 ) -> Option<ClientAction> {
     session.ready.then(|| ClientAction::OfferVillageTrade {
         session_id: session.session_id.clone(),
-        nickname: CLIENT_ACTOR_LABEL.to_owned(),
+        nickname: session.nickname().to_owned(),
         sig: session.sig.clone(),
         target_colony_id: target.to_owned(),
         offered_kind: draft.offered_kind,
@@ -10759,14 +11823,14 @@ fn village_trade_reply_action(offer_id: &str, accept: bool, session: &Session) -
     if accept {
         ClientAction::AcceptVillageTrade {
             session_id: session.session_id.clone(),
-            nickname: CLIENT_ACTOR_LABEL.to_owned(),
+            nickname: session.nickname().to_owned(),
             sig: session.sig.clone(),
             offer_id: offer_id.to_owned(),
         }
     } else {
         ClientAction::CancelVillageTrade {
             session_id: session.session_id.clone(),
-            nickname: CLIENT_ACTOR_LABEL.to_owned(),
+            nickname: session.nickname().to_owned(),
             sig: session.sig.clone(),
             offer_id: offer_id.to_owned(),
         }
@@ -11164,7 +12228,7 @@ fn handle_goods_repair_buttons(
         };
         outgoing.0.push(ClientAction::RepairItem {
             session_id: session.session_id.clone(),
-            nickname: CLIENT_ACTOR_LABEL.to_owned(),
+            nickname: session.nickname().to_owned(),
             sig: session.sig.clone(),
             item_id: item_id.to_string(),
         });
@@ -11338,7 +12402,7 @@ fn handle_trade_buttons(
             if count > 0 {
                 outgoing.0.push(ClientAction::SellGoods {
                     session_id: session.session_id.clone(),
-                    nickname: CLIENT_ACTOR_LABEL.to_owned(),
+                    nickname: session.nickname().to_owned(),
                     sig: session.sig.clone(),
                     kind: offer.kind.clone(),
                     material: offer.material.clone(),
@@ -11360,7 +12424,7 @@ fn handle_trade_buttons(
         {
             outgoing.0.push(ClientAction::BuyResource {
                 session_id: session.session_id.clone(),
-                nickname: CLIENT_ACTOR_LABEL.to_owned(),
+                nickname: session.nickname().to_owned(),
                 sig: session.sig.clone(),
                 resource: offer.resource,
                 amount: 1.0,
@@ -11412,7 +12476,8 @@ fn update_announcements(
 
     for (line, mut text, mut color) in &mut lines {
         if let Some(e) = newest.get(line.0) {
-            text.0 = announcement_line(now, &e.kind, &e.message, e.timestamp);
+            let message = attributed_event_message(e);
+            text.0 = announcement_line(now, &e.kind, &message, e.timestamp);
             color.0 = event_color(event_kind_of(&e.kind));
         } else {
             text.0 = String::new();
@@ -11421,7 +12486,7 @@ fn update_announcements(
     if let Ok((mut text, mut color)) = ticker.single_mut() {
         if let Some(e) = newest.first() {
             let kind = event_kind_of(&e.kind);
-            text.0 = format!("{} {}", event_glyph(kind), e.message);
+            text.0 = format!("{} {}", event_glyph(kind), attributed_event_message(e));
             color.0 = event_color(kind);
         } else {
             text.0 = String::new();
@@ -11787,7 +12852,7 @@ fn update_event_log(
                 .iter()
                 .rev()
                 .take(4_usize.saturating_sub(lines.len()))
-                .map(|event| format!("- {}", event.message)),
+                .map(|event| format!("- {}", attributed_event_message(event))),
         );
     }
     text.0 = if lines.is_empty() {
@@ -11795,6 +12860,13 @@ fn update_event_log(
     } else {
         lines.join("\n")
     };
+}
+
+fn attributed_event_message(event: &EventSnapshot) -> String {
+    event.actor_name.as_deref().map_or_else(
+        || event.message.clone(),
+        |name| format!("{name}: {}", event.message),
+    )
 }
 
 /// React to toolbar clicks: tint the button and enqueue its action.
@@ -11859,7 +12931,7 @@ fn build_action(action: ButtonAction, session: &Session) -> Option<ClientAction>
             };
             return Some(ClientAction::DispatchScout {
                 session_id: session.session_id.clone(),
-                nickname: CLIENT_ACTOR_LABEL.to_owned(),
+                nickname: session.nickname().to_owned(),
                 sig: session.sig.clone(),
                 mission,
             });
@@ -11874,7 +12946,7 @@ fn build_action(action: ButtonAction, session: &Session) -> Option<ClientAction>
     };
     Some(ClientAction::RequestJob {
         session_id: session.session_id.clone(),
-        nickname: CLIENT_ACTOR_LABEL.to_owned(),
+        nickname: session.nickname().to_owned(),
         sig: session.sig.clone(),
         kind,
     })
@@ -12953,6 +14025,7 @@ mod tests {
             sig: "signed".to_owned(),
             presence_sent: true,
             ready: true,
+            ..default()
         }
     }
 
@@ -13023,117 +14096,117 @@ mod tests {
         let expected = [
             ClientAction::RequestJob {
                 session_id: "session-1".to_owned(),
-                nickname: CLIENT_ACTOR_LABEL.to_owned(),
+                nickname: session.nickname().to_owned(),
                 sig: "signed".to_owned(),
                 kind: JobKind::HuntExpedition,
             },
             ClientAction::RequestJob {
                 session_id: "session-1".to_owned(),
-                nickname: CLIENT_ACTOR_LABEL.to_owned(),
+                nickname: session.nickname().to_owned(),
                 sig: "signed".to_owned(),
                 kind: JobKind::Fish,
             },
             ClientAction::RequestJob {
                 session_id: "session-1".to_owned(),
-                nickname: CLIENT_ACTOR_LABEL.to_owned(),
+                nickname: session.nickname().to_owned(),
                 sig: "signed".to_owned(),
                 kind: JobKind::FetchWater,
             },
             ClientAction::RequestJob {
                 session_id: "session-1".to_owned(),
-                nickname: CLIENT_ACTOR_LABEL.to_owned(),
+                nickname: session.nickname().to_owned(),
                 sig: "signed".to_owned(),
                 kind: JobKind::Quarry,
             },
             ClientAction::RequestJob {
                 session_id: "session-1".to_owned(),
-                nickname: CLIENT_ACTOR_LABEL.to_owned(),
+                nickname: session.nickname().to_owned(),
                 sig: "signed".to_owned(),
                 kind: JobKind::GatherLogs,
             },
             ClientAction::RequestJob {
                 session_id: "session-1".to_owned(),
-                nickname: CLIENT_ACTOR_LABEL.to_owned(),
+                nickname: session.nickname().to_owned(),
                 sig: "signed".to_owned(),
                 kind: JobKind::ReplantTree,
             },
             ClientAction::RequestJob {
                 session_id: "session-1".to_owned(),
-                nickname: CLIENT_ACTOR_LABEL.to_owned(),
+                nickname: session.nickname().to_owned(),
                 sig: "signed".to_owned(),
                 kind: JobKind::ForageFibre,
             },
             ClientAction::RequestJob {
                 session_id: "session-1".to_owned(),
-                nickname: CLIENT_ACTOR_LABEL.to_owned(),
+                nickname: session.nickname().to_owned(),
                 sig: "signed".to_owned(),
                 kind: JobKind::ExpandVillage,
             },
             ClientAction::RequestJob {
                 session_id: "session-1".to_owned(),
-                nickname: CLIENT_ACTOR_LABEL.to_owned(),
+                nickname: session.nickname().to_owned(),
                 sig: "signed".to_owned(),
                 kind: JobKind::Ritual,
             },
             ClientAction::OfferTithe {
                 session_id: "session-1".to_owned(),
-                nickname: CLIENT_ACTOR_LABEL.to_owned(),
+                nickname: session.nickname().to_owned(),
                 sig: "signed".to_owned(),
             },
             ClientAction::OfferResource {
                 session_id: "session-1".to_owned(),
-                nickname: CLIENT_ACTOR_LABEL.to_owned(),
+                nickname: session.nickname().to_owned(),
                 sig: "signed".to_owned(),
                 resource: OfferingResource::Food,
             },
             ClientAction::OfferResource {
                 session_id: "session-1".to_owned(),
-                nickname: CLIENT_ACTOR_LABEL.to_owned(),
+                nickname: session.nickname().to_owned(),
                 sig: "signed".to_owned(),
                 resource: OfferingResource::Herbs,
             },
             ClientAction::OfferMaterials {
                 session_id: "session-1".to_owned(),
-                nickname: CLIENT_ACTOR_LABEL.to_owned(),
+                nickname: session.nickname().to_owned(),
                 sig: "signed".to_owned(),
             },
             ClientAction::HaulGatherSpot {
                 session_id: "session-1".to_owned(),
-                nickname: CLIENT_ACTOR_LABEL.to_owned(),
+                nickname: session.nickname().to_owned(),
                 sig: "signed".to_owned(),
                 stockpile_id: "gather-1".to_owned(),
                 cat_id: Some("cat-1".to_owned()),
             },
             ClientAction::PlanBuilding {
                 session_id: "session-1".to_owned(),
-                nickname: CLIENT_ACTOR_LABEL.to_owned(),
+                nickname: session.nickname().to_owned(),
                 sig: "signed".to_owned(),
                 building_type: BuildingType::Sawmill,
                 site: None,
             },
             ClientAction::AssignWorker {
                 session_id: "session-1".to_owned(),
-                nickname: CLIENT_ACTOR_LABEL.to_owned(),
+                nickname: session.nickname().to_owned(),
                 sig: "signed".to_owned(),
                 cat_id: "cat-1".to_owned(),
                 building_id: Some("mill-1".to_owned()),
             },
             ClientAction::AssignWorker {
                 session_id: "session-1".to_owned(),
-                nickname: CLIENT_ACTOR_LABEL.to_owned(),
+                nickname: session.nickname().to_owned(),
                 sig: "signed".to_owned(),
                 cat_id: "cat-1".to_owned(),
                 building_id: None,
             },
             ClientAction::TrainWarrior {
                 session_id: "session-1".to_owned(),
-                nickname: CLIENT_ACTOR_LABEL.to_owned(),
+                nickname: session.nickname().to_owned(),
                 sig: "signed".to_owned(),
                 cat_id: Some("cat-1".to_owned()),
             },
             ClientAction::DefendRaid {
                 session_id: "session-1".to_owned(),
-                nickname: CLIENT_ACTOR_LABEL.to_owned(),
+                nickname: session.nickname().to_owned(),
                 sig: "signed".to_owned(),
             },
         ];
@@ -13534,6 +14607,7 @@ mod tests {
             sig: "signed".to_owned(),
             presence_sent: true,
             ready: true,
+            ..default()
         };
         assert_eq!(
             build_action(ButtonAction::FoundVillage, &session),
@@ -13571,7 +14645,7 @@ mod tests {
                 build_action(button, &session),
                 Some(ClientAction::DispatchScout {
                     session_id: "scout-session".to_owned(),
-                    nickname: CLIENT_ACTOR_LABEL.to_owned(),
+                    nickname: session.nickname().to_owned(),
                     sig: "signed".to_owned(),
                     mission,
                 })
@@ -13903,12 +14977,15 @@ mod tests {
             sig: "signed".to_owned(),
             presence_sent: true,
             ready: true,
+            ..default()
         }
     }
 
     #[test]
     fn durable_session_json_round_trips_and_presence_reuses_it() {
-        let session = signed_session("stable-player-session");
+        let mut session = signed_session("stable-player-session");
+        session.nickname = "Mara".to_owned();
+        session.text_scale = 1.3;
         let selection = VillageSelection {
             selected_id: Some("my-village".to_owned()),
             join_required: false,
@@ -13920,13 +14997,15 @@ mod tests {
                 session_id: "stable-player-session".to_owned(),
                 sig: "signed".to_owned(),
                 selected_colony_id: Some("my-village".to_owned()),
+                nickname: "Mara".to_owned(),
+                text_scale: 1.3,
             })
         );
         assert_eq!(
             presence_action(&session),
             ClientAction::Presence {
                 session_id: "stable-player-session".to_owned(),
-                nickname: CLIENT_ACTOR_LABEL.to_owned(),
+                nickname: "Mara".to_owned(),
                 sig: Some("signed".to_owned()),
             }
         );
@@ -13934,7 +15013,7 @@ mod tests {
             presence_action(&Session::default()),
             ClientAction::Presence {
                 session_id: "desktop".to_owned(),
-                nickname: CLIENT_ACTOR_LABEL.to_owned(),
+                nickname: String::new(),
                 sig: None,
             }
         );
@@ -13945,8 +15024,48 @@ mod tests {
                 session_id: "legacy".to_owned(),
                 sig: "signed".to_owned(),
                 selected_colony_id: None,
+                nickname: String::new(),
+                text_scale: 1.0,
             }),
             "pre-selector bearer files remain valid"
+        );
+    }
+
+    #[test]
+    fn focused_start_input_has_a_visible_cursor() {
+        assert_eq!(
+            start_input_label("", "Name eingeben …", true),
+            "▌ Name eingeben …"
+        );
+        assert_eq!(start_input_label("Mara", "Name eingeben …", true), "Mara ▌");
+        assert_eq!(start_input_label("Mara", "Name eingeben …", false), "Mara");
+    }
+
+    #[test]
+    fn attributed_events_show_only_the_player_name() {
+        let event = EventSnapshot {
+            message: "Plan building".to_owned(),
+            timestamp: 1,
+            actor_name: Some("Mara".to_owned()),
+            kind: "player_action".to_owned(),
+        };
+        assert_eq!(attributed_event_message(&event), "Mara: Plan building");
+    }
+
+    #[test]
+    fn start_names_are_trimmed_bounded_and_require_visible_content() {
+        assert_eq!(
+            normalized_required_name("  Mara   Moos  ", "Name", PLAYER_NAME_MAX_CHARS),
+            Ok("Mara Moos".to_owned())
+        );
+        assert!(normalized_required_name("x", "Name", PLAYER_NAME_MAX_CHARS).is_err());
+        assert!(
+            normalized_required_name(
+                &"x".repeat(PLAYER_NAME_MAX_CHARS + 1),
+                "Name",
+                PLAYER_NAME_MAX_CHARS
+            )
+            .is_err()
         );
     }
 
@@ -13959,6 +15078,8 @@ mod tests {
                 session_id: "restored-session".to_owned(),
                 sig: "restored-signature".to_owned(),
                 selected_colony_id: Some("restored-village".to_owned()),
+                nickname: "Mara".to_owned(),
+                text_scale: 1.15,
             }),
             &mut session,
             &mut selection,
@@ -13966,6 +15087,8 @@ mod tests {
 
         assert_eq!(session.session_id, "restored-session");
         assert_eq!(session.sig, "restored-signature");
+        assert_eq!(session.nickname, "Mara");
+        assert_eq!(session.text_scale, 1.15);
         assert_eq!(selection.selected_id.as_deref(), Some("restored-village"));
         assert!(selection.join_required);
     }
@@ -14005,6 +15128,8 @@ mod tests {
                 session_id: "native-session".to_owned(),
                 sig: "signed".to_owned(),
                 selected_colony_id: Some("remembered-village".to_owned()),
+                nickname: String::new(),
+                text_scale: 1.0,
             })
         );
     }
@@ -14024,6 +15149,8 @@ mod tests {
             session_id: "original-session".to_owned(),
             sig: "original-signature".to_owned(),
             selected_colony_id: Some("original-village".to_owned()),
+            nickname: String::new(),
+            text_scale: 1.0,
         };
         let raw = serde_json::json!({
             "sessionId": original.session_id.clone(),
@@ -14067,7 +15194,7 @@ mod tests {
             village_trade_proposal_action("reed-rest", &draft, &session),
             Some(ClientAction::OfferVillageTrade {
                 session_id: "trade-session".to_owned(),
-                nickname: CLIENT_ACTOR_LABEL.to_owned(),
+                nickname: session.nickname().to_owned(),
                 sig: "signed".to_owned(),
                 target_colony_id: "reed-rest".to_owned(),
                 offered_kind: ResourceKind::Water,
@@ -14080,7 +15207,7 @@ mod tests {
             village_trade_reply_action("offer-1", true, &session),
             ClientAction::AcceptVillageTrade {
                 session_id: "trade-session".to_owned(),
-                nickname: CLIENT_ACTOR_LABEL.to_owned(),
+                nickname: session.nickname().to_owned(),
                 sig: "signed".to_owned(),
                 offer_id: "offer-1".to_owned(),
             }
@@ -14204,6 +15331,7 @@ mod tests {
         snapshot.colonies[1].claimed_tiles =
             vec![TilePoint { x: -14, y: -20 }, TilePoint { x: -12, y: -20 }];
         snapshot.colonies[1].agricultural_tiles = vec![TilePoint { x: -12, y: -20 }];
+        snapshot.colonies[1].road_tiles = vec![TilePoint { x: -10, y: -20 }];
         let mut selection = VillageSelection {
             selected_id: Some("beta".to_owned()),
             join_required: false,
@@ -14225,6 +15353,10 @@ mod tests {
             -20,
             rock
         ));
+        assert!(
+            settlement.contains(&(-10, -20)),
+            "an exterior paved road must override generated water/biome art"
+        );
         assert!(!procedural_decoration_visible(
             anchor,
             Some(&settlement),
@@ -14523,16 +15655,19 @@ mod tests {
                 message: "Dawnpaw was born to the colony.".to_string(),
                 timestamp: 0,
                 kind: "birth".to_string(),
+                actor_name: None,
             },
             EventSnapshot {
                 message: "Two cats are expecting a litter.".to_string(),
                 timestamp: 0,
                 kind: "conception".to_string(),
+                actor_name: None,
             },
             EventSnapshot {
                 message: "Mossfur died of old age.".to_string(),
                 timestamp: 0,
                 kind: "death_old_age".to_string(),
+                actor_name: None,
             },
         ];
 
@@ -14629,7 +15764,7 @@ mod tests {
             labor_preference_action(&session, &cat, Labor::Process),
             Some(ClientAction::SetCatLaborPreference {
                 session_id: "labor-session".to_owned(),
-                nickname: CLIENT_ACTOR_LABEL.to_owned(),
+                nickname: session.nickname().to_owned(),
                 sig: "signed".to_owned(),
                 cat_id: "worker-7".to_owned(),
                 labor: Labor::Process,

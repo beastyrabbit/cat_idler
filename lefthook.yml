@@ -1,7 +1,7 @@
 # Git hooks for the Rust/Bevy game. The TypeScript web game was retired at the
 # P11 cutover (preserved on branch archive/web-game, tag web-final). Heavy Rust
-# steps (clippy, tests) live on pre-push to keep commits fast while Bevy is a
-# dependency.
+# steps (clippy, smoke tests) live on pre-push to keep commits fast while Bevy
+# is a dependency. Forgejo runs the complete suite in four remote shards.
 pre-commit:
   parallel: true
   commands:
@@ -18,6 +18,6 @@ pre-push:
     rust-clippy:
       glob: "*.rs"
       run: cargo clippy --workspace --all-targets -- -D warnings
-    rust-test:
+    rust-smoke:
       glob: "*.rs"
-      run: cargo nextest run --workspace
+      run: cargo nextest run --workspace --profile smoke
