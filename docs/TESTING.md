@@ -51,16 +51,22 @@ it or when diagnosing a failure that cannot be reproduced with a focused test.
 Every pushed commit triggers `.forgejo/workflows/quality.yaml`. Forgejo performs the exhaustive gate
 on the Kubernetes runner pool:
 
-- format and workspace Clippy run first;
+- format/workspace Clippy and the dependency-policy check form the first stage;
+- the test suite is compiled once into a Nextest archive only after both first-stage gates pass;
+- the four test shards download that same archive instead of compiling the Rust/Bevy workspace
+  four times; the browser build also waits for the first-stage gates;
 - the complete workspace Nextest inventory is divided into four deterministic hash partitions;
-- four `personal` runner jobs execute those partitions in parallel;
+- at most two `personal` runner jobs execute at once, with one test thread each, so the shared
+  Kubernetes nodes stay responsive even though the complete suite takes longer;
+- Cargo compilation is capped at two jobs per runner;
 - the four partitions must contain every test exactly once;
-- the browser/WASM build and dependency-policy check run as independent jobs.
+- the browser/WASM build remains a separate downstream job.
 
-The remote command used by shard `N` is:
+The archive build and the command used by shard `N` are:
 
 ```bash
-cargo nextest run --workspace --partition "hash:N/4"
+cargo nextest archive --workspace --archive-file target/nextest-archive.tar.zst
+cargo nextest run --archive-file target/nextest-archive.tar.zst --profile ci --partition "hash:N/4"
 ```
 
 The workflow, not the local smoke profile, is the release-quality source of truth. A change is not
@@ -73,7 +79,8 @@ fully verified until all four remote test shards and the other required Forgejo 
 3. Implement the change and rerun the focused test.
 4. Run the local smoke profile, formatting, and touched-crate Clippy.
 5. Commit and push.
-6. Let Forgejo run the complete suite in four parallel shards.
+6. Let Forgejo compile the test archive once, then run the complete suite in four low-concurrency
+   shards.
 7. If a shard fails, reproduce only the reported test locally; do not rerun the whole workspace.
 8. Push the fix and require a clean Forgejo run.
 

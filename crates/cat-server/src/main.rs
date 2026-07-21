@@ -1438,6 +1438,9 @@ fn action_authentication(action: &ClientAction) -> ActionAuthentication<'_> {
         | ClientAction::BuildRoad {
             session_id, sig, ..
         }
+        | ClientAction::BuildBridge {
+            session_id, sig, ..
+        }
         | ClientAction::DesignateRail {
             session_id, sig, ..
         }

@@ -218,6 +218,10 @@ pub struct ColonySnapshot {
     /// over these. Additive; empty/absent when none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub road_tiles: Vec<TilePoint>,
+    /// Completed one-tile bridges. Unlike roads, these retain the river terrain
+    /// below them and carry an explicit crossing axis for deterministic rendering.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bridge_tiles: Vec<BridgeSnapshot>,
     /// Constructed transport truth. Empty means the corresponding research is
     /// still only a blueprint and must not affect ordinary movement.
     #[serde(default)]
@@ -1653,6 +1657,23 @@ pub struct TilePoint {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum BridgeAxis {
+    Horizontal,
+    Vertical,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeSnapshot {
+    pub tile: TilePoint,
+    pub axis: BridgeAxis,
+    pub completed: bool,
+    /// Hands-on build progress in `[0, 1]`; completed bridges report `1`.
+    pub progress: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum TransportMode {
     Rail,
     Shipping,
@@ -1896,6 +1917,13 @@ pub enum ClientAction {
         sig: String,
         a: TilePoint,
         b: TilePoint,
+    },
+    /// Build a physical one-tile bridge across a narrow river crossing.
+    BuildBridge {
+        session_id: String,
+        nickname: String,
+        sig: String,
+        at: TilePoint,
     },
     /// Designate a cardinal, revealed land alignment. A living builder must
     /// carry exact Metal to every tile before it becomes track.
@@ -3153,6 +3181,7 @@ mod tests {
                 revealed_tiles: vec![TilePoint { x: 6, y: 6 }],
                 provisional_tiles: vec![],
                 road_tiles: vec![],
+                bridge_tiles: vec![],
                 transport: TransportSnapshot::default(),
                 stump_tiles: vec![],
                 sapling_tiles: vec![],
@@ -4227,6 +4256,37 @@ mod tests {
         assert_eq!(
             serde_json::from_value::<TransportSnapshot>(wire).unwrap(),
             snapshot
+        );
+    }
+
+    #[test]
+    fn bridge_action_and_progress_snapshot_round_trip_with_typed_axis() {
+        let action = ClientAction::BuildBridge {
+            session_id: "session".to_owned(),
+            nickname: "Mason".to_owned(),
+            sig: "signed".to_owned(),
+            at: TilePoint { x: 4, y: 9 },
+        };
+        let wire = serde_json::to_value(&action).unwrap();
+        assert_eq!(wire["action"], json!("buildBridge"));
+        assert_eq!(wire["at"], json!({ "x": 4, "y": 9 }));
+        assert_eq!(
+            serde_json::from_value::<ClientAction>(wire).unwrap(),
+            action
+        );
+
+        let bridge = BridgeSnapshot {
+            tile: TilePoint { x: 4, y: 9 },
+            axis: BridgeAxis::Vertical,
+            completed: false,
+            progress: 0.5,
+        };
+        let wire = serde_json::to_value(bridge).unwrap();
+        assert_eq!(wire["axis"], json!("vertical"));
+        assert_eq!(wire["progress"], json!(0.5));
+        assert_eq!(
+            serde_json::from_value::<BridgeSnapshot>(wire).unwrap(),
+            bridge
         );
     }
 }

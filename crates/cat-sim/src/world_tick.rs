@@ -1065,11 +1065,41 @@ impl SpatialPlacementError {
     }
 }
 
+const BRIDGE_HORIZONTAL_OVERLAY: &str = "bridge_built_h";
+const BRIDGE_VERTICAL_OVERLAY: &str = "bridge_built_v";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BridgeAxis {
+    Horizontal,
+    Vertical,
+}
+
+#[must_use]
+pub(crate) fn bridge_axis_from_overlay(overlay: Option<&str>) -> Option<BridgeAxis> {
+    match overlay {
+        Some(BRIDGE_HORIZONTAL_OVERLAY) => Some(BridgeAxis::Horizontal),
+        Some(BRIDGE_VERTICAL_OVERLAY) => Some(BridgeAxis::Vertical),
+        _ => None,
+    }
+}
+
+fn bridge_overlay(axis: BridgeAxis) -> &'static str {
+    match axis {
+        BridgeAxis::Horizontal => BRIDGE_HORIZONTAL_OVERLAY,
+        BridgeAxis::Vertical => BRIDGE_VERTICAL_OVERLAY,
+    }
+}
+
+fn tile_has_authored_road(tile: &WorldTileRuntime) -> bool {
+    tile.overlay_feature.as_deref() == Some("road_built")
+        || bridge_axis_from_overlay(tile.overlay_feature.as_deref()).is_some()
+}
+
 fn tile_has_paved_road(colony: &ColonyRuntime, tile: TilePos) -> bool {
     colony
         .world_tiles
         .get(&tile)
-        .is_some_and(|tile| tile.overlay_feature.as_deref() == Some("road_built"))
+        .is_some_and(tile_has_authored_road)
 }
 
 fn runtime_decoration_cleared(tile: &WorldTileRuntime) -> bool {
@@ -1406,9 +1436,7 @@ impl SpatialOccupancyContext {
         let paved_road_tiles = colony
             .world_tiles
             .iter()
-            .filter_map(|(&pos, tile)| {
-                (tile.overlay_feature.as_deref() == Some("road_built")).then_some(pos)
-            })
+            .filter_map(|(&pos, tile)| tile_has_authored_road(tile).then_some(pos))
             .collect();
         let reserved_road_tiles = colony
             .jobs
@@ -2438,6 +2466,8 @@ const FISHING_TOTAL_YIELD: f64 = 12.0;
 const FIBRE_FORAGE_YIELD: f64 = 1.0;
 const ROAD_MATERIALS_RESERVE: f64 = 30.0;
 const ROAD_MAX_PAVE_PER_BATCH: i32 = 6;
+const BRIDGE_MIN_SAVED_STEPS: usize = 8;
+const BRIDGE_CANDIDATE_LIMIT: usize = 12;
 /// P14.4: bounds the accessibility router's BFS so a pathological map (or a
 /// building stranded with no reachable network) can't spin the tick forever.
 /// Generous relative to any realistic village span.
@@ -4334,8 +4364,8 @@ fn merge_legacy_world_tile(current: &mut WorldTileRuntime, candidate: &WorldTile
     current.resources.gem = current.resources.gem.min(candidate.resources.gem);
     current.resources.clay = current.resources.clay.min(candidate.resources.clay);
     current.resources.sand = current.resources.sand.min(candidate.resources.sand);
-    let candidate_wins_overlay = candidate.overlay_feature.as_deref() == Some("road_built")
-        || (current.overlay_feature.as_deref() != Some("road_built")
+    let candidate_wins_overlay = tile_has_authored_road(candidate)
+        || (!tile_has_authored_road(current)
             && candidate.last_depleted >= current.last_depleted
             && candidate.overlay_feature.is_some());
     if candidate_wins_overlay {
@@ -4519,6 +4549,7 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
         phase_34_movement_travel_job_acceptance_reveal_path_wear(colony, gate, &movement);
         phase_steward_stockpile_logistics(colony, gate, world_seed);
         phase_p16_gather_spot_logistics(colony, gate, world_seed);
+        phase_35_bridge_crossings(colony, gate, world_seed);
         phase_35_deliberate_roads(colony, gate, world_seed);
         phase_35b_road_accessibility(colony, gate, world_seed);
         if let Some(reset_reason) = phase_36_threat_and_raid_director(colony, gate) {
@@ -5338,7 +5369,7 @@ fn phase_11_path_wear_decay(colony: &mut ColonyRuntime, gate: TickGate) {
     }
 
     for tile in colony.world_tiles.values_mut() {
-        if tile.path_wear == 0 || tile.overlay_feature.as_deref() == Some("road_built") {
+        if tile.path_wear == 0 || tile_has_authored_road(tile) {
             continue;
         }
 
@@ -7423,6 +7454,8 @@ fn phase_15c_physical_road_work(colony: &mut ColonyRuntime, gate: TickGate) {
         };
         let target = tile_pos_to_world(target_tile);
         let tile_work_ms = colony.jobs[job_index].duration_ms.max(1_000);
+        let bridge_axis = tile_has_water(colony.world_tiles.get(&target_tile))
+            .then(|| active_bridge_axis(colony, target_tile));
 
         if let Some(carrying) = colony.cats[cat_index].carrying.clone()
             && let Some((cargo_job_id, _source_id)) =
@@ -7449,10 +7482,13 @@ fn phase_15c_physical_road_work(colony: &mut ColonyRuntime, gate: TickGate) {
                 continue;
             }
 
-            let already_paved = colony
-                .world_tiles
-                .get(&target_tile)
-                .is_some_and(|tile| tile.overlay_feature.as_deref() == Some("road_built"));
+            let already_paved = colony.world_tiles.get(&target_tile).is_some_and(|tile| {
+                if bridge_axis.is_some() {
+                    bridge_axis_from_overlay(tile.overlay_feature.as_deref()).is_some()
+                } else {
+                    tile_has_authored_road(tile)
+                }
+            });
             if already_paved {
                 // Another route may have paved this tile after pickup. The carried
                 // unit remains physical wealth: restore its source slot, or expose a
@@ -7460,7 +7496,8 @@ fn phase_15c_physical_road_work(colony: &mut ColonyRuntime, gate: TickGate) {
                 let salvaged = salvage_road_cargo(colony, &carrying, target);
                 debug_assert!(salvaged, "matched road cargo remains salvageable");
             } else if let Some(tile) = colony.world_tiles.get_mut(&target_tile) {
-                tile.overlay_feature = Some("road_built".to_owned());
+                tile.overlay_feature =
+                    Some(bridge_axis.map_or("road_built", bridge_overlay).to_owned());
                 tile.path_wear = 100;
                 stockpiles::add_resource(
                     &mut colony.resources,
@@ -7471,10 +7508,17 @@ fn phase_15c_physical_road_work(colony: &mut ColonyRuntime, gate: TickGate) {
                     colony,
                     gate.processed_through,
                     EventKind::RoadBuilt,
-                    format!(
-                        "A builder paved road tile ({}, {}).",
-                        target_tile.x, target_tile.y
-                    ),
+                    if bridge_axis.is_some() {
+                        format!(
+                            "A builder completed a bridge at ({}, {}).",
+                            target_tile.x, target_tile.y
+                        )
+                    } else {
+                        format!(
+                            "A builder paved road tile ({}, {}).",
+                            target_tile.x, target_tile.y
+                        )
+                    },
                 );
             }
             colony.cats[cat_index].carrying = None;
@@ -14254,7 +14298,7 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
                 });
                 let road = colony.world_tiles.get(&tile_pos).map_or(1.0, |tile| {
                     road_surface_multiplier(
-                        tile.overlay_feature.as_deref() == Some("road_built"),
+                        tile_has_authored_road(tile),
                         tile_forms_dirt_road(tile),
                         tile.path_wear,
                     )
@@ -14324,7 +14368,7 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
                     });
                     let road = colony.world_tiles.get(&tile_pos).map_or(1.0, |tile| {
                         road_surface_multiplier(
-                            tile.overlay_feature.as_deref() == Some("road_built"),
+                            tile_has_authored_road(tile),
                             tile_forms_dirt_road(tile),
                             tile.path_wear,
                         )
@@ -15103,6 +15147,129 @@ fn dispatch_gather_haul_movers(colony: &mut ColonyRuntime, now_ms: i64) {
     }
 }
 
+fn bridge_detour_justifies(path_steps: Option<usize>) -> bool {
+    path_steps.is_none_or(|steps| steps >= 2 + BRIDGE_MIN_SAVED_STEPS)
+}
+
+/// Phase 35: a staffed Steward may commission one narrow crossing when traffic
+/// has reached a bank and walking around the river costs materially more than the
+/// two-step bridge route. The ordinary physical road job then owns pickup, travel,
+/// work, persistence, and worker replacement.
+fn phase_35_bridge_crossings(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u32) {
+    if !gate.minute_rolled
+        || !has_officer(colony, OfficerRole::Steward)
+        || construction_spendable_resource(colony, ResourceKind::Materials)
+            <= ROAD_MATERIALS_RESERVE
+        || colony.jobs.iter().any(|job| {
+            job.kind == JobKind::BuildRoad
+                && matches!(job.status, JobStatus::Queued | JobStatus::Active)
+        })
+    {
+        return;
+    }
+
+    let mut candidates = colony
+        .world_tiles
+        .values()
+        .filter(|tile| colony.revealed_tiles.contains(&tile.pos) && tile_has_water(Some(tile)))
+        .filter(|tile| bridge_axis_from_overlay(tile.overlay_feature.as_deref()).is_none())
+        .filter_map(|tile| {
+            let axis = active_bridge_axis(colony, tile.pos);
+            let banks = bridge_banks(tile.pos, axis);
+            let traffic_reached_bank = [banks.0, banks.1].into_iter().any(|bank| {
+                colony.world_tiles.get(&bank).is_some_and(|tile| {
+                    tile_has_authored_road(tile)
+                        || tile.path_wear >= crate::movement::WORN_ROAD_WEAR
+                })
+            });
+            traffic_reached_bank.then_some(tile.pos)
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by_key(|tile| {
+        (
+            tile.x.abs_diff(colony.anchor.x) + tile.y.abs_diff(colony.anchor.y),
+            tile.y,
+            tile.x,
+        )
+    });
+    candidates.truncate(BRIDGE_CANDIDATE_LIMIT);
+    if candidates.is_empty() {
+        return;
+    }
+
+    let walk_tiles = colony
+        .world_tiles
+        .values()
+        .map(walk_tile_from_runtime)
+        .collect::<Vec<_>>();
+    let grid = build_colony_walk_grid(ColonyGridParams {
+        tiles: &walk_tiles,
+        anchor: PathTilePos {
+            x: colony.anchor.x,
+            y: colony.anchor.y,
+        },
+        ring_radius: 10_000,
+        gate: PathTilePos {
+            x: colony.anchor.x,
+            y: colony.anchor.y,
+        },
+        area: None,
+        area_gate: None,
+        extra_fence_edges: None,
+        terrain: None,
+        mountains_unlocked: resolve_effects(colony.upgrade_tree.owned_node_ids.iter())
+            .unlocked_capabilities
+            .contains("mountain_travel"),
+        shipping_researched: is_owned(&colony.upgrade_tree, "shipping"),
+        soft_obstacles: None,
+        soft_obstacle_field: None,
+        surface_factors: None,
+    });
+    let crossing = candidates.into_iter().find(|&tile| {
+        let Ok(axis) = bridge_placement_axis(colony, tile, world_seed) else {
+            return false;
+        };
+        let (from, to) = bridge_banks(tile, axis);
+        let path_steps = find_path(
+            pathfinding_pos(tile_pos_to_world(from)),
+            pathfinding_pos(tile_pos_to_world(to)),
+            &grid,
+            FindPathOptions {
+                max_expansions: 4_096,
+                margin: 32,
+            },
+        )
+        .map(|path| path.len().saturating_sub(1));
+        bridge_detour_justifies(path_steps)
+    });
+    let Some(tile) = crossing else {
+        return;
+    };
+    let Some(reservations) = road_material_reservations(colony, &[tile]) else {
+        return;
+    };
+    let Some(builder) = select_best_cat_for_labor(
+        colony,
+        Some(CatSpecialization::Architect),
+        Some(Labor::Build),
+    ) else {
+        return;
+    };
+    queue_job_requested_by(
+        colony,
+        gate.processed_through,
+        JobKind::BuildRoad,
+        JobRequester::Leader,
+        Some(builder),
+        JobMetadata::RoadConstruction {
+            tiles: vec![tile],
+            next_tile: 0,
+            reservations,
+            work_ms: 0,
+        },
+    );
+}
+
 /// Phase 35: let a staffed Steward designate one worn corridor at a time. The
 /// ordinary physical road job owns all pickup, travel, work, debit, and recovery.
 fn phase_35_deliberate_roads(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u32) {
@@ -15292,6 +15459,120 @@ pub fn road_placement_error(
     world_seed: u32,
 ) -> Option<SpatialPlacementError> {
     SpatialOccupancyContext::new(colony, world_seed).road_placement_error(tile)
+}
+
+/// Resolve the only legal crossing axis for a one-cell bridge. The selected tile
+/// must be revealed water with two opposite, walkable banks. Existing structures
+/// and queued road/bridge work reserve the water cell atomically.
+pub(crate) fn bridge_placement_axis(
+    colony: &ColonyRuntime,
+    tile: TilePos,
+    world_seed: u32,
+) -> Result<BridgeAxis, &'static str> {
+    if !tile_coordinates_supported(tile)
+        || !colony.revealed_tiles.contains(&tile)
+        || !colony.world_tiles.contains_key(&tile)
+    {
+        return Err("Bridges must be built on mapped, revealed terrain.");
+    }
+    let occupancy = SpatialOccupancyContext::new(colony, world_seed);
+    if occupancy.paved_road_tiles.contains(&tile) {
+        return Err("That crossing already has a bridge.");
+    }
+    if occupancy.reserved_road_tiles.contains(&tile) {
+        return Err("That crossing already has construction work in progress.");
+    }
+    if !occupancy.water_tiles.contains(&tile) {
+        return Err("Bridges can only be built on water.");
+    }
+    if occupancy.building_tiles.contains(&tile)
+        || occupancy.has_road_blocking_stockpile(tile)
+        || occupancy.has_farm(tile)
+        || occupancy.growing_tree_tiles.contains(&tile)
+        || occupancy.has_uncleared_tree(tile)
+        || occupancy.has_uncleared_rock(tile)
+        || occupancy.is_perimeter(tile)
+    {
+        return Err("The bridge site is obstructed.");
+    }
+
+    bridge_axis_across_banks(colony, tile, &occupancy)
+        .ok_or("A bridge needs walkable banks on two opposite sides.")
+}
+
+fn bridge_axis_across_banks(
+    colony: &ColonyRuntime,
+    tile: TilePos,
+    occupancy: &SpatialOccupancyContext,
+) -> Option<BridgeAxis> {
+    let bank_is_walkable = |bank: TilePos| {
+        colony.revealed_tiles.contains(&bank) && occupancy.road_placement_error(bank).is_none()
+    };
+    let west = TilePos {
+        x: tile.x - 1,
+        y: tile.y,
+    };
+    let east = TilePos {
+        x: tile.x + 1,
+        y: tile.y,
+    };
+    let north = TilePos {
+        x: tile.x,
+        y: tile.y - 1,
+    };
+    let south = TilePos {
+        x: tile.x,
+        y: tile.y + 1,
+    };
+    let horizontal = bank_is_walkable(west) && bank_is_walkable(east);
+    let vertical = bank_is_walkable(north) && bank_is_walkable(south);
+    match (horizontal, vertical) {
+        (true, false) => Some(BridgeAxis::Horizontal),
+        (false, true) => Some(BridgeAxis::Vertical),
+        // An isolated single water cell has both valid axes. Keep its result stable
+        // without asking the click-only tool for a second input.
+        (true, true) => Some(BridgeAxis::Horizontal),
+        (false, false) => None,
+    }
+}
+
+pub(crate) fn active_bridge_axis(colony: &ColonyRuntime, tile: TilePos) -> BridgeAxis {
+    let is_land = |x, y| {
+        colony
+            .world_tiles
+            .get(&TilePos { x, y })
+            .is_some_and(|bank| !tile_has_water(Some(bank)))
+    };
+    if is_land(tile.x - 1, tile.y) && is_land(tile.x + 1, tile.y) {
+        BridgeAxis::Horizontal
+    } else {
+        BridgeAxis::Vertical
+    }
+}
+
+fn bridge_banks(tile: TilePos, axis: BridgeAxis) -> (TilePos, TilePos) {
+    match axis {
+        BridgeAxis::Horizontal => (
+            TilePos {
+                x: tile.x - 1,
+                y: tile.y,
+            },
+            TilePos {
+                x: tile.x + 1,
+                y: tile.y,
+            },
+        ),
+        BridgeAxis::Vertical => (
+            TilePos {
+                x: tile.x,
+                y: tile.y - 1,
+            },
+            TilePos {
+                x: tile.x,
+                y: tile.y + 1,
+            },
+        ),
+    }
 }
 
 /// A freshly-generated ground tile for a newly claimed or otherwise explicitly
@@ -19969,6 +20250,7 @@ fn walk_overlay_feature(overlay: &str) -> WalkOverlayFeature {
     match overlay {
         "river" => WalkOverlayFeature::River,
         "road_built" => WalkOverlayFeature::RoadBuilt,
+        "bridge_built_h" | "bridge_built_v" => WalkOverlayFeature::BridgeBuilt,
         "game_trail" => WalkOverlayFeature::GameTrail,
         "ancient_road" => WalkOverlayFeature::AncientRoad,
         "trade_route" => WalkOverlayFeature::TradeRoute,
@@ -21169,7 +21451,13 @@ fn logging_scan_inputs(colony: &ColonyRuntime) -> (BTreeSet<TilePos>, BTreeSet<(
                 // slot, so later road work may replace the visible stump marker.
                 && !matches!(
                     tile.overlay_feature.as_deref(),
-                    Some("stump" | "sapling" | "road_built")
+                    Some(
+                        "stump"
+                            | "sapling"
+                            | "road_built"
+                            | "bridge_built_h"
+                            | "bridge_built_v"
+                    )
                 )
         })
         .map(|tile| tile.pos)
@@ -21543,10 +21831,13 @@ fn release_raw_material_workshop_workers(colony: &mut ColonyRuntime) {
             && !committed_physical_route
         {
             while colony.buildings[index].automated_by == Some(OfficerRole::Forester) {
-                let cat_id = colony.buildings[index]
-                    .assigned_cat
-                    .clone()
-                    .expect("automated slot has worker");
+                let Some(cat_id) = colony.buildings[index].assigned_cat.clone() else {
+                    // A dead or otherwise pruned worker can leave legacy automation
+                    // provenance behind for one phase. Clear that stale marker instead
+                    // of treating the already-vacant slot as an impossible state.
+                    colony.buildings[index].automated_by = None;
+                    break;
+                };
                 colony.buildings[index].remove_worker(&cat_id);
             }
             for slot in &mut colony.buildings[index].additional_work_slots {
@@ -31824,6 +32115,172 @@ mod tests {
         );
         assert_eq!(colony.jobs[0].status, JobStatus::Completed);
         assert!(colony.cats[0].skill(Labor::Build) > 0.0);
+    }
+
+    #[test]
+    fn physical_bridge_keeps_water_and_becomes_a_horizontal_crossing_after_work() {
+        let (mut colony, target) = physical_road_fixture();
+        let water = colony.world_tiles.get_mut(&target).unwrap();
+        water.tile_type = TileType::River;
+        water.resources.water = 100;
+        water.overlay_feature = Some("river".to_owned());
+        colony.world_tiles.insert(
+            pos(target.x - 1, target.y),
+            tile(target.x - 1, target.y, 0, None),
+        );
+        colony.world_tiles.insert(
+            pos(target.x + 1, target.y),
+            tile(target.x + 1, target.y, 0, None),
+        );
+
+        phase_15c_physical_road_work(&mut colony, production_gate(1, 1_000));
+        assert_eq!(colony.stockpiles[0].contents.materials, 0.0);
+        assert_eq!(
+            colony.world_tiles[&target].overlay_feature.as_deref(),
+            Some("river")
+        );
+
+        colony.cats[0].position = position_from_world(tile_pos_to_world(target));
+        phase_15c_physical_road_work(&mut colony, production_gate(60, 61_000));
+
+        assert_eq!(colony.world_tiles[&target].tile_type, TileType::River);
+        assert_eq!(colony.world_tiles[&target].resources.water, 100);
+        assert_eq!(
+            colony.world_tiles[&target].overlay_feature.as_deref(),
+            Some(BRIDGE_HORIZONTAL_OVERLAY)
+        );
+        assert_eq!(colony.resources.materials, 0.0);
+    }
+
+    #[test]
+    fn bridge_director_threshold_requires_eight_saved_steps() {
+        assert!(!bridge_detour_justifies(Some(9)));
+        assert!(bridge_detour_justifies(Some(10)));
+        assert!(bridge_detour_justifies(None));
+    }
+
+    #[test]
+    fn bridge_placement_accepts_one_water_tile_and_rejects_land_or_a_missing_bank() {
+        let anchor = pos(6, 6);
+        let crossing = pos(anchor.x + 1, anchor.y);
+        let mut water = tile(crossing.x, crossing.y, 0, Some("river"));
+        water.tile_type = TileType::River;
+        water.resources.water = 100;
+        let mut west = tile(crossing.x - 1, crossing.y, 0, None);
+        west.last_depleted = 1;
+        let mut east = tile(crossing.x + 1, crossing.y, 0, None);
+        east.last_depleted = 1;
+        let mut colony = ColonyRuntime {
+            anchor,
+            world_tiles: BTreeMap::from([(crossing, water), (west.pos, west), (east.pos, east)]),
+            ..ColonyRuntime::default()
+        };
+        colony.revealed_tiles.extend([
+            crossing,
+            pos(crossing.x - 1, crossing.y),
+            pos(crossing.x + 1, crossing.y),
+        ]);
+
+        assert_eq!(
+            bridge_placement_axis(&colony, crossing, 1),
+            Ok(BridgeAxis::Horizontal)
+        );
+        colony.world_tiles.get_mut(&crossing).unwrap().tile_type = TileType::Meadow;
+        colony
+            .world_tiles
+            .get_mut(&crossing)
+            .unwrap()
+            .resources
+            .water = 0;
+        colony
+            .world_tiles
+            .get_mut(&crossing)
+            .unwrap()
+            .overlay_feature = None;
+        assert_eq!(
+            bridge_placement_axis(&colony, crossing, 1),
+            Err("Bridges can only be built on water.")
+        );
+        let water = colony.world_tiles.get_mut(&crossing).unwrap();
+        water.tile_type = TileType::River;
+        water.resources.water = 100;
+        water.overlay_feature = Some("river".to_owned());
+        colony.world_tiles.remove(&pos(crossing.x + 1, crossing.y));
+        assert_eq!(
+            bridge_placement_axis(&colony, crossing, 1),
+            Err("A bridge needs walkable banks on two opposite sides.")
+        );
+    }
+
+    #[test]
+    fn staffed_steward_commissions_a_high_value_revealed_crossing() {
+        let anchor = pos(6, 6);
+        let crossing = pos(anchor.x + 1, anchor.y);
+        let mut world_tiles = BTreeMap::new();
+        for y in (anchor.y - 40)..=(anchor.y + 40) {
+            let mut water = tile(crossing.x, y, 0, Some("river"));
+            water.tile_type = TileType::River;
+            water.resources.water = 100;
+            world_tiles.insert(water.pos, water);
+        }
+        let mut west_bank = tile(crossing.x - 1, crossing.y, 100, None);
+        west_bank.last_depleted = 1;
+        let mut east_bank = tile(crossing.x + 1, crossing.y, 0, None);
+        east_bank.last_depleted = 1;
+        world_tiles.insert(west_bank.pos, west_bank);
+        world_tiles.insert(east_bank.pos, east_bank);
+        let mut colony = ColonyRuntime {
+            id: "bridge-colony".to_owned(),
+            anchor,
+            cats: vec![adult_idle_cat("steward", "bridge-colony")],
+            resources: Resources {
+                materials: ROAD_MATERIALS_RESERVE + 1.0,
+                ..Resources::default()
+            },
+            stockpiles: vec![Stockpile {
+                id: "bridge-materials".to_owned(),
+                rect: ZoneRect {
+                    x1: anchor.x - 2,
+                    y1: anchor.y,
+                    x2: anchor.x - 2,
+                    y2: anchor.y,
+                },
+                accepts: [ResourceKind::Materials].into_iter().collect(),
+                contents: Resources {
+                    materials: ROAD_MATERIALS_RESERVE + 1.0,
+                    ..Resources::default()
+                },
+            }],
+            world_tiles,
+            ..ColonyRuntime::default()
+        };
+        colony
+            .officers
+            .insert(OfficerRole::Steward, "steward".to_owned());
+        colony.revealed_tiles.extend([
+            crossing,
+            pos(crossing.x - 1, crossing.y),
+            pos(crossing.x + 1, crossing.y),
+        ]);
+
+        phase_35_bridge_crossings(
+            &mut colony,
+            TickGate {
+                elapsed_sec: 60,
+                processed_through: 60_000,
+                minute_rolled: true,
+                previous_water: 0,
+            },
+            1,
+        );
+
+        assert!(colony.jobs.iter().any(|job| {
+            job.requested_by == JobRequester::Leader
+                && matches!(
+                    &job.metadata,
+                    JobMetadata::RoadConstruction { tiles, .. } if tiles == &[crossing]
+                )
+        }));
     }
 
     #[test]
@@ -53614,6 +54071,10 @@ mod tests {
         shared
             .colonies
             .push(found_colony_at(world_seed, "beta", start, 4321, site));
+        let beta_only_knowledge = TilePos { x: 900, y: 900 };
+        shared.colonies[1]
+            .revealed_tiles
+            .insert(beta_only_knowledge);
 
         for step in 1..=120 {
             let now = start + i64::from(step) * 60_000;
@@ -53627,8 +54088,16 @@ mod tests {
         assert_eq!(solo_zero.anchor, shared_zero.anchor);
         assert_eq!(solo_zero.claimed_tiles, shared_zero.claimed_tiles);
         assert_eq!(solo_zero.agricultural_tiles, shared_zero.agricultural_tiles);
-        assert_eq!(solo_zero.revealed_tiles, shared_zero.revealed_tiles);
-        assert_eq!(solo_zero.provisional_tiles, shared_zero.provisional_tiles);
+        // Shared mutable ecology may legitimately alter each colony's chosen routes,
+        // and ordinary cats now reveal a permanent 3x3 halo along those routes. Exact
+        // reveal-set equality with a solo world therefore no longer proves isolation.
+        // A tile known only to beta must instead remain absent from colony zero.
+        assert!(
+            shared.colonies[1]
+                .revealed_tiles
+                .contains(&beta_only_knowledge)
+        );
+        assert!(!shared_zero.revealed_tiles.contains(&beta_only_knowledge));
         assert_eq!(solo_zero.known_village_ids, shared_zero.known_village_ids);
         for pos in solo_zero.world_tiles.keys() {
             assert_eq!(

@@ -35,14 +35,14 @@ use bevy::window::CustomCursorImage;
 use bevy::window::CustomCursorUrl;
 use bevy::window::{CursorIcon, CustomCursor, PrimaryWindow};
 use cat_protocol::{
-    ActionResult, BuildingSnapshot, BuildingType, CarryingKind, CatActivity, CatHousingStatus,
-    CatNeeds, CatSnapshot, ClientAction, ColonySnapshot, CropKind, EventSnapshot, FarmSnapshot,
-    FarmStage, FootprintSize, GateSide, GatherSpotPurpose, ItemInstanceSnapshot, ItemLocation,
-    ItemStackSnapshot, JobKind, Labor, OfferingResource, OfficerRole, PROTOCOL_VERSION,
-    ProductionQueueEdit, QueueMoveDirection, RaiderStatus, ResourceAmounts, ResourceCapacities,
-    ResourceKind, ResourceStackSnapshot, RoleXp, ScoutMission, ScoutResource, Specialization,
-    StationCompartment, StockpileSnapshot, TilePoint, TraderBuyOffer, TraderSellOffer,
-    TraderSnapshot, TraderVisitState, TransportMode, VillageKind, VillageScale,
+    ActionResult, BridgeAxis, BuildingSnapshot, BuildingType, CarryingKind, CatActivity,
+    CatHousingStatus, CatNeeds, CatSnapshot, ClientAction, ColonySnapshot, CropKind, EventSnapshot,
+    FarmSnapshot, FarmStage, FootprintSize, GateSide, GatherSpotPurpose, ItemInstanceSnapshot,
+    ItemLocation, ItemStackSnapshot, JobKind, Labor, OfferingResource, OfficerRole,
+    PROTOCOL_VERSION, ProductionQueueEdit, QueueMoveDirection, RaiderStatus, ResourceAmounts,
+    ResourceCapacities, ResourceKind, ResourceStackSnapshot, RoleXp, ScoutMission, ScoutResource,
+    Specialization, StationCompartment, StockpileSnapshot, TilePoint, TraderBuyOffer,
+    TraderSellOffer, TraderSnapshot, TraderVisitState, TransportMode, VillageKind, VillageScale,
     VillageTradeCaravanPhase, WorldSnapshot, ZoneKind,
 };
 use cat_sim::climate::{Biome, ResourceHint};
@@ -948,6 +948,7 @@ enum ToolMode {
     GatherSpot,
     FishingSpot,
     Road,
+    Bridge,
     Building,
 }
 
@@ -992,7 +993,12 @@ impl DockCategory {
                 ToolMode::FishingSpot,
                 ToolMode::Farm,
             ],
-            Self::Build => &[ToolMode::Building, ToolMode::Stockpile, ToolMode::Road],
+            Self::Build => &[
+                ToolMode::Building,
+                ToolMode::Stockpile,
+                ToolMode::Road,
+                ToolMode::Bridge,
+            ],
             Self::Territory => &[ToolMode::AvoidZone],
             Self::Scout | Self::Village => &[],
         }
@@ -1037,6 +1043,7 @@ enum PaintKind {
     GatherSpot,
     FishingSpot,
     Road,
+    Bridge,
 }
 
 impl ToolMode {
@@ -1050,6 +1057,7 @@ impl ToolMode {
             Self::GatherSpot => "Gather spot",
             Self::FishingSpot => "Fishing spot",
             Self::Road => "Road",
+            Self::Bridge => "Bridge",
             Self::Building => "Building",
         }
     }
@@ -1065,6 +1073,7 @@ impl ToolMode {
             Self::GatherSpot => Some(PaintKind::GatherSpot),
             Self::FishingSpot => Some(PaintKind::FishingSpot),
             Self::Road => Some(PaintKind::Road),
+            Self::Bridge => Some(PaintKind::Bridge),
             Self::Building => None,
         }
     }
@@ -1359,6 +1368,7 @@ struct InfraArt {
     road_t: Handle<Image>,
     road_h: Handle<Image>,
     road_v: Handle<Image>,
+    bridge: Handle<Image>,
 }
 
 impl InfraArt {
@@ -1375,6 +1385,7 @@ impl InfraArt {
             road_t: assets.load("public/images/game/infra/road_t.png"),
             road_h: assets.load("public/images/game/infra/road_straight_h.png"),
             road_v: assets.load("public/images/game/infra/road_straight_v.png"),
+            bridge: assets.load("public/images/game/infra/bridge.png"),
         }
     }
 
@@ -7673,8 +7684,15 @@ fn render_roads(
     let stone_set: HashSet<(i32, i32)> = colony.road_tiles.iter().map(|t| (t.x, t.y)).collect();
     let dirt_set: HashSet<(i32, i32)> = colony.dirt_road_tiles.iter().map(|t| (t.x, t.y)).collect();
     let road_set: HashSet<(i32, i32)> = stone_set.union(&dirt_set).copied().collect();
+    let bridge_set = colony
+        .bridge_tiles
+        .iter()
+        .filter(|bridge| bridge.completed)
+        .map(|bridge| (bridge.tile.x, bridge.tile.y))
+        .collect::<HashSet<_>>();
+    let connected_set = road_set.union(&bridge_set).copied().collect::<HashSet<_>>();
     for &(x, y) in &road_set {
-        let visual = road_visual_at(&road_set, x, y);
+        let visual = road_visual_at(&connected_set, x, y);
         let p = grid_to_world(x, y);
         commands.spawn((
             Sprite {
@@ -7690,6 +7708,44 @@ fn render_roads(
             Transform::from_xyz(p.x, p.y, Z_ROAD).with_rotation(visual.rotation()),
             RoadTile,
         ));
+    }
+    for bridge in &colony.bridge_tiles {
+        let p = grid_to_world(bridge.tile.x, bridge.tile.y);
+        let rotation = match bridge.axis {
+            BridgeAxis::Horizontal => Quat::IDENTITY,
+            BridgeAxis::Vertical => Quat::from_rotation_z(std::f32::consts::FRAC_PI_2),
+        };
+        commands.spawn((
+            Sprite {
+                image: art.bridge.clone(),
+                custom_size: Some(Vec2::splat(TILE)),
+                color: if bridge.completed {
+                    Color::WHITE
+                } else {
+                    Color::srgba(0.78, 0.64, 0.46, 0.58)
+                },
+                ..default()
+            },
+            Transform::from_xyz(p.x, p.y, Z_ROAD + 0.04).with_rotation(rotation),
+            RoadTile,
+        ));
+        if !bridge.completed {
+            let width = TILE * 0.78;
+            let y = p.y - TILE * 0.36;
+            commands.spawn((
+                Sprite::from_color(Color::srgba(0.08, 0.06, 0.04, 0.9), Vec2::new(width, 1.4)),
+                Transform::from_xyz(p.x, y, Z_ROAD + 0.06),
+                RoadTile,
+            ));
+            let filled = width * bridge.progress.clamp(0.0, 1.0) as f32;
+            if filled > 0.0 {
+                commands.spawn((
+                    Sprite::from_color(Color::srgb(0.92, 0.72, 0.30), Vec2::new(filled, 1.0)),
+                    Transform::from_xyz(p.x - (width - filled) / 2.0, y, Z_ROAD + 0.07),
+                    RoadTile,
+                ));
+            }
+        }
     }
     let track_set = colony
         .transport
@@ -10896,7 +10952,11 @@ fn zone_paint(
     } else if buttons.just_released(MouseButton::Left)
         && let Some((start, end)) = tools.drag.take()
     {
-        let (min, max) = drag_tile_rect(start, end, ZONE_MAX_TILES);
+        let (min, max) = if kind == PaintKind::Bridge {
+            (start, start)
+        } else {
+            drag_tile_rect(start, end, ZONE_MAX_TILES)
+        };
         if !session.ready {
             warn!("session not ready; dropping paint action");
             return;
@@ -10953,6 +11013,12 @@ fn zone_paint(
                 sig: session.sig.clone(),
                 a,
                 b,
+            },
+            PaintKind::Bridge => ClientAction::BuildBridge {
+                session_id: session.session_id.clone(),
+                nickname: session.nickname().to_owned(),
+                sig: session.sig.clone(),
+                at: a,
             },
         });
     }
@@ -13002,6 +13068,7 @@ fn paint_preview_color(kind: PaintKind) -> Color {
         PaintKind::GatherSpot => Color::srgba(0.35, 0.70, 0.85, 0.45),
         PaintKind::FishingSpot => Color::srgba(0.20, 0.72, 0.90, 0.55),
         PaintKind::Road => Color::srgba(0.70, 0.68, 0.62, 0.55),
+        PaintKind::Bridge => Color::srgba(0.72, 0.46, 0.20, 0.62),
     }
 }
 
@@ -14715,6 +14782,7 @@ mod tests {
             ToolMode::GatherSpot,
             ToolMode::FishingSpot,
             ToolMode::Road,
+            ToolMode::Bridge,
             ToolMode::Building,
         ];
         assert_eq!(tools.len(), expected_tools.len());

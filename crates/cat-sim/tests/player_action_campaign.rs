@@ -33,12 +33,13 @@ use cat_sim::{
     zones::ZoneRect,
 };
 
-const EXPECTED_ACTIONS: [&str; 52] = [
+const EXPECTED_ACTIONS: [&str; 53] = [
     "advance_time",
     "assign_officer",
     "assign_worker",
     "boost",
     "boost_cat",
+    "build_bridge",
     "build_dock",
     "build_road",
     "build_transport_vehicle",
@@ -198,6 +199,7 @@ fn action_name(action: &proto::ClientAction) -> &'static str {
         proto::ClientAction::TrainWarrior { .. } => "train_warrior",
         proto::ClientAction::DefendRaid { .. } => "defend_raid",
         proto::ClientAction::BuildRoad { .. } => "build_road",
+        proto::ClientAction::BuildBridge { .. } => "build_bridge",
         proto::ClientAction::DesignateRail { .. } => "designate_rail",
         proto::ClientAction::BuildDock { .. } => "build_dock",
         proto::ClientAction::BuildTransportVehicle { .. } => "build_transport_vehicle",
@@ -1852,6 +1854,68 @@ fn run_action_campaign() -> WorldState {
         world.colonies[0].gather_spots.last().unwrap().purpose,
         cat_sim::stockpiles::GatherSpotPurpose::Fishing
     );
+
+    // Queue one physical bridge at a deterministic synthetic one-cell crossing.
+    let bridge_pos = TilePos {
+        x: water.x + 100,
+        y: water.y + 100,
+    };
+    let mut bridge_tile = world.colonies[0].world_tiles[&water].clone();
+    bridge_tile.pos = bridge_pos;
+    bridge_tile.tile_type = TileType::River;
+    bridge_tile.resources.water = 100;
+    // The synthetic crossing is explicitly cleared so procedural decoration at
+    // this far-away fixture coordinate cannot make campaign coverage seed-sensitive.
+    bridge_tile.overlay_feature = Some("stump".to_owned());
+    world.colonies[0]
+        .world_tiles
+        .insert(bridge_pos, bridge_tile.clone());
+    for bank in [
+        TilePos {
+            x: bridge_pos.x - 1,
+            y: bridge_pos.y,
+        },
+        TilePos {
+            x: bridge_pos.x + 1,
+            y: bridge_pos.y,
+        },
+    ] {
+        let mut bank_tile = bridge_tile.clone();
+        bank_tile.pos = bank;
+        bank_tile.tile_type = TileType::Meadow;
+        bank_tile.resources.water = 0;
+        bank_tile.overlay_feature = None;
+        bank_tile.last_depleted = 1;
+        world.colonies[0].world_tiles.insert(bank, bank_tile);
+        world.colonies[0].revealed_tiles.insert(bank);
+    }
+    world.colonies[0].revealed_tiles.insert(bridge_pos);
+    publish_colony_spatial(&mut world.shared_spatial, &world.colonies[0]);
+    world.colonies[0].resources.materials = 1_000.0;
+    reset_workers(&mut world);
+    let (session_id, nickname, sig) = signed_fields();
+    apply_ok(
+        &mut world,
+        &mut coverage,
+        proto::ClientAction::BuildBridge {
+            session_id,
+            nickname,
+            sig,
+            at: proto::TilePoint {
+                x: bridge_pos.x,
+                y: bridge_pos.y,
+            },
+        },
+        &ctx(7_800),
+    );
+    assert!(world.colonies[0].jobs.iter().any(|job| {
+        matches!(
+            &job.metadata,
+            cat_sim::world_tick::JobMetadata::RoadConstruction { tiles, .. }
+                if tiles == &[bridge_pos]
+        )
+    }));
+    reset_workers(&mut world);
 
     // Lay one observable road tile on a known non-water, unpaved world tile.
     let road_pos = world.colonies[0]

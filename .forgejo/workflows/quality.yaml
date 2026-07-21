@@ -15,6 +15,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_BUILD_JOBS: 2
 
 jobs:
   rust-quality:
@@ -58,15 +59,11 @@ jobs:
       - name: Deny Clippy warnings
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-  rust-tests:
-    name: Rust tests (shard ${{ matrix.shard }}/4)
-    needs: rust-quality
+  rust-test-build:
+    name: Build test archive once
+    needs: [rust-quality, supply-chain]
     runs-on: personal
     timeout-minutes: 90
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3, 4]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -103,11 +100,58 @@ jobs:
           curl -LsSf https://get.nexte.st/latest/linux \
             | tar zxf - -C "$HOME/.cargo/bin"
 
+      - name: Build workspace test archive
+        run: cargo nextest archive --workspace --archive-file target/nextest-archive.tar.zst
+
+      - name: Upload workspace test archive
+        uses: https://data.forgejo.org/forgejo/upload-artifact@v4
+        with:
+          name: workspace-nextest-archive
+          path: target/nextest-archive.tar.zst
+          retention-days: 1
+
+  rust-tests:
+    name: Rust tests (shard ${{ matrix.shard }}/4)
+    needs: rust-test-build
+    runs-on: personal
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install native runtime dependencies
+        run: |
+          set -euo pipefail
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates curl libssl3 libasound2 libudev1 libx11-6 libxcursor1 libxi6 \
+            libxrandr2 libwayland-client0 libxkbcommon0 libvulkan1
+
+      - name: Install cargo-nextest
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.cargo/bin"
+          curl -LsSf https://get.nexte.st/latest/linux \
+            | tar zxf - -C "$HOME/.cargo/bin"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Download workspace test archive
+        uses: https://data.forgejo.org/forgejo/download-artifact@v4
+        with:
+          name: workspace-nextest-archive
+          path: target
+
       - name: Run workspace test shard
-        run: cargo nextest run --workspace --partition "hash:${{ matrix.shard }}/4"
+        run: cargo nextest run --archive-file target/nextest-archive.tar.zst --profile ci --partition "hash:${{ matrix.shard }}/4"
 
   wasm:
     name: Build browser client
+    needs: [rust-quality, supply-chain]
     runs-on: personal
     timeout-minutes: 90
     steps:

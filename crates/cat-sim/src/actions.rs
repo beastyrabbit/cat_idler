@@ -197,6 +197,12 @@ pub fn apply_action(
                 build_road(colony, *a, *b, world_seed, ctx)
             })
         }
+        proto::ClientAction::BuildBridge { at, .. } => {
+            let world_seed = world.world_seed;
+            with_colony(world, ctx, |colony| {
+                build_bridge(colony, *at, world_seed, ctx)
+            })
+        }
         proto::ClientAction::DesignateRail { a, b, cat_id, .. } => {
             let world_seed = world.world_seed;
             with_colony(world, ctx, |colony| {
@@ -2777,11 +2783,11 @@ fn build_road(
     let new_tiles = path
         .iter()
         .filter(|&&pos| {
-            colony
-                .world_tiles
-                .get(&pos)
-                .is_some_and(|tile| tile.overlay_feature.as_deref() != Some("road_built"))
-                && !crate::world_tick::tile_is_shrine_footprint(colony, pos)
+            colony.world_tiles.get(&pos).is_some_and(|tile| {
+                tile.overlay_feature.as_deref() != Some("road_built")
+                    && crate::world_tick::bridge_axis_from_overlay(tile.overlay_feature.as_deref())
+                        .is_none()
+            }) && !crate::world_tick::tile_is_shrine_footprint(colony, pos)
         })
         .copied()
         .collect::<Vec<_>>();
@@ -2819,6 +2825,49 @@ fn build_road(
         Some(builder),
         JobMetadata::RoadConstruction {
             tiles: new_tiles.clone(),
+            next_tile: 0,
+            reservations,
+            work_ms: 0,
+        },
+    );
+    colony.last_player_activity_at = Some(ctx.now_ms);
+    ok()
+}
+
+fn build_bridge(
+    colony: &mut ColonyRuntime,
+    at: proto::TilePoint,
+    world_seed: u32,
+    ctx: &ActionCtx,
+) -> proto::ActionResult {
+    if [at.x, at.y]
+        .iter()
+        .any(|&coord| i64::from(coord).abs() > 1_000)
+    {
+        return fail("Invalid bridge coordinate.");
+    }
+    let tile = TilePos { x: at.x, y: at.y };
+    if let Err(message) = crate::world_tick::bridge_placement_axis(colony, tile, world_seed) {
+        return fail(message);
+    }
+    let Some(reservations) = road_material_reservations(colony, &[tile]) else {
+        return fail("Not enough materials (1 needed).");
+    };
+    let Some(builder) = select_best_cat_for_labor(
+        colony,
+        Some(CatSpecialization::Architect),
+        Some(Labor::Build),
+    ) else {
+        return fail("No available builder.");
+    };
+    queue_job(
+        colony,
+        ctx.now_ms,
+        JobKind::BuildRoad,
+        JobRequester::Player,
+        Some(builder),
+        JobMetadata::RoadConstruction {
+            tiles: vec![tile],
             next_tile: 0,
             reservations,
             work_ms: 0,
@@ -4517,6 +4566,57 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
             })
             .map(|(pos, _)| tile_point(pos))
             .collect(),
+        bridge_tiles: {
+            let to_proto_axis = |axis| match axis {
+                crate::world_tick::BridgeAxis::Horizontal => proto::BridgeAxis::Horizontal,
+                crate::world_tick::BridgeAxis::Vertical => proto::BridgeAxis::Vertical,
+            };
+            let mut bridges = colony
+                .world_tiles
+                .iter()
+                .filter_map(|(pos, tile)| {
+                    let axis = crate::world_tick::bridge_axis_from_overlay(
+                        tile.overlay_feature.as_deref(),
+                    )?;
+                    colony
+                        .revealed_tiles
+                        .contains(pos)
+                        .then_some(proto::BridgeSnapshot {
+                            tile: tile_point(pos),
+                            axis: to_proto_axis(axis),
+                            completed: true,
+                            progress: 1.0,
+                        })
+                })
+                .collect::<Vec<_>>();
+            bridges.extend(colony.jobs.iter().filter_map(|job| {
+                if job.kind != JobKind::BuildRoad
+                    || !matches!(job.status, JobStatus::Queued | JobStatus::Active)
+                {
+                    return None;
+                }
+                let JobMetadata::RoadConstruction {
+                    tiles,
+                    next_tile,
+                    work_ms,
+                    ..
+                } = &job.metadata
+                else {
+                    return None;
+                };
+                let pos = *tiles.get(*next_tile)?;
+                crate::world_tick::tile_has_water(colony.world_tiles.get(&pos)).then(|| {
+                    proto::BridgeSnapshot {
+                        tile: tile_point(&pos),
+                        axis: to_proto_axis(crate::world_tick::active_bridge_axis(colony, pos)),
+                        completed: false,
+                        progress: (*work_ms as f64 / job.duration_ms.max(1) as f64).clamp(0.0, 1.0),
+                    }
+                })
+            }));
+            bridges.sort_by_key(|bridge| (bridge.tile.y, bridge.tile.x, bridge.completed));
+            bridges
+        },
         transport: transport_snapshot(colony),
         stump_tiles: colony
             .world_tiles

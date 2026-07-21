@@ -94,6 +94,7 @@ pub enum WalkTileType {
 pub enum WalkOverlayFeature {
     River,
     RoadBuilt,
+    BridgeBuilt,
     GameTrail,
     AncientRoad,
     TradeRoute,
@@ -540,7 +541,7 @@ impl WalkGrid for ColonyWalkGrid<'_> {
         self.by_key.get(&pack_tile_key(x, y)).is_some_and(|tile| {
             // A naked walking cat cannot enter water. Shipping research is a design
             // prerequisite only; physical vessels/routes do not exist yet.
-            tile_is_water(tile)
+            (tile_is_water(tile) && tile.overlay_feature != Some(WalkOverlayFeature::BridgeBuilt))
                 || (!self.mountains_unlocked && tile.tile_type == WalkTileType::Mountain)
         })
     }
@@ -618,7 +619,10 @@ fn tile_cost(tile: Option<&WalkTile>) -> f64 {
         return OPEN_COST;
     };
 
-    if tile.overlay_feature == Some(WalkOverlayFeature::RoadBuilt) {
+    if matches!(
+        tile.overlay_feature,
+        Some(WalkOverlayFeature::RoadBuilt | WalkOverlayFeature::BridgeBuilt)
+    ) {
         return ROAD_COST;
     }
     // Water is always hard-blocked for walking cats; its nominal cost is never
@@ -653,24 +657,28 @@ fn fine_tile_cost(tile: Option<&WalkTile>, surface_factor: f64) -> f64 {
     if !surface_factor.is_finite() || surface_factor <= 0.0 {
         return tile_cost(tile);
     }
-    let road_multiplier =
-        if tile.is_some_and(|tile| tile.overlay_feature == Some(WalkOverlayFeature::RoadBuilt)) {
-            ROAD_BUILT_SPEED_MULT
-        } else if tile.is_some_and(|tile| {
-            tile.path_wear >= ROAD_WEAR_THRESHOLD
-                || matches!(
-                    tile.overlay_feature,
-                    Some(
-                        WalkOverlayFeature::GameTrail
-                            | WalkOverlayFeature::AncientRoad
-                            | WalkOverlayFeature::TradeRoute
-                    )
+    let road_multiplier = if tile.is_some_and(|tile| {
+        matches!(
+            tile.overlay_feature,
+            Some(WalkOverlayFeature::RoadBuilt | WalkOverlayFeature::BridgeBuilt)
+        )
+    }) {
+        ROAD_BUILT_SPEED_MULT
+    } else if tile.is_some_and(|tile| {
+        tile.path_wear >= ROAD_WEAR_THRESHOLD
+            || matches!(
+                tile.overlay_feature,
+                Some(
+                    WalkOverlayFeature::GameTrail
+                        | WalkOverlayFeature::AncientRoad
+                        | WalkOverlayFeature::TradeRoute
                 )
-        }) {
-            DIRT_ROAD_SPEED_MULT
-        } else {
-            1.0
-        };
+            )
+    }) {
+        DIRT_ROAD_SPEED_MULT
+    } else {
+        1.0
+    };
     1.0 / (surface_factor * road_multiplier)
 }
 
@@ -1316,6 +1324,89 @@ mod tests {
         with_mountain_and_water_grid(true, true, |grid| assert!(grid.is_blocked(5, 0)));
     }
 
+    #[test]
+    fn completed_bridge_makes_its_water_tile_walkable_at_road_cost() {
+        let tiles = vec![WalkTile {
+            x: 5,
+            y: 0,
+            tile_type: WalkTileType::River,
+            overlay_feature: Some(WalkOverlayFeature::BridgeBuilt),
+            resources: Some(WalkTileResources { water: 1 }),
+            path_wear: 100,
+        }];
+        let grid = build_colony_walk_grid(ColonyGridParams {
+            tiles: &tiles,
+            anchor: TilePos { x: 0, y: 0 },
+            ring_radius: 10_000,
+            gate: TilePos { x: 0, y: 1 },
+            area: None,
+            area_gate: None,
+            extra_fence_edges: None,
+            terrain: None,
+            mountains_unlocked: false,
+            shipping_researched: false,
+            soft_obstacles: None,
+            soft_obstacle_field: None,
+            surface_factors: None,
+        });
+
+        assert!(!grid.is_blocked(5, 0));
+        assert_eq!(grid.cost(5, 0), ROAD_COST);
+    }
+
+    #[test]
+    fn a_new_bridge_replans_an_unreachable_route_through_the_crossing() {
+        let barrier = |completed: bool| {
+            (-40..=40)
+                .map(|y| WalkTile {
+                    x: 1,
+                    y,
+                    tile_type: WalkTileType::River,
+                    overlay_feature: if completed && y == 0 {
+                        Some(WalkOverlayFeature::BridgeBuilt)
+                    } else {
+                        Some(WalkOverlayFeature::River)
+                    },
+                    resources: Some(WalkTileResources { water: 1 }),
+                    path_wear: u32::from(completed && y == 0) * 100,
+                })
+                .collect::<Vec<_>>()
+        };
+        let route = |tiles: &[WalkTile]| {
+            let grid = build_colony_walk_grid(ColonyGridParams {
+                tiles,
+                anchor: TilePos { x: 0, y: 0 },
+                ring_radius: 10_000,
+                gate: TilePos { x: 0, y: 1 },
+                area: None,
+                area_gate: None,
+                extra_fence_edges: None,
+                terrain: None,
+                mountains_unlocked: false,
+                shipping_researched: false,
+                soft_obstacles: None,
+                soft_obstacle_field: None,
+                surface_factors: None,
+            });
+            find_path(
+                WorldPos { x: 0.0, y: 0.0 },
+                WorldPos { x: 2.0, y: 0.0 },
+                &grid,
+                FindPathOptions::default(),
+            )
+        };
+
+        assert!(route(&barrier(false)).is_none());
+        assert_eq!(
+            route(&barrier(true)).expect("completed bridge opens and replans the route"),
+            vec![
+                WorldPos { x: 0.0, y: 0.0 },
+                WorldPos { x: 1.0, y: 0.0 },
+                WorldPos { x: 2.0, y: 0.0 },
+            ]
+        );
+    }
+
     /// A full-width water barrier (a lake/strait) at `y == 5`, spanning the entire
     /// bounded search window so there is no detour around it — the only way from
     /// one bank to the other is straight through the water. Anchor + ring are
@@ -1853,6 +1944,7 @@ mod tests {
                     .map(|feature| match feature {
                         "river" => WalkOverlayFeature::River,
                         "road_built" => WalkOverlayFeature::RoadBuilt,
+                        "bridge_built_h" | "bridge_built_v" => WalkOverlayFeature::BridgeBuilt,
                         "game_trail" => WalkOverlayFeature::GameTrail,
                         "ancient_road" => WalkOverlayFeature::AncientRoad,
                         "trade_route" => WalkOverlayFeature::TradeRoute,
