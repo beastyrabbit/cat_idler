@@ -3660,6 +3660,7 @@ fn found_colony_with_kind(
     // The settlement is genuinely cleared in simulation state, not merely hidden
     // by the renderer. Resources and water live beyond the wall.
     clear_founding_interior(&mut colony);
+    clear_communal_gate_approach(&mut colony);
     // Pave the shrine-to-wall cross and guarantee a nearby exterior water source.
     stamp_founding_roads_and_water(&mut colony);
     connect_all_buildings_to_shrine(&mut colony, world_seed);
@@ -4201,6 +4202,43 @@ fn clear_founding_interior(colony: &mut ColonyRuntime) {
         tile.path_wear = 0;
         tile.last_depleted = colony.created_at;
         tile.overlay_feature = None;
+    }
+}
+
+/// The communal claim extends one tile beyond terrain generation's guaranteed founding
+/// plateau. Carve a short south-gate approach so an unlucky mountain or river band cannot
+/// seal the shared hub before its first migrant, trader, or scout has mountain travel.
+fn clear_communal_gate_approach(colony: &mut ColonyRuntime) {
+    if colony.scale != VillageScale::Communal {
+        return;
+    }
+    let Some(gate) = retained_area_gate(colony) else {
+        return;
+    };
+    let delta = side_delta(gate.side);
+    for distance in 1..=MIGRANT_EXTERIOR_DISTANCE_TILES + 1 {
+        let pos = TilePos {
+            x: gate.x + delta.x * distance,
+            y: gate.y + delta.y * distance,
+        };
+        let tile = colony
+            .world_tiles
+            .entry(pos)
+            .or_insert_with(|| fresh_ground_tile(pos));
+        tile.tile_type = TileType::Meadow;
+        tile.resources = TileResources {
+            food: 0,
+            herbs: 0,
+            water: 0,
+            gem: 0,
+            clay: 0,
+            sand: 0,
+        };
+        tile.max_resources = MaxResources { food: 0, herbs: 0 };
+        tile.danger_level = 0.0;
+        tile.path_wear = 100;
+        tile.last_depleted = colony.created_at;
+        tile.overlay_feature = Some("road_built".to_owned());
     }
 }
 
@@ -11795,7 +11833,7 @@ fn phase_25c_prosperity_migration(colony: &mut ColonyRuntime, gate: TickGate, wo
     let previous_cohort_bucket = colony.migration_state.last_evaluated_cohort_bucket;
     let mut outcome = advance_migration(&policy, &mut colony.migration_state, &input);
     let migration_exterior = (!outcome.arrivals.is_empty())
-        .then(|| migrant_exterior_tile(colony))
+        .then(|| migrant_exterior_tile(colony, world_seed))
         .flatten();
     if !outcome.arrivals.is_empty() && migration_exterior.is_none() {
         // A temporary staged fence or hazardous relocated gate must defer, not
@@ -11946,7 +11984,9 @@ fn create_migrant_cat(colony: &ColonyRuntime, id: &str, now_ms: i64, exterior: T
         },
         current_task: None,
         position: position_from_world(tile_pos_to_world(spot)),
-        destination: Some(position_from_world(village_anchor_world(colony.anchor))),
+        destination: Some(position_from_world(tile_pos_to_world(
+            trader_shrine_contact_tile(colony),
+        ))),
         carrying: None,
         activity: CatActivity::Traveling,
         is_pregnant: false,
@@ -12050,7 +12090,7 @@ fn finish_departing_migrant(colony: &mut ColonyRuntime, cat_id: &str, now_ms: i6
     );
 }
 
-fn migrant_exterior_tile(colony: &ColonyRuntime) -> Option<TilePos> {
+fn migrant_exterior_tile(colony: &ColonyRuntime, world_seed: u32) -> Option<TilePos> {
     let gate = movement_gate(
         colony.anchor,
         retained_area_gate(colony),
@@ -12082,9 +12122,23 @@ fn migrant_exterior_tile(colony: &ColonyRuntime) -> Option<TilePos> {
             candidate.x,
         )
     });
-    candidates
-        .into_iter()
-        .find(|candidate| migrant_exterior_is_passable(colony, *candidate))
+    candidates.retain(|candidate| migrant_exterior_is_passable(colony, *candidate));
+    let targets = candidates
+        .iter()
+        .copied()
+        .map(tile_pos_to_world)
+        .collect::<Vec<_>>();
+    let exterior_component = farm_designation_exterior_component(colony, &targets);
+    let candidate = candidates.into_iter().find(|candidate| {
+        exterior_component.contains(&path_tile_for_world(tile_pos_to_world(*candidate)))
+    })?;
+    farm_route_is_reachable(
+        colony,
+        world_seed,
+        tile_pos_to_world(candidate),
+        tile_pos_to_world(trader_shrine_contact_tile(colony)),
+    )
+    .then_some(candidate)
 }
 
 fn migrant_exterior_is_passable(colony: &ColonyRuntime, candidate: TilePos) -> bool {
@@ -13171,7 +13225,7 @@ fn phase_33_movement_deposits_and_no_destination_wander(
 /// Reuse each migrant's persisted exterior origin. A temporary blockage is left
 /// to authoritative A* movement (and resumes when it opens); only a claimed or
 /// newly impassable endpoint selects a replacement near the current south gate.
-fn phase_32b_replan_migrant_routes(colony: &mut ColonyRuntime, _: &MovementPassContext) {
+fn phase_32b_replan_migrant_routes(colony: &mut ColonyRuntime, movement: &MovementPassContext) {
     let invalid_departures = colony
         .migration_state
         .probationary_migrants
@@ -13193,9 +13247,9 @@ fn phase_32b_replan_migrant_routes(colony: &mut ColonyRuntime, _: &MovementPassC
         .map(|migrant| migrant.id.clone())
         .collect::<HashSet<_>>();
     let replacement_exterior = (!invalid_departures.is_empty())
-        .then(|| migrant_exterior_tile(colony))
+        .then(|| migrant_exterior_tile(colony, movement.world_seed))
         .flatten();
-    let inside = village_anchor_world(colony.anchor);
+    let inside = tile_pos_to_world(trader_shrine_contact_tile(colony));
     for migrant in &mut colony.migration_state.probationary_migrants {
         let Some(cat) = colony
             .cats
@@ -48067,7 +48121,7 @@ mod tests {
             assert!(colony.world_tiles.get(&contact).is_some_and(|tile| {
                 !tile_has_water(Some(tile)) && tile.tile_type != TileType::Mountains
             }));
-            let exterior = migrant_exterior_tile(colony).expect("passable exterior");
+            let exterior = migrant_exterior_tile(colony, 41).expect("passable exterior");
             let movement = test_trader_movement(colony, production_gate(1, 1_000));
             assert!(
                 walk_trader_route(
@@ -58484,6 +58538,81 @@ mod tests {
         }
     }
 
+    #[test]
+    fn communal_migrant_crosses_the_real_gate_before_an_unattended_reset() {
+        const START_MS: i64 = 1_700_000_000_000;
+        const WORLD_SEED: u32 = 20_240_703;
+
+        let mut world = new_world(WORLD_SEED);
+        let mut colony = found_global_colony(WORLD_SEED, "colony-1", START_MS, 1);
+        colony.test_rng_seed = Some(4_242);
+        colony.resources.food = 1_000.0;
+        colony.resources.water = 1_000.0;
+        colony.resources.materials = 1_000.0;
+        colony.resources.refined = 1_000.0;
+        colony.resources.metal = 1_000.0;
+        colony.resources.lumber = 1_000.0;
+        colony.resources.blocks = 1_000.0;
+        colony.run_started_at = START_MS - 30 * 60 * 60_000;
+        colony.cats.truncate(STARTER_CAT_COUNT);
+        reconcile_colony_stockpiles(&mut colony);
+        world.colonies.push(colony);
+        register_colony_spatial(&mut world, 0);
+
+        let mut approach_fixture = world.colonies[0].clone();
+        let approach = phase_32_movement_setup_and_village_expansion_queue(
+            &mut approach_fixture,
+            production_gate(60, START_MS + 60_000),
+            normal_policy(),
+            WORLD_SEED,
+        );
+        assert!(
+            trader_exterior_tile(&world.colonies[0], &approach).is_some(),
+            "the communal terrain fixture must have a real gate approach"
+        );
+
+        let _ = world_tick(&mut world, START_MS + 60_000);
+        let migrant_id = world.colonies[0]
+            .migration_state
+            .probationary_migrants
+            .first()
+            .expect("prosperous communal fixture creates a migrant")
+            .id
+            .clone();
+        for step in 1..=8 {
+            let _ = world_tick(
+                &mut world,
+                START_MS + 60_000 + i64::from(step) * 15 * 60_000,
+            );
+            if migrant_phase(&world.colonies[0].migration_state, &migrant_id)
+                != Some(MigrantSpatialPhase::Arriving)
+            {
+                break;
+            }
+        }
+
+        let migrant = world.colonies[0]
+            .cats
+            .iter()
+            .find(|cat| cat.id == migrant_id)
+            .expect("migrant remains physical before crossing");
+        assert_ne!(
+            migrant_phase(&world.colonies[0].migration_state, &migrant_id),
+            Some(MigrantSpatialPhase::Arriving),
+            "an unobstructed migrant must cross the communal village gate within two game-hours; position={:?}, destination={:?}, activity={:?}",
+            migrant.position,
+            migrant.destination,
+            migrant.activity,
+        );
+        assert!(
+            world.colonies[0]
+                .cats
+                .iter()
+                .any(|cat| cat.id == migrant_id && cat.death_time.is_none()),
+            "the crossing migrant must remain a live physical cat"
+        );
+    }
+
     fn advance_migrant_movement_only(
         colony: &mut ColonyRuntime,
         elapsed_sec: i64,
@@ -58726,7 +58855,7 @@ mod tests {
     #[test]
     fn migrant_exterior_requires_dry_ground_and_real_mountain_access() {
         let mut colony = found_colony(7, "colony-1", 0, 7);
-        let exterior = migrant_exterior_tile(&colony).expect("seed 7 has a south approach");
+        let exterior = migrant_exterior_tile(&colony, 7).expect("seed 7 has a south approach");
         assert!(migrant_exterior_is_passable(&colony, exterior));
 
         colony.world_tiles.get_mut(&exterior).unwrap().tile_type = TileType::Mountains;
@@ -59087,7 +59216,7 @@ mod tests {
             .map(|cat| cat.name.as_str())
             .collect::<BTreeSet<_>>();
 
-        let exterior = migrant_exterior_tile(&colony).expect("passable exterior");
+        let exterior = migrant_exterior_tile(&colony, 4242).expect("passable exterior");
         let migrant = create_migrant_cat(&colony, migrant_id, 2, exterior);
 
         assert!(migrant.name.starts_with("Wayfarer-"));
