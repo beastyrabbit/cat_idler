@@ -8385,6 +8385,7 @@ fn phase_20_leader_labor_assignments_and_staffing(
     plan: &DirectorPlan,
     world_seed: u32,
 ) {
+    select_captain_weapon_recipe_for_demand(colony, gate.processed_through);
     // A filled office first secures its canonical workstation. These are the
     // visible station gates the player established to create each role; auxiliary
     // director jobs and raw-chain benches may use only the remaining labour.
@@ -22434,6 +22435,96 @@ fn physical_smithy_runnable(colony: &ColonyRuntime, building: &BuildingRuntime) 
 
 fn physical_smithy_needs_worker(colony: &ColonyRuntime, building: &BuildingRuntime) -> bool {
     physical_smithy_route_committed(colony, building) || physical_smithy_runnable(colony, building)
+}
+
+/// Turn an exact unarmed-warrior shortage into one bounded Captain-owned order.
+///
+/// Player-authored Smithy queues remain authoritative: automation only fills an
+/// empty, unpaused primary queue. The non-repeating order empties after one batch,
+/// while the created finite identity itself satisfies demand throughout local
+/// output, outbound cargo, storage, retrieval, and final equip. That prevents a
+/// Captain from ordering duplicates while the first Weapon is still travelling.
+fn select_captain_weapon_recipe_for_demand(colony: &mut ColonyRuntime, now_ms: i64) {
+    if !has_officer(colony, OfficerRole::Captain)
+        || !production_recipe_availability(colony, BuildingType::Smithy, SMITHY_WEAPON_RECIPE_ID)
+            .is_some_and(|availability| availability.available)
+    {
+        return;
+    }
+
+    let warrior_ids = active_resident_cats(colony)
+        .filter(|cat| {
+            can_work(get_life_stage(cat.age_hours))
+                && cat.specialization == Some(CatSpecialization::Warrior)
+        })
+        .map(|cat| cat.id.clone())
+        .collect::<BTreeSet<_>>();
+    let warrior_has_usable_weapon = |cat_id: &str| {
+        colony.items.instances().any(|instance| {
+            instance.item.kind == ItemKind::Weapon
+                && !instance.is_broken()
+                && matches!(
+                    &instance.location,
+                    ItemLocation::Equipped { cat_id: holder }
+                        | ItemLocation::Carrier { cat_id: holder }
+                        if holder == cat_id
+                )
+        })
+    };
+    let unarmed_warriors = warrior_ids
+        .iter()
+        .filter(|cat_id| !warrior_has_usable_weapon(cat_id))
+        .count();
+    if unarmed_warriors == 0 {
+        return;
+    }
+    let available_weapons = colony
+        .items
+        .instances()
+        .filter(|instance| {
+            instance.item.kind == ItemKind::Weapon
+                && !instance.is_broken()
+                && match &instance.location {
+                    ItemLocation::LegacyTreasury
+                    | ItemLocation::Stockpile { .. }
+                    | ItemLocation::Station { .. } => true,
+                    ItemLocation::Carrier { cat_id } => !warrior_ids.contains(cat_id),
+                    _ => false,
+                }
+        })
+        .count();
+    if available_weapons >= unarmed_warriors {
+        return;
+    }
+
+    let candidate = colony
+        .buildings
+        .iter()
+        .enumerate()
+        .filter(|(_, building)| {
+            building.building_type == BuildingType::Smithy
+                && building.construction_progress >= 100
+                && !building.production_paused
+                && building.production_progress <= f64::EPSILON
+                && building.production_queue.is_empty()
+        })
+        .min_by(|(_, left), (_, right)| left.id.cmp(&right.id))
+        .map(|(index, _)| index);
+    let Some(index) = candidate else {
+        return;
+    };
+    colony.buildings[index]
+        .production_queue
+        .push(ProductionQueueEntry {
+            recipe_id: SMITHY_WEAPON_RECIPE_ID.to_owned(),
+            repeat: false,
+        });
+    append_event(
+        colony,
+        now_ms,
+        EventKind::Production,
+        "The Captain ordered a Weapon for an unarmed warrior.",
+    );
 }
 
 fn release_unrunnable_smithy_workers(colony: &mut ColonyRuntime) {
