@@ -60,9 +60,14 @@ only as the reference during migration.
    Edition 2024. Bevy 0.19.
 7. **Tiered quality gates.** Before commit, run the focused regression test plus
    `cargo nextest run --workspace --profile smoke`, touched-crate Clippy with `-D warnings`,
-   and `cargo fmt`. Do not routinely run the complete workspace suite locally. After push,
-   Forgejo must run the full workspace inventory in four parallel Nextest hash partitions;
-   all shards must pass. See `docs/TESTING.md`.
+   and `cargo fmt`. Do not routinely run the complete workspace suite locally. Broad aggregate
+   and full-suite runs can take tens of minutes, especially when failing or timing out. During
+   local diagnosis and iteration, run the smallest focused named test or one
+   `CAT_SYSTEM_SCENARIO_ID` instead of repeatedly running a broad aggregate or complete workspace
+   inventory. After push and in the nightly workflow, Forgejo must run the entire workspace test
+   inventory once on the capped `cat-idler-heavy` runner with two dynamically scheduled test
+   threads and fail-fast disabled, including all broad scenarios with no exclusions. See
+   `docs/TESTING.md`.
 8. **Out of scope:** the Catford Examiner newspaper and its ~35 flavor generators
    (horoscope, obituaries, gossip, sports…) are DROPPED. Don't port them. The
    client gets a dashboard + event-log page instead.
