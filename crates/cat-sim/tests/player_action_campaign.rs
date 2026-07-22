@@ -179,6 +179,7 @@ fn restore_campaign_trade_enclosures(world: &mut WorldState) {
 fn action_name(action: &proto::ClientAction) -> &'static str {
     match action {
         proto::ClientAction::Ensure => "ensure",
+        proto::ClientAction::RestartWorld { .. } => "restart_world",
         proto::ClientAction::Presence { .. } => "presence",
         proto::ClientAction::RequestJob { .. } => "request_job",
         proto::ClientAction::DispatchScout { .. } => "dispatch_scout",

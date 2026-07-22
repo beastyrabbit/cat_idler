@@ -1247,6 +1247,11 @@ async fn handle_client_text(
             ClientAction::JoinVillage { colony_id, .. } => {
                 connection.colony_id.clone_from(colony_id);
             }
+            ClientAction::RestartWorld { .. } => {
+                if let Some(colony_id) = &result.colony_id {
+                    connection.colony_id.clone_from(colony_id);
+                }
+            }
             _ => {}
         }
         if let (Some(actor_name), Some(message)) =
@@ -1255,8 +1260,11 @@ async fn handle_client_text(
             append_player_action_event(&mut world, &connection.colony_id, actor_name, message, now);
         }
     }
-    let refreshed_directory =
-        matches!(action, ClientAction::FoundVillage { .. }).then(|| village_directory(&world));
+    let refreshed_directory = matches!(
+        action,
+        ClientAction::FoundVillage { .. } | ClientAction::RestartWorld { .. }
+    )
+    .then(|| village_directory(&world));
     let refreshed_snapshot = result
         .ok
         .then(|| build_snapshot(&world, now, state.online_count.load(Ordering::SeqCst)));
@@ -1382,6 +1390,9 @@ fn action_authentication(action: &ClientAction) -> ActionAuthentication<'_> {
             sig: sig.as_deref(),
         },
         ClientAction::RequestJob {
+            session_id, sig, ..
+        }
+        | ClientAction::RestartWorld {
             session_id, sig, ..
         }
         | ClientAction::DispatchScout {
@@ -5965,6 +5976,61 @@ mod tests {
         let snapshot = current_snapshot(&state, 1, &connection).await;
         assert_eq!(snapshot.colonies[0].id, beta_id);
         assert!(snapshot.colonies[0].capabilities.is_owner);
+    }
+
+    #[tokio::test]
+    async fn signed_restart_replaces_the_shared_world_directory_snapshot_and_persistence() {
+        let state = build_state(1_000_000);
+        let (mut connection, signed) = authenticated_connection(&state);
+        let found = send_action(
+            &state,
+            &mut connection,
+            &ClientAction::FoundVillage {
+                name: "Old Local Village".to_owned(),
+                session_id: signed.session_id.clone(),
+                sig: Some(signed.sig.clone()),
+            },
+        )
+        .await;
+        assert!(found.result.ok, "{found:?}");
+        assert_ne!(connection.colony_id, STARTER_COLONY_ID);
+        let old_seed = state.world.lock().await.world_seed;
+
+        let restarted = send_action(
+            &state,
+            &mut connection,
+            &ClientAction::RestartWorld {
+                session_id: signed.session_id,
+                nickname: "Test Player".to_owned(),
+                sig: signed.sig,
+            },
+        )
+        .await;
+
+        assert!(restarted.result.ok, "{restarted:?}");
+        assert_eq!(connection.colony_id, STARTER_COLONY_ID);
+        let world = state.world.lock().await.clone();
+        assert_ne!(world.world_seed, old_seed);
+        assert_eq!(world.colonies.len(), 1);
+        assert_eq!(world.colonies[0].kind, VillageKind::Global);
+        let directory = state.village_directory.read().await.clone();
+        assert_eq!(directory.len(), 1);
+        assert!(directory.contains_key(STARTER_COLONY_ID));
+        let snapshot = state.completed_snapshot.read().await.clone();
+        assert_eq!(snapshot.colonies.len(), 1);
+        assert_eq!(snapshot.colonies[0].id, STARTER_COLONY_ID);
+
+        save_current_world(&state)
+            .await
+            .expect("save restarted world");
+        let persisted = {
+            let db = state.db.lock().await;
+            persistence::load_world(&db)
+                .expect("load restarted world")
+                .expect("persisted world")
+        };
+        assert_eq!(persisted.colonies.len(), 1);
+        assert_eq!(persisted.world_seed, world.world_seed);
     }
 
     #[tokio::test]

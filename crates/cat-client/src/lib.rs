@@ -37,13 +37,13 @@ use bevy::window::{CursorIcon, CustomCursor, PrimaryWindow};
 use cat_protocol::{
     ActionResult, BridgeAxis, BuildingSnapshot, BuildingType, CarryingKind, CatActivity,
     CatHousingStatus, CatNeeds, CatSnapshot, ClientAction, ColonySnapshot, CropKind, EventSnapshot,
-    FarmSnapshot, FarmStage, FootprintSize, GateSide, GatherSpotPurpose, ItemInstanceSnapshot,
-    ItemLocation, ItemStackSnapshot, JobKind, Labor, OfferingResource, OfficerRole,
-    PROTOCOL_VERSION, ProductionQueueEdit, QueueMoveDirection, RaiderStatus, ResourceAmounts,
-    ResourceCapacities, ResourceKind, ResourceStackSnapshot, RoleXp, ScoutMission, ScoutResource,
-    Specialization, StationCompartment, StockpileSnapshot, TilePoint, TraderBuyOffer,
-    TraderSellOffer, TraderSnapshot, TraderVisitState, TransportMode, VillageKind, VillageScale,
-    VillageTradeCaravanPhase, WorldSnapshot, ZoneKind,
+    FarmSnapshot, FarmStage, FoodSiteKind, FootprintSize, GateSide, GatherSpotPurpose,
+    ItemInstanceSnapshot, ItemLocation, ItemStackSnapshot, JobKind, JobSnapshot, JobStatus, Labor,
+    OfferingResource, OfficerRole, PROTOCOL_VERSION, ProductionQueueEdit, QueueMoveDirection,
+    RaiderStatus, ResourceAmounts, ResourceCapacities, ResourceKind, ResourceStackSnapshot, RoleXp,
+    ScoutMission, ScoutResource, Specialization, StationCompartment, StockpileSnapshot, TilePoint,
+    TraderBuyOffer, TraderSellOffer, TraderSnapshot, TraderVisitState, TransportMode, VillageKind,
+    VillageScale, VillageTradeCaravanPhase, WorldSnapshot, ZoneKind,
 };
 use cat_sim::climate::{Biome, ResourceHint};
 use cat_sim::terrain_gen::{
@@ -165,10 +165,13 @@ fn ysort_origin(anchor: TilePoint) -> f32 {
     grid_to_world(anchor.x.saturating_add(1), anchor.y.saturating_add(1)).y
 }
 
-// ---- Corner minimap (pure coordinate mapping — unit-tested) ----
+// ---- Full-screen world map (pure coordinate mapping — unit-tested) ----
 
-/// Minimap texture side, in pixels; one pixel per `tiles_per_px` world tiles.
-const MINIMAP_PX: i32 = 128;
+/// Landscape world-map texture. The rectangular aspect mirrors the playable
+/// viewport and avoids the old circular-map decoration suggesting a radial
+/// world that the simulation does not have.
+const WORLD_MAP_PX_WIDTH: i32 = 192;
+const WORLD_MAP_PX_HEIGHT: i32 = 128;
 /// Cap on how many terrain chunks the minimap samples for biome colour per
 /// rebuild — a huge revealed area beyond this shows as revealed-but-uncoloured
 /// (grey) rather than stalling the frame. Not a truncation of the world, just of
@@ -210,17 +213,19 @@ fn minimap_bounds(revealed: &[TilePoint]) -> (i32, i32, i32, i32) {
 }
 
 /// The minimap view that fits the revealed bounding box, centred, at the coarsest
-/// integer tiles-per-pixel needed (1 while the explored area is ≤ 128 tiles).
+/// integer tiles-per-pixel needed.
 fn minimap_view(revealed: &[TilePoint]) -> MinimapView {
     let (min_x, min_y, max_x, max_y) = minimap_bounds(revealed);
-    let span = (max_x - min_x + 1).max(max_y - min_y + 1).max(1);
-    let tiles_per_px = ((span + MINIMAP_PX - 1) / MINIMAP_PX).max(1);
+    let span_x = (max_x - min_x + 1).max(1);
+    let span_y = (max_y - min_y + 1).max(1);
+    let tiles_per_px = ((span_x + WORLD_MAP_PX_WIDTH - 1) / WORLD_MAP_PX_WIDTH)
+        .max((span_y + WORLD_MAP_PX_HEIGHT - 1) / WORLD_MAP_PX_HEIGHT)
+        .max(1);
     let center_x = (min_x + max_x) / 2;
     let center_y = (min_y + max_y) / 2;
-    let half = MINIMAP_PX * tiles_per_px / 2;
     MinimapView {
-        origin_x: center_x - half,
-        origin_y: center_y - half,
+        origin_x: center_x - WORLD_MAP_PX_WIDTH * tiles_per_px / 2,
+        origin_y: center_y - WORLD_MAP_PX_HEIGHT * tiles_per_px / 2,
         tiles_per_px,
     }
 }
@@ -229,7 +234,8 @@ fn minimap_view(revealed: &[TilePoint]) -> MinimapView {
 fn world_to_minimap(view: MinimapView, x: i32, y: i32) -> Option<(i32, i32)> {
     let px = (x - view.origin_x).div_euclid(view.tiles_per_px);
     let py = (y - view.origin_y).div_euclid(view.tiles_per_px);
-    ((0..MINIMAP_PX).contains(&px) && (0..MINIMAP_PX).contains(&py)).then_some((px, py))
+    ((0..WORLD_MAP_PX_WIDTH).contains(&px) && (0..WORLD_MAP_PX_HEIGHT).contains(&py))
+        .then_some((px, py))
 }
 
 /// The world tile at the centre of a minimap pixel (for click-to-pan).
@@ -251,13 +257,12 @@ fn viewport_rect(
     max_tx: i32,
     max_ty: i32,
 ) -> (i32, i32, i32, i32) {
-    let clamp = |v: i32| v.clamp(0, MINIMAP_PX);
     let to_px = |t: i32, origin: i32| (t - origin).div_euclid(view.tiles_per_px);
     (
-        clamp(to_px(min_tx, view.origin_x)),
-        clamp(to_px(min_ty, view.origin_y)),
-        clamp(to_px(max_tx, view.origin_x) + 1),
-        clamp(to_px(max_ty, view.origin_y) + 1),
+        to_px(min_tx, view.origin_x).clamp(0, WORLD_MAP_PX_WIDTH),
+        to_px(min_ty, view.origin_y).clamp(0, WORLD_MAP_PX_HEIGHT),
+        (to_px(max_tx, view.origin_x) + 1).clamp(0, WORLD_MAP_PX_WIDTH),
+        (to_px(max_ty, view.origin_y) + 1).clamp(0, WORLD_MAP_PX_HEIGHT),
     )
 }
 
@@ -270,12 +275,12 @@ fn biome_rgba(biome: Biome) -> [u8; 4] {
     [r, g, b, 255]
 }
 
-/// Set the minimap pixel at `(px, py)` in an `MINIMAP_PX`-wide RGBA buffer.
+/// Set the map pixel at `(px, py)` in its RGBA buffer.
 fn put_pixel(buf: &mut [u8], px: i32, py: i32, color: [u8; 4]) {
-    if !(0..MINIMAP_PX).contains(&px) || !(0..MINIMAP_PX).contains(&py) {
+    if !(0..WORLD_MAP_PX_WIDTH).contains(&px) || !(0..WORLD_MAP_PX_HEIGHT).contains(&py) {
         return;
     }
-    let i = ((py * MINIMAP_PX + px) * 4) as usize;
+    let i = ((py * WORLD_MAP_PX_WIDTH + px) * 4) as usize;
     buf[i..i + 4].copy_from_slice(&color);
 }
 
@@ -630,6 +635,11 @@ struct HelpUi {
     visible: bool,
 }
 
+#[derive(Resource, Default)]
+struct RestartWorldUi {
+    armed: bool,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 enum FeedbackLevel {
     #[default]
@@ -752,21 +762,40 @@ struct GovernanceUi {
 }
 
 /// Whether the announcements / event-log panel is open (toggled by `L`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+enum LogFilter {
+    #[default]
+    All,
+    Work,
+    Life,
+    Danger,
+    Trade,
+}
+
+impl LogFilter {
+    const ALL: [Self; 5] = [Self::All, Self::Work, Self::Life, Self::Danger, Self::Trade];
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::All => "All",
+            Self::Work => "Work",
+            Self::Life => "Life",
+            Self::Danger => "Danger",
+            Self::Trade => "Trade",
+        }
+    }
+}
+
 #[derive(Resource, Default)]
 struct AnnouncementsUi {
     visible: bool,
+    filter: LogFilter,
 }
 
-/// Whether the corner minimap is shown (toggled by `M`; on by default).
-#[derive(Resource)]
+/// Whether the full-screen world map is shown (toggled by `M`).
+#[derive(Resource, Default)]
 struct MinimapUi {
     visible: bool,
-}
-
-impl Default for MinimapUi {
-    fn default() -> Self {
-        Self { visible: true }
-    }
 }
 
 /// Handle to the dynamic minimap texture (rewritten each snapshot), plus the last
@@ -778,7 +807,7 @@ struct Minimap {
 }
 
 /// Number of announcement lines the panel shows (newest first).
-const ANNOUNCEMENT_LINES: usize = 11;
+const ANNOUNCEMENT_LINES: usize = 48;
 
 /// Whether the goods / inventory panel is open (toggled by `G`).
 #[derive(Resource, Default)]
@@ -795,6 +824,7 @@ struct CommandDock {
 
 /// Number of item-stack lines the goods panel shows (most valuable first).
 const GOODS_LINES: usize = 12;
+const STOCKPILE_MANAGEMENT_LINES: usize = 16;
 
 /// Whether the colony census / demographics panel is open (toggled by `C`).
 #[derive(Resource, Default)]
@@ -803,7 +833,8 @@ struct CensusUi {
 }
 
 /// Number of text lines the census panel renders (see `census_report_lines`).
-const CENSUS_LINES: usize = 18;
+const CENSUS_LINES: usize = 19;
+const JOB_QUEUE_LINES: usize = 32;
 
 /// Trade menu (open only during physical shrine trading). `closed` lets the player
 /// dismiss the current visit, while `sell_page` makes every finite item stack reachable
@@ -867,9 +898,9 @@ fn officer_role_name(role: OfficerRole) -> &'static str {
 /// on-map marker so the two read as the same affordance.
 fn boost_button_label(boosted: bool) -> &'static str {
     if boosted {
-        "★ Boosted (click to clear)"
+        "* Boosted (click to clear)"
     } else {
-        "★ Boost"
+        "* Boost"
     }
 }
 
@@ -1320,41 +1351,6 @@ impl BuildingArt {
     }
 }
 
-/// Pixel-art prop sprites used for stockpile piles, loaded once at startup.
-#[derive(Resource, Clone)]
-struct PropArt {
-    sack: Handle<Image>,
-    barrel: Handle<Image>,
-    haystack: Handle<Image>,
-    stone_pile: Handle<Image>,
-    gold_pile: Handle<Image>,
-    crate_box: Handle<Image>,
-}
-
-impl PropArt {
-    fn load(assets: &AssetServer) -> Self {
-        Self {
-            sack: assets.load("public/images/game/props/sack.png"),
-            barrel: assets.load("public/images/game/props/barrel.png"),
-            haystack: assets.load("public/images/game/props/haystack.png"),
-            stone_pile: assets.load("public/images/game/props/stone_pile.png"),
-            gold_pile: assets.load("public/images/game/props/gold_pile.png"),
-            crate_box: assets.load("public/images/game/props/crate.png"),
-        }
-    }
-
-    fn pile(&self, texture: PropTexture) -> Handle<Image> {
-        match texture {
-            PropTexture::Sack => self.sack.clone(),
-            PropTexture::Barrel => self.barrel.clone(),
-            PropTexture::Haystack => self.haystack.clone(),
-            PropTexture::StonePile => self.stone_pile.clone(),
-            PropTexture::GoldPile => self.gold_pile.clone(),
-            PropTexture::Crate => self.crate_box.clone(),
-        }
-    }
-}
-
 /// Infra sprites (village palisade + gate), loaded once at startup.
 const PALISADE_ASSET_PATH: &str = "public/images/game/infra/palisade_topdown.png";
 
@@ -1530,15 +1526,8 @@ const UI_GAP_TIGHT: f32 = 3.0;
 const UI_RADIUS: f32 = 6.0;
 const UI_BORDER_W: f32 = 2.5;
 const UI_BTN_H: f32 = 30.0;
-const MINIMAP_PANEL_WIDTH: f32 = 168.0 + 2.0 * UI_GAP + 2.0 * UI_BORDER_W;
 const BUILDING_INSPECTOR_WIDTH: f32 = 300.0;
 const RIGHT_PANEL_MARGIN: f32 = 10.0;
-/// Category row plus one compact submenu. The default Inspect category uses
-/// only the first row; this maximum keeps corner overlays clear when a menu is
-/// expanded, including one wrapped submenu line at the 1024px floor.
-const WIDE_BOTTOM_BAR_FOOTPRINT: f32 = UI_BTN_H + 22.0 + 3.0 * UI_GAP + 2.0 * UI_BORDER_W + 10.0;
-const NARROW_BOTTOM_BAR_FOOTPRINT: f32 =
-    UI_BTN_H + 2.0 * 22.0 + 4.0 * UI_GAP + 2.0 * UI_BORDER_W + 10.0;
 const COLLAPSED_BOTTOM_BAR_FOOTPRINT: f32 = UI_BTN_H + 2.0 * UI_GAP + 2.0 * UI_BORDER_W + 10.0;
 const NARROW_LAYOUT_MAX_WIDTH: f32 = 1100.0;
 const BOTTOM_OVERLAY_CLEARANCE: f32 = COLLAPSED_BOTTOM_BAR_FOOTPRINT + UI_GAP;
@@ -1584,7 +1573,6 @@ struct AdventureUiArt {
     progress_low: Handle<Image>,
     banner: Handle<Image>,
     icon_frame: Handle<Image>,
-    minimap_ring: Handle<Image>,
     #[cfg(not(target_arch = "wasm32"))]
     cursor_pointer: Handle<Image>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -1612,7 +1600,6 @@ impl AdventureUiArt {
             progress_low: assets.load("public/images/game/ui/progress-low.png"),
             banner: assets.load("public/images/game/ui/banner.png"),
             icon_frame: assets.load("public/images/game/ui/icon-frame.png"),
-            minimap_ring: assets.load("public/images/game/ui/minimap-ring.png"),
             #[cfg(not(target_arch = "wasm32"))]
             cursor_pointer: assets.load("public/images/game/ui/cursor/pointer.png"),
             #[cfg(not(target_arch = "wasm32"))]
@@ -1725,6 +1712,38 @@ fn ui_panel_node(width: Val) -> Node {
         flex_direction: FlexDirection::Column,
         overflow: Overflow::clip(),
         ..default()
+    }
+}
+
+/// Shared shell for management surfaces. These pages intentionally cover the
+/// world below the command bar so inventory, village records, logs and the map
+/// have enough room to be legible instead of behaving like tiny popovers.
+fn management_panel_node() -> Node {
+    Node {
+        left: Val::Px(10.0),
+        right: Val::Px(10.0),
+        top: Val::Px(60.0),
+        bottom: Val::Px(10.0),
+        ..ui_panel_node(Val::Auto)
+    }
+}
+
+fn responsive_ui_scale(width: f32, height: f32) -> f32 {
+    if width >= 3_200.0 && height >= 1_800.0 {
+        2.0
+    } else if width >= 2_400.0 && height >= 1_300.0 {
+        4.0 / 3.0
+    } else {
+        1.0
+    }
+}
+
+fn apply_responsive_ui_scale(
+    windows: Query<&Window, With<PrimaryWindow>>,
+    mut scale: ResMut<UiScale>,
+) {
+    if let Ok(window) = windows.single() {
+        scale.0 = responsive_ui_scale(window.width(), window.height());
     }
 }
 
@@ -1900,6 +1919,7 @@ enum TabKind {
     Goods,
     Census,
     Tree,
+    Map,
 }
 
 /// Light the top-bar tab whose panel is currently open.
@@ -1908,6 +1928,7 @@ fn sync_tab_toggles(
     goods: Res<GoodsUi>,
     census: Res<CensusUi>,
     tree: Res<UpgradeTreeUi>,
+    map: Res<MinimapUi>,
     mut tabs: Query<(&TabKind, &mut KitToggle)>,
 ) {
     for (kind, mut toggle) in &mut tabs {
@@ -1916,6 +1937,7 @@ fn sync_tab_toggles(
             TabKind::Goods => goods.visible,
             TabKind::Census => census.visible,
             TabKind::Tree => tree.visible,
+            TabKind::Map => map.visible,
         };
     }
 }
@@ -2082,8 +2104,8 @@ fn update_adventure_cursor(
     let Ok((window_entity, window)) = window.single() else {
         return;
     };
-    let over_world_input_blocker =
-        research.visible || cursor_over_world_input_blocker(window.cursor_position(), &blockers);
+    let over_world_input_blocker = research.visible
+        || cursor_over_world_input_blocker(window.physical_cursor_position(), &blockers);
     let kind = adventure_cursor_kind(
         interactions,
         tools.mode.paint_kind().is_some(),
@@ -2158,17 +2180,6 @@ impl SpriteSheets {
     }
 }
 
-/// The prop sprite a stockpile's dominant resource renders as.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum PropTexture {
-    Sack,
-    Barrel,
-    Haystack,
-    StonePile,
-    GoldPile,
-    Crate,
-}
-
 /// The live WebSocket connection (kept off the render threads — the receiver is
 /// `!Sync`).
 struct WsConn {
@@ -2219,6 +2230,18 @@ struct FollowCat {
 struct AnimSprite {
     group: usize,
     moving: bool,
+    /// Stable per-actor walk-cycle offset so a crowd does not march in lockstep.
+    phase: usize,
+}
+
+fn animation_phase_for_id(id: &str) -> usize {
+    id.bytes()
+        .fold(0_usize, |phase, byte| phase.wrapping_add(usize::from(byte)))
+        % 4
+}
+
+fn walk_frame(global_frame: usize, phase: usize) -> usize {
+    (global_frame + phase) % 4
 }
 
 /// Live cat body entities keyed by cat id (persist across snapshots).
@@ -2551,6 +2574,9 @@ struct TerrainDecoration {
 /// Persisted stump/sapling prop rebuilt from each authoritative snapshot.
 #[derive(Component)]
 struct TreeLifecycleVisual;
+/// Authoritative renewable food source (cave, fruit, or fishing habitat).
+#[derive(Component)]
+struct FoodSiteVisual;
 /// A fog-of-war tile sprite, keyed by tile for incremental updates.
 #[derive(Component, Clone, Copy)]
 struct FogTile {
@@ -2692,9 +2718,15 @@ struct HelpPanel;
 struct HelpButton;
 #[derive(Component)]
 struct HelpDismissButton;
+#[derive(Component)]
+struct RestartWorldButton;
+#[derive(Component)]
+struct RestartWorldButtonLabel;
 /// Marker for a paved-road tile sprite.
 #[derive(Component)]
 struct RoadTile;
+#[derive(Component)]
+struct JobWorldMarker;
 /// Marker for the cursor-following hover tooltip panel.
 #[derive(Component)]
 struct TooltipPanel;
@@ -2713,6 +2745,8 @@ struct AnnouncementLine(usize);
 /// The HUD button that toggles the announcements panel.
 #[derive(Component)]
 struct AnnouncementsButton;
+#[derive(Component, Clone, Copy)]
+struct LogFilterButton(LogFilter);
 /// The compact "latest announcement" ticker line on the HUD.
 #[derive(Component)]
 struct AnnouncementTicker;
@@ -2722,6 +2756,8 @@ struct GoodsPanel;
 /// One goods line slot (index 0 = most valuable stack at top).
 #[derive(Component, Clone, Copy)]
 struct GoodsLine(usize);
+#[derive(Component, Clone, Copy)]
+struct StockpileManagementLine(usize);
 /// The per-kind glyph node for a goods line (tinted by material).
 #[derive(Component, Clone, Copy)]
 struct GoodsLineIcon(usize);
@@ -2740,6 +2776,8 @@ struct CensusPanel;
 /// One census text-line slot (index 0 at the top).
 #[derive(Component, Clone, Copy)]
 struct CensusLine(usize);
+#[derive(Component, Clone, Copy)]
+struct JobQueueLine(usize);
 /// The HUD button that toggles the census panel.
 #[derive(Component)]
 struct CensusButton;
@@ -2783,6 +2821,9 @@ struct TradeCloseButton;
 /// Marker for the corner minimap panel node (toggled open/closed).
 #[derive(Component)]
 struct MinimapPanel;
+/// Top-bar button for the full-screen world map.
+#[derive(Component)]
+struct MapButton;
 /// Marker for the minimap image node (for click-to-pan hit-testing).
 #[derive(Component)]
 struct MinimapImageNode;
@@ -2827,6 +2868,78 @@ fn event_kind_of(kind: &str) -> EventKind {
         // trader lifecycle, jobs, rituals, resets, empty (pre-taxonomy) → neutral.
         _ => EventKind::Neutral,
     }
+}
+
+fn event_matches_log_filter(kind: &str, filter: LogFilter) -> bool {
+    match filter {
+        LogFilter::All => true,
+        LogFilter::Life => matches!(event_kind_of(kind), EventKind::Birth | EventKind::Death),
+        LogFilter::Danger => matches!(event_kind_of(kind), EventKind::Raid | EventKind::Crisis),
+        LogFilter::Trade => kind.starts_with("trade_") || kind.starts_with("trader_"),
+        LogFilter::Work => matches!(
+            kind,
+            "production"
+                | "research_unlocked"
+                | "node_owned"
+                | "road_built"
+                | "forest_chopped"
+                | "discovery"
+                | "offering"
+                | "tithe"
+                | "blessing_delivered"
+        ),
+    }
+}
+
+fn job_kind_label(kind: JobKind) -> &'static str {
+    match kind {
+        JobKind::SupplyFood => "Supply food",
+        JobKind::SupplyWater => "Supply water",
+        JobKind::LeaderPlanHunt => "Plan hunt",
+        JobKind::HuntExpedition => "Hunt",
+        JobKind::GatherFood => "Gather food",
+        JobKind::LeaderPlanHouse => "Plan housing",
+        JobKind::BuildHouse => "Build",
+        JobKind::BuildRoad => "Build road",
+        JobKind::Ritual => "Ritual",
+        JobKind::Quarry => "Quarry",
+        JobKind::GatherLogs => "Gather logs",
+        JobKind::ReplantTree => "Replant tree",
+        JobKind::Fish => "Fish",
+        JobKind::ForageFibre => "Forage fibre",
+        JobKind::Explore => "Explore",
+        JobKind::FetchWater => "Fetch water",
+        JobKind::TrainWarrior => "Train warrior",
+        JobKind::ExpandVillage => "Expand village",
+        JobKind::CarryOffering => "Carry offering",
+        JobKind::PerformOffering => "Perform offering",
+        JobKind::HaulGatherSpot => "Haul goods",
+        JobKind::VillageMaintenance => "Clean and tidy",
+    }
+}
+
+fn job_queue_row(
+    kind: JobKind,
+    status: JobStatus,
+    assigned_cat: Option<&str>,
+    position: Option<TilePoint>,
+) -> String {
+    let status = match status {
+        JobStatus::Queued => "OPEN",
+        JobStatus::Active => "ACTIVE",
+        JobStatus::Completed => "DONE",
+        JobStatus::Failed => "FAILED",
+        JobStatus::Cancelled => "CANCELLED",
+    };
+    let worker = assigned_cat.unwrap_or("unassigned");
+    let target = position.map_or_else(
+        || "village-wide".to_owned(),
+        |site| format!("{},{}", site.x, site.y),
+    );
+    format!(
+        "{status:<6} · {} · {worker} · {target}",
+        job_kind_label(kind)
+    )
 }
 
 /// Aggregated colony demographics for the census panel — a pure function of the
@@ -2916,6 +3029,43 @@ fn colony_census(cats: &[CatSnapshot], events: &[EventSnapshot], leader: Option<
     c
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct VillageEmployment {
+    capable: usize,
+    working: usize,
+    idle: usize,
+}
+
+impl VillageEmployment {
+    fn line(self) -> String {
+        format!(
+            "Working {}/{}   Idle {}",
+            self.working, self.capable, self.idle
+        )
+    }
+}
+
+/// Count cats, not job records. Ambient housekeeping may move an idle cat around,
+/// but only a real task or workshop assignment counts as employment.
+fn village_employment(cats: &[CatSnapshot]) -> VillageEmployment {
+    let mut capable = 0;
+    let mut working = 0;
+    for cat in cats.iter().filter(|cat| {
+        cat.death_time.is_none()
+            && cat.age_hours.partial_cmp(&6.0) != Some(std::cmp::Ordering::Less)
+    }) {
+        capable += 1;
+        if cat.current_task.is_some() || cat.assigned_building_id.is_some() {
+            working += 1;
+        }
+    }
+    VillageEmployment {
+        capable,
+        working,
+        idle: capable.saturating_sub(working),
+    }
+}
+
 /// A proportional `#` bar `width` chars wide, scaled so the largest tally fills it.
 fn census_bar(count: u32, max: u32, width: usize) -> String {
     if max == 0 {
@@ -2928,7 +3078,11 @@ fn census_bar(count: u32, max: u32, width: usize) -> String {
 /// Render the census as a fixed block of `CENSUS_LINES` display lines — a DF-style
 /// "units" readout: population + leader + averages, a life-stage breakdown with
 /// bars, a specialization breakdown, and a recent births/deaths line.
-fn census_report_lines(c: &Census, scale: VillageScale) -> Vec<String> {
+fn census_report_lines(
+    c: &Census,
+    scale: VillageScale,
+    employment: VillageEmployment,
+) -> Vec<String> {
     let stage_max = c.kittens.max(c.young).max(c.adults).max(c.elders);
     let leader = c.leader.as_deref().unwrap_or("(vacant)");
     vec![
@@ -2940,9 +3094,10 @@ fn census_report_lines(c: &Census, scale: VillageScale) -> Vec<String> {
             },
             c.total
         ),
+        employment.line(),
         format!("Leader: {leader}"),
         format!(
-            "Avg age: {:.0}h    ★ Boosted: {}",
+            "Avg age: {:.0}h    * Boosted: {}",
             c.avg_age_hours, c.boosted
         ),
         format!("Expecting: {}", c.expecting),
@@ -3368,7 +3523,7 @@ fn equipment_control_state(
     if let Some(item_id) = loadout_item_id(cat, slot) {
         let instance = item_instance_by_id(colony, item_id);
         return EquipmentControlState {
-            slot_label: format!("{} ▶", slot.name()),
+            slot_label: format!("{} >", slot.name()),
             candidate_label: "Equipped".to_owned(),
             action_label: "Unequip",
             item_id: Some(item_id.to_owned()),
@@ -3418,12 +3573,12 @@ fn equipment_control_state(
         format!("{} · {} — {reason}", instance.id, item_condition(instance))
     });
     EquipmentControlState {
-        slot_label: format!("{} ▶", slot.name()),
+        slot_label: format!("{} >", slot.name()),
         candidate_label: candidate.map_or_else(
             || format!("no {}", slot.name()),
             |_| {
                 format!(
-                    "Item {}/{} ▶",
+                    "Item {}/{} >",
                     ui.candidate % candidates.len().max(1) + 1,
                     candidates.len()
                 )
@@ -3538,7 +3693,7 @@ fn trader_status_line(trader: &TraderSnapshot, colony_coin: f64, now_ms: i64) ->
     );
     let phase = match trader.state {
         TraderVisitState::Arriving => {
-            format!("ARRIVING · {exterior} → {destination} · trade locked until shrine contact")
+            format!("ARRIVING · {exterior} -> {destination} · trade locked until shrine contact")
         }
         TraderVisitState::Trading => {
             let remaining = trader.visit_ends_at.map_or_else(
@@ -3553,7 +3708,7 @@ fn trader_status_line(trader: &TraderSnapshot, colony_coin: f64, now_ms: i64) ->
             format!("AT SHRINE · {remaining} · {destination}")
         }
         TraderVisitState::Departing => format!(
-            "DEPARTING · current {},{} → {exterior}",
+            "DEPARTING · current {},{} -> {exterior}",
             trader.position.x, trader.position.y
         ),
     };
@@ -3697,10 +3852,10 @@ fn ui_surface_blocks_world(display: Display, contains_cursor: bool) -> bool {
 }
 
 fn cursor_over_world_input_blocker(
-    cursor: Option<Vec2>,
+    physical_cursor: Option<Vec2>,
     blockers: &WorldInputBlockerQuery<'_, '_>,
 ) -> bool {
-    cursor.is_some_and(|cursor| {
+    physical_cursor.is_some_and(|cursor| {
         blockers.iter().any(|(computed, transform, style)| {
             ui_surface_blocks_world(style.display, computed.contains_point(*transform, cursor))
         })
@@ -3926,6 +4081,7 @@ pub fn run() {
         .insert_resource(VillageTradeDraft::default())
         .insert_resource(ConnectionState::default())
         .insert_resource(HelpUi::default())
+        .insert_resource(RestartWorldUi::default())
         .insert_resource(ClientFeedback::default())
         .insert_resource(ClientAlerts::default())
         .insert_resource(OutgoingActions::default())
@@ -3981,9 +4137,10 @@ pub fn run() {
                         sync_terrain_ground_surface,
                         sync_terrain_decoration_visibility,
                         render_tree_lifecycle,
+                        render_food_sites,
                     )
                         .after(spawn_terrain),
-                    render_roads,
+                    (render_roads, render_job_world_markers),
                     render_fog.after(spawn_terrain),
                     render_buildings,
                     render_walls,
@@ -4006,6 +4163,7 @@ pub fn run() {
                         handle_pause_menu.after(toggle_pause_menu),
                         apply_text_layout_defaults,
                         apply_text_scale,
+                        apply_responsive_ui_scale,
                     ),
                     camera_controls.after(research_ui::toggle_upgrade_tree),
                     select_cat,
@@ -4014,7 +4172,6 @@ pub fn run() {
                     (
                         update_building_inspector,
                         update_station_queue_controls.after(update_building_inspector),
-                        position_minimap_around_building_inspector.after(update_building_inspector),
                     ),
                     handle_station_queue_buttons,
                     update_remove_panel,
@@ -4028,9 +4185,12 @@ pub fn run() {
                         handle_farm_crop_button,
                         handle_gather_kind_button,
                         sync_action_button_availability,
+                        sync_restart_world_button,
                         update_kit_buttons
                             .after(sync_action_button_availability)
+                            .after(sync_restart_world_button)
                             .after(handle_tool_buttons)
+                            .after(handle_log_filters)
                             .after(sync_tab_toggles)
                             .after(research_ui::update_research_filter)
                             .after(research_ui::update_research_inspector),
@@ -4052,6 +4212,7 @@ pub fn run() {
                         update_client_feedback,
                         update_connection_status,
                         handle_help_overlay,
+                        handle_restart_world_button.after(handle_help_overlay),
                     ),
                     handle_buttons,
                     (
@@ -4073,7 +4234,10 @@ pub fn run() {
                 (
                     cycle_stacked_selection,
                     toggle_announcements,
-                    update_announcements,
+                    (
+                        handle_log_filters,
+                        update_announcements.after(handle_log_filters),
+                    ),
                     toggle_goods,
                     update_goods,
                     handle_goods_repair_buttons,
@@ -4106,27 +4270,6 @@ pub fn run() {
             ),
         )
         .run();
-}
-
-fn minimap_right_offset(building_selected: bool) -> f32 {
-    if building_selected {
-        RIGHT_PANEL_MARGIN + BUILDING_INSPECTOR_WIDTH + UI_GAP
-    } else {
-        RIGHT_PANEL_MARGIN
-    }
-}
-
-fn position_minimap_around_building_inspector(
-    selection: Res<BuildingSelection>,
-    mut minimap: Query<&mut Node, With<MinimapPanel>>,
-) {
-    if !selection.is_changed() {
-        return;
-    }
-    let Ok(mut node) = minimap.single_mut() else {
-        return;
-    };
-    node.right = Val::Px(minimap_right_offset(selection.selected.is_some()));
 }
 
 /// Configure the game window for either a native surface or the browser canvas.
@@ -4504,7 +4647,6 @@ fn setup(
     commands.insert_resource(BuildingArt::load(&asset_server));
     let icons = IconArt::load(&asset_server);
     commands.insert_resource(icons.clone());
-    commands.insert_resource(PropArt::load(&asset_server));
     commands.insert_resource(InfraArt::load(&asset_server));
     commands.insert_resource(SpriteSheets::load(&asset_server, &mut atlas_layouts));
     let ui_art = AdventureUiArt::load(&asset_server);
@@ -4513,8 +4655,8 @@ fn setup(
     // Dynamic minimap texture (rewritten each snapshot by update_minimap).
     let minimap_image = Image::new_fill(
         Extent3d {
-            width: MINIMAP_PX as u32,
-            height: MINIMAP_PX as u32,
+            width: WORLD_MAP_PX_WIDTH as u32,
+            height: WORLD_MAP_PX_HEIGHT as u32,
             depth_or_array_layers: 1,
         },
         TextureDimension::D2,
@@ -4966,17 +5108,12 @@ fn setup(
             });
         });
 
-    // Corner minimap (bottom-right, clear of the inspectors + toolbars): a kit
-    // panel with a "Map" title bar over the dynamic minimap texture. Toggled 'M'.
+    // Full-screen landscape world map. It is hidden until requested and shares
+    // the management-page shell with Stores, Village and Log.
     commands
         .spawn((
-            Node {
-                right: Val::Px(RIGHT_PANEL_MARGIN),
-                // Clear the two-row command bar at 768px-high windows.
-                bottom: Val::Px(BOTTOM_OVERLAY_CLEARANCE),
-                ..ui_panel_node(Val::Px(MINIMAP_PANEL_WIDTH))
-            },
-            GlobalZIndex(70),
+            management_panel_node(),
+            GlobalZIndex(82),
             ui_panel_frame(),
             MinimapPanel,
             WorldInputBlocker,
@@ -4986,13 +5123,20 @@ fn setup(
             panel
                 .spawn(Node {
                     padding: UiRect::all(Val::Px(UI_GAP)),
+                    flex_grow: 1.0,
+                    align_items: AlignItems::Center,
+                    justify_content: JustifyContent::Center,
                     ..default()
                 })
                 .with_children(|body| {
                     body.spawn((
                         Node {
-                            width: Val::Px(168.0),
-                            height: Val::Px(168.0),
+                            width: Val::Percent(92.0),
+                            max_width: Val::Px(1_440.0),
+                            max_height: Val::Percent(90.0),
+                            aspect_ratio: Some(
+                                WORLD_MAP_PX_WIDTH as f32 / WORLD_MAP_PX_HEIGHT as f32,
+                            ),
                             ..default()
                         },
                         ImageNode::new(minimap_handle),
@@ -5002,32 +5146,15 @@ fn setup(
                         RelativeCursorPosition::default(),
                         MinimapImageNode,
                         // Camera-viewport outline, positioned each frame.
-                        children![
-                            (
-                                Node {
-                                    position_type: PositionType::Absolute,
-                                    border: UiRect::all(Val::Px(1.0)),
-                                    ..default()
-                                },
-                                BorderColor::all(Color::srgba(1.0, 1.0, 1.0, 0.85)),
-                                MinimapViewportRect,
-                            ),
-                            (
-                                Node {
-                                    position_type: PositionType::Absolute,
-                                    left: Val::Px(0.0),
-                                    top: Val::Px(0.0),
-                                    width: Val::Px(168.0),
-                                    height: Val::Px(168.0),
-                                    ..default()
-                                },
-                                ImageNode {
-                                    image: ui_art.minimap_ring.clone(),
-                                    image_mode: NodeImageMode::Stretch,
-                                    ..default()
-                                },
-                            )
-                        ],
+                        children![(
+                            Node {
+                                position_type: PositionType::Absolute,
+                                border: UiRect::all(Val::Px(1.0)),
+                                ..default()
+                            },
+                            BorderColor::all(Color::srgba(1.0, 1.0, 1.0, 0.85)),
+                            MinimapViewportRect,
+                        )],
                     ));
                 });
         });
@@ -5098,7 +5225,7 @@ fn setup(
                 CensusButton,
                 TabKind::Census,
                 KitToggle::default(),
-                children![ui_text("Census [C]", FS_BODY, UI_INK)],
+                children![ui_text("Village [C]", FS_BODY, UI_INK)],
             ));
             bar.spawn((
                 ui_button(),
@@ -5106,6 +5233,13 @@ fn setup(
                 TabKind::Tree,
                 KitToggle::default(),
                 children![ui_text("Tree [U]", FS_BODY, UI_INK)],
+            ));
+            bar.spawn((
+                ui_button(),
+                MapButton,
+                TabKind::Map,
+                KitToggle::default(),
+                children![ui_text("Map [M]", FS_BODY, UI_INK)],
             ));
             bar.spawn((
                 ui_button(),
@@ -5183,7 +5317,7 @@ fn setup(
                     UI_MUTED,
                 ));
                 body.spawn(ui_text(
-                    "PANELS  L Log · G Stores · C Census · U Research Tree · O Officers · P Orders · M Map",
+                    "PANELS  L Log · G Stores · C Village · U Research Tree · O Officers · P Orders · M Map",
                     FS_SMALL,
                     UI_MUTED,
                 ));
@@ -5191,6 +5325,21 @@ fn setup(
                     "CAMERA  WASD/arrows pan · wheel zoom · R reset · H or ? help · Esc close",
                     FS_SMALL,
                     UI_MUTED,
+                ));
+                body.spawn(ui_text_wrapped(
+                    "TEMPORARY WORLD CONTROL  Erases the map and every village, then founds a new Grand Commons.",
+                    FS_SMALL,
+                    UI_WARNING,
+                ));
+                body.spawn((
+                    ui_button(),
+                    RestartWorldButton,
+                    KitToggle::default(),
+                    KitDisabled::default(),
+                    children![(
+                        ui_text("Restart world", FS_BODY, UI_TITLE_INK),
+                        RestartWorldButtonLabel,
+                    )],
                 ));
                 body.spawn((
                     ui_button(),
@@ -5200,14 +5349,15 @@ fn setup(
             });
         });
 
-    // Shared-world village selector. It stays visible beside (not on top of)
-    // the fixed HUD and inspectors, so changing the action/render target is an
-    // explicit player choice rather than an invisible consequence of snapshot
-    // ordering or founding another settlement.
+    // The server still supports multiple colonies, but a player is always in
+    // one current village. The old permanent "Villages" strip exposed server
+    // topology as game navigation and confused local versus global play, so it
+    // stays out of the playable HUD.
     commands
         .spawn((
             Node {
                 position_type: PositionType::Absolute,
+                display: Display::None,
                 top: Val::Px(54.0),
                 left: Val::Px(340.0),
                 right: Val::Px(310.0),
@@ -5251,19 +5401,33 @@ fn setup(
     // from `AnnouncementsUi.visible`, so it starts hidden without a spawn flag.
     commands
         .spawn((
-            Node {
-                left: Val::Px(456.0),
-                top: Val::Px(60.0),
-                ..ui_panel_node(Val::Px(560.0))
-            },
+            management_panel_node(),
             GlobalZIndex(80),
             ui_panel_frame(),
             AnnouncementsPanel,
             WorldInputBlocker,
         ))
         .with_children(|panel| {
-            panel.spawn(ui_title_bar("Announcements"));
+            panel.spawn(ui_title_bar("Village Log"));
             panel.spawn(ui_panel_body()).with_children(|body| {
+                body.spawn(Node {
+                    width: Val::Percent(100.0),
+                    column_gap: Val::Px(UI_GAP),
+                    margin: UiRect::bottom(Val::Px(UI_GAP)),
+                    ..default()
+                })
+                .with_children(|filters| {
+                    for filter in LogFilter::ALL {
+                        filters.spawn((
+                            ui_button_small(),
+                            LogFilterButton(filter),
+                            KitToggle {
+                                active: filter == LogFilter::All,
+                            },
+                            children![ui_text(filter.label(), FS_BODY, UI_INK)],
+                        ));
+                    }
+                });
                 for i in 0..ANNOUNCEMENT_LINES {
                     body.spawn((ui_text("", FS_BODY, UI_MUTED), AnnouncementLine(i)));
                 }
@@ -5274,21 +5438,21 @@ fn setup(
     // tab panels — mutually exclusive), hidden until toggled.
     commands
         .spawn((
-            Node {
-                left: Val::Px(456.0),
-                top: Val::Px(60.0),
-                ..ui_panel_node(Val::Px(360.0))
-            },
+            management_panel_node(),
             GlobalZIndex(82),
             ui_panel_frame(),
             CensusPanel,
             WorldInputBlocker,
         ))
         .with_children(|panel| {
-            panel.spawn(ui_title_bar("Census"));
+            panel.spawn(ui_title_bar("Village"));
             panel.spawn(ui_panel_body()).with_children(|body| {
                 for i in 0..CENSUS_LINES {
                     body.spawn((ui_text("", FS_BODY, UI_INK), CensusLine(i)));
+                }
+                body.spawn(ui_text("Open jobs", FS_SECTION, UI_ACCENT));
+                for i in 0..JOB_QUEUE_LINES {
+                    body.spawn((ui_text("", FS_BODY, UI_MUTED), JobQueueLine(i)));
                 }
             });
         });
@@ -5303,11 +5467,7 @@ fn setup(
     // two are mutually exclusive), hidden until toggled.
     commands
         .spawn((
-            Node {
-                left: Val::Px(456.0),
-                top: Val::Px(60.0),
-                ..ui_panel_node(Val::Px(500.0))
-            },
+            management_panel_node(),
             GlobalZIndex(82),
             ui_panel_frame(),
             GoodsPanel,
@@ -5349,6 +5509,10 @@ fn setup(
                             children![ui_text("Repair", FS_SMALL, UI_INK)],
                         ));
                     });
+                }
+                body.spawn(ui_text("World storage zones", FS_SECTION, UI_ACCENT));
+                for i in 0..STOCKPILE_MANAGEMENT_LINES {
+                    body.spawn((ui_text("", FS_SMALL, UI_MUTED), StockpileManagementLine(i)));
                 }
             });
         });
@@ -5498,7 +5662,7 @@ fn setup(
                     row.spawn((
                         ui_button_small(),
                         CycleEquipmentSlot,
-                        children![(ui_text("Tool ▶", FS_SMALL, UI_INK), EquipmentSlotText)],
+                        children![(ui_text("Tool >", FS_SMALL, UI_INK), EquipmentSlotText)],
                     ));
                     row.spawn((
                         ui_button_small(),
@@ -6066,9 +6230,9 @@ fn append_input_text(target: &mut String, text: &str, max_chars: usize) {
 
 fn start_input_label(value: &str, placeholder: &str, focused: bool) -> String {
     match (value.is_empty(), focused) {
-        (true, true) => format!("▌ {placeholder}"),
+        (true, true) => format!("| {placeholder}"),
         (true, false) => placeholder.to_owned(),
-        (false, true) => format!("{value} ▌"),
+        (false, true) => format!("{value} |"),
         (false, false) => value.to_owned(),
     }
 }
@@ -6842,6 +7006,14 @@ fn join_village_action(colony_id: &str, session: &Session) -> Option<ClientActio
     })
 }
 
+fn restart_world_action(session: &Session) -> Option<ClientAction> {
+    session.ready.then(|| ClientAction::RestartWorld {
+        session_id: session.session_id.clone(),
+        nickname: session.nickname().to_owned(),
+        sig: session.sig.clone(),
+    })
+}
+
 /// Select a village immediately for local rendering and, when authenticated,
 /// return the server action that moves this socket's mutation target to it.
 fn choose_village(
@@ -7332,6 +7504,77 @@ fn render_tree_lifecycle(
     }
 }
 
+fn render_food_sites(
+    mut commands: Commands,
+    latest: Res<LatestSnapshot>,
+    existing: Query<Entity, With<FoodSiteVisual>>,
+) {
+    if !latest.is_changed() {
+        return;
+    }
+    for entity in &existing {
+        commands.entity(entity).despawn();
+    }
+    let Some(colony) = latest.0.as_ref().and_then(|world| world.colonies.first()) else {
+        return;
+    };
+    let revealed = revealed_lookup(&colony.revealed_tiles);
+    let depth_origin = ysort_origin(colony.anchor);
+    for site in &colony.food_sites {
+        if !revealed.contains(&(site.position.x, site.position.y)) {
+            continue;
+        }
+        let pos = grid_to_world(site.position.x, site.position.y);
+        let z = ysort_z(pos.y, depth_origin) + 0.35;
+        let (main_color, main_size, accent_color, accent_size, accent_offset, label) =
+            match site.kind {
+                FoodSiteKind::Cave => (
+                    Color::srgb(0.20, 0.22, 0.25),
+                    Vec2::new(TILE * 0.95, TILE * 0.78),
+                    Color::srgb(0.025, 0.03, 0.04),
+                    Vec2::new(TILE * 0.58, TILE * 0.42),
+                    Vec2::new(0.0, -TILE * 0.08),
+                    format!("Cave level {}", site.level),
+                ),
+                FoodSiteKind::AppleTree => (
+                    Color::srgb(0.65, 0.08, 0.06),
+                    Vec2::splat(TILE * 0.34),
+                    Color::srgb(0.94, 0.36, 0.12),
+                    Vec2::splat(TILE * 0.13),
+                    Vec2::new(TILE * 0.14, TILE * 0.12),
+                    "Apple tree".to_owned(),
+                ),
+                FoodSiteKind::BerryBush => (
+                    Color::srgb(0.10, 0.37, 0.12),
+                    Vec2::new(TILE * 0.78, TILE * 0.58),
+                    Color::srgb(0.63, 0.12, 0.50),
+                    Vec2::splat(TILE * 0.20),
+                    Vec2::new(TILE * 0.16, TILE * 0.05),
+                    "Berry bush".to_owned(),
+                ),
+                FoodSiteKind::Fishing => (
+                    Color::srgba(0.14, 0.62, 0.76, 0.72),
+                    Vec2::new(TILE * 0.82, TILE * 0.24),
+                    Color::srgb(0.82, 0.95, 0.95),
+                    Vec2::new(TILE * 0.22, TILE * 0.10),
+                    Vec2::new(TILE * 0.14, 0.0),
+                    "Fishing habitat".to_owned(),
+                ),
+            };
+        commands.spawn((
+            Sprite::from_color(main_color, main_size),
+            Transform::from_xyz(pos.x, pos.y, z),
+            FoodSiteVisual,
+            Name::new(label),
+        ));
+        commands.spawn((
+            Sprite::from_color(accent_color, accent_size),
+            Transform::from_xyz(pos.x + accent_offset.x, pos.y + accent_offset.y, z + 0.02),
+            FoodSiteVisual,
+        ));
+    }
+}
+
 /// Active settlement claims render as authoritatively cleared meadow and hide
 /// procedural props. Agricultural claims are excluded deliberately: farms and
 /// future rural work remain exterior territory rather than moving the wall.
@@ -7665,6 +7908,56 @@ fn render_fog(
 /// Authored stone roads and traffic-formed dirt roads. Both use the connected
 /// road grammar, but receive deliberately cool-stone and warm-earth tints so
 /// their gameplay meaning stays legible even at the default camera zoom.
+fn job_visible_in_queue(kind: JobKind, status: JobStatus) -> bool {
+    kind != JobKind::VillageMaintenance && matches!(status, JobStatus::Queued | JobStatus::Active)
+}
+
+fn job_world_marker_visible(kind: JobKind, status: JobStatus, position: Option<TilePoint>) -> bool {
+    position.is_some() && job_visible_in_queue(kind, status)
+}
+
+fn render_job_world_markers(
+    mut commands: Commands,
+    latest: Res<LatestSnapshot>,
+    existing: Query<Entity, With<JobWorldMarker>>,
+) {
+    if !latest.is_changed() {
+        return;
+    }
+    for entity in &existing {
+        commands.entity(entity).despawn();
+    }
+    let Some(colony) = latest.0.as_ref().and_then(|world| world.colonies.first()) else {
+        return;
+    };
+    for job in &colony.jobs {
+        if !job_world_marker_visible(job.kind, job.status, job.world_position) {
+            continue;
+        }
+        let site = job.world_position.expect("visible marker has a position");
+        let center = grid_to_world(site.x, site.y);
+        let color = if job.status == JobStatus::Queued {
+            Color::srgba(0.92, 0.16, 0.12, 0.90)
+        } else {
+            Color::srgba(1.0, 0.62, 0.12, 0.90)
+        };
+        let half = TILE * 0.58;
+        let thickness = TILE * 0.12;
+        for (offset, size) in [
+            (Vec2::new(0.0, -half), Vec2::new(TILE * 1.28, thickness)),
+            (Vec2::new(0.0, half), Vec2::new(TILE * 1.28, thickness)),
+            (Vec2::new(-half, 0.0), Vec2::new(thickness, TILE * 1.28)),
+            (Vec2::new(half, 0.0), Vec2::new(thickness, TILE * 1.28)),
+        ] {
+            commands.spawn((
+                Sprite::from_color(color, size),
+                Transform::from_xyz(center.x + offset.x, center.y + offset.y, Z_FOG - 0.5),
+                JobWorldMarker,
+            ));
+        }
+    }
+}
+
 fn render_roads(
     mut commands: Commands,
     latest: Res<LatestSnapshot>,
@@ -7831,14 +8124,6 @@ fn render_buildings(
         match building_visual(building.building_type) {
             BuildingVisual::Infrastructure => {}
             BuildingVisual::Roofed(facade) => {
-                spawn_station_floor(
-                    &mut commands,
-                    &art,
-                    building.world_position,
-                    building.footprint,
-                    StationFloor::Wood,
-                    complete,
-                );
                 let layout = building_render_layout(building.world_position, building.footprint);
                 commands.spawn((
                     Sprite {
@@ -8140,7 +8425,6 @@ fn render_stockpiles(
     mut commands: Commands,
     latest: Res<LatestSnapshot>,
     selection: Res<StockpileSelection>,
-    art: Option<Res<PropArt>>,
     icons: Option<Res<IconArt>>,
     existing: Query<Entity, StockpileEntities>,
 ) {
@@ -8150,8 +8434,7 @@ fn render_stockpiles(
     for entity in &existing {
         commands.entity(entity).despawn();
     }
-    let (Some(colony), Some(art)) = (latest.0.as_ref().and_then(|w| w.colonies.first()), art)
-    else {
+    let Some(colony) = latest.0.as_ref().and_then(|w| w.colonies.first()) else {
         return;
     };
     let depth_origin = ysort_origin(colony.anchor);
@@ -8164,45 +8447,9 @@ fn render_stockpiles(
         let cx = (x0 as f32 + x1 as f32) / 2.0 * TILE;
         let cy = -(y0 as f32 + y1 as f32) / 2.0 * TILE;
 
-        let total = resource_total(&pile.contents);
-        let dominant = dominant_resource(&pile.contents);
-
-        // The shrine reservoir is de-emphasized: its pile prop floats above the
-        // village buildings so the colony's stock reads as a visible pile, but
-        // it gets no overlay rect / accept label / selection (always General,
-        // can't be removed).
-        if is_shrine {
-            if let Some(dominant) = dominant {
-                commands.spawn((
-                    Sprite {
-                        image: art.pile(pile_prop(dominant)),
-                        custom_size: Some(Vec2::splat(pile_scale(total))),
-                        ..default()
-                    },
-                    Transform::from_xyz(cx, cy, ysort_z(cy, depth_origin) + 2.0),
-                    StockpileVis,
-                ));
-                if let Some(icons) = icons.as_ref() {
-                    let hud = hud_res_of(dominant);
-                    commands.spawn((
-                        Sprite {
-                            image: icons.get(hud),
-                            color: resource_icon_tint(hud),
-                            custom_size: Some(Vec2::splat(TILE * 0.34)),
-                            ..default()
-                        },
-                        Transform::from_xyz(cx, cy, ysort_z(cy, depth_origin) + 2.1),
-                        StockpileVis,
-                    ));
-                }
-            }
-            continue;
-        }
-
-        // Player pile: selection outline, an accept-tinted overlay, an
-        // accept-type label (always — so limited piles read even while empty),
-        // and a pile prop when non-empty.
-        if selection.selected.as_deref() == Some(pile.id.as_str()) {
+        // Every pile, including the seeded general store, is a world zone. The
+        // old single pile/boat-like prop made storage look like a building.
+        if !is_shrine && selection.selected.as_deref() == Some(pile.id.as_str()) {
             commands.spawn((
                 Sprite::from_color(
                     Color::srgba(1.0, 0.85, 0.30, 0.50),
@@ -8212,11 +8459,13 @@ fn render_stockpiles(
                 StockpileHighlight,
             ));
         }
-        commands.spawn((
-            Sprite::from_color(accept_overlay_color(&pile.accepts), Vec2::new(w, h)),
-            Transform::from_xyz(cx, cy, Z_ZONE),
-            StockpileVis,
-        ));
+        if stockpile_zone_is_visible(&pile.id) {
+            commands.spawn((
+                Sprite::from_color(accept_overlay_color(&pile.accepts), Vec2::new(w, h)),
+                Transform::from_xyz(cx, cy, Z_ZONE),
+                StockpileVis,
+            ));
+        }
 
         let mut label = accepts_label(&pile.accepts);
         let reported = pile.report.as_ref();
@@ -8238,26 +8487,28 @@ fn render_stockpiles(
         } else if reported.is_none() {
             label.push_str("  uncounted");
         }
-        if let Some(dominant) = dominant {
-            commands.spawn((
-                Sprite {
-                    image: art.pile(pile_prop(dominant)),
-                    custom_size: Some(Vec2::splat(pile_scale(total))),
-                    ..default()
-                },
-                Transform::from_xyz(cx, cy, ysort_z(cy, depth_origin)),
-                StockpileVis,
-            ));
-            if let Some(icons) = icons.as_ref() {
-                let hud = hud_res_of(dominant);
+        if let Some(icons) = icons.as_ref() {
+            let tile_width = (x1 - x0 + 1) as usize;
+            let tile_count = tile_width * (y1 - y0 + 1) as usize;
+            for marker in stockpile_item_markers(&pile.contents, tile_count) {
+                let tile_x = x0 + (marker.tile_index % tile_width) as i32;
+                let tile_y = y0 + (marker.tile_index / tile_width) as i32;
+                let offset_x = if marker.slot % 2 == 0 { -0.22 } else { 0.22 };
+                let offset_y = if marker.slot < 2 { -0.22 } else { 0.22 };
+                let p = grid_to_world(tile_x, tile_y);
+                let hud = hud_res_of(marker.kind);
                 commands.spawn((
                     Sprite {
                         image: icons.get(hud),
                         color: resource_icon_tint(hud),
-                        custom_size: Some(Vec2::splat(TILE * 0.34)),
+                        custom_size: Some(Vec2::splat(TILE * 0.28)),
                         ..default()
                     },
-                    Transform::from_xyz(cx, cy, ysort_z(cy, depth_origin) + 0.1),
+                    Transform::from_xyz(
+                        p.x + offset_x * TILE,
+                        p.y + offset_y * TILE,
+                        ysort_z(p.y, depth_origin) + 0.1,
+                    ),
                     StockpileVis,
                 ));
             }
@@ -8634,46 +8885,27 @@ fn update_orders_panel(
     }
 }
 
-fn bottom_overlay_clearance(window_width: f32, category: DockCategory) -> f32 {
-    let footprint = if category == DockCategory::Inspect {
-        COLLAPSED_BOTTOM_BAR_FOOTPRINT
-    } else if window_width <= NARROW_LAYOUT_MAX_WIDTH {
-        NARROW_BOTTOM_BAR_FOOTPRINT
-    } else {
-        WIDE_BOTTOM_BAR_FOOTPRINT
-    };
-    footprint + UI_GAP
-}
-
-fn dispatches_display(window_width: f32, orders_visible: bool) -> Display {
-    if orders_visible || window_width <= NARROW_LAYOUT_MAX_WIDTH {
-        Display::None
-    } else {
-        Display::Flex
-    }
+fn dispatches_display(_window_width: f32, _orders_visible: bool) -> Display {
+    // The command-bar ticker carries the live feed; the complete, filterable
+    // history lives on the Log page. Keeping a second floating Dispatches box
+    // only duplicated information and obscured the world.
+    Display::None
 }
 
 fn update_bottom_overlays(
     windows: Query<&Window, With<PrimaryWindow>>,
     orders: Res<OrdersUi>,
-    dock: Res<CommandDock>,
     mut dispatches: Query<&mut Node, (With<DispatchesPanel>, Without<MinimapPanel>)>,
-    mut minimap: Query<&mut Node, (With<MinimapPanel>, Without<DispatchesPanel>)>,
 ) {
     let Ok(window) = windows.single() else {
         return;
     };
     let width = window.width();
-    let clearance = bottom_overlay_clearance(width, dock.category);
     if let Ok(mut node) = dispatches.single_mut() {
-        node.bottom = Val::Px(clearance);
         // The compact always-on HUD already carries the newest announcement.
         // At 1024px, hide the larger duplicate feed so every wrapped toolbar
         // row remains usable; the full Log panel stays available via L/click.
         node.display = dispatches_display(width, orders.visible);
-    }
-    if let Ok(mut node) = minimap.single_mut() {
-        node.bottom = Val::Px(clearance);
     }
 }
 
@@ -9096,7 +9328,7 @@ fn update_equipment_controls(
         .zip(selected_cat(&latest, &selection));
     let state = found.map_or_else(
         || EquipmentControlState {
-            slot_label: format!("{} ▶", ui.slot.name()),
+            slot_label: format!("{} >", ui.slot.name()),
             candidate_label: format!("no {}", ui.slot.name()),
             action_label: "Equip",
             item_id: None,
@@ -9640,6 +9872,7 @@ fn sync_cats(
                     AnimSprite {
                         group,
                         moving: false,
+                        phase: animation_phase_for_id(&cat.id),
                     },
                 ))
                 .id();
@@ -9830,7 +10063,11 @@ fn sync_raiders(
                     Transform::from_xyz(target.x, target.y, ysort_z(target.y, depth_origin)),
                     RaiderBody,
                     MoveTarget(target),
-                    AnimSprite { group, moving },
+                    AnimSprite {
+                        group,
+                        moving,
+                        phase: animation_phase_for_id(&raider.id),
+                    },
                 ))
                 .id();
             bodies.0.insert(raider.id.clone(), entity);
@@ -9894,6 +10131,7 @@ fn sync_trader(
                     AnimSprite {
                         group,
                         moving: false,
+                        phase: animation_phase_for_id("visiting-trader"),
                     },
                     children![(
                         // A gold trade-pack on the merchant's back.
@@ -9968,6 +10206,7 @@ fn sync_village_trade_caravans(
                 AnimSprite {
                     group,
                     moving: false,
+                    phase: animation_phase_for_id(&caravan.id),
                 },
                 children![(
                     Sprite::from_color(Color::srgb(0.24, 0.48, 0.72), Vec2::splat(TILE * 0.55)),
@@ -10052,7 +10291,14 @@ fn animate_sprites(time: Res<Time>, mut sprites: Query<(&AnimSprite, &mut Sprite
     let frame = (time.elapsed_secs() * 8.0) as usize % 4;
     for (anim, mut sprite) in &mut sprites {
         if let Some(atlas) = sprite.texture_atlas.as_mut() {
-            atlas.index = atlas_index(anim.group, if anim.moving { frame } else { 0 });
+            atlas.index = atlas_index(
+                anim.group,
+                if anim.moving {
+                    walk_frame(frame, anim.phase)
+                } else {
+                    0
+                },
+            );
         }
     }
 }
@@ -10082,7 +10328,11 @@ fn select_cat(
         .single()
         .ok()
         .and_then(|window| window.cursor_position());
-    let over_world_input_blocker = cursor_over_world_input_blocker(cursor, &blockers);
+    let physical_cursor = windows
+        .single()
+        .ok()
+        .and_then(Window::physical_cursor_position);
+    let over_world_input_blocker = cursor_over_world_input_blocker(physical_cursor, &blockers);
     if !world_pointer_input_allowed(research.visible, over_world_input_blocker, cursor.is_some()) {
         return;
     }
@@ -10155,7 +10405,11 @@ fn select_building(
         .single()
         .ok()
         .and_then(|window| window.cursor_position());
-    let over_world_input_blocker = cursor_over_world_input_blocker(cursor, &blockers);
+    let physical_cursor = windows
+        .single()
+        .ok()
+        .and_then(Window::physical_cursor_position);
+    let over_world_input_blocker = cursor_over_world_input_blocker(physical_cursor, &blockers);
     if !world_pointer_input_allowed(research.visible, over_world_input_blocker, cursor.is_some()) {
         return;
     }
@@ -10166,18 +10420,13 @@ fn select_building(
         return;
     };
     // Skip Walls (rendered as the palisade, not a point marker).
-    let buildings: Vec<(String, Vec2)> = colony
+    let tile = world_to_tile(world);
+    let picked = colony
         .buildings
         .iter()
         .filter(|b| building_visual(b.building_type).is_map_building())
-        .map(|b| {
-            (
-                b.id.clone(),
-                grid_to_world(b.world_position.x, b.world_position.y),
-            )
-        })
-        .collect();
-    let picked = nearest_id(world, &buildings, TILE * 0.9);
+        .find(|building| point_in_building(tile, building))
+        .map(|building| building.id.clone());
     selection.selected = toggle_selection(selection.selected.as_deref(), picked);
 }
 
@@ -10206,7 +10455,11 @@ fn cycle_stacked_selection(
         .single()
         .ok()
         .and_then(|window| window.cursor_position());
-    let over_world_input_blocker = cursor_over_world_input_blocker(cursor, &blockers);
+    let physical_cursor = windows
+        .single()
+        .ok()
+        .and_then(Window::physical_cursor_position);
+    let over_world_input_blocker = cursor_over_world_input_blocker(physical_cursor, &blockers);
     if !world_pointer_input_allowed(research.visible, over_world_input_blocker, cursor.is_some()) {
         return;
     }
@@ -10234,8 +10487,7 @@ fn cycle_stacked_selection(
         .iter()
         .filter(|b| building_visual(b.building_type).is_map_building())
     {
-        let p = grid_to_world(b.world_position.x, b.world_position.y);
-        if p.distance_squared(world) <= (TILE * 0.9).powi(2) {
+        if point_in_building(tile, b) {
             stack.push(PickCandidate {
                 id: b.id.clone(),
                 kind: PickKind::Building,
@@ -10423,6 +10675,7 @@ fn close_inspectors_on_esc(
     mut goods: ResMut<GoodsUi>,
     mut census: ResMut<CensusUi>,
     mut tree: ResMut<UpgradeTreeUi>,
+    mut map: ResMut<MinimapUi>,
     mut trade: ResMut<TradeUi>,
 ) {
     if keys.just_pressed(KeyCode::Escape) {
@@ -10437,6 +10690,7 @@ fn close_inspectors_on_esc(
         goods.visible = false;
         census.visible = false;
         tree.visible = false;
+        map.visible = false;
         trade.closed = true;
     }
 }
@@ -10461,6 +10715,15 @@ struct TooltipUi<'w, 's> {
     text: Query<'w, 's, &'static mut Text, With<TooltipText>>,
 }
 
+/// `Window::cursor_position` is expressed in logical window pixels, while every
+/// fixed `Val::Px` is multiplied by Bevy's global [`UiScale`]. Divide the full
+/// desired screen position (including the cursor clearance) by that multiplier
+/// so a 150% interface does not move the tooltip 150% away from the pointer.
+fn tooltip_node_position(cursor: Vec2, ui_scale: f32) -> Vec2 {
+    (cursor + Vec2::splat(16.0)) / ui_scale.max(f32::EPSILON)
+}
+
+#[allow(clippy::too_many_arguments)]
 fn hover_tooltip(
     windows: Query<&Window>,
     camera: Query<(&Camera, &GlobalTransform), With<WorldCamera>>,
@@ -10468,18 +10731,23 @@ fn hover_tooltip(
     ui_roots: UiRootQuery,
     latest: Res<LatestSnapshot>,
     terrain: Res<WorldRender>,
+    ui_scale: Res<UiScale>,
     mut tooltip: TooltipUi,
 ) {
     let (Ok(mut node), Ok(mut text)) = (tooltip.panel.single_mut(), tooltip.text.single_mut())
     else {
         return;
     };
-    let cursor = windows.single().ok().and_then(|w| w.cursor_position());
+    let cursor = windows.single().ok().and_then(Window::cursor_position);
+    let physical_cursor = windows
+        .single()
+        .ok()
+        .and_then(Window::physical_cursor_position);
     // Suppress over every visible UI root, not only interactive buttons. Without
     // this hit test, pointing at a title bar or HUD still projected through to
     // the terrain and painted an unrelated biome card on top of the panel.
     let over_button = ui.iter().any(|i| !matches!(i, Interaction::None));
-    let over_ui = cursor.is_some_and(|cursor| {
+    let over_ui = physical_cursor.is_some_and(|cursor| {
         ui_roots.iter().any(|(computed, transform, style)| {
             style.display != Display::None && computed.contains_point(*transform, cursor)
         })
@@ -10500,8 +10768,9 @@ fn hover_tooltip(
         Some((cursor, tip)) => {
             text.0 = tip;
             node.display = Display::Flex;
-            node.left = Val::Px(cursor.x + 16.0);
-            node.top = Val::Px(cursor.y + 16.0);
+            let position = tooltip_node_position(cursor, ui_scale.0);
+            node.left = Val::Px(position.x);
+            node.top = Val::Px(position.y);
         }
         None => node.display = Display::None,
     }
@@ -10509,6 +10778,29 @@ fn hover_tooltip(
 
 fn world_tooltip_allowed(over_button: bool, over_ui: bool, has_cursor: bool) -> bool {
     has_cursor && !over_button && !over_ui
+}
+
+fn point_in_building(tile: (i32, i32), building: &BuildingSnapshot) -> bool {
+    let width = building.footprint.width.max(1);
+    let height = building.footprint.height.max(1);
+    tile.0 >= building.world_position.x
+        && tile.0 < building.world_position.x.saturating_add(width)
+        && tile.1 >= building.world_position.y
+        && tile.1 < building.world_position.y.saturating_add(height)
+}
+
+fn decoration_covering_tile(
+    decorations: &BTreeMap<(i32, i32), DecorationRole>,
+    tile: (i32, i32),
+) -> Option<DecorationRole> {
+    decorations.get(&tile).copied().or_else(|| {
+        decorations.iter().find_map(|(&(x, y), &decoration)| {
+            decoration_footprint(x, y, decoration)
+                .iter()
+                .any(|point| (point.x, point.y) == tile)
+                .then_some(decoration)
+        })
+    })
 }
 
 /// The tooltip text for whatever sits under `world` — cats first, then buildings,
@@ -10519,6 +10811,81 @@ fn hover_text(
     world_seed: i64,
     world: Vec2,
     terrain: &WorldRender,
+) -> Option<String> {
+    let tile = world_to_tile(world);
+    let marked_work = marked_work_tooltip(&colony.jobs, tile);
+    let subject = hover_subject_text(colony, world_seed, world, terrain, tile);
+    match (marked_work, subject) {
+        (Some(work), Some(subject)) => Some(format!("{work}\n\n{subject}")),
+        (Some(work), None) => Some(work),
+        (None, subject) => subject,
+    }
+}
+
+/// Explain the authoritative job behind a red/orange tile border. The wording
+/// deliberately answers both "what is marked?" and "why does it exist?" without
+/// requiring the player to cross-reference the full Village job queue.
+fn marked_work_tooltip(jobs: &[JobSnapshot], tile: (i32, i32)) -> Option<String> {
+    let mut matching = jobs.iter().filter(|job| {
+        job_world_marker_visible(job.kind, job.status, job.world_position)
+            && job.world_position.is_some_and(|at| (at.x, at.y) == tile)
+    });
+    let job = matching.next()?;
+    let status = if job.status == JobStatus::Queued {
+        "OPEN"
+    } else {
+        "ACTIVE"
+    };
+    let worker = job.assigned_cat_name.as_deref().unwrap_or("unassigned");
+    let additional = matching.count();
+    let more = if additional > 0 {
+        format!("\nAlso here: {additional} more job(s)")
+    } else {
+        String::new()
+    };
+    Some(format!(
+        "MARKED WORK - {status}\n{}\nWhy: {}\nWorker: {worker}\nTile: {},{}{}",
+        job_kind_label(job.kind),
+        job_reason(job.kind),
+        tile.0,
+        tile.1,
+        more,
+    ))
+}
+
+fn job_reason(kind: JobKind) -> &'static str {
+    match kind {
+        JobKind::SupplyFood => "the village food reserve needs replenishing",
+        JobKind::SupplyWater => "the village water reserve needs replenishing",
+        JobKind::LeaderPlanHunt => "the leader is planning a food expedition",
+        JobKind::HuntExpedition => "the village needs hunted food",
+        JobKind::GatherFood => "ripe apples or berries are ready to gather",
+        JobKind::LeaderPlanHouse => "the leader is planning more housing",
+        JobKind::BuildHouse => "the village needs more housing",
+        JobKind::BuildRoad => "the village ordered this road tile",
+        JobKind::Ritual => "the shrine has requested ritual work",
+        JobKind::Quarry => "stone is needed for village construction",
+        JobKind::GatherLogs => "logs are needed for construction and workshops",
+        JobKind::ReplantTree => "the forest needs a replacement tree",
+        JobKind::Fish => "the village needs food from this fishing spot",
+        JobKind::ForageFibre => "fibre is needed by the textile workshops",
+        JobKind::Explore => "the village needs nearby land revealed",
+        JobKind::FetchWater => "cats need water in village storage",
+        JobKind::TrainWarrior => "the village needs another trained defender",
+        JobKind::ExpandVillage => "the village needs usable territory",
+        JobKind::CarryOffering => "village needs are met, so surplus can serve the shrine",
+        JobKind::PerformOffering => "the delivered offering is ready for the shrine",
+        JobKind::HaulGatherSpot => "gathered goods are waiting to enter storage",
+        JobKind::VillageMaintenance => "urgent needs are met, so this cat can clean and tidy",
+    }
+}
+
+fn hover_subject_text(
+    colony: &ColonySnapshot,
+    world_seed: i64,
+    world: Vec2,
+    terrain: &WorldRender,
+    tile: (i32, i32),
 ) -> Option<String> {
     let cats: Vec<(String, Vec2)> = colony
         .cats
@@ -10532,24 +10899,15 @@ fn hover_text(
         return Some(cat_tooltip(cat));
     }
 
-    let buildings: Vec<(String, Vec2)> = colony
+    if let Some(building) = colony
         .buildings
         .iter()
         .filter(|b| building_visual(b.building_type).is_map_building())
-        .map(|b| {
-            (
-                b.id.clone(),
-                grid_to_world(b.world_position.x, b.world_position.y),
-            )
-        })
-        .collect();
-    if let Some(id) = nearest_id(world, &buildings, TILE * 0.9)
-        && let Some(b) = colony.buildings.iter().find(|b| b.id == id)
+        .find(|building| point_in_building(tile, building))
     {
-        return Some(building_tooltip(b));
+        return Some(building_tooltip(building));
     }
 
-    let tile = world_to_tile(world);
     if let Some(pile) = colony
         .stockpiles
         .iter()
@@ -10558,13 +10916,60 @@ fn hover_text(
         return Some(stockpile_tooltip(pile));
     }
 
+    if let Some(site) = colony
+        .food_sites
+        .iter()
+        .find(|site| (site.position.x, site.position.y) == tile)
+    {
+        return Some(food_site_tooltip(site));
+    }
+
+    if colony
+        .road_tiles
+        .iter()
+        .any(|road| (road.x, road.y) == tile)
+    {
+        return Some("street\npaved road".to_owned());
+    }
+    if colony
+        .dirt_road_tiles
+        .iter()
+        .any(|path| (path.x, path.y) == tile)
+    {
+        return Some("path\nworn footpath".to_owned());
+    }
+
+    let decoration = decoration_covering_tile(&terrain.decorations, tile);
     Some(terrain.climate_biomes.get(&tile).copied().map_or_else(
-        || tile_tooltip(world_seed, tile.0, tile.1),
-        |biome| tile_tooltip_for(biome, terrain.decorations.get(&tile).copied()),
+        || {
+            let biome = tile_climate_biome(world_seed as u32, tile.0, tile.1);
+            tile_tooltip_for(
+                biome,
+                decoration.or_else(|| rendered_decoration(world_seed as u32, tile.0, tile.1)),
+            )
+        },
+        |biome| tile_tooltip_for(biome, decoration),
     ))
 }
 
+fn food_site_tooltip(site: &cat_protocol::FoodSiteSnapshot) -> String {
+    let stock = format!(
+        "food {:.0} / {:.0}\nregen {:.2} / hour",
+        site.stock, site.capacity, site.regen_per_game_hour
+    );
+    match site.kind {
+        FoodSiteKind::Cave => format!(
+            "Cave · level {}\n{stock}\nHunting + fighting\nHigher levels can injure cats; use skilled groups and weapons.",
+            site.level
+        ),
+        FoodSiteKind::AppleTree => format!("Apple tree\n{stock}\nGathering trains farming."),
+        FoodSiteKind::BerryBush => format!("Berry bush\n{stock}\nGathering trains farming."),
+        FoodSiteKind::Fishing => format!("Fishing habitat\n{stock}\nFishing trains fishing."),
+    }
+}
+
 /// Hover text for a bare terrain tile: its climate biome and what it offers.
+#[cfg(test)]
 fn tile_tooltip(world_seed: i64, x: i32, y: i32) -> String {
     let biome = tile_climate_biome(world_seed as u32, x, y);
     tile_tooltip_for(biome, rendered_decoration(world_seed as u32, x, y))
@@ -10930,7 +11335,11 @@ fn zone_paint(
         .single()
         .ok()
         .and_then(|window| window.cursor_position());
-    let over_world_input_blocker = cursor_over_world_input_blocker(cursor, &blockers);
+    let physical_cursor = windows
+        .single()
+        .ok()
+        .and_then(Window::physical_cursor_position);
+    let over_world_input_blocker = cursor_over_world_input_blocker(physical_cursor, &blockers);
     if !world_pointer_input_allowed(research.visible, over_world_input_blocker, cursor.is_some()) {
         // A drag that ends over a panel is cancelled instead of committing a
         // rectangle to the obscured world beneath it.
@@ -11046,7 +11455,11 @@ fn place_building(
         .single()
         .ok()
         .and_then(|window| window.cursor_position());
-    let over_world_input_blocker = cursor_over_world_input_blocker(cursor, &blockers);
+    let physical_cursor = windows
+        .single()
+        .ok()
+        .and_then(Window::physical_cursor_position);
+    let over_world_input_blocker = cursor_over_world_input_blocker(physical_cursor, &blockers);
     if !session.ready
         || !world_pointer_input_allowed(
             research.visible,
@@ -11153,9 +11566,13 @@ fn camera_controls(
         .single()
         .ok()
         .and_then(|window| window.cursor_position());
+    let physical_cursor = windows
+        .single()
+        .ok()
+        .and_then(Window::physical_cursor_position);
     let pointer_allowed = world_pointer_input_allowed(
         false,
-        cursor_over_world_input_blocker(cursor, &blockers),
+        cursor_over_world_input_blocker(physical_cursor, &blockers),
         cursor.is_some(),
     );
     if let Some(colony) = latest
@@ -11478,7 +11895,7 @@ fn village_trade_draft_label(draft: &VillageTradeDraft, field: VillageTradeDraft
 
 fn village_trade_target_label(name: &str, draft: &VillageTradeDraft) -> String {
     format!(
-        "Offer to {name}\n{:.0} {} ↔ {:.0} {}",
+        "Offer to {name}\n{:.0} {} <-> {:.0} {}",
         draft.offered_amount,
         trade_resource_short_label(draft.offered_kind),
         draft.requested_amount,
@@ -11597,7 +12014,7 @@ fn update_village_selector(
             for colony in &snapshot.colonies {
                 let active = selection.selected_id.as_deref() == Some(colony.id.as_str());
                 let status = format!("{:?}", colony.status).to_lowercase();
-                let marker = if active { "●" } else { "○" };
+                let marker = if active { "*" } else { "-" };
                 let group = village_group_label(colony.kind, colony.capabilities.is_owner);
                 let label = format!(
                     "{marker} {group} · {name}\n{pop} cats · {status}",
@@ -11664,7 +12081,7 @@ fn update_village_selector(
                     .any(|colony| colony.id == village.id)
             }) {
                 let label = format!(
-                    "◇ {} @ {},{}\nOffer {:.0} {} ↔ {:.0} {}",
+                    "# {} @ {},{}\nOffer {:.0} {} <-> {:.0} {}",
                     village.name,
                     village.anchor.x,
                     village.anchor.y,
@@ -11755,7 +12172,7 @@ fn update_village_selector(
                         )
                     };
                     let label = format!(
-                        "Caravan: {} · {:.0} {} ↔ {:.0} {}{}\nworld {:.1},{:.1}",
+                        "Caravan: {} · {:.0} {} <-> {:.0} {}{}\nworld {:.1},{:.1}",
                         village_trade_caravan_phase_label(caravan.phase),
                         caravan.offered_amount,
                         trade_resource_short_label(caravan.offered_kind),
@@ -11945,10 +12362,11 @@ fn dashboard_header_text(colony: &ColonySnapshot, online: u32, compact: bool) ->
 
 /// The HUD footer (job counts + stock ledger) shown below the resource rows.
 fn dashboard_footer_text(colony: &ColonySnapshot, compact: bool) -> String {
-    let active_jobs = colony
+    let employment = village_employment(&colony.cats);
+    let visible_jobs = colony
         .jobs
         .iter()
-        .filter(|j| matches!(j.status, cat_protocol::JobStatus::Active))
+        .filter(|job| job_visible_in_queue(job.kind, job.status))
         .count();
     let _ = compact;
     let physical = physical_goods_total(&colony.items);
@@ -11965,8 +12383,8 @@ fn dashboard_footer_text(colony: &ColonySnapshot, compact: bool) -> String {
         },
     );
     format!(
-        "Jobs {active_jobs}/{} · goods {physical}g · ready {trade_ready}\n{ledger} · details in Stores [G]",
-        colony.jobs.len()
+        "Working {}/{} · idle {} · open jobs {}\ngoods {physical}g · ready {trade_ready} · {ledger} · Stores [G]",
+        employment.working, employment.capable, employment.idle, visible_jobs
     )
 }
 
@@ -12066,6 +12484,7 @@ fn toggle_announcements(
     mut goods: ResMut<GoodsUi>,
     mut census: ResMut<CensusUi>,
     mut tree: ResMut<UpgradeTreeUi>,
+    mut map: ResMut<MinimapUi>,
 ) {
     let clicked = button.iter().any(|i| *i == Interaction::Pressed);
     let shortcut_pressed = keys.just_pressed(KeyCode::KeyL) && !tree.visible;
@@ -12075,6 +12494,7 @@ fn toggle_announcements(
             goods.visible = false;
             census.visible = false;
             tree.visible = false;
+            map.visible = false;
         }
     }
 }
@@ -12089,6 +12509,7 @@ fn toggle_goods(
     mut announce: ResMut<AnnouncementsUi>,
     mut census: ResMut<CensusUi>,
     mut tree: ResMut<UpgradeTreeUi>,
+    mut map: ResMut<MinimapUi>,
 ) {
     let clicked = button.iter().any(|i| *i == Interaction::Pressed);
     let shortcut_pressed = keys.just_pressed(KeyCode::KeyG) && !tree.visible;
@@ -12098,6 +12519,7 @@ fn toggle_goods(
             announce.visible = false;
             census.visible = false;
             tree.visible = false;
+            map.visible = false;
         }
     }
 }
@@ -12112,6 +12534,7 @@ fn toggle_census(
     mut goods: ResMut<GoodsUi>,
     mut announce: ResMut<AnnouncementsUi>,
     mut tree: ResMut<UpgradeTreeUi>,
+    mut map: ResMut<MinimapUi>,
 ) {
     let clicked = button.iter().any(|i| *i == Interaction::Pressed);
     let shortcut_pressed = keys.just_pressed(KeyCode::KeyC) && !tree.visible;
@@ -12121,6 +12544,7 @@ fn toggle_census(
             goods.visible = false;
             announce.visible = false;
             tree.visible = false;
+            map.visible = false;
         }
     }
 }
@@ -12131,7 +12555,8 @@ fn update_census(
     latest: Res<LatestSnapshot>,
     ui: Res<CensusUi>,
     mut panel: Query<&mut Node, With<CensusPanel>>,
-    mut lines: Query<(&CensusLine, &mut Text)>,
+    mut lines: Query<(&CensusLine, &mut Text), Without<JobQueueLine>>,
+    mut job_lines: Query<(&JobQueueLine, &mut Text), Without<CensusLine>>,
 ) {
     if let Ok(mut node) = panel.single_mut() {
         node.display = if ui.visible {
@@ -12153,10 +12578,33 @@ fn update_census(
                 &c.events,
                 c.leader.as_ref().map(|l| l.name.as_str()),
             );
-            census_report_lines(&census, c.scale)
+            census_report_lines(&census, c.scale, village_employment(&c.cats))
         });
     for (line, mut text) in &mut lines {
         text.0 = report.get(line.0).cloned().unwrap_or_default();
+    }
+    let jobs = latest
+        .0
+        .as_ref()
+        .and_then(|world| world.colonies.first())
+        .map(|colony| {
+            colony
+                .jobs
+                .iter()
+                .filter(|job| job_visible_in_queue(job.kind, job.status))
+                .map(|job| {
+                    job_queue_row(
+                        job.kind,
+                        job.status,
+                        job.assigned_cat_name.as_deref(),
+                        job.world_position,
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    for (line, mut text) in &mut job_lines {
+        text.0 = jobs.get(line.0).cloned().unwrap_or_default();
     }
 }
 
@@ -12167,7 +12615,6 @@ fn update_goods(
     latest: Res<LatestSnapshot>,
     ui: Res<GoodsUi>,
     session: Res<Session>,
-    selection: Res<Selection>,
     icons: Res<IconArt>,
     mut panel: Query<
         &mut Node,
@@ -12177,8 +12624,22 @@ fn update_goods(
             Without<RepairGoodsButton>,
         ),
     >,
-    mut treasury: Query<&mut Text, (With<GoodsTreasury>, Without<GoodsLine>)>,
-    mut lines: Query<(&GoodsLine, &mut Text), Without<GoodsTreasury>>,
+    mut treasury: Query<
+        &mut Text,
+        (
+            With<GoodsTreasury>,
+            Without<GoodsLine>,
+            Without<StockpileManagementLine>,
+        ),
+    >,
+    mut lines: Query<
+        (&GoodsLine, &mut Text),
+        (Without<GoodsTreasury>, Without<StockpileManagementLine>),
+    >,
+    mut stockpile_lines: Query<
+        (&StockpileManagementLine, &mut Text),
+        (Without<GoodsTreasury>, Without<GoodsLine>),
+    >,
     mut icon_nodes: Query<
         (&GoodsLineIcon, &mut Node, &mut ImageNode),
         (Without<GoodsPanel>, Without<RepairGoodsButton>),
@@ -12194,20 +12655,8 @@ fn update_goods(
         } else {
             Display::None
         };
-        if selection.selected.is_some() {
-            node.left = Val::Auto;
-            node.right = Val::Px(320.0);
-        } else {
-            node.left = Val::Px(456.0);
-            node.right = Val::Auto;
-        }
     }
-    if !ui.visible
-        || (!latest.is_changed()
-            && !ui.is_changed()
-            && !session.is_changed()
-            && !selection.is_changed())
-    {
+    if !ui.visible || (!latest.is_changed() && !ui.is_changed() && !session.is_changed()) {
         return;
     }
     let colony = latest.0.as_ref().and_then(|w| w.colonies.first());
@@ -12247,6 +12696,28 @@ fn update_goods(
             (0, None) if items.is_empty() => "No crafted goods yet".to_string(),
             _ => String::new(),
         };
+    }
+    let pile_rows = colony
+        .map(|colony| {
+            colony
+                .stockpiles
+                .iter()
+                .map(|pile| {
+                    stockpile_management_row(
+                        &pile.id,
+                        pile.x1,
+                        pile.y1,
+                        pile.x2,
+                        pile.y2,
+                        &pile.accepts,
+                        &resource_contents_summary(&pile.contents),
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    for (line, mut text) in &mut stockpile_lines {
+        text.0 = pile_rows.get(line.0).cloned().unwrap_or_default();
     }
     // Per-kind glyph tinted by material, hidden on empty slots.
     for (icon, mut node, mut image) in &mut icon_nodes {
@@ -12508,6 +12979,21 @@ fn handle_trade_buttons(
 
 /// Show/hide the announcements panel and repaint its colour-coded lines
 /// newest-first, plus the HUD "latest announcement" ticker.
+fn handle_log_filters(
+    mut ui: ResMut<AnnouncementsUi>,
+    mut buttons: Query<(&Interaction, &LogFilterButton, &mut KitToggle)>,
+) {
+    let selected = buttons.iter().find_map(|(interaction, filter, _)| {
+        (*interaction == Interaction::Pressed).then_some(filter.0)
+    });
+    if let Some(selected) = selected {
+        ui.filter = selected;
+    }
+    for (_, filter, mut toggle) in &mut buttons {
+        toggle.active = filter.0 == ui.filter;
+    }
+}
+
 #[allow(clippy::type_complexity)]
 fn update_announcements(
     latest: Res<LatestSnapshot>,
@@ -12538,7 +13024,11 @@ fn update_announcements(
         .unwrap_or_default();
     events.sort_by_key(|e| e.timestamp);
     // Newest first.
-    let newest: Vec<_> = events.iter().rev().collect();
+    let newest: Vec<_> = events
+        .iter()
+        .rev()
+        .filter(|event| event_matches_log_filter(&event.kind, ui.filter))
+        .collect();
 
     for (line, mut text, mut color) in &mut lines {
         if let Some(e) = newest.get(line.0) {
@@ -12550,7 +13040,7 @@ fn update_announcements(
         }
     }
     if let Ok((mut text, mut color)) = ticker.single_mut() {
-        if let Some(e) = newest.first() {
+        if let Some(e) = events.last() {
             let kind = event_kind_of(&e.kind);
             text.0 = format!("{} {}", event_glyph(kind), attributed_event_message(e));
             color.0 = event_color(kind);
@@ -12560,21 +13050,34 @@ fn update_announcements(
     }
 }
 
-/// Toggle the corner minimap with the `M` key.
+/// Toggle the full-screen world map with the `M` key or command-bar button.
+#[allow(clippy::too_many_arguments)]
 fn toggle_minimap(
     keys: Res<ButtonInput<KeyCode>>,
-    tree: Res<UpgradeTreeUi>,
+    button: Query<&Interaction, (Changed<Interaction>, With<MapButton>)>,
+    mut tree: ResMut<UpgradeTreeUi>,
     mut ui: ResMut<MinimapUi>,
+    mut goods: ResMut<GoodsUi>,
+    mut census: ResMut<CensusUi>,
+    mut announcements: ResMut<AnnouncementsUi>,
 ) {
-    if keys.just_pressed(KeyCode::KeyM) && !tree.visible {
+    let clicked = button.iter().any(|i| *i == Interaction::Pressed);
+    if (keys.just_pressed(KeyCode::KeyM) && !tree.visible) || clicked {
         ui.visible = !ui.visible;
+        if ui.visible {
+            goods.visible = false;
+            census.visible = false;
+            announcements.visible = false;
+            tree.visible = false;
+        }
     }
 }
 
 /// Redraw the minimap texture from the snapshot each tick: revealed terrain
 /// coloured by biome, with village buildings, cats and any raiders marked.
 fn minimap_panel_visible(requested: bool, goods_open: bool, cat_selected: bool) -> bool {
-    requested && !(goods_open && cat_selected)
+    let _ = (goods_open, cat_selected);
+    requested
 }
 
 fn update_minimap(
@@ -12614,7 +13117,7 @@ fn update_minimap(
     minimap.view = view;
     let biomes = revealed_biomes(seed, &colony.revealed_tiles);
 
-    let mut buf = vec![0u8; (MINIMAP_PX * MINIMAP_PX * 4) as usize];
+    let mut buf = vec![0u8; (WORLD_MAP_PX_WIDTH * WORLD_MAP_PX_HEIGHT * 4) as usize];
     for px in buf.chunks_exact_mut(4) {
         px.copy_from_slice(&MINIMAP_FOG);
     }
@@ -12714,12 +13217,11 @@ fn update_minimap_viewport(
         tx0.max(tx1),
         ty0.max(ty1),
     );
-    let pct = |v: i32| Val::Percent(v as f32 / MINIMAP_PX as f32 * 100.0);
     node.display = Display::Flex;
-    node.left = pct(x0);
-    node.top = pct(y0);
-    node.width = pct(x1 - x0);
-    node.height = pct(y1 - y0);
+    node.left = Val::Percent(x0 as f32 / WORLD_MAP_PX_WIDTH as f32 * 100.0);
+    node.top = Val::Percent(y0 as f32 / WORLD_MAP_PX_HEIGHT as f32 * 100.0);
+    node.width = Val::Percent((x1 - x0) as f32 / WORLD_MAP_PX_WIDTH as f32 * 100.0);
+    node.height = Val::Percent((y1 - y0) as f32 / WORLD_MAP_PX_HEIGHT as f32 * 100.0);
 }
 
 /// Left-click on the minimap recenters the main camera on that world point.
@@ -12742,8 +13244,8 @@ fn minimap_click_to_pan(
     else {
         return;
     };
-    let px = (n.x * MINIMAP_PX as f32) as i32;
-    let py = (n.y * MINIMAP_PX as f32) as i32;
+    let px = (n.x * WORLD_MAP_PX_WIDTH as f32) as i32;
+    let py = (n.y * WORLD_MAP_PX_HEIGHT as f32) as i32;
     let (tx, ty) = minimap_to_world(minimap.view, px, py);
     let world = grid_to_world(tx, ty);
     if let Ok(mut cam) = camera.single_mut() {
@@ -12856,12 +13358,14 @@ fn handle_help_overlay(
     keys: Res<ButtonInput<KeyCode>>,
     tree: Res<UpgradeTreeUi>,
     mut ui: ResMut<HelpUi>,
+    mut restart: ResMut<RestartWorldUi>,
     open: Query<&Interaction, (Changed<Interaction>, With<HelpButton>)>,
     dismiss: Query<&Interaction, (Changed<Interaction>, With<HelpDismissButton>)>,
     mut panel: Query<&mut Node, With<HelpPanel>>,
 ) {
     if tree.visible {
         ui.visible = false;
+        restart.armed = false;
         if let Ok(mut node) = panel.single_mut() {
             node.display = Display::None;
         }
@@ -12883,6 +13387,10 @@ fn handle_help_overlay(
     }
     if clicked_dismiss || (ui.visible && keys.just_pressed(KeyCode::Escape)) {
         ui.visible = false;
+        restart.armed = false;
+    }
+    if !ui.visible {
+        restart.armed = false;
     }
     if let Ok(mut node) = panel.single_mut() {
         node.display = if ui.visible {
@@ -12891,6 +13399,59 @@ fn handle_help_overlay(
             Display::None
         };
     }
+}
+
+fn sync_restart_world_button(
+    session: Res<Session>,
+    restart: Res<RestartWorldUi>,
+    mut button: Query<(&mut KitToggle, &mut KitDisabled), With<RestartWorldButton>>,
+    mut label: Query<&mut Text, With<RestartWorldButtonLabel>>,
+) {
+    let Ok((mut toggle, mut disabled)) = button.single_mut() else {
+        return;
+    };
+    toggle.active = restart.armed;
+    disabled.disabled = !session.ready;
+    if let Ok(mut text) = label.single_mut() {
+        text.0 = if !session.ready {
+            "Restart world (connect first)"
+        } else if restart.armed {
+            "Confirm: erase all villages"
+        } else {
+            "Restart world"
+        }
+        .to_owned();
+    }
+}
+
+fn handle_restart_world_button(
+    button: Query<&Interaction, (Changed<Interaction>, With<RestartWorldButton>)>,
+    session: Res<Session>,
+    mut restart: ResMut<RestartWorldUi>,
+    mut outgoing: ResMut<OutgoingActions>,
+    mut feedback: ResMut<ClientFeedback>,
+) {
+    if !button
+        .iter()
+        .any(|interaction| *interaction == Interaction::Pressed)
+    {
+        return;
+    }
+    if !restart.armed {
+        restart.armed = true;
+        feedback.message =
+            Some("Press the red button again to erase the map and every village.".to_owned());
+        feedback.level = FeedbackLevel::Error;
+        feedback.remaining_secs = 5.0;
+        return;
+    }
+    if let Some(action) = restart_world_action(&session) {
+        outgoing.0.push(action);
+        feedback.message = Some("World restart requested…".to_owned());
+        feedback.level = FeedbackLevel::Info;
+        feedback.remaining_secs = 5.0;
+    }
+    restart.armed = false;
 }
 
 fn update_event_log(
@@ -13377,6 +13938,34 @@ fn resource_contents_summary(resources: &ResourceAmounts) -> String {
     }
 }
 
+fn stockpile_management_row(
+    id: &str,
+    x1: i32,
+    y1: i32,
+    x2: i32,
+    y2: i32,
+    accepts: &[ResourceKind],
+    contents: &str,
+) -> String {
+    let (min_x, max_x) = (x1.min(x2), x1.max(x2));
+    let (min_y, max_y) = (y1.min(y2), y1.max(y2));
+    let tiles = ((max_x - min_x + 1) * (max_y - min_y + 1)).max(0) as usize;
+    let accepts = if accepts.is_empty() {
+        "all".to_owned()
+    } else {
+        accepts
+            .iter()
+            .copied()
+            .map(resource_kind_name)
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    format!(
+        "{id} @ {min_x},{min_y}..{max_x},{max_y} · {tiles} tiles / {} loose slots · accepts {accepts} · {contents}",
+        tiles * 4
+    )
+}
+
 /// Sum of the storable goods held in a stockpile (blessings excluded).
 fn resource_total(c: &ResourceAmounts) -> f64 {
     MAINTAINED_RESOURCE_KINDS
@@ -13399,38 +13988,50 @@ fn dominant_resource(c: &ResourceAmounts) -> Option<ResourceKind> {
         .map(|(kind, _)| kind)
 }
 
-/// The pile prop sprite for a dominant resource.
-fn pile_prop(kind: ResourceKind) -> PropTexture {
-    match kind {
-        ResourceKind::Food => PropTexture::Sack,
-        ResourceKind::Fish => PropTexture::Sack,
-        ResourceKind::Water => PropTexture::Barrel,
-        ResourceKind::Herbs => PropTexture::Haystack,
-        ResourceKind::Catnip | ResourceKind::Grain | ResourceKind::Flour => PropTexture::Sack,
-        ResourceKind::Preserves => PropTexture::Crate,
-        ResourceKind::Medicine => PropTexture::Haystack,
-        ResourceKind::Brew => PropTexture::Barrel,
-        ResourceKind::Materials => PropTexture::StonePile,
-        ResourceKind::Stone => PropTexture::StonePile,
-        ResourceKind::Refined => PropTexture::GoldPile,
-        ResourceKind::Logs | ResourceKind::Lumber | ResourceKind::Planks => PropTexture::Crate,
-        ResourceKind::Blocks => PropTexture::StonePile,
-        ResourceKind::Tools => PropTexture::GoldPile,
-        ResourceKind::Fibre | ResourceKind::Thread | ResourceKind::Cloth => PropTexture::Haystack,
-        ResourceKind::Hide | ResourceKind::Bone | ResourceKind::Leather => PropTexture::Sack,
-        ResourceKind::Ore => PropTexture::StonePile,
-        ResourceKind::Gem => PropTexture::GoldPile,
-        ResourceKind::Clay | ResourceKind::Sand => PropTexture::StonePile,
-        ResourceKind::Metal => PropTexture::GoldPile,
-        ResourceKind::Weapons | ResourceKind::Armor | ResourceKind::Blessings => PropTexture::Crate,
-    }
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct StockpileItemMarker {
+    tile_index: usize,
+    slot: usize,
+    kind: ResourceKind,
 }
 
-/// Pile sprite size scaled by total contents: ~0.5 tile when nearly empty up to
-/// ~1.4 tiles when full.
-fn pile_scale(total: f64) -> f32 {
-    let t = (total / 200.0).clamp(0.0, 1.0) as f32;
-    TILE * (0.5 + t * 0.9)
+/// Turn aggregate contents into a bounded physical-looking display: each world
+/// tile owns four loose-item positions. Containers can later replace a marker
+/// with a denser same-kind stack without changing this spatial contract.
+fn stockpile_item_markers(
+    contents: &ResourceAmounts,
+    tile_count: usize,
+) -> Vec<StockpileItemMarker> {
+    let capacity = tile_count.saturating_mul(4);
+    let mut remaining = MAINTAINED_RESOURCE_KINDS
+        .iter()
+        .copied()
+        .filter(|kind| *kind != ResourceKind::Blessings)
+        .filter_map(|kind| {
+            let units = resource_amount(kind, contents).ceil().max(0.0) as usize;
+            (units > 0).then_some((kind, units))
+        })
+        .collect::<Vec<_>>();
+    let mut markers = Vec::with_capacity(capacity.min(remaining.len().saturating_mul(4)));
+    while markers.len() < capacity && remaining.iter().any(|(_, units)| *units > 0) {
+        for (kind, units) in &mut remaining {
+            if *units == 0 || markers.len() == capacity {
+                continue;
+            }
+            let index = markers.len();
+            markers.push(StockpileItemMarker {
+                tile_index: index / 4,
+                slot: index % 4,
+                kind: *kind,
+            });
+            *units -= 1;
+        }
+    }
+    markers
+}
+
+fn stockpile_zone_is_visible(_id: &str) -> bool {
+    true
 }
 
 fn resource_kind_name(kind: ResourceKind) -> &'static str {
@@ -14097,6 +14698,50 @@ mod tests {
     }
 
     #[test]
+    fn restart_world_action_uses_the_ready_signed_session() {
+        assert_eq!(
+            restart_world_action(&ready_session()),
+            Some(ClientAction::RestartWorld {
+                session_id: "session-1".to_owned(),
+                nickname: CLIENT_ACTOR_LABEL.to_owned(),
+                sig: "signed".to_owned(),
+            })
+        );
+        assert_eq!(restart_world_action(&Session::default()), None);
+    }
+
+    #[test]
+    fn restart_world_button_requires_two_distinct_presses() {
+        let mut app = App::new();
+        app.insert_resource(ready_session())
+            .insert_resource(RestartWorldUi::default())
+            .insert_resource(OutgoingActions::default())
+            .insert_resource(ClientFeedback::default())
+            .add_systems(Update, handle_restart_world_button);
+        let button = app
+            .world_mut()
+            .spawn((RestartWorldButton, Interaction::Pressed))
+            .id();
+
+        app.update();
+        assert!(app.world().resource::<RestartWorldUi>().armed);
+        assert!(app.world().resource::<OutgoingActions>().0.is_empty());
+
+        app.world_mut().entity_mut(button).insert(Interaction::None);
+        app.update();
+        app.world_mut()
+            .entity_mut(button)
+            .insert(Interaction::Pressed);
+        app.update();
+
+        assert!(!app.world().resource::<RestartWorldUi>().armed);
+        assert!(matches!(
+            app.world().resource::<OutgoingActions>().0.as_slice(),
+            [ClientAction::RestartWorld { .. }]
+        ));
+    }
+
+    #[test]
     fn browser_window_follows_parent_while_native_keeps_requested_size() {
         let browser = primary_window_for_platform(true);
         let native = primary_window_for_platform(false);
@@ -14732,26 +15377,11 @@ mod tests {
         assert_eq!(row.justify_content, JustifyContent::Center);
         assert_eq!(row.row_gap, Val::Px(UI_GAP));
         assert_eq!(COLLAPSED_BOTTOM_BAR_FOOTPRINT, 57.0);
-        assert_eq!(WIDE_BOTTOM_BAR_FOOTPRINT, 85.0);
-        assert_eq!(NARROW_BOTTOM_BAR_FOOTPRINT, 113.0);
         assert_eq!(BOTTOM_OVERLAY_CLEARANCE, 63.0);
-        assert_eq!(
-            bottom_overlay_clearance(1024.0, DockCategory::Inspect),
-            63.0
-        );
-        assert_eq!(
-            bottom_overlay_clearance(1280.0, DockCategory::Inspect),
-            63.0
-        );
-        assert_eq!(
-            bottom_overlay_clearance(1024.0, DockCategory::Gather),
-            119.0
-        );
-        assert_eq!(bottom_overlay_clearance(1280.0, DockCategory::Gather), 91.0);
         assert!(dashboard_layout_is_compact(1024.0));
         assert!(!dashboard_layout_is_compact(1280.0));
         assert_eq!(dispatches_display(1024.0, false), Display::None);
-        assert_eq!(dispatches_display(1280.0, false), Display::Flex);
+        assert_eq!(dispatches_display(1280.0, false), Display::None);
         assert_eq!(dispatches_display(1280.0, true), Display::None);
         assert_eq!(hud_resource_grid_rows(), 2);
         assert_eq!(hud_resource_grid_height(), 41.0);
@@ -14761,7 +15391,6 @@ mod tests {
             + 2.0 * UI_BORDER_W;
         assert!(grid_width <= HUD_PANEL_WIDTH);
         const { assert!(HUD_PANEL_WIDTH < 1024.0 && HUD_PANEL_WIDTH < 1280.0) };
-        const { assert!(NARROW_BOTTOM_BAR_FOOTPRINT > WIDE_BOTTOM_BAR_FOOTPRINT) };
         const { assert!(SURVIVAL_HUD_RESOURCES.len() <= 6) };
         const { assert!(HUD_RESOURCE_PILL_HEIGHT <= 20.0) };
     }
@@ -14953,21 +15582,11 @@ mod tests {
     }
 
     #[test]
-    fn selected_building_moves_minimap_beside_inspector_at_1024_width() {
-        assert_eq!(minimap_right_offset(false), RIGHT_PANEL_MARGIN);
-        assert_eq!(
-            minimap_right_offset(true),
-            RIGHT_PANEL_MARGIN + BUILDING_INSPECTOR_WIDTH + UI_GAP
-        );
-        let viewport_width = 1024.0;
-        let inspector_left = viewport_width - RIGHT_PANEL_MARGIN - BUILDING_INSPECTOR_WIDTH;
-        let minimap_right = viewport_width - minimap_right_offset(true);
-        let minimap_left = minimap_right - MINIMAP_PANEL_WIDTH;
-        assert!(minimap_left >= 0.0);
-        assert!(
-            minimap_right + UI_GAP <= inspector_left,
-            "minimap {minimap_left}..{minimap_right} overlaps inspector from {inspector_left}"
-        );
+    fn selected_buildings_do_not_reposition_the_full_screen_world_map() {
+        let node = management_panel_node();
+        assert_eq!(node.left, Val::Px(10.0));
+        assert_eq!(node.right, Val::Px(10.0));
+        assert_eq!(node.bottom, Val::Px(10.0));
     }
 
     fn village_colony(id: &str, name: &str, population: u32, status: &str) -> ColonySnapshot {
@@ -15103,9 +15722,9 @@ mod tests {
     fn focused_start_input_has_a_visible_cursor() {
         assert_eq!(
             start_input_label("", "Name eingeben …", true),
-            "▌ Name eingeben …"
+            "| Name eingeben …"
         );
-        assert_eq!(start_input_label("Mara", "Name eingeben …", true), "Mara ▌");
+        assert_eq!(start_input_label("Mara", "Name eingeben …", true), "Mara |");
         assert_eq!(start_input_label("Mara", "Name eingeben …", false), "Mara");
     }
 
@@ -15792,18 +16411,28 @@ mod tests {
             &[],
             Some("Bella"),
         );
-        let lines = census_report_lines(&c, VillageScale::Communal);
+        let lines = census_report_lines(
+            &c,
+            VillageScale::Communal,
+            village_employment(&[census_cat(3.0, None, false), census_cat(30.0, None, false)]),
+        );
         assert_eq!(lines.len(), CENSUS_LINES);
         assert_eq!(lines[0], "Communal population: 2");
-        assert_eq!(lines[1], "Leader: Bella");
-        assert!(lines[2].contains("★ Boosted: 1"));
-        assert_eq!(lines[3], "Expecting: 1");
+        assert_eq!(lines[1], "Working 0/1   Idle 1");
+        assert_eq!(lines[2], "Leader: Bella");
+        assert!(lines[3].contains("* Boosted: 1"));
+        assert_eq!(lines[4], "Expecting: 1");
         // A vacant seat renders a placeholder rather than dropping the line.
-        let vacant = census_report_lines(&colony_census(&[], &[], None), VillageScale::Personal);
+        let vacant = census_report_lines(
+            &colony_census(&[], &[], None),
+            VillageScale::Personal,
+            village_employment(&[]),
+        );
         assert_eq!(vacant.len(), CENSUS_LINES);
         assert_eq!(vacant[0], "Personal population: 0");
-        assert_eq!(vacant[1], "Leader: (vacant)");
-        assert_eq!(vacant[3], "Expecting: 0");
+        assert_eq!(vacant[1], "Working 0/0   Idle 0");
+        assert_eq!(vacant[2], "Leader: (vacant)");
+        assert_eq!(vacant[4], "Expecting: 0");
     }
 
     #[test]
@@ -15816,11 +16445,11 @@ mod tests {
 
     #[test]
     fn boost_button_label_reflects_boosted_state() {
-        assert_eq!(boost_button_label(false), "★ Boost");
-        assert_eq!(boost_button_label(true), "★ Boosted (click to clear)");
+        assert_eq!(boost_button_label(false), "* Boost");
+        assert_eq!(boost_button_label(true), "* Boosted (click to clear)");
         // The star prefix ties the button to the on-map marker in both states.
-        assert!(boost_button_label(false).starts_with('★'));
-        assert!(boost_button_label(true).starts_with('★'));
+        assert!(boost_button_label(false).starts_with('*'));
+        assert!(boost_button_label(true).starts_with('*'));
     }
 
     #[test]
@@ -16064,9 +16693,9 @@ mod tests {
         assert_eq!(viewport_rect(view, 10, 10, 19, 19), (10, 10, 20, 20));
         // A viewport running off the top-left clamps to the minimap edge.
         assert_eq!(viewport_rect(view, -50, -50, 4, 4), (0, 0, 5, 5));
-        // Off the far edge clamps to MINIMAP_PX.
+        // Off the far edge clamps to the rectangular map edges.
         let (_, _, x1, y1) = viewport_rect(view, 100, 100, 900, 900);
-        assert_eq!((x1, y1), (MINIMAP_PX, MINIMAP_PX));
+        assert_eq!((x1, y1), (WORLD_MAP_PX_WIDTH, WORLD_MAP_PX_HEIGHT));
         // At 4 tiles/pixel the rect coarsens.
         let coarse = MinimapView {
             origin_x: 0,
@@ -16279,6 +16908,22 @@ mod tests {
         }
     }
 
+    #[test]
+    fn cat_walk_animation_has_a_stable_per_cat_phase() {
+        let moss = animation_phase_for_id("moss");
+        let fern = animation_phase_for_id("fern");
+        assert!(moss < 4);
+        assert!(fern < 4);
+        assert_eq!(moss, animation_phase_for_id("moss"));
+        assert_ne!(moss, fern, "unrelated cats should not march in lockstep");
+    }
+
+    #[test]
+    fn moving_cats_with_different_phases_render_different_frames() {
+        assert_ne!(walk_frame(0, 1), walk_frame(0, 3));
+        assert_eq!(walk_frame(3, 1), 0);
+    }
+
     fn png_dimensions(path: &std::path::Path) -> (u32, u32) {
         let bytes = std::fs::read(path).expect("tracked sprite sheet");
         assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
@@ -16337,6 +16982,7 @@ mod tests {
                 AnimSprite {
                     group: 0,
                     moving: false,
+                    phase: animation_phase_for_id(id),
                 },
             ))
             .id()
@@ -16513,7 +17159,7 @@ mod tests {
     }
 
     #[test]
-    fn dominant_resource_and_pile_prop() {
+    fn dominant_resource_finds_the_largest_physical_stack() {
         assert_eq!(dominant_resource(&amounts(0.0, 0.0, 0.0)), None);
         assert_eq!(
             dominant_resource(&amounts(10.0, 4.0, 0.0)),
@@ -16523,20 +17169,6 @@ mod tests {
             dominant_resource(&amounts(3.0, 20.0, 0.0)),
             Some(ResourceKind::Materials)
         );
-        assert_eq!(pile_prop(ResourceKind::Food), PropTexture::Sack);
-        assert_eq!(pile_prop(ResourceKind::Materials), PropTexture::StonePile);
-        assert_eq!(pile_prop(ResourceKind::Refined), PropTexture::GoldPile);
-    }
-
-    #[test]
-    fn pile_scale_grows_with_contents_and_clamps() {
-        let empty = pile_scale(0.0);
-        let some = pile_scale(100.0);
-        let full = pile_scale(200.0);
-        let over = pile_scale(9999.0);
-        assert!(empty < some && some < full);
-        assert_eq!(full, over); // clamps at the cap
-        assert!(empty > 0.0);
     }
 
     #[test]
@@ -16547,7 +17179,7 @@ mod tests {
     }
 
     #[test]
-    fn each_new_single_resource_pile_has_a_visible_total_and_dominant_prop() {
+    fn each_new_single_resource_pile_has_a_loose_item_marker() {
         type ResourceSetter = fn(&mut ResourceAmounts);
         let cases: [(ResourceKind, ResourceSetter); 10] = [
             (ResourceKind::Fibre, |a: &mut ResourceAmounts| a.fibre = 3.0),
@@ -16568,8 +17200,28 @@ mod tests {
             set(&mut amounts);
             assert_eq!(resource_total(&amounts), 3.0, "{kind:?}");
             assert_eq!(dominant_resource(&amounts), Some(kind));
-            assert!(pile_scale(resource_total(&amounts)) > pile_scale(0.0));
+            assert!(
+                stockpile_item_markers(&amounts, 1)
+                    .iter()
+                    .any(|marker| marker.kind == kind)
+            );
         }
+    }
+
+    #[test]
+    fn stockpile_tiles_show_at_most_four_loose_item_markers_each() {
+        let mut contents = amounts(12.0, 7.0, 3.0);
+        contents.water = 8.0;
+        let markers = stockpile_item_markers(&contents, 2);
+        assert_eq!(markers.len(), 8);
+        assert!(markers.iter().all(|marker| marker.slot < 4));
+        assert!(markers.iter().all(|marker| marker.tile_index < 2));
+    }
+
+    #[test]
+    fn seeded_general_storage_is_rendered_as_a_zone_too() {
+        assert!(stockpile_zone_is_visible("storehouse"));
+        assert!(stockpile_zone_is_visible("player-pile"));
     }
 
     #[test]
@@ -16767,6 +17419,37 @@ mod tests {
         );
         let mut labels = world.query_filtered::<Entity, (With<BuildingSprite>, With<Text2d>)>();
         assert_eq!(labels.iter(world).count(), 0);
+    }
+
+    #[test]
+    fn compact_den_renders_one_two_by_two_roof_and_no_exposed_floor_tiles() {
+        let mut snapshot = village_world(&["alpha"]);
+        snapshot.colonies[0].buildings.push(BuildingSnapshot {
+            id: "compact-den".to_owned(),
+            building_type: BuildingType::Den,
+            level: 1,
+            construction_progress: 100.0,
+            world_position: TilePoint { x: 6, y: 6 },
+            position: TilePoint { x: 6, y: 6 },
+            footprint: FootprintSize {
+                width: 2,
+                height: 2,
+            },
+            ..default()
+        });
+
+        let mut app = App::new();
+        app.insert_resource(LatestSnapshot(Some(snapshot)))
+            .insert_resource(BuildingArt::default())
+            .add_systems(Update, render_buildings);
+        app.update();
+
+        let world = app.world_mut();
+        let mut floors = world.query_filtered::<Entity, With<StationFloorSprite>>();
+        assert_eq!(floors.iter(world).count(), 0);
+        let mut roofs = world.query_filtered::<&Sprite, With<RoofedBuildingSprite>>();
+        let roof = roofs.single(world).expect("one compact den roof");
+        assert_eq!(roof.custom_size, Some(Vec2::splat(2.0 * TILE)));
     }
 
     #[test]
@@ -17884,7 +18567,7 @@ mod tests {
         };
         let arriving = trader_status_line(&trader, 12.0, 1_000);
         assert!(arriving.contains("Visit #2 · ARRIVING"));
-        assert!(arriving.contains("exterior 7,20 → target 7,8"));
+        assert!(arriving.contains("exterior 7,20 -> target 7,8"));
         assert!(arriving.contains("trade locked"));
         assert!(arriving.contains("merchant purse 75g"));
         assert!(arriving.contains("wagon 42.0/100.0 kg"));
@@ -17899,7 +18582,7 @@ mod tests {
         trader.state = TraderVisitState::Departing;
         trader.destination = trader.route_exterior;
         let departing = trader_status_line(&trader, 12.0, 1_000);
-        assert!(departing.contains("DEPARTING · current 9,10 → exterior 7,20"));
+        assert!(departing.contains("DEPARTING · current 9,10 -> exterior 7,20"));
     }
 
     #[test]
@@ -18248,6 +18931,31 @@ mod tests {
     }
 
     #[test]
+    fn food_site_tooltips_explain_level_stock_and_regeneration() {
+        let cave = cat_protocol::FoodSiteSnapshot {
+            position: TilePoint { x: 4, y: 9 },
+            kind: cat_protocol::FoodSiteKind::Cave,
+            level: 73,
+            stock: 42.0,
+            capacity: 90.0,
+            regen_per_game_hour: 0.35,
+        };
+        let cave_tip = food_site_tooltip(&cave);
+        assert!(cave_tip.contains("Cave · level 73"));
+        assert!(cave_tip.contains("food 42 / 90"));
+        assert!(cave_tip.contains("regen 0.35 / hour"));
+        assert!(cave_tip.contains("Hunting + fighting"));
+
+        let apple = cat_protocol::FoodSiteSnapshot {
+            kind: cat_protocol::FoodSiteKind::AppleTree,
+            level: 0,
+            ..cave
+        };
+        assert!(food_site_tooltip(&apple).contains("Apple tree"));
+        assert!(food_site_tooltip(&apple).contains("trains farming"));
+    }
+
+    #[test]
     fn production_bar_and_pct_and_line() {
         assert_eq!(progress_pct(0.0), 0);
         assert_eq!(progress_pct(0.5), 50);
@@ -18317,6 +19025,122 @@ mod tests {
     }
 
     #[test]
+    fn cursor_following_tooltip_compensates_for_the_global_ui_scale() {
+        let cursor = Vec2::new(900.0, 450.0);
+
+        assert_eq!(tooltip_node_position(cursor, 1.0), Vec2::new(916.0, 466.0));
+        assert_eq!(
+            tooltip_node_position(cursor, 1.5),
+            Vec2::new(916.0 / 1.5, 466.0 / 1.5)
+        );
+    }
+
+    #[test]
+    fn a_marked_tile_tooltip_explains_the_job_and_why_it_exists() {
+        let mut colony = empty_inspector_test_colony();
+        colony.jobs.push(JobSnapshot {
+            id: "fell-oak-1".to_owned(),
+            kind: JobKind::GatherLogs,
+            status: JobStatus::Queued,
+            ends_at: 0,
+            started_at: 0,
+            click_time_reduced_sec: 0.0,
+            assigned_cat_name: None,
+            world_position: Some(TilePoint { x: 10, y: 11 }),
+        });
+        let mut terrain = WorldRender::default();
+        terrain
+            .decorations
+            .insert((10, 11), DecorationRole::Tree { species: 0 });
+        terrain.climate_biomes.insert((10, 11), Biome::OakForest);
+
+        let tip =
+            hover_text(&colony, 1, grid_to_world(10, 11), &terrain).expect("marked work tooltip");
+
+        assert!(
+            tip.starts_with("MARKED WORK - OPEN"),
+            "unexpected tooltip: {tip}"
+        );
+        assert!(tip.contains("Gather logs"), "unexpected tooltip: {tip}");
+        assert!(
+            tip.contains("Why: logs are needed"),
+            "unexpected tooltip: {tip}"
+        );
+        assert!(
+            tip.contains("Worker: unassigned"),
+            "unexpected tooltip: {tip}"
+        );
+        assert!(tip.contains("Tile: 10,11"), "unexpected tooltip: {tip}");
+        assert!(
+            tip.ends_with("trees"),
+            "underlying tile should remain visible: {tip}"
+        );
+    }
+
+    #[test]
+    fn workshop_hover_uses_the_whole_three_by_three_footprint() {
+        let mut colony = empty_inspector_test_colony();
+        colony.buildings.push(BuildingSnapshot {
+            id: "workshop-hover".to_owned(),
+            building_type: BuildingType::Workshop,
+            level: 1,
+            construction_progress: 100.0,
+            world_position: TilePoint { x: 10, y: 10 },
+            position: TilePoint { x: 10, y: 10 },
+            footprint: FootprintSize {
+                width: 3,
+                height: 3,
+            },
+            ..BuildingSnapshot::default()
+        });
+
+        let tip = hover_text(&colony, 1, grid_to_world(12, 12), &WorldRender::default())
+            .expect("workshop tooltip");
+        assert!(tip.starts_with("workshop"), "unexpected tooltip: {tip}");
+    }
+
+    #[test]
+    fn workshop_selection_hitbox_uses_the_whole_three_by_three_footprint() {
+        let building = BuildingSnapshot {
+            world_position: TilePoint { x: 10, y: 10 },
+            footprint: FootprintSize {
+                width: 3,
+                height: 3,
+            },
+            ..BuildingSnapshot::default()
+        };
+        assert!(point_in_building((10, 10), &building));
+        assert!(point_in_building((12, 12), &building));
+        assert!(!point_in_building((13, 12), &building));
+    }
+
+    #[test]
+    fn paved_streets_and_worn_paths_keep_their_world_type_on_hover() {
+        let mut colony = empty_inspector_test_colony();
+        colony.road_tiles.push(TilePoint { x: 3, y: 4 });
+        colony.dirt_road_tiles.push(TilePoint { x: 5, y: 6 });
+        let terrain = WorldRender::default();
+
+        let street = hover_text(&colony, 1, grid_to_world(3, 4), &terrain).unwrap();
+        let path = hover_text(&colony, 1, grid_to_world(5, 6), &terrain).unwrap();
+        assert!(street.starts_with("street"), "unexpected tooltip: {street}");
+        assert!(path.starts_with("path"), "unexpected tooltip: {path}");
+    }
+
+    #[test]
+    fn tree_canopy_is_hoverable_across_its_full_footprint() {
+        let colony = empty_inspector_test_colony();
+        let mut terrain = WorldRender::default();
+        terrain
+            .decorations
+            .insert((10, 10), DecorationRole::Tree { species: 0 });
+        terrain.climate_biomes.insert((11, 12), Biome::OakForest);
+
+        let tip = hover_text(&colony, 1, grid_to_world(11, 12), &terrain).unwrap();
+        assert!(tip.ends_with("\ntrees"), "unexpected tooltip: {tip}");
+    }
+
+    #[test]
     fn all_building_types_have_labels() {
         for building in [
             BuildingType::Shrine,
@@ -18367,7 +19191,7 @@ mod tests {
         let footer = dashboard_footer_text(&snap.colonies[0], true);
         assert_eq!(footer.lines().count(), 2);
         assert!(!footer.contains("\n\n"));
-        assert!(footer.contains("Jobs"));
+        assert!(footer.contains("Working 0/2 · idle 2 · open jobs 0"));
         assert!(footer.contains("goods"));
         assert!(footer.contains("stores"));
         assert!(footer.contains("Stores [G]"));
@@ -19143,6 +19967,40 @@ mod tests {
     }
 
     #[test]
+    fn management_pages_fill_the_available_screen_below_the_command_bar() {
+        let node = management_panel_node();
+        assert_eq!(node.position_type, PositionType::Absolute);
+        assert_eq!(node.left, Val::Px(10.0));
+        assert_eq!(node.right, Val::Px(10.0));
+        assert_eq!(node.top, Val::Px(60.0));
+        assert_eq!(node.bottom, Val::Px(10.0));
+        assert_eq!(node.width, Val::Auto);
+    }
+
+    #[test]
+    fn high_resolution_windows_scale_the_entire_interface() {
+        assert_eq!(responsive_ui_scale(1280.0, 800.0), 1.0);
+        assert_eq!(responsive_ui_scale(1920.0, 1080.0), 1.0);
+        assert_eq!(responsive_ui_scale(2560.0, 1440.0), 4.0 / 3.0);
+        assert_eq!(responsive_ui_scale(3840.0, 2160.0), 2.0);
+    }
+
+    #[test]
+    fn world_map_uses_a_rectangular_landscape_texture() {
+        const { assert!(WORLD_MAP_PX_WIDTH > WORLD_MAP_PX_HEIGHT) };
+        let view = MinimapView {
+            origin_x: 0,
+            origin_y: 0,
+            tiles_per_px: 1,
+        };
+        assert_eq!(
+            world_to_minimap(view, WORLD_MAP_PX_WIDTH - 1, WORLD_MAP_PX_HEIGHT - 1),
+            Some((WORLD_MAP_PX_WIDTH - 1, WORLD_MAP_PX_HEIGHT - 1))
+        );
+        assert_eq!(world_to_minimap(view, 0, WORLD_MAP_PX_HEIGHT), None);
+    }
+
+    #[test]
     fn narrow_cat_inspector_keeps_actionable_truth_without_colliding_with_toolbar() {
         let mut cat = census_cat(30.0, Some(Specialization::Warrior), false);
         cat.skills.insert(Labor::Fight, 12.0);
@@ -19157,10 +20015,124 @@ mod tests {
     }
 
     #[test]
-    fn minimap_yields_only_when_goods_and_cat_inspector_need_the_same_space() {
+    fn world_map_visibility_depends_only_on_the_map_toggle() {
         assert!(minimap_panel_visible(true, false, true));
         assert!(minimap_panel_visible(true, true, false));
-        assert!(!minimap_panel_visible(true, true, true));
+        assert!(minimap_panel_visible(true, true, true));
         assert!(!minimap_panel_visible(false, false, false));
+    }
+
+    #[test]
+    fn log_filters_group_authoritative_events_without_dropping_all_view() {
+        assert!(event_matches_log_filter("birth", LogFilter::All));
+        assert!(event_matches_log_filter("death_old_age", LogFilter::Life));
+        assert!(event_matches_log_filter("raid_started", LogFilter::Danger));
+        assert!(event_matches_log_filter("trade_sell", LogFilter::Trade));
+        assert!(event_matches_log_filter("production", LogFilter::Work));
+        assert!(!event_matches_log_filter("production", LogFilter::Danger));
+    }
+
+    #[test]
+    fn only_open_physical_jobs_receive_world_markers() {
+        let site = Some(TilePoint { x: 4, y: 5 });
+        assert!(job_world_marker_visible(
+            JobKind::GatherLogs,
+            JobStatus::Queued,
+            site
+        ));
+        assert!(job_world_marker_visible(
+            JobKind::GatherLogs,
+            JobStatus::Active,
+            site
+        ));
+        assert!(!job_world_marker_visible(
+            JobKind::GatherLogs,
+            JobStatus::Completed,
+            site
+        ));
+        assert!(!job_world_marker_visible(
+            JobKind::GatherLogs,
+            JobStatus::Queued,
+            None
+        ));
+        assert!(!job_world_marker_visible(
+            JobKind::VillageMaintenance,
+            JobStatus::Active,
+            site
+        ));
+    }
+
+    #[test]
+    fn village_job_queue_excludes_ambient_cleaning_and_closed_history() {
+        assert!(job_visible_in_queue(JobKind::GatherLogs, JobStatus::Queued));
+        assert!(job_visible_in_queue(JobKind::Fish, JobStatus::Active));
+        assert!(!job_visible_in_queue(
+            JobKind::VillageMaintenance,
+            JobStatus::Active
+        ));
+        assert!(!job_visible_in_queue(
+            JobKind::GatherLogs,
+            JobStatus::Completed
+        ));
+    }
+
+    #[test]
+    fn village_employment_counts_cats_not_job_records_and_ignores_ambient_motion() {
+        let mut working_job = census_cat(30.0, None, false);
+        working_job.id = "job-cat".to_owned();
+        working_job.current_task = Some("job-1".to_owned());
+        let mut working_building = census_cat(30.0, None, false);
+        working_building.id = "building-cat".to_owned();
+        working_building.assigned_building_id = Some("workshop-1".to_owned());
+        let mut ambient = census_cat(30.0, None, false);
+        ambient.id = "ambient-cat".to_owned();
+        ambient.activity = CatActivity::Traveling;
+        let kitten = census_cat(3.0, None, false);
+
+        let summary = village_employment(&[working_job, working_building, ambient, kitten]);
+
+        assert_eq!(summary.capable, 3);
+        assert_eq!(summary.working, 2);
+        assert_eq!(summary.idle, 1);
+        assert_eq!(summary.line(), "Working 2/3   Idle 1");
+    }
+
+    #[test]
+    fn job_queue_rows_show_status_worker_and_world_target() {
+        let row = job_queue_row(
+            JobKind::GatherLogs,
+            JobStatus::Queued,
+            None,
+            Some(TilePoint { x: 4, y: 5 }),
+        );
+        assert!(row.contains("Gather logs"));
+        assert!(row.contains("OPEN"));
+        assert!(row.contains("4,5"));
+
+        let assigned = job_queue_row(
+            JobKind::BuildRoad,
+            JobStatus::Active,
+            Some("Moss"),
+            Some(TilePoint { x: 8, y: 3 }),
+        );
+        assert!(assigned.contains("Moss"));
+        assert!(assigned.contains("ACTIVE"));
+    }
+
+    #[test]
+    fn stores_zone_rows_explain_world_footprint_and_loose_slots() {
+        let row = stockpile_management_row(
+            "pantry",
+            2,
+            3,
+            3,
+            4,
+            &[ResourceKind::Food, ResourceKind::Preserves],
+            "food 6",
+        );
+        assert!(row.contains("pantry"));
+        assert!(row.contains("2,3..3,4"));
+        assert!(row.contains("4 tiles / 16 loose slots"));
+        assert!(row.contains("food, preserves"));
     }
 }

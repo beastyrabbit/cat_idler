@@ -80,6 +80,7 @@ impl Labor {
     pub fn for_job_kind(kind: JobKind) -> Option<Self> {
         match kind {
             JobKind::HuntExpedition => Some(Self::Hunt),
+            JobKind::GatherFood => Some(Self::Farm),
             JobKind::Fish => Some(Self::Fishing),
             JobKind::BuildHouse | JobKind::BuildRoad => Some(Self::Build),
             JobKind::Ritual => Some(Self::Ritual),
@@ -95,6 +96,7 @@ impl Labor {
             // P16: a gather-spot mover is pure hauling, same labor as the mid-job haul
             // trips other gathering jobs already train (`HAUL_SKILL_GAIN`).
             JobKind::HaulGatherSpot => Some(Self::Haul),
+            JobKind::VillageMaintenance => Some(Self::Haul),
             JobKind::Explore => Some(Self::Scout),
             JobKind::ExpandVillage => Some(Self::Build),
             JobKind::SupplyFood
@@ -156,6 +158,7 @@ mod tests {
             let mapped = Labor::for_job_kind(*kind);
             match kind {
                 JobKind::HuntExpedition => assert_eq!(mapped, Some(Labor::Hunt)),
+                JobKind::GatherFood => assert_eq!(mapped, Some(Labor::Farm)),
                 JobKind::Fish => assert_eq!(mapped, Some(Labor::Fishing)),
                 JobKind::BuildHouse | JobKind::BuildRoad => {
                     assert_eq!(mapped, Some(Labor::Build));
@@ -171,6 +174,7 @@ mod tests {
                 JobKind::CarryOffering => assert_eq!(mapped, Some(Labor::Haul)),
                 JobKind::PerformOffering => assert_eq!(mapped, Some(Labor::Ritual)),
                 JobKind::HaulGatherSpot => assert_eq!(mapped, Some(Labor::Haul)),
+                JobKind::VillageMaintenance => assert_eq!(mapped, Some(Labor::Haul)),
                 JobKind::Explore => assert_eq!(mapped, Some(Labor::Scout)),
                 JobKind::ExpandVillage => assert_eq!(mapped, Some(Labor::Build)),
                 _ => assert_eq!(mapped, None),

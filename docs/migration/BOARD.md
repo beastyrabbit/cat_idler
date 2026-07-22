@@ -55,6 +55,22 @@ This table is a summary rollup, not a card-by-card log; see “P12–P19 — wha
 below for the historical feature list and
 `docs/IMPLEMENTATION_AUDIT.md` for the evidence-backed status and remaining acceptance matrix.
 
+### P21.1 Playtest feedback backlog   [status: dev]
+persona: test-engineer -> developer -> qa            depends_on: [P15, P18]        parallel_group: P21-feedback
+scope: Implement the complete 2026-07-22 playtest-feedback request. The first partial slice compacts
+Dens to 2x2, uses complete building and tree footprints for world interaction, labels paved streets
+and worn paths, de-synchronizes actor walk cycles, and gives otherwise-idle work-capable cats a
+low-priority maintenance job. Storage/barrels, shrine demand, job visualization, walls/pathfinding,
+farm/fishing/road authoring, leader autonomy, and the full-screen Village/log/map UI remain open.
+partial evidence: Regression tests cover the Den footprint, 3x3 workshop hover, multi-tile tree hover,
+street/path labels, stable per-cat animation phases, 100% autonomous adult employment, explicit
+maintenance job/task projection, wire literals, duration, and skill mapping. Focused Nextest,
+workspace smoke (74/74), touched-crate Clippy with `-D warnings`, and rustfmt pass on 2026-07-22.
+notes: The TypeScript-parity `direct_colony` scorer remains unchanged; evergreen maintenance is
+appended only by `automated_plan`, after all survival, staffing, production, and scouting slots.
+This card must not return to `done` until every item in the original feedback request has direct
+tests where practical and has been exercised in a live graphical playtest.
+
 ---
 
 ## P0 — Foundation & safety (orchestrator does directly)

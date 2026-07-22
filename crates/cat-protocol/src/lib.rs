@@ -238,6 +238,10 @@ pub struct ColonySnapshot {
     /// They are distinct from authored stone roads and never form on stone ground.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dirt_road_tiles: Vec<TilePoint>,
+    /// Revealed renewable wilderness food sites. Hidden sites never cross the
+    /// protocol boundary, preserving fog-of-war knowledge.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub food_sites: Vec<FoodSiteSnapshot>,
     pub village_gate: Option<GatePlacement>,
     /// Authoritative wall edges. During expansion this contains the complete old
     /// enclosure plus only those new outer segments whose work has finished.
@@ -1095,6 +1099,10 @@ pub struct JobSnapshot {
     pub started_at: i64,
     pub click_time_reduced_sec: f64,
     pub assigned_cat_name: Option<String>,
+    /// Physical work target used by the Jobs page and world marker. Jobs whose
+    /// work is colony-wide or has not resolved a site yet leave this absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub world_position: Option<TilePoint>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -1116,6 +1124,8 @@ pub enum JobKind {
     SupplyWater,
     LeaderPlanHunt,
     HuntExpedition,
+    /// Physical apple-tree or berry-bush harvest that trains farming.
+    GatherFood,
     LeaderPlanHouse,
     BuildHouse,
     /// Physical authored-road work: fetch one unit of Supplies per tile, walk the
@@ -1146,6 +1156,8 @@ pub enum JobKind {
     /// P16 gather spots: a mover walks to a gather spot, picks up its contents, and
     /// hauls them back to a village stockpile/shrine — see [`ClientAction::DesignateGatherSpot`].
     HaulGatherSpot,
+    /// Evergreen low-priority cleaning and tidying dispatched by the leader.
+    VillageMaintenance,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1657,6 +1669,27 @@ pub struct TilePoint {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum FoodSiteKind {
+    Cave,
+    AppleTree,
+    BerryBush,
+    Fishing,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FoodSiteSnapshot {
+    pub position: TilePoint,
+    pub kind: FoodSiteKind,
+    /// Caves use 1-100. Peaceful gathering/fishing sites report zero.
+    pub level: u8,
+    pub stock: f64,
+    pub capacity: f64,
+    pub regen_per_game_hour: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum BridgeAxis {
     Horizontal,
     Vertical,
@@ -1782,6 +1815,11 @@ pub enum GateSide {
 )]
 pub enum ClientAction {
     Ensure,
+    RestartWorld {
+        session_id: String,
+        nickname: String,
+        sig: String,
+    },
     Presence {
         session_id: String,
         nickname: String,
@@ -3073,6 +3111,7 @@ mod tests {
                     started_at: 1_700_000_000_000,
                     click_time_reduced_sec: 3.5,
                     assigned_cat_name: Some("Moss".to_string()),
+                    world_position: None,
                 }],
                 upgrades: vec![UpgradeSnapshot {
                     key: UpgradeKey::ClickPower,
@@ -3186,6 +3225,14 @@ mod tests {
                 stump_tiles: vec![],
                 sapling_tiles: vec![],
                 dirt_road_tiles: vec![],
+                food_sites: vec![FoodSiteSnapshot {
+                    position: TilePoint { x: 14, y: 8 },
+                    kind: FoodSiteKind::Cave,
+                    level: 37,
+                    stock: 42.0,
+                    capacity: 80.0,
+                    regen_per_game_hour: 0.25,
+                }],
                 village_gate: Some(GatePlacement {
                     x: 5,
                     y: 7,
@@ -3306,6 +3353,27 @@ mod tests {
             serde_json::from_value::<FarmSnapshot>(encoded).expect("farm round-trip"),
             farm
         );
+    }
+
+    #[test]
+    fn job_snapshot_exposes_an_optional_world_marker_position() {
+        let value = serde_json::json!({
+            "id": "job-tree",
+            "kind": "gather_logs",
+            "status": "queued",
+            "endsAt": 20,
+            "startedAt": 10,
+            "clickTimeReducedSec": 0.0,
+            "assignedCatName": null,
+            "worldPosition": { "x": 7, "y": 9 }
+        });
+        let job: JobSnapshot = serde_json::from_value(value).expect("job marker decodes");
+        assert_eq!(job.world_position, Some(TilePoint { x: 7, y: 9 }));
+
+        let mut legacy = serde_json::to_value(&job).expect("job marker encodes");
+        legacy.as_object_mut().unwrap().remove("worldPosition");
+        let legacy: JobSnapshot = serde_json::from_value(legacy).expect("legacy job decodes");
+        assert_eq!(legacy.world_position, None);
     }
 
     #[test]
@@ -4066,6 +4134,30 @@ mod tests {
                 "sig": "x",
                 "resource": "food"
             })
+        );
+    }
+
+    #[test]
+    fn restart_world_action_has_an_explicit_signed_wire_contract() {
+        let action = ClientAction::RestartWorld {
+            session_id: "session-1".to_owned(),
+            nickname: "Mara".to_owned(),
+            sig: "signed".to_owned(),
+        };
+
+        let wire = serde_json::to_value(&action).expect("serialize restart action");
+        assert_eq!(
+            wire,
+            json!({
+                "action": "restartWorld",
+                "sessionId": "session-1",
+                "nickname": "Mara",
+                "sig": "signed"
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<ClientAction>(wire).expect("deserialize restart action"),
+            action
         );
     }
 

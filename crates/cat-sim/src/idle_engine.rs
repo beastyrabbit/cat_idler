@@ -12,11 +12,13 @@ pub struct UpgradeLevels {
     pub resilience: f64,
 }
 
-pub const BASE_JOB_SECONDS: [(JobKind, f64); 20] = [
+pub const BASE_JOB_SECONDS: [(JobKind, f64); 22] = [
     (JobKind::SupplyFood, 20.0),
     (JobKind::SupplyWater, 15.0),
     (JobKind::LeaderPlanHunt, 30.0 * 60.0),
     (JobKind::HuntExpedition, 8.0 * 60.0 * 60.0),
+    // Renewable orchard/bush gathering is a short farming shift.
+    (JobKind::GatherFood, 40.0 * 60.0),
     // P16/P17 fishing: a bounded shoreline shift. Physical travel and three
     // conserved cargo trips make the wall clock longer than this work timer.
     (JobKind::Fish, 45.0 * 60.0),
@@ -46,6 +48,9 @@ pub const BASE_JOB_SECONDS: [(JobKind, f64); 20] = [
     // reaches the gather spot and picks up its cargo (see `world_tick`'s gather-spot
     // pickup phase), not on this timer.
     (JobKind::HaulGatherSpot, 5.0 * 60.0),
+    // A short renewable shift. It keeps spare adults occupied without outranking
+    // concrete resource, construction, staffing, or shrine work.
+    (JobKind::VillageMaintenance, 30.0 * 60.0),
 ];
 
 #[must_use]
@@ -245,6 +250,7 @@ mod tests {
             (JobKind::CarryOffering, 300.0),
             (JobKind::PerformOffering, 2_400.0),
             (JobKind::HaulGatherSpot, 300.0),
+            (JobKind::VillageMaintenance, 1_800.0),
         ];
 
         assert_eq!(BASE_JOB_SECONDS.len(), JobKind::ALL.len());
