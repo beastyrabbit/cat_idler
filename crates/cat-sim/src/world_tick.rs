@@ -1892,6 +1892,27 @@ fn placement_error_for_tiles(
         .placement_error_for_tiles(tiles, require_claimed)
 }
 
+fn building_placement_error_with_context(
+    occupancy: &SpatialOccupancyContext,
+    tiles: &[TilePos],
+    building_type: BuildingType,
+) -> Option<SpatialPlacementError> {
+    match occupancy.placement_error_for_tiles(tiles, true) {
+        Some(SpatialPlacementError::PerimeterWall) if building_type == BuildingType::Field => None,
+        error => error,
+    }
+}
+
+fn building_placement_error_for_tiles(
+    colony: &ColonyRuntime,
+    tiles: &[TilePos],
+    world_seed: u32,
+    building_type: BuildingType,
+) -> Option<SpatialPlacementError> {
+    let occupancy = SpatialOccupancyContext::new(colony, world_seed);
+    building_placement_error_with_context(&occupancy, tiles, building_type)
+}
+
 /// Validate a new stockpile/gather-spot rectangle without mutating the colony.
 /// General stockpiles pass `require_claimed = true`; temporary P16 gather spots
 /// remain legal outside the village but obey every collision/terrain rule.
@@ -5814,7 +5835,9 @@ pub(crate) fn commit_player_scaffold(
     }
     let (width, height) = footprint_for(building_type);
     let footprint = footprint_tiles(site, width, height);
-    if let Some(error) = placement_error_for_tiles(colony, &footprint, world_seed, true) {
+    if let Some(error) =
+        building_placement_error_for_tiles(colony, &footprint, world_seed, building_type)
+    {
         return Err(error.message());
     }
     if reserved_construction_tiles(colony)
@@ -20719,7 +20742,7 @@ fn next_claimed_building_site(
         .copied()
         .filter(|anchor| {
             let tiles = footprint_tiles(*anchor, w, h);
-            occupancy.placement_error_for_tiles(&tiles, true).is_none()
+            building_placement_error_with_context(&occupancy, &tiles, building_type).is_none()
                 && tiles.iter().all(|tile| !reserved_tiles.contains(tile))
                 && (building_type == BuildingType::Field
                     || tiles
@@ -20926,7 +20949,7 @@ fn claimed_building_site_is_ready(
     let (width, height) = footprint_for(building_type);
     let tiles = footprint_tiles(site, width, height);
     let claimed = colony.claimed_tiles.iter().copied().collect();
-    placement_error_for_tiles(colony, &tiles, world_seed, true).is_none()
+    building_placement_error_for_tiles(colony, &tiles, world_seed, building_type).is_none()
         && (building_type == BuildingType::Field
             || tiles
                 .iter()
@@ -21107,7 +21130,7 @@ pub fn can_plan_building_at(
 ) -> bool {
     let (width, height) = footprint_for(building_type);
     let footprint = footprint_tiles(site, width, height);
-    if placement_error_for_tiles(colony, &footprint, world_seed, true).is_some()
+    if building_placement_error_for_tiles(colony, &footprint, world_seed, building_type).is_some()
         || reserved_construction_tiles(colony)
             .iter()
             .any(|tile| footprint.contains(tile))
@@ -57659,6 +57682,30 @@ mod tests {
             footprint_tiles(chosen, 2, 3)
                 .iter()
                 .all(|tile| !inside_village_interior(&colony, *tile))
+        );
+    }
+
+    #[test]
+    fn field_placement_accepts_prepared_agricultural_perimeter_ground() {
+        let seed = 42;
+        let site = pos(31, 31);
+        let mut colony = ColonyRuntime::default();
+        typed_block(&mut colony, pos(30, 30), 7, 8, TileType::Field);
+        for tile in colony.world_tiles.values_mut() {
+            tile.last_depleted = 1;
+        }
+        for tile in footprint_tiles(site, 2, 3) {
+            colony.agricultural_tiles.insert(tile);
+        }
+
+        assert_eq!(
+            placement_error_for_tiles(&colony, &footprint_tiles(site, 2, 3), seed, true),
+            Some(SpatialPlacementError::PerimeterWall),
+            "prepared exterior ground deliberately replaces this palisade segment"
+        );
+        assert!(
+            claimed_building_site_is_ready(&colony, site, seed, BuildingType::Field),
+            "the Field must be allowed to occupy its prepared exterior parcel"
         );
     }
 
