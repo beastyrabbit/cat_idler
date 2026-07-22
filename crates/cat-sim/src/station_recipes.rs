@@ -377,7 +377,7 @@ const WORKSHOP_RECIPES: &[StationRecipeDescriptor] = &[
         id: WORKSHOP_RECIPE_ID,
         building_type: BuildingType::Workshop,
         input_resources: &[ResourceKind::Materials],
-        output_resources: WORKSHOP_OUTPUTS,
+        output_resources: &[ResourceKind::Refined],
         output_item: None,
         founding_available: false,
     },
@@ -757,7 +757,7 @@ const TANNERY_RECIPES: &[StationRecipeDescriptor] = &[
     StationRecipeDescriptor {
         id: HIDE_TO_LEATHER_RECIPE_ID,
         building_type: BuildingType::Tannery,
-        input_resources: TANNERY_INPUTS,
+        input_resources: &[ResourceKind::Hide],
         output_resources: TANNERY_OUTPUTS,
         output_item: None,
         founding_available: false,

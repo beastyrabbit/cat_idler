@@ -18685,7 +18685,15 @@ pub(crate) fn building_station_capacity(colony: &ColonyRuntime, building: &Build
         .building(building.building_type.as_str())
         .capacity_mult
         .max(0.0);
-    stockpiles::STATION_LOCAL_CAPACITY * multiplier
+    let base_capacity = if building.building_type == BuildingType::Mill {
+        // The maintained masterwork-pastry recipe emits twelve Food before any
+        // yield research. A Mill must be able to hold one complete atomic batch;
+        // capacity research then scales that truthful working reserve normally.
+        12.0
+    } else {
+        stockpiles::STATION_LOCAL_CAPACITY
+    };
+    base_capacity * multiplier
 }
 
 fn deposit_stockpile_index(
@@ -25868,14 +25876,16 @@ fn advance_physical_mill_slot(
         return;
     }
 
-    // Finished food leaves first; residual flour is then physically banked before it
-    // may return as input for a later flour-first baking cycle.
-    for kind in [ResourceKind::Food, ResourceKind::Flour] {
-        if !allow_output_haul {
-            break;
-        }
-        if begin_station_output_haul(colony, &building, cat_index, kind, gate) {
-            return;
+    // Flush every descriptor-owned Mill output even after a non-repeating generic
+    // recipe has left the queue. Otherwise the empty-queue fallback strands the
+    // Preserves and Brew produced by food-preservation and brewing recipes.
+    if allow_output_haul
+        && let Some((_, output_kinds)) = station_resource_sets(building.building_type)
+    {
+        for &kind in output_kinds {
+            if begin_station_output_haul(colony, &building, cat_index, kind, gate) {
+                return;
+            }
         }
     }
     let Some(selected_recipe_id) = building
@@ -40712,6 +40722,123 @@ mod tests {
             .position(|pile| pile.id == input_id)
             .expect("station input");
         stockpiles::add_resource(&mut colony.stockpiles[input].contents, kind, amount);
+    }
+
+    #[test]
+    fn catalog_recipe_lifecycle_regressions_cover_exact_contracts_and_delivery() {
+        let workshop = crate::station_recipes::station_recipe(WORKSHOP_RECIPE_ID).unwrap();
+        assert_eq!(workshop.input_resources, &[ResourceKind::Materials]);
+        assert_eq!(workshop.output_resources, &[ResourceKind::Refined]);
+
+        let tannery = crate::station_recipes::station_recipe(TANNERY_RECIPE_ID).unwrap();
+        assert_eq!(tannery.input_resources, &[ResourceKind::Hide]);
+        assert_eq!(tannery.output_resources, &[ResourceKind::Leather]);
+
+        for (recipe_id, output_kind) in [
+            (
+                crate::station_recipes::DRY_FOOD_RECIPE_ID,
+                ResourceKind::Preserves,
+            ),
+            (
+                crate::station_recipes::SMOKE_FOOD_RECIPE_ID,
+                ResourceKind::Preserves,
+            ),
+            (
+                crate::station_recipes::PICKLE_FOOD_RECIPE_ID,
+                ResourceKind::Preserves,
+            ),
+            (
+                crate::station_recipes::PRESERVE_RATIONS_RECIPE_ID,
+                ResourceKind::Preserves,
+            ),
+            (
+                crate::station_recipes::PRESERVE_MASTERWORK_FEAST_RECIPE_ID,
+                ResourceKind::Preserves,
+            ),
+            (
+                crate::station_recipes::BREW_GRAIN_SMALL_RECIPE_ID,
+                ResourceKind::Brew,
+            ),
+            (
+                crate::station_recipes::BREW_CATNIP_ALE_RECIPE_ID,
+                ResourceKind::Brew,
+            ),
+            (
+                crate::station_recipes::BREW_HERBAL_TONIC_RECIPE_ID,
+                ResourceKind::Brew,
+            ),
+            (
+                crate::station_recipes::BREW_SPICED_ALE_RECIPE_ID,
+                ResourceKind::Brew,
+            ),
+            (
+                crate::station_recipes::BREW_MASTERWORK_RECIPE_ID,
+                ResourceKind::Brew,
+            ),
+        ] {
+            let mut colony = chain_colony(BuildingType::Mill, Resources::default(), true);
+            colony.buildings[0].production_queue.clear();
+            ensure_station_stores(&mut colony, 0);
+            let building = colony.buildings[0].clone();
+            let output_id = stockpiles::station_output_id(&building.id);
+            let output = colony
+                .stockpiles
+                .iter_mut()
+                .find(|pile| pile.id == output_id)
+                .unwrap();
+            stockpiles::add_resource(&mut output.contents, output_kind, 1.0);
+            colony.cats[0].position = position_from_world(station_work_point(&building));
+
+            advance_primary_production_slot(&mut colony, 0, production_gate(1, 1_000), 0.0, true);
+
+            let carried = colony.cats[0]
+                .carrying
+                .as_ref()
+                .unwrap_or_else(|| panic!("{recipe_id} left its completed output stranded"));
+            assert_eq!(
+                carrying_resource_kind(carried.kind),
+                Some(output_kind),
+                "{recipe_id}"
+            );
+        }
+
+        let mut pastry = chain_colony(
+            BuildingType::Mill,
+            Resources {
+                flour: 6.0,
+                ..Resources::default()
+            },
+            true,
+        );
+        pastry.recipe_entitlement_rules_version = 0;
+        pastry.upgrade_tree.owned_node_ids = vec![
+            "baking_sources".to_owned(),
+            "baking_bulk".to_owned(),
+            "mill_stores".to_owned(),
+        ];
+        pastry.buildings[0].production_queue = vec![ProductionQueueEntry {
+            recipe_id: crate::station_recipes::BAKE_MASTERWORK_PASTRY_RECIPE_ID.to_owned(),
+            repeat: false,
+        }];
+        move_general_stock_to_station_input(&mut pastry, ResourceKind::Flour, 6.0);
+        let building = pastry.buildings[0].clone();
+        pastry.cats[0].position = position_from_world(station_work_point(&building));
+
+        advance_physical_refiner_slot(
+            &mut pastry,
+            0,
+            production_gate(600, 600_000),
+            600.0,
+            false,
+            true,
+        );
+
+        assert!(pastry.buildings[0].production_queue.is_empty());
+        assert!(
+            (station_inventory_amount(&pastry, &building.id, true, ResourceKind::Food) - 13.2)
+                .abs()
+                <= 1.0e-9
+        );
     }
 
     #[test]
