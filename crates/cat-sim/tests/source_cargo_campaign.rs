@@ -12,7 +12,7 @@ use cat_sim::{
     },
     stockpiles::{station_input_id, station_output_id},
     storage::BASE_CAPACITY,
-    types::{BuildingType, JobKind, JobStatus},
+    types::{BuildingType, CatSpecialization, JobKind, JobStatus},
     world_tick::{
         BuildingRuntime, TilePos, WorldState, default_production_queue, found_colony, new_world,
         reconcile_colony_stockpiles, world_tick,
@@ -902,6 +902,156 @@ fn passive_captain_forges_exact_metal_tools_at_one_and_five_minute_cadence() {
             "cadence {cadence} never delivered a forged metal tool"
         );
     }
+}
+
+#[test]
+fn captain_selects_one_weapon_for_an_exact_unequipped_warrior_and_delivers_it() {
+    let mut world = new_world(0xCA97_A12D);
+    world
+        .colonies
+        .push(found_colony(0xCA97_A12D, "colony-1", START, 0xCA97_A12D));
+    let colony = &mut world.colonies[0];
+    colony.test_resource_decay_multiplier = 0.0;
+    colony.resources.food = 500.0;
+    colony.resources.water = 500.0;
+    colony.resources.ore = 10.0;
+    colony.resources.metal = 0.0;
+    colony.upgrade_tree.owned_node_ids.extend(
+        [
+            "basic_tools",
+            "metallurgy_preparation",
+            "weaponsmithing",
+            "barracks",
+        ]
+        .map(str::to_owned),
+    );
+    let anchor = colony.anchor;
+    colony.buildings.push(BuildingRuntime {
+        id: "demand-smelter".to_owned(),
+        building_type: BuildingType::Smelter,
+        position: TilePos {
+            x: anchor.x + 6,
+            y: anchor.y + 6,
+        },
+        is_complete: true,
+        construction_progress: 100,
+        production_queue: vec![cat_sim::world_tick::ProductionQueueEntry {
+            recipe_id: SMELTER_RECIPE_ID.to_owned(),
+            repeat: true,
+        }],
+        ..BuildingRuntime::default()
+    });
+    colony.buildings.push(BuildingRuntime {
+        id: "demand-smithy".to_owned(),
+        building_type: BuildingType::Smithy,
+        position: TilePos {
+            x: anchor.x + 10,
+            y: anchor.y + 6,
+        },
+        is_complete: true,
+        construction_progress: 100,
+        production_queue: Vec::new(),
+        ..BuildingRuntime::default()
+    });
+    colony.buildings.push(BuildingRuntime {
+        id: "demand-barracks".to_owned(),
+        building_type: BuildingType::Barracks,
+        position: TilePos {
+            x: anchor.x + 14,
+            y: anchor.y + 6,
+        },
+        is_complete: true,
+        construction_progress: 100,
+        ..BuildingRuntime::default()
+    });
+    let captain_id = colony.cats[13].id.clone();
+    let warrior_id = colony.cats[14].id.clone();
+    colony.officers.insert(OfficerRole::Captain, captain_id);
+    colony.cats[14].specialization = Some(CatSpecialization::Warrior);
+    reconcile_colony_stockpiles(colony);
+    assert!(colony.items.instances().next().is_none());
+    assert!(
+        colony
+            .buildings
+            .iter()
+            .find(|building| building.id == "demand-smithy")
+            .unwrap()
+            .production_queue
+            .is_empty()
+    );
+
+    let mut selected = false;
+    let mut local_weapon_id = None;
+    let mut outbound_weapon_id = None;
+    let mut stored_weapon_id = None;
+    let mut equipped_weapon_id = None;
+    for second in (60..=4 * 60 * 60).step_by(60) {
+        let reports = world_tick(&mut world, START + i64::from(second) * 1_000);
+        assert_eq!(reports[0].reset_reason, None, "second {second}");
+        let colony = &world.colonies[0];
+        let smithy = colony
+            .buildings
+            .iter()
+            .find(|building| building.id == "demand-smithy")
+            .unwrap();
+        selected |= smithy
+            .production_queue
+            .first()
+            .is_some_and(|entry| entry.recipe_id == SMITHY_WEAPON_RECIPE_ID);
+        for weapon in colony
+            .items
+            .instances()
+            .filter(|instance| instance.item.kind == ItemKind::Weapon)
+        {
+            match &weapon.location {
+                ItemLocation::Station { building_id, .. } if building_id == "demand-smithy" => {
+                    local_weapon_id.get_or_insert_with(|| weapon.id.clone());
+                }
+                ItemLocation::Carrier { .. } => {
+                    outbound_weapon_id.get_or_insert_with(|| weapon.id.clone());
+                }
+                ItemLocation::Stockpile { .. } => {
+                    stored_weapon_id.get_or_insert_with(|| weapon.id.clone());
+                }
+                ItemLocation::Equipped { cat_id } if cat_id == &warrior_id => {
+                    equipped_weapon_id.get_or_insert_with(|| weapon.id.clone());
+                }
+                _ => {}
+            }
+        }
+        if equipped_weapon_id.is_some() {
+            break;
+        }
+    }
+
+    assert!(selected, "the Captain never selected smithy_weapon");
+    let local_weapon_id = local_weapon_id.expect("no exact Weapon reached Smithy output");
+    assert_eq!(
+        outbound_weapon_id.as_deref(),
+        Some(local_weapon_id.as_str())
+    );
+    assert_eq!(stored_weapon_id.as_deref(), Some(local_weapon_id.as_str()));
+    assert_eq!(
+        equipped_weapon_id.as_deref(),
+        Some(local_weapon_id.as_str())
+    );
+    assert_eq!(
+        world.colonies[0]
+            .items
+            .equipped_id(&warrior_id, ItemKind::Weapon),
+        Some(local_weapon_id.as_str())
+    );
+    assert_eq!(world.colonies[0].items.count_kind(ItemKind::Weapon), 1);
+    assert!(
+        world.colonies[0]
+            .buildings
+            .iter()
+            .find(|building| building.id == "demand-smithy")
+            .unwrap()
+            .production_queue
+            .is_empty(),
+        "the one-shot demand order must not flood storage after it is satisfied"
+    );
 }
 
 fn run_passive_established_textiles(
