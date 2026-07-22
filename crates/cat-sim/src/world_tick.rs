@@ -16878,6 +16878,15 @@ fn release_transport_route(colony: &mut ColonyRuntime, route_id: &str) {
     }
 }
 
+fn record_known_transport_resource(
+    colony: &mut ColonyRuntime,
+    stockpile_index: usize,
+    kind: ResourceKind,
+) {
+    let pile = colony.stockpiles[stockpile_index].clone();
+    colony.stock_ledger.record_known_resource(&pile, kind);
+}
+
 fn advance_transport_routes(colony: &mut ColonyRuntime, gate: TickGate) {
     let route_ids = colony.transport.routes.keys().cloned().collect::<Vec<_>>();
     for route_id in route_ids {
@@ -16945,6 +16954,7 @@ fn advance_transport_routes(colony: &mut ColonyRuntime, gate: TickGate) {
                     snapshot.resource,
                     -snapshot.amount,
                 );
+                record_known_transport_resource(colony, source_index, snapshot.resource);
                 if let Some(route) = colony.transport.routes.get_mut(&route_id) {
                     route.cargo_loaded = snapshot.amount;
                     route.phase = crate::transport::RoutePhase::Outbound;
@@ -17002,6 +17012,7 @@ fn advance_transport_routes(colony: &mut ColonyRuntime, gate: TickGate) {
                     snapshot.resource,
                     snapshot.cargo_loaded,
                 );
+                record_known_transport_resource(colony, destination_index, snapshot.resource);
                 if let Some(route) = colony.transport.routes.get_mut(&route_id) {
                     route.cargo_loaded = 0.0;
                     route.phase = crate::transport::RoutePhase::Returning;
@@ -17030,6 +17041,7 @@ fn advance_transport_routes(colony: &mut ColonyRuntime, gate: TickGate) {
                         snapshot.resource,
                         snapshot.cargo_loaded,
                     );
+                    record_known_transport_resource(colony, destination, snapshot.resource);
                     if let Some(route) = colony.transport.routes.get_mut(&route_id) {
                         route.cargo_loaded = 0.0;
                     }
@@ -67235,6 +67247,8 @@ mod physical_transport_tests {
             food: 10.0 - cargo,
             ..Resources::default()
         };
+        colony.stock_ledger =
+            StockLedger::counted_with_piles(&colony.resources, &colony.stockpiles, 0);
         let cat_id = colony.cats[0].id.clone();
         colony.cats[0].position = position_from_world(tile_pos_to_world(TilePos { x: 1, y: 1 }));
         colony
@@ -67291,6 +67305,17 @@ mod physical_transport_tests {
         assert_eq!(colony.stockpiles[0].contents.food, 6.0);
         assert_eq!(colony.stockpiles[1].contents.food, 4.0);
         assert_eq!(colony.resources.food, 10.0);
+        assert_eq!(
+            colony.stock_ledger.pile_reports["source"].reported.food,
+            6.0
+        );
+        assert_eq!(
+            colony.stock_ledger.pile_reports["destination"]
+                .reported
+                .food,
+            4.0
+        );
+        assert_eq!(colony.stock_ledger.reported.food, 10.0);
         assert_eq!(colony.transport.routes["route"].cargo_loaded, 0.0);
         assert_eq!(colony.transport.routes["route"].phase, RoutePhase::Complete);
         assert_eq!(colony.transport.vehicles["wagon"].assigned_route_id, None);
