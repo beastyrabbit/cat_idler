@@ -66,6 +66,9 @@ only as the reference during migration.
 8. **Out of scope:** the Catford Examiner newspaper and its ~35 flavor generators
    (horoscope, obituaries, gossip, sports…) are DROPPED. Don't port them. The
    client gets a dashboard + event-log page instead.
+9. **UI surfaces.** New Bevy panels and screens must follow `docs/UI_ARCHITECTURE.md`: route
+   primary screens through `UiRouter`, use bounded scroll bodies for dynamic content, and verify
+   1024×768 at 100%, 115%, and 130% whole-interface scale.
 
 ## New vs. old scope
 The world is **multi-colony**: one shared world owns many colonies; today's single

@@ -233,6 +233,7 @@ runnable, on branch `archive/web-game` (tag `web-final`).
 | [`docs/GAME_VISION.md`](docs/GAME_VISION.md) | Design pillars for "Idle Cat Forest" (manual → role-automation, visible workplaces) |
 | [`docs/HANDOFF.md`](docs/HANDOFF.md) | Migration status, architecture, hard-won Bevy/codex lessons |
 | [`docs/IMPLEMENTATION_AUDIT.md`](docs/IMPLEMENTATION_AUDIT.md) | Current design-to-code gaps, active fixes, and full playtest matrix |
+| [`docs/UI_ARCHITECTURE.md`](docs/UI_ARCHITECTURE.md) | Maintained Bevy surface, scrolling, scaling, input, and extension contracts |
 | [`docs/migration/BOARD.md`](docs/migration/BOARD.md) | Phase-by-phase task board (P0–P9 tracked in detail) |
 | [`docs/migration/specs/`](docs/migration/specs/) | Design specs for pathfinding, leader director, world_tick, and P12–P19 (skills/roles, spatial placement, biomes, visual polish, item economy) |
 | [`docs/migration/WASM.md`](docs/migration/WASM.md) | Verified browser/production build and optional optimization work |

@@ -7,8 +7,16 @@ and any changed Bevy visuals have been verified.
 
 ## Open fix queue
 
-No reproduced gameplay or maintained-design defect is open after the 2026-07-16 generalized
-correction gate. New findings belong here before implementation begins.
+### 2026-07-22 — Research still reads as several catalogs instead of one tree
+
+**Problem:** The first Research-atlas correction improved contrast and navigation but retained the
+catalog's authoring coordinates as four wide category regions. The resulting 20,000 px strip still
+looks and behaves like several adjacent lists, obscures the single-root prerequisite structure,
+and makes distant studies unnecessarily laborious to reach.
+
+**Required correction:** Derive presentation coordinates from the prerequisite DAG, render one
+continuous root-to-leaf tree, retain category only as a card/branch accent, keep every study and
+dependency searchable, and verify the complete tree at the supported desktop scale matrix.
 
 ## Playtest cadence
 
@@ -26,6 +34,63 @@ including one body per authoritative cat and every visible road junction—not o
 sprite that motivated the change.
 
 ## Verified fixes
+
+## 2026-07-22 — Pointer panning is decisive and Research is a readable dependency atlas
+
+**Problem:** Player follow-up after the client-surface correction found that dragging the world
+still moved it much less than expected, while Research remained a flat beige node dump with weak
+state, category, and dependency hierarchy.
+
+**Fix:** World and Research panning now consume logical `CursorMoved` deltas, which are reliable in
+both native winit and browser canvas builds, and apply a zoom-independent 1.65× screen-space gain.
+World navigation retains middle-drag and Space-left-drag; Research adds direct left-drag anywhere
+inside its computed canvas viewport. The Research page is now a cartographer-style dependency
+atlas: a dark forest worktable separates the graph from UI chrome; progression regions have subtle
+category rails and headers; larger paper cards carry category, title, state, era, and cost in a
+stable hierarchy; owned, available, locked, selected, and selected-path states have distinct
+contrast; and the plain paper inspector stays readable beside the map. The compact header hides
+secondary leader-priority copy before controls wrap, preserving a clean two-row layout at 130%.
+
+**Evidence:** Playwright drove the WASM client on isolated ports `18081` and `18789`. At 1024×768,
+a real 150×50 px left drag moved the Research content approximately 248×83 px, and a real
+Space-left drag moved the world by the same accelerated screen distance. Settled screenshots at
+100% and 130% confirmed readable cards, contained inspector content, and a non-wrapping compact
+header. All 165 `cat-client` tests pass, including pure world/Research drag-gain checks and the
+responsive Research contract; workspace smoke passes 74 tests. Strict Clippy, formatting,
+`git diff --check`, and the `cat-web` wasm32 build pass. The Playwright page and both temporary
+servers were closed after capture.
+
+## 2026-07-22 — Redundant and overflowing client surfaces are removed
+
+**Problem:** Player screenshots at the supported desktop size showed missing-character boxes,
+long dispatch/log copy crossing panel bounds, a hover tooltip detached from the pointer, redundant
+icon-plus-text resource rows, and visually weak Stores and Research pages. Map and Help did not
+earn permanent navigation space, screen-opening letter shortcuts were easy to trigger by accident,
+and world navigation had no direct return-to-village action. Underneath those symptoms, primary
+pages and inspectors used independent fixed-pixel positioning, clipping hid excess content instead
+of making it reachable, and multiple Boolean toggles could compete for full-window ownership.
+
+**Fix:** `ClientUiShellPlugin` now owns five typed surface categories, one `UiRouter` state for the
+four maintained destinations (Log, Stores, Village, and Research), centralized layer order,
+whole-interface scaling, and reusable Bevy `ScrollArea`/`Scrollbar` bodies. Map, Help, Dispatches,
+and the moving announcement ticker were removed. Primary pages open only from explicit top-bar
+buttons; Log wraps inside a bounded scroll body; the permanent HUD uses text-only survival totals;
+Stores owns the complete semantic resource-icon grid and structured crafted inventory; and
+Research uses clearer category lanes, larger cards, a contained inspector, and middle-drag/wheel
+navigation. Unsupported decorative glyphs were replaced with supported text. Tooltips convert the
+physical cursor into scaled UI coordinates and flip at viewport edges. World controls now support
+faster movement, Shift acceleration, Space-left or middle-button panning, cursor-centred zoom, and
+an explicit **Center village** button. `docs/UI_ARCHITECTURE.md` defines the extension contract for
+future panels, primary screens, scrolling, input ownership, and the required scale matrix.
+
+**Evidence:** Playwright exercised the live WASM game against isolated ports `18080` (client) and
+`8788` (server) at 1440×900 and the 1024×768 support floor, at both 100% and 130% interface scale.
+Settled screenshots confirmed contained onboarding, Log, Stores, Research, HUD, command dock, and
+near-pointer tooltips; visible scrollbars retained access to excess content. Sending `L/G/C/U/M`
+left the world open. The current-origin browser run reported zero application console errors. The
+`cat-client` suite passes all 163 tests, workspace smoke passes 74 tests, and strict `cat-client`
+Clippy, formatting, `git diff --check`, and the `cat-web` wasm32 build pass. The Playwright page,
+browser, WASM server, native client, and temporary authoritative server were closed afterward.
 
 ## 2026-07-16 — Comprehensive review findings are resolved and release-bounded
 

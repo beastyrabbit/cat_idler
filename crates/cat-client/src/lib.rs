@@ -15,20 +15,13 @@
 //! - a HUD dashboard + event log, and clickable manual-action buttons that
 //!   round-trip [`cat_protocol::ClientAction`] over the socket.
 
-use bevy::asset::{AssetMetaCheck, RenderAssetUsages};
+use bevy::asset::AssetMetaCheck;
 use bevy::ecs::system::SystemParam;
-use bevy::input::{
-    ButtonState,
-    keyboard::KeyboardInput,
-    mouse::{MouseMotion, MouseWheel},
-};
+use bevy::input::{ButtonState, keyboard::KeyboardInput, mouse::MouseWheel};
 use bevy::prelude::*;
-use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::sprite::Anchor;
 use bevy::sprite::{BorderRect, SliceScaleMode, TextureSlicer};
-use bevy::ui::{
-    InteractionDisabled, RelativeCursorPosition, Val2, VisualBox, widget::NodeImageMode,
-};
+use bevy::ui::{InteractionDisabled, Val2, VisualBox, widget::NodeImageMode};
 #[cfg(not(target_arch = "wasm32"))]
 use bevy::window::CustomCursorImage;
 #[cfg(target_arch = "wasm32")]
@@ -65,10 +58,16 @@ use std::{
 
 mod research_ui;
 mod station_layout;
+mod ui_shell;
 use research_ui::UpgradeTreeUi;
 use station_layout::{
     BuildingVisual, PropPlacement, ResidentialFacade, StationFloor, StationLayout, StationProp,
     building_visual,
+};
+use ui_shell::{
+    CONTEXT_SURFACE_Z, ClientUiShellPlugin, FEEDBACK_SURFACE_Z, MODAL_SURFACE_Z, PRIMARY_SURFACE_Z,
+    PrimaryScreen, START_SURFACE_Z, UiLayoutProfile, UiRouter, UiSurfaceKind, UiSurfaceRoot,
+    effective_ui_scale, primary_screen_node, spawn_vertical_scroll_area,
 };
 
 /// Side length (world units) of one flat tile. Shrunk to ~1/3 of the original 28
@@ -99,14 +98,17 @@ const VILLAGE_INTERIOR_RADIUS: u32 = 6;
 const STARTER_CAMERA_RADIUS: u32 = VILLAGE_INTERIOR_RADIUS;
 /// Top command strip + bottom toolbar space kept clear by mature-village fitting.
 const CAMERA_VERTICAL_UI_RESERVE: f32 = 160.0;
-/// The mature view centres in the unobscured map rectangle: 332px of persistent
-/// HUD on the left versus 195px of minimap on the right.
-const CAMERA_SAFE_CENTER_OFFSET_X: f32 = (332.0 - 195.0) / 2.0;
+/// The mature view centres in the unobscured world rectangle to the right of
+/// the persistent 332px colony HUD.
+const CAMERA_SAFE_CENTER_OFFSET_X: f32 = 332.0 / 2.0;
 /// Orthographic-scale zoom bounds (smaller scale = closer). `MIN_ZOOM` lets the
 /// wheel push all the way in to individual-cat level; `MAX_ZOOM` frames the
 /// whole known map.
 const MIN_ZOOM: f32 = 0.1;
 const MAX_ZOOM: f32 = 3.0;
+/// Pointer-pan acceleration. A slight gain makes a single hand movement cover
+/// useful terrain without making keyboard navigation twitchy.
+const WORLD_DRAG_GAIN: f32 = 1.65;
 
 // Flat ground layers (terrain + ground markings) sit below the y-sorted world
 // sprites; all strictly below the camera at Z=1000 so nothing is clipped.
@@ -138,9 +140,6 @@ const FOG_COLOR: Color = Color::srgb(0.02, 0.03, 0.05);
 const PROVISIONAL_FOG_COLOR: Color = Color::srgba(0.02, 0.03, 0.05, 0.55);
 
 const CAMERA_Z: f32 = 1000.0;
-const OFFICERS_SHORTCUT: KeyCode = KeyCode::KeyO;
-const ORDERS_SHORTCUT: KeyCode = KeyCode::KeyP;
-const CAMERA_RESET_SHORTCUT: KeyCode = KeyCode::KeyR;
 /// Human-readable actor attached to actions from this generic client surface.
 /// It identifies the controller, rather than inventing a cat name.
 const CLIENT_ACTOR_LABEL: &str = "Idle Cat Forest player";
@@ -163,147 +162,6 @@ fn ysort_z(base_world_y: f32, origin_world_y: f32) -> f32 {
 
 fn ysort_origin(anchor: TilePoint) -> f32 {
     grid_to_world(anchor.x.saturating_add(1), anchor.y.saturating_add(1)).y
-}
-
-// ---- Corner minimap (pure coordinate mapping — unit-tested) ----
-
-/// Minimap texture side, in pixels; one pixel per `tiles_per_px` world tiles.
-const MINIMAP_PX: i32 = 128;
-/// Cap on how many terrain chunks the minimap samples for biome colour per
-/// rebuild — a huge revealed area beyond this shows as revealed-but-uncoloured
-/// (grey) rather than stalling the frame. Not a truncation of the world, just of
-/// the per-frame biome-colour sampling.
-const MINIMAP_CHUNK_CAP: usize = 512;
-
-/// How the revealed world maps onto the minimap texture: the tile at
-/// `(origin_x, origin_y)` is the top-left minimap pixel, and each pixel spans
-/// `tiles_per_px` tiles square.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-struct MinimapView {
-    origin_x: i32,
-    origin_y: i32,
-    tiles_per_px: i32,
-}
-
-/// Inclusive tile bounding box `(min_x, min_y, max_x, max_y)` of the revealed
-/// set — or a small box around the village anchor when nothing is revealed.
-fn minimap_bounds(revealed: &[TilePoint]) -> (i32, i32, i32, i32) {
-    if revealed.is_empty() {
-        return (
-            VILLAGE_ANCHOR.x - 8,
-            VILLAGE_ANCHOR.y - 8,
-            VILLAGE_ANCHOR.x + 8,
-            VILLAGE_ANCHOR.y + 8,
-        );
-    }
-    let mut min_x = i32::MAX;
-    let mut min_y = i32::MAX;
-    let mut max_x = i32::MIN;
-    let mut max_y = i32::MIN;
-    for t in revealed {
-        min_x = min_x.min(t.x);
-        min_y = min_y.min(t.y);
-        max_x = max_x.max(t.x);
-        max_y = max_y.max(t.y);
-    }
-    (min_x, min_y, max_x, max_y)
-}
-
-/// The minimap view that fits the revealed bounding box, centred, at the coarsest
-/// integer tiles-per-pixel needed (1 while the explored area is ≤ 128 tiles).
-fn minimap_view(revealed: &[TilePoint]) -> MinimapView {
-    let (min_x, min_y, max_x, max_y) = minimap_bounds(revealed);
-    let span = (max_x - min_x + 1).max(max_y - min_y + 1).max(1);
-    let tiles_per_px = ((span + MINIMAP_PX - 1) / MINIMAP_PX).max(1);
-    let center_x = (min_x + max_x) / 2;
-    let center_y = (min_y + max_y) / 2;
-    let half = MINIMAP_PX * tiles_per_px / 2;
-    MinimapView {
-        origin_x: center_x - half,
-        origin_y: center_y - half,
-        tiles_per_px,
-    }
-}
-
-/// The minimap pixel a world tile falls on, or `None` if it's outside the view.
-fn world_to_minimap(view: MinimapView, x: i32, y: i32) -> Option<(i32, i32)> {
-    let px = (x - view.origin_x).div_euclid(view.tiles_per_px);
-    let py = (y - view.origin_y).div_euclid(view.tiles_per_px);
-    ((0..MINIMAP_PX).contains(&px) && (0..MINIMAP_PX).contains(&py)).then_some((px, py))
-}
-
-/// The world tile at the centre of a minimap pixel (for click-to-pan).
-fn minimap_to_world(view: MinimapView, px: i32, py: i32) -> (i32, i32) {
-    let half = view.tiles_per_px / 2;
-    (
-        view.origin_x + px * view.tiles_per_px + half,
-        view.origin_y + py * view.tiles_per_px + half,
-    )
-}
-
-/// The camera-viewport rectangle in minimap pixels `(x0, y0, x1, y1)` — the
-/// half-open pixel box `[x0,x1) × [y0,y1)` covering the visible tile range,
-/// clamped to the minimap so a partly-off view still shows an edge.
-fn viewport_rect(
-    view: MinimapView,
-    min_tx: i32,
-    min_ty: i32,
-    max_tx: i32,
-    max_ty: i32,
-) -> (i32, i32, i32, i32) {
-    let clamp = |v: i32| v.clamp(0, MINIMAP_PX);
-    let to_px = |t: i32, origin: i32| (t - origin).div_euclid(view.tiles_per_px);
-    (
-        clamp(to_px(min_tx, view.origin_x)),
-        clamp(to_px(min_ty, view.origin_y)),
-        clamp(to_px(max_tx, view.origin_x) + 1),
-        clamp(to_px(max_ty, view.origin_y) + 1),
-    )
-}
-
-/// Fog colour for undiscovered / uncoloured minimap pixels.
-const MINIMAP_FOG: [u8; 4] = [10, 12, 16, 255];
-
-/// A biome's minimap pixel colour (its palette tint), matching the main view.
-fn biome_rgba(biome: Biome) -> [u8; 4] {
-    let [r, g, b] = biome.properties().tint;
-    [r, g, b, 255]
-}
-
-/// Set the minimap pixel at `(px, py)` in an `MINIMAP_PX`-wide RGBA buffer.
-fn put_pixel(buf: &mut [u8], px: i32, py: i32, color: [u8; 4]) {
-    if !(0..MINIMAP_PX).contains(&px) || !(0..MINIMAP_PX).contains(&py) {
-        return;
-    }
-    let i = ((py * MINIMAP_PX + px) * 4) as usize;
-    buf[i..i + 4].copy_from_slice(&color);
-}
-
-/// Set a 2x2 block of minimap pixels so a mark stands out over 1px terrain.
-fn put_block(buf: &mut [u8], px: i32, py: i32, color: [u8; 4]) {
-    for dy in 0..2 {
-        for dx in 0..2 {
-            put_pixel(buf, px + dx, py + dy, color);
-        }
-    }
-}
-
-/// Biome colour for each revealed tile, sampling terrain per chunk (capped at
-/// `MINIMAP_CHUNK_CAP` chunks/rebuild). Tiles in unsampled chunks are omitted
-/// (drawn grey by the caller) rather than blocking the frame.
-fn revealed_biomes(seed: i64, revealed: &[TilePoint]) -> HashMap<(i32, i32), Biome> {
-    let mut chunks: HashSet<(i32, i32)> = HashSet::new();
-    for t in revealed {
-        let c = tile_to_chunk(t.x, t.y);
-        chunks.insert((c.chunk_x, c.chunk_y));
-    }
-    let mut map = HashMap::new();
-    for (cx, cy) in chunks.into_iter().take(MINIMAP_CHUNK_CAP) {
-        for tile in generate_terrain_chunk(cx, cy, seed, WORLD_TERRAIN_OPTIONS) {
-            map.insert((tile.x, tile.y), tile.climate_biome);
-        }
-    }
-    map
 }
 
 /// The bottom-anchored base position (front-edge centre) and pixel size of a
@@ -623,13 +481,6 @@ struct ConnectionState {
     retry_remaining_secs: f32,
 }
 
-/// First-run guidance and the shortcut reference share one deliberately compact
-/// overlay. It starts open, can be dismissed, and remains reachable with H/? .
-#[derive(Resource, Default)]
-struct HelpUi {
-    visible: bool,
-}
-
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 enum FeedbackLevel {
     #[default]
@@ -757,26 +608,6 @@ struct AnnouncementsUi {
     visible: bool,
 }
 
-/// Whether the corner minimap is shown (toggled by `M`; on by default).
-#[derive(Resource)]
-struct MinimapUi {
-    visible: bool,
-}
-
-impl Default for MinimapUi {
-    fn default() -> Self {
-        Self { visible: true }
-    }
-}
-
-/// Handle to the dynamic minimap texture (rewritten each snapshot), plus the last
-/// view used to draw it (so click-to-pan / the viewport rect share the mapping).
-#[derive(Resource)]
-struct Minimap {
-    image: Handle<Image>,
-    view: MinimapView,
-}
-
 /// Number of announcement lines the panel shows (newest first).
 const ANNOUNCEMENT_LINES: usize = 11;
 
@@ -867,9 +698,9 @@ fn officer_role_name(role: OfficerRole) -> &'static str {
 /// on-map marker so the two read as the same affordance.
 fn boost_button_label(boosted: bool) -> &'static str {
     if boosted {
-        "★ Boosted (click to clear)"
+        "Priority on (click to clear)"
     } else {
-        "★ Boost"
+        "Set priority"
     }
 }
 
@@ -1530,20 +1361,13 @@ const UI_GAP_TIGHT: f32 = 3.0;
 const UI_RADIUS: f32 = 6.0;
 const UI_BORDER_W: f32 = 2.5;
 const UI_BTN_H: f32 = 30.0;
-const MINIMAP_PANEL_WIDTH: f32 = 168.0 + 2.0 * UI_GAP + 2.0 * UI_BORDER_W;
 const BUILDING_INSPECTOR_WIDTH: f32 = 300.0;
 const RIGHT_PANEL_MARGIN: f32 = 10.0;
-/// Category row plus one compact submenu. The default Inspect category uses
-/// only the first row; this maximum keeps corner overlays clear when a menu is
-/// expanded, including one wrapped submenu line at the 1024px floor.
-const WIDE_BOTTOM_BAR_FOOTPRINT: f32 = UI_BTN_H + 22.0 + 3.0 * UI_GAP + 2.0 * UI_BORDER_W + 10.0;
-const NARROW_BOTTOM_BAR_FOOTPRINT: f32 =
-    UI_BTN_H + 2.0 * 22.0 + 4.0 * UI_GAP + 2.0 * UI_BORDER_W + 10.0;
 const COLLAPSED_BOTTOM_BAR_FOOTPRINT: f32 = UI_BTN_H + 2.0 * UI_GAP + 2.0 * UI_BORDER_W + 10.0;
 const NARROW_LAYOUT_MAX_WIDTH: f32 = 1100.0;
 const BOTTOM_OVERLAY_CLEARANCE: f32 = COLLAPSED_BOTTOM_BAR_FOOTPRINT + UI_GAP;
 /// Only survival-critical stores remain pinned to the world view. The complete
-/// maintained inventory is available from Stores [G].
+/// maintained inventory is available from the Stores screen.
 const HUD_RESOURCE_PILL_HEIGHT: f32 = 19.0;
 #[cfg(test)]
 const HUD_RESOURCE_COLUMNS: usize = 2;
@@ -1574,7 +1398,6 @@ fn hud_resource_grid_height() -> f32 {
 struct AdventureUiArt {
     panel: Handle<Image>,
     panel_dark: Handle<Image>,
-    panel_ornate: Handle<Image>,
     button: Handle<Image>,
     button_active: Handle<Image>,
     button_disabled: Handle<Image>,
@@ -1583,8 +1406,6 @@ struct AdventureUiArt {
     progress_mid: Handle<Image>,
     progress_low: Handle<Image>,
     banner: Handle<Image>,
-    icon_frame: Handle<Image>,
-    minimap_ring: Handle<Image>,
     #[cfg(not(target_arch = "wasm32"))]
     cursor_pointer: Handle<Image>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -1602,7 +1423,6 @@ impl AdventureUiArt {
         Self {
             panel: assets.load("public/images/game/ui/panel.png"),
             panel_dark: assets.load("public/images/game/ui/panel-dark.png"),
-            panel_ornate: assets.load("public/images/game/ui/panel-ornate.png"),
             button: assets.load("public/images/game/ui/button.png"),
             button_active: assets.load("public/images/game/ui/button-active.png"),
             button_disabled: assets.load("public/images/game/ui/button-disabled.png"),
@@ -1611,8 +1431,6 @@ impl AdventureUiArt {
             progress_mid: assets.load("public/images/game/ui/progress-mid.png"),
             progress_low: assets.load("public/images/game/ui/progress-low.png"),
             banner: assets.load("public/images/game/ui/banner.png"),
-            icon_frame: assets.load("public/images/game/ui/icon-frame.png"),
-            minimap_ring: assets.load("public/images/game/ui/minimap-ring.png"),
             #[cfg(not(target_arch = "wasm32"))]
             cursor_pointer: assets.load("public/images/game/ui/cursor/pointer.png"),
             #[cfg(not(target_arch = "wasm32"))]
@@ -1663,7 +1481,6 @@ fn button_slicer() -> TextureSlicer {
 enum AdventurePanel {
     Paper,
     Dark,
-    Ornate,
 }
 
 /// Assign image handles after spawn so common UI builders stay usable by
@@ -1676,7 +1493,6 @@ fn skin_adventure_panels(
         image.image = match style {
             AdventurePanel::Paper => art.panel.clone(),
             AdventurePanel::Dark => art.panel_dark.clone(),
-            AdventurePanel::Ornate => art.panel_ornate.clone(),
         };
         image.image_mode = NodeImageMode::Sliced(panel_slicer());
         image.visual_box = VisualBox::BorderBox;
@@ -1694,7 +1510,7 @@ fn ui_text(s: impl Into<String>, size: f32, color: Color) -> impl Bundle {
             ..default()
         },
         TextColor(color),
-        UiFontSize(size),
+        UiFontSize,
     )
 }
 
@@ -1706,13 +1522,13 @@ fn ui_text_wrapped(s: impl Into<String>, size: f32, color: Color) -> impl Bundle
             ..default()
         },
         TextColor(color),
-        UiFontSize(size),
+        UiFontSize,
         UiWrappedText,
     )
 }
 
-/// The base Node of a panel: an absolutely-placed, bordered, clipped column of a
-/// fixed width. Callers set `left`/`top` (etc.) via struct-update syntax, e.g.
+/// The base Node of a panel: an absolutely-placed, bordered column of a fixed
+/// width. Callers set `left`/`top` (etc.) via struct-update syntax, e.g.
 /// `Node { left: Val::Px(10.0), top: Val::Px(52.0), ..ui_panel_node(w) }`, and
 /// pair it with [`ui_panel_frame`]. The title bar spans edge-to-edge as the
 /// first child; the body ([`ui_panel_body`]) carries the padding so text never
@@ -1723,7 +1539,10 @@ fn ui_panel_node(width: Val) -> Node {
         width,
         border: UiRect::all(Val::Px(UI_BORDER_W)),
         flex_direction: FlexDirection::Column,
-        overflow: Overflow::clip(),
+        // Never put clipping on a generic surface root. A dedicated scroll
+        // viewport owns clipping; root clipping has caused Bevy scissor leaks
+        // and makes overflow impossible to recover with a scrollbar.
+        overflow: Overflow::visible(),
         ..default()
     }
 }
@@ -1735,6 +1554,8 @@ fn cat_inspector_panel_node() -> Node {
     Node {
         right: Val::Px(10.0),
         top: Val::Px(60.0),
+        bottom: Val::Px(BOTTOM_OVERLAY_CLEARANCE),
+        min_height: Val::Px(0.0),
         overflow: Overflow::visible(),
         ..ui_panel_node(Val::Px(300.0))
     }
@@ -1788,7 +1609,7 @@ fn ui_button() -> impl Bundle {
     (
         Button,
         Node {
-            height: Val::Px(UI_BTN_H),
+            min_height: Val::Px(UI_BTN_H),
             flex_shrink: 0.0,
             padding: UiRect::axes(Val::Px(UI_PAD), Val::Px(0.0)),
             justify_content: JustifyContent::Center,
@@ -1809,7 +1630,7 @@ fn ui_button_small() -> impl Bundle {
     (
         Button,
         Node {
-            height: Val::Px(22.0),
+            min_height: Val::Px(22.0),
             min_width: Val::Px(22.0),
             flex_shrink: 0.0,
             padding: UiRect::axes(Val::Px(UI_GAP), Val::Px(0.0)),
@@ -1903,19 +1724,13 @@ enum TabKind {
 }
 
 /// Light the top-bar tab whose panel is currently open.
-fn sync_tab_toggles(
-    ann: Res<AnnouncementsUi>,
-    goods: Res<GoodsUi>,
-    census: Res<CensusUi>,
-    tree: Res<UpgradeTreeUi>,
-    mut tabs: Query<(&TabKind, &mut KitToggle)>,
-) {
+fn sync_tab_toggles(router: Res<UiRouter>, mut tabs: Query<(&TabKind, &mut KitToggle)>) {
     for (kind, mut toggle) in &mut tabs {
         toggle.active = match kind {
-            TabKind::Log => ann.visible,
-            TabKind::Goods => goods.visible,
-            TabKind::Census => census.visible,
-            TabKind::Tree => tree.visible,
+            TabKind::Log => router.is_open(PrimaryScreen::Log),
+            TabKind::Goods => router.is_open(PrimaryScreen::Stores),
+            TabKind::Census => router.is_open(PrimaryScreen::Village),
+            TabKind::Tree => router.is_open(PrimaryScreen::Research),
         };
     }
 }
@@ -2177,7 +1992,7 @@ struct WsConn {
 }
 
 /// The single camera that renders and navigates the world. Keeping an explicit
-/// marker prevents future UI/minimap cameras from being panned accidentally.
+/// marker prevents future UI cameras from being panned accidentally.
 #[derive(Component)]
 struct WorldCamera;
 
@@ -2454,9 +2269,6 @@ struct OfficersPanel;
 /// Manual orders sheet (toggled with `P`).
 #[derive(Component)]
 struct OrdersPanel;
-/// Compact event log hidden while the wide manual-orders sheet owns its lane.
-#[derive(Component)]
-struct DispatchesPanel;
 #[derive(Component, Clone, Copy)]
 struct OrderButton(OrderAction);
 #[derive(Component)]
@@ -2616,7 +2428,7 @@ struct PauseQuitButton;
 /// Original, unscaled point size for text whose accessibility scale is driven
 /// by the full-screen Settings page.
 #[derive(Component, Clone, Copy)]
-struct UiFontSize(f32);
+struct UiFontSize;
 
 /// Opts prose into soft wrapping. Compact labels use no-wrap by default.
 #[derive(Component)]
@@ -2685,13 +2497,6 @@ struct StartScreenUi<'w, 's> {
         ),
     >,
 }
-/// Dismissible first-run guide / keyboard reference.
-#[derive(Component)]
-struct HelpPanel;
-#[derive(Component)]
-struct HelpButton;
-#[derive(Component)]
-struct HelpDismissButton;
 /// Marker for a paved-road tile sprite.
 #[derive(Component)]
 struct RoadTile;
@@ -2701,9 +2506,6 @@ struct TooltipPanel;
 /// Marker for the hover tooltip's text.
 #[derive(Component)]
 struct TooltipText;
-/// Marker for the event-log text.
-#[derive(Component)]
-struct EventLogText;
 /// Marker for the announcements panel node (toggled open/closed).
 #[derive(Component)]
 struct AnnouncementsPanel;
@@ -2713,9 +2515,8 @@ struct AnnouncementLine(usize);
 /// The HUD button that toggles the announcements panel.
 #[derive(Component)]
 struct AnnouncementsButton;
-/// The compact "latest announcement" ticker line on the HUD.
 #[derive(Component)]
-struct AnnouncementTicker;
+struct TopBarBanner;
 /// Marker for the goods / inventory panel node (toggled open/closed).
 #[derive(Component)]
 struct GoodsPanel;
@@ -2725,6 +2526,9 @@ struct GoodsLine(usize);
 /// The per-kind glyph node for a goods line (tinted by material).
 #[derive(Component, Clone, Copy)]
 struct GoodsLineIcon(usize);
+/// Numeric amount beside a semantic icon in the Stores resource grid.
+#[derive(Component, Clone, Copy)]
+struct StoreResourceValue(HudRes);
 /// Repair affordance for a damaged finite item in one goods row.
 #[derive(Component, Clone, Copy)]
 struct RepairGoodsButton(usize);
@@ -2746,6 +2550,9 @@ struct CensusButton;
 /// The HUD button that toggles the upgrade-tree panel.
 #[derive(Component)]
 struct TreeButton;
+/// Restores the selected village's fitted camera framing.
+#[derive(Component)]
+struct CenterVillageButton;
 /// Marker for the trade-menu panel node.
 #[derive(Component)]
 struct TradeMenuPanel;
@@ -2780,15 +2587,6 @@ struct BuyButton(usize);
 /// The trade-menu close button.
 #[derive(Component)]
 struct TradeCloseButton;
-/// Marker for the corner minimap panel node (toggled open/closed).
-#[derive(Component)]
-struct MinimapPanel;
-/// Marker for the minimap image node (for click-to-pan hit-testing).
-#[derive(Component)]
-struct MinimapImageNode;
-/// Marker for the camera-viewport outline drawn over the minimap.
-#[derive(Component)]
-struct MinimapViewportRect;
 
 /// The kind of a colony event, inferred from its message (the snapshot carries
 /// only message + timestamp), for colour + glyph coding in the announcements log.
@@ -2942,7 +2740,7 @@ fn census_report_lines(c: &Census, scale: VillageScale) -> Vec<String> {
         ),
         format!("Leader: {leader}"),
         format!(
-            "Avg age: {:.0}h    ★ Boosted: {}",
+            "Avg age: {:.0}h    Priority: {}",
             c.avg_age_hours, c.boosted
         ),
         format!("Expecting: {}", c.expecting),
@@ -3368,7 +3166,7 @@ fn equipment_control_state(
     if let Some(item_id) = loadout_item_id(cat, slot) {
         let instance = item_instance_by_id(colony, item_id);
         return EquipmentControlState {
-            slot_label: format!("{} ▶", slot.name()),
+            slot_label: format!("{} >", slot.name()),
             candidate_label: "Equipped".to_owned(),
             action_label: "Unequip",
             item_id: Some(item_id.to_owned()),
@@ -3418,12 +3216,12 @@ fn equipment_control_state(
         format!("{} · {} — {reason}", instance.id, item_condition(instance))
     });
     EquipmentControlState {
-        slot_label: format!("{} ▶", slot.name()),
+        slot_label: format!("{} >", slot.name()),
         candidate_label: candidate.map_or_else(
             || format!("no {}", slot.name()),
             |_| {
                 format!(
-                    "Item {}/{} ▶",
+                    "Item {}/{} >",
                     ui.candidate % candidates.len().max(1) + 1,
                     candidates.len()
                 )
@@ -3538,7 +3336,7 @@ fn trader_status_line(trader: &TraderSnapshot, colony_coin: f64, now_ms: i64) ->
     );
     let phase = match trader.state {
         TraderVisitState::Arriving => {
-            format!("ARRIVING · {exterior} → {destination} · trade locked until shrine contact")
+            format!("ARRIVING · {exterior} to {destination} · trade locked until shrine contact")
         }
         TraderVisitState::Trading => {
             let remaining = trader.visit_ends_at.map_or_else(
@@ -3553,7 +3351,7 @@ fn trader_status_line(trader: &TraderSnapshot, colony_coin: f64, now_ms: i64) ->
             format!("AT SHRINE · {remaining} · {destination}")
         }
         TraderVisitState::Departing => format!(
-            "DEPARTING · current {},{} → {exterior}",
+            "DEPARTING · current {},{} to {exterior}",
             trader.position.x, trader.position.y
         ),
     };
@@ -3917,7 +3715,7 @@ pub fn run() {
                     ..default()
                 }),
         )
-        .add_plugins(BrpDevPlugin)
+        .add_plugins((BrpDevPlugin, ClientUiShellPlugin))
         .insert_resource(LatestSnapshot::default())
         .insert_resource(Session::default())
         .insert_resource(VillageSelection::default())
@@ -3925,7 +3723,6 @@ pub fn run() {
         .insert_resource(PauseMenu::default())
         .insert_resource(VillageTradeDraft::default())
         .insert_resource(ConnectionState::default())
-        .insert_resource(HelpUi::default())
         .insert_resource(ClientFeedback::default())
         .insert_resource(ClientAlerts::default())
         .insert_resource(OutgoingActions::default())
@@ -3944,7 +3741,6 @@ pub fn run() {
         .insert_resource(CensusUi::default())
         .insert_resource(UpgradeTreeUi::default())
         .insert_resource(TradeUi::default())
-        .insert_resource(MinimapUi::default())
         .insert_resource(CatBodies::default())
         .insert_resource(RaiderBodies::default())
         .insert_resource(VillageCaravanBodies::default())
@@ -4002,19 +3798,27 @@ pub fn run() {
                 (
                     (
                         handle_start_screen,
-                        toggle_pause_menu.before(close_inspectors_on_esc),
+                        (
+                            toggle_pause_menu,
+                            close_inspectors_on_esc,
+                            toggle_announcements,
+                            toggle_goods,
+                            toggle_census,
+                            research_ui::toggle_upgrade_tree,
+                            sync_primary_screen_state,
+                        )
+                            .chain(),
                         handle_pause_menu.after(toggle_pause_menu),
                         apply_text_layout_defaults,
                         apply_text_scale,
+                        update_top_bar_responsive.after(apply_text_scale),
                     ),
-                    camera_controls.after(research_ui::toggle_upgrade_tree),
+                    camera_controls.after(sync_primary_screen_state),
                     select_cat,
                     select_building,
-                    close_inspectors_on_esc,
                     (
                         update_building_inspector,
                         update_station_queue_controls.after(update_building_inspector),
-                        position_minimap_around_building_inspector.after(update_building_inspector),
                     ),
                     handle_station_queue_buttons,
                     update_remove_panel,
@@ -4034,7 +3838,7 @@ pub fn run() {
                             .after(sync_tab_toggles)
                             .after(research_ui::update_research_filter)
                             .after(research_ui::update_research_inspector),
-                        sync_tab_toggles,
+                        sync_tab_toggles.after(sync_primary_screen_state),
                         skin_adventure_panels,
                         update_adventure_cursor.after(update_kit_buttons),
                     ),
@@ -4047,19 +3851,13 @@ pub fn run() {
                         handle_village_buttons,
                         handle_village_trade_buttons,
                     ),
-                    update_event_log,
-                    (
-                        update_client_feedback,
-                        update_connection_status,
-                        handle_help_overlay,
-                    ),
+                    (update_client_feedback, update_connection_status),
                     handle_buttons,
                     (
                         toggle_officers,
                         toggle_orders,
                         update_officers_panel,
                         update_orders_panel,
-                        update_bottom_overlays,
                         handle_order_buttons,
                         handle_order_building_cycle,
                         update_governance_controls,
@@ -4069,13 +3867,11 @@ pub fn run() {
                     ),
                     flush_outgoing,
                 ),
-                // announcements / event log + goods + trade + boost + minimap
+                // announcements + stores + trade + priority controls
                 (
                     cycle_stacked_selection,
-                    toggle_announcements,
-                    update_announcements,
-                    toggle_goods,
-                    update_goods,
+                    update_announcements.after(sync_primary_screen_state),
+                    update_goods.after(sync_primary_screen_state),
                     handle_goods_repair_buttons,
                     update_trade_menu,
                     handle_trade_buttons,
@@ -4084,10 +3880,8 @@ pub fn run() {
                     (update_equipment_controls, handle_equipment_controls),
                     update_labor_preference_controls,
                     handle_labor_preference_buttons,
-                    toggle_census,
-                    update_census,
+                    update_census.after(sync_primary_screen_state),
                     (
-                        research_ui::toggle_upgrade_tree,
                         research_ui::update_research_shell,
                         research_ui::handle_research_controls,
                         research_ui::research_keyboard_input,
@@ -4097,36 +3891,12 @@ pub fn run() {
                         research_ui::update_research_snapshot,
                         research_ui::update_research_inspector,
                         research_ui::handle_research_purchase,
-                    ),
-                    toggle_minimap,
-                    update_minimap,
-                    update_minimap_viewport,
-                    minimap_click_to_pan,
+                    )
+                        .after(sync_primary_screen_state),
                 ),
             ),
         )
         .run();
-}
-
-fn minimap_right_offset(building_selected: bool) -> f32 {
-    if building_selected {
-        RIGHT_PANEL_MARGIN + BUILDING_INSPECTOR_WIDTH + UI_GAP
-    } else {
-        RIGHT_PANEL_MARGIN
-    }
-}
-
-fn position_minimap_around_building_inspector(
-    selection: Res<BuildingSelection>,
-    mut minimap: Query<&mut Node, With<MinimapPanel>>,
-) {
-    if !selection.is_changed() {
-        return;
-    }
-    let Ok(mut node) = minimap.single_mut() else {
-        return;
-    };
-    node.right = Val::Px(minimap_right_offset(selection.selected.is_some()));
 }
 
 /// Configure the game window for either a native surface or the browser canvas.
@@ -4486,7 +4256,6 @@ fn setup(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
     mut atlas_layouts: ResMut<Assets<TextureAtlasLayout>>,
-    mut images: ResMut<Assets<Image>>,
     mut fonts: ResMut<Assets<Font>>,
 ) {
     // Use a calm, highly legible UI face rather than the former narrow pixel
@@ -4509,24 +4278,6 @@ fn setup(
     commands.insert_resource(SpriteSheets::load(&asset_server, &mut atlas_layouts));
     let ui_art = AdventureUiArt::load(&asset_server);
     commands.insert_resource(ui_art.clone());
-
-    // Dynamic minimap texture (rewritten each snapshot by update_minimap).
-    let minimap_image = Image::new_fill(
-        Extent3d {
-            width: MINIMAP_PX as u32,
-            height: MINIMAP_PX as u32,
-            depth_or_array_layers: 1,
-        },
-        TextureDimension::D2,
-        &MINIMAP_FOG,
-        TextureFormat::Rgba8UnormSrgb,
-        RenderAssetUsages::all(),
-    );
-    let minimap_handle = images.add(minimap_image);
-    commands.insert_resource(Minimap {
-        image: minimap_handle.clone(),
-        view: minimap_view(&[]),
-    });
 
     // Camera at Z=1000: a default Camera2d sits at Z=0 and clips sprites at
     // Z>0. Centre on the village anchor.
@@ -4554,9 +4305,10 @@ fn setup(
                 justify_content: JustifyContent::Center,
                 ..default()
             },
-            GlobalZIndex(1_000),
+            GlobalZIndex(START_SURFACE_Z),
             BackgroundColor(Color::srgb(0.055, 0.075, 0.055)),
             StartScreenRoot,
+            UiSurfaceRoot(UiSurfaceKind::Modal),
             WorldInputBlocker,
         ))
         .with_children(|screen| {
@@ -4565,17 +4317,17 @@ fn setup(
                     Node {
                         width: Val::Px(720.0),
                         max_width: Val::Percent(96.0),
+                        height: Val::Percent(96.0),
                         max_height: Val::Percent(96.0),
-                        padding: UiRect::all(Val::Px(28.0)),
+                        min_height: Val::Px(0.0),
                         flex_direction: FlexDirection::Column,
-                        row_gap: Val::Px(16.0),
                         border: UiRect::all(Val::Px(UI_BORDER_W)),
-                        overflow: Overflow::clip_y(),
                         ..default()
                     },
                     ui_panel_frame(),
                 ))
                 .with_children(|panel| {
+                    spawn_vertical_scroll_area(panel, 28.0, 16.0, |panel| {
                     panel.spawn(ui_text("IDLE CAT FOREST", 30.0, UI_ACCENT));
                     panel.spawn(ui_text_wrapped(
                         "Wähle, wo du heute spielen möchtest. Deine private Siedlung bleibt über einen lokal gespeicherten, signierten Zugang mit diesem Gerät verbunden.",
@@ -4592,7 +4344,7 @@ fn setup(
                         Button,
                         Node {
                             width: Val::Percent(100.0),
-                            height: Val::Px(48.0),
+                            min_height: Val::Px(48.0),
                             padding: UiRect::horizontal(Val::Px(14.0)),
                             align_items: AlignItems::Center,
                             border: UiRect::all(Val::Px(2.0)),
@@ -4714,6 +4466,7 @@ fn setup(
                             StartContinueText,
                         )],
                     ));
+                    });
                 });
         });
 
@@ -4736,9 +4489,10 @@ fn setup(
                 display: Display::None,
                 ..default()
             },
-            GlobalZIndex(900),
+            GlobalZIndex(MODAL_SURFACE_Z),
             BackgroundColor(Color::srgb(0.045, 0.055, 0.045)),
             PauseMenuRoot,
+            UiSurfaceRoot(UiSurfaceKind::Modal),
             WorldInputBlocker,
         ))
         .with_children(|screen| {
@@ -4793,11 +4547,11 @@ fn setup(
                 .with_children(|panel| {
                     panel.spawn(ui_text("EINSTELLUNGEN", 28.0, UI_ACCENT));
                     panel.spawn(ui_text_wrapped(
-                        "Textgröße verändert sämtliche Beschriftungen. Die Auswahl wird auf diesem Gerät gespeichert.",
+                        "Interface-Größe skaliert Schrift, Bedienelemente und Abstände gemeinsam. Die Auswahl wird auf diesem Gerät gespeichert.",
                         FS_BODY,
                         UI_MUTED,
                     ));
-                    panel.spawn(ui_text("Textgröße", FS_SECTION, UI_INK));
+                    panel.spawn(ui_text("Interface-Größe", FS_SECTION, UI_INK));
                     panel
                         .spawn(Node {
                             width: Val::Percent(100.0),
@@ -4846,9 +4600,10 @@ fn setup(
                 display: Display::None,
                 ..default()
             },
-            GlobalZIndex(100),
+            GlobalZIndex(FEEDBACK_SURFACE_Z),
             ui_panel_frame(),
             ClientFeedbackPanel,
+            UiSurfaceRoot(UiSurfaceKind::Tooltip),
             WorldInputBlocker,
         ))
         .with_children(|panel| {
@@ -4861,7 +4616,7 @@ fn setup(
 
     // Compact always-on colony card. Only the four stores which can turn into
     // an immediate survival crisis stay pinned over the map; the complete
-    // ledger lives in Stores [G].
+    // ledger lives in the Stores screen.
     commands
         .spawn((
             Node {
@@ -4870,6 +4625,7 @@ fn setup(
                 ..ui_panel_node(Val::Px(HUD_PANEL_WIDTH))
             },
             ui_panel_frame(),
+            UiSurfaceRoot(UiSurfaceKind::Hud),
             WorldInputBlocker,
         ))
         .with_children(|panel| {
@@ -4895,40 +4651,15 @@ fn setup(
                                 height: Val::Px(HUD_RESOURCE_PILL_HEIGHT),
                                 padding: UiRect::horizontal(Val::Px(4.0)),
                                 align_items: AlignItems::Center,
-                                column_gap: Val::Px(UI_GAP),
                                 ..default()
                             },
                             BackgroundColor(Color::NONE),
                             ImageNode::default(),
                             AdventurePanel::Dark,
-                            children![
-                                (
-                                    Node {
-                                        width: Val::Px(18.0),
-                                        height: Val::Px(18.0),
-                                        align_items: AlignItems::Center,
-                                        justify_content: JustifyContent::Center,
-                                        ..default()
-                                    },
-                                    ImageNode::new(ui_art.icon_frame.clone()),
-                                    children![(
-                                        Node {
-                                            width: Val::Px(11.0),
-                                            height: Val::Px(11.0),
-                                            ..default()
-                                        },
-                                        ImageNode {
-                                            image: icons.get(kind),
-                                            color: resource_icon_tint(kind),
-                                            ..default()
-                                        },
-                                    )],
-                                ),
-                                (
-                                    ui_text(hud_resource_text(kind, None), FS_SMALL, UI_TITLE_INK,),
-                                    HudResource(kind),
-                                ),
-                            ],
+                            children![(
+                                ui_text(hud_resource_text(kind, None), FS_SMALL, UI_TITLE_INK,),
+                                HudResource(kind),
+                            )],
                         ));
                     }
                 });
@@ -4946,96 +4677,8 @@ fn setup(
             });
         });
 
-    // Event log (bottom-left): a kit panel with a scrolling text body.
-    commands
-        .spawn((
-            Node {
-                left: Val::Px(10.0),
-                // Clear the two-row command bar at 768px-high windows.
-                bottom: Val::Px(BOTTOM_OVERLAY_CLEARANCE),
-                ..ui_panel_node(Val::Px(430.0))
-            },
-            ui_panel_frame(),
-            DispatchesPanel,
-            WorldInputBlocker,
-        ))
-        .with_children(|panel| {
-            panel.spawn(ui_title_bar("Dispatches"));
-            panel.spawn(ui_panel_body()).with_children(|body| {
-                body.spawn((ui_text("events…", FS_BODY, UI_MUTED), EventLogText));
-            });
-        });
-
-    // Corner minimap (bottom-right, clear of the inspectors + toolbars): a kit
-    // panel with a "Map" title bar over the dynamic minimap texture. Toggled 'M'.
-    commands
-        .spawn((
-            Node {
-                right: Val::Px(RIGHT_PANEL_MARGIN),
-                // Clear the two-row command bar at 768px-high windows.
-                bottom: Val::Px(BOTTOM_OVERLAY_CLEARANCE),
-                ..ui_panel_node(Val::Px(MINIMAP_PANEL_WIDTH))
-            },
-            GlobalZIndex(70),
-            ui_panel_frame(),
-            MinimapPanel,
-            WorldInputBlocker,
-        ))
-        .with_children(|panel| {
-            panel.spawn(ui_title_bar("Map"));
-            panel
-                .spawn(Node {
-                    padding: UiRect::all(Val::Px(UI_GAP)),
-                    ..default()
-                })
-                .with_children(|body| {
-                    body.spawn((
-                        Node {
-                            width: Val::Px(168.0),
-                            height: Val::Px(168.0),
-                            ..default()
-                        },
-                        ImageNode::new(minimap_handle),
-                        // Button so the world-pick systems (which skip Button
-                        // interactions) ignore clicks that land on the minimap.
-                        Button,
-                        RelativeCursorPosition::default(),
-                        MinimapImageNode,
-                        // Camera-viewport outline, positioned each frame.
-                        children![
-                            (
-                                Node {
-                                    position_type: PositionType::Absolute,
-                                    border: UiRect::all(Val::Px(1.0)),
-                                    ..default()
-                                },
-                                BorderColor::all(Color::srgba(1.0, 1.0, 1.0, 0.85)),
-                                MinimapViewportRect,
-                            ),
-                            (
-                                Node {
-                                    position_type: PositionType::Absolute,
-                                    left: Val::Px(0.0),
-                                    top: Val::Px(0.0),
-                                    width: Val::Px(168.0),
-                                    height: Val::Px(168.0),
-                                    ..default()
-                                },
-                                ImageNode {
-                                    image: ui_art.minimap_ring.clone(),
-                                    image_mode: NodeImageMode::Stretch,
-                                    ..default()
-                                },
-                            )
-                        ],
-                    ));
-                });
-        });
-
-    // Top command bar: game title + panel tabs (Log/Goods/Census/Tree) + the
-    // latest-dispatch ticker, all in ONE framed strip so the controls read as a
-    // designed toolbar instead of buttons scattered at fixed pixel offsets. The
-    // active tab stays lit via `sync_tab_toggles`.
+    // Top command bar: one explicit button per destination plus a direct camera
+    // action. Screen navigation is intentionally button-only.
     commands
         .spawn((
             Node {
@@ -5056,6 +4699,7 @@ fn setup(
             BorderColor::all(Color::NONE),
             ImageNode::default(),
             AdventurePanel::Paper,
+            UiSurfaceRoot(UiSurfaceKind::Hud),
             WorldInputBlocker,
         ))
         .with_children(|bar| {
@@ -5074,6 +4718,7 @@ fn setup(
                     image_mode: NodeImageMode::Stretch,
                     ..default()
                 },
+                TopBarBanner,
                 children![(
                     ui_text("Idle Cat Forest", FS_TITLE, UI_TITLE_INK),
                     TextLayout::no_wrap(),
@@ -5084,38 +4729,39 @@ fn setup(
                 AnnouncementsButton,
                 TabKind::Log,
                 KitToggle::default(),
-                children![ui_text("Log [L]", FS_BODY, UI_INK)],
+                children![ui_text("Log", FS_BODY, UI_INK)],
             ));
             bar.spawn((
                 ui_button(),
                 GoodsButton,
                 TabKind::Goods,
                 KitToggle::default(),
-                children![ui_text("Stores [G]", FS_BODY, UI_INK)],
+                children![ui_text("Stores", FS_BODY, UI_INK)],
             ));
             bar.spawn((
                 ui_button(),
                 CensusButton,
                 TabKind::Census,
                 KitToggle::default(),
-                children![ui_text("Census [C]", FS_BODY, UI_INK)],
+                children![ui_text("Village", FS_BODY, UI_INK)],
             ));
             bar.spawn((
                 ui_button(),
                 TreeButton,
                 TabKind::Tree,
                 KitToggle::default(),
-                children![ui_text("Tree [U]", FS_BODY, UI_INK)],
+                children![ui_text("Research", FS_BODY, UI_INK)],
             ));
             bar.spawn((
                 ui_button(),
-                HelpButton,
-                children![ui_text("Help [?]", FS_BODY, UI_INK)],
+                CenterVillageButton,
+                children![ui_text("Center village", FS_BODY, UI_INK)],
             ));
             bar.spawn((
                 Node {
                     height: Val::Px(25.0),
                     min_width: Val::Px(74.0),
+                    margin: UiRect::left(Val::Auto),
                     padding: UiRect::horizontal(Val::Px(6.0)),
                     align_items: AlignItems::Center,
                     justify_content: JustifyContent::Center,
@@ -5131,119 +4777,6 @@ fn setup(
                     ConnectionStatusText,
                 )],
             ));
-            // Ticker: pushed to the right edge, clipped so it never overflows.
-            bar.spawn((
-                Node {
-                    margin: UiRect::left(Val::Auto),
-                    min_width: Val::Px(0.0),
-                    max_width: Val::Px(400.0),
-                    flex_shrink: 1.0,
-                    overflow: Overflow::clip(),
-                    ..default()
-                },
-                ui_text("", FS_SMALL, UI_MUTED),
-                TextLayout::no_wrap(),
-                AnnouncementTicker,
-            ));
-        });
-
-    // First-run guidance is intentionally one small parchment card rather than
-    // a tutorial procession. It leaves the world visible, explains the first
-    // useful loop, and doubles as the complete shortcut reference thereafter.
-    commands
-        .spawn((
-            Node {
-                position_type: PositionType::Absolute,
-                left: Val::Percent(50.0),
-                top: Val::Percent(50.0),
-                width: Val::Px(560.0),
-                max_width: Val::Percent(88.0),
-                padding: UiRect::all(Val::Px(UI_PAD)),
-                flex_direction: FlexDirection::Column,
-                row_gap: Val::Px(UI_GAP),
-                ..default()
-            },
-            UiTransform::from_translation(Val2::percent(-50.0, -50.0)),
-            GlobalZIndex(120),
-            ui_panel_frame(),
-            HelpPanel,
-            WorldInputBlocker,
-        ))
-        .with_children(|panel| {
-            panel.spawn(ui_title_bar("Welcome to Idle Cat Forest"));
-            panel.spawn(ui_panel_body()).with_children(|body| {
-                body.spawn(ui_text_wrapped(
-                    "Start here: keep Food and Water safe, gather nearby Wood, build housing, then send a scout. The leader keeps the colony moving while you shape its priorities.",
-                    FS_BODY,
-                    UI_INK,
-                ));
-                body.spawn(ui_text(
-                    "DOCK  Inspect cats/buildings · Gather resources · Build stations · Territory roads/zones · Scout the fog · Village trade/founding",
-                    FS_SMALL,
-                    UI_MUTED,
-                ));
-                body.spawn(ui_text(
-                    "PANELS  L Log · G Stores · C Census · U Research Tree · O Officers · P Orders · M Map",
-                    FS_SMALL,
-                    UI_MUTED,
-                ));
-                body.spawn(ui_text(
-                    "CAMERA  WASD/arrows pan · wheel zoom · R reset · H or ? help · Esc close",
-                    FS_SMALL,
-                    UI_MUTED,
-                ));
-                body.spawn((
-                    ui_button(),
-                    HelpDismissButton,
-                    children![ui_text("Begin exploring", FS_BODY, UI_INK)],
-                ));
-            });
-        });
-
-    // Shared-world village selector. It stays visible beside (not on top of)
-    // the fixed HUD and inspectors, so changing the action/render target is an
-    // explicit player choice rather than an invisible consequence of snapshot
-    // ordering or founding another settlement.
-    commands
-        .spawn((
-            Node {
-                position_type: PositionType::Absolute,
-                top: Val::Px(54.0),
-                left: Val::Px(340.0),
-                right: Val::Px(310.0),
-                min_height: Val::Px(62.0),
-                padding: UiRect::all(Val::Px(UI_GAP)),
-                align_items: AlignItems::Center,
-                column_gap: Val::Px(UI_GAP),
-                border: UiRect::all(Val::Px(UI_BORDER_W)),
-                border_radius: BorderRadius::all(Val::Px(UI_RADIUS)),
-                ..default()
-            },
-            GlobalZIndex(65),
-            ui_panel_frame(),
-            WorldInputBlocker,
-        ))
-        .with_children(|panel| {
-            panel.spawn((
-                Node {
-                    flex_shrink: 0.0,
-                    ..default()
-                },
-                ui_text("Villages", FS_SECTION, UI_ACCENT),
-                TextLayout::no_wrap(),
-            ));
-            panel.spawn((
-                Node {
-                    min_width: Val::Px(0.0),
-                    flex_grow: 1.0,
-                    flex_wrap: FlexWrap::Wrap,
-                    align_items: AlignItems::Center,
-                    column_gap: Val::Px(UI_GAP),
-                    row_gap: Val::Px(UI_GAP),
-                    ..default()
-                },
-                VillageSelectorRows,
-            ));
         });
 
     // Announcements panel (centre), hidden until toggled. Lines are colour-coded
@@ -5251,21 +4784,18 @@ fn setup(
     // from `AnnouncementsUi.visible`, so it starts hidden without a spawn flag.
     commands
         .spawn((
-            Node {
-                left: Val::Px(456.0),
-                top: Val::Px(60.0),
-                ..ui_panel_node(Val::Px(560.0))
-            },
-            GlobalZIndex(80),
+            primary_screen_node(),
+            GlobalZIndex(PRIMARY_SURFACE_Z),
             ui_panel_frame(),
             AnnouncementsPanel,
+            UiSurfaceRoot(UiSurfaceKind::PrimaryScreen),
             WorldInputBlocker,
         ))
         .with_children(|panel| {
             panel.spawn(ui_title_bar("Announcements"));
-            panel.spawn(ui_panel_body()).with_children(|body| {
+            spawn_vertical_scroll_area(panel, UI_PAD, UI_GAP, |body| {
                 for i in 0..ANNOUNCEMENT_LINES {
-                    body.spawn((ui_text("", FS_BODY, UI_MUTED), AnnouncementLine(i)));
+                    body.spawn((ui_text_wrapped("", FS_BODY, UI_MUTED), AnnouncementLine(i)));
                 }
             });
         });
@@ -5274,19 +4804,30 @@ fn setup(
     // tab panels — mutually exclusive), hidden until toggled.
     commands
         .spawn((
-            Node {
-                left: Val::Px(456.0),
-                top: Val::Px(60.0),
-                ..ui_panel_node(Val::Px(360.0))
-            },
-            GlobalZIndex(82),
+            primary_screen_node(),
+            GlobalZIndex(PRIMARY_SURFACE_Z),
             ui_panel_frame(),
             CensusPanel,
+            UiSurfaceRoot(UiSurfaceKind::PrimaryScreen),
             WorldInputBlocker,
         ))
         .with_children(|panel| {
-            panel.spawn(ui_title_bar("Census"));
-            panel.spawn(ui_panel_body()).with_children(|body| {
+            panel.spawn(ui_title_bar("Village"));
+            spawn_vertical_scroll_area(panel, UI_PAD, UI_GAP, |body| {
+                body.spawn(ui_text("VILLAGES & TRADE", FS_SECTION, UI_ACCENT));
+                body.spawn((
+                    Node {
+                        width: Val::Percent(100.0),
+                        min_width: Val::Px(0.0),
+                        flex_wrap: FlexWrap::Wrap,
+                        align_items: AlignItems::Center,
+                        column_gap: Val::Px(UI_GAP),
+                        row_gap: Val::Px(UI_GAP),
+                        ..default()
+                    },
+                    VillageSelectorRows,
+                ));
+                body.spawn(ui_text("CENSUS", FS_SECTION, UI_ACCENT));
                 for i in 0..CENSUS_LINES {
                     body.spawn((ui_text("", FS_BODY, UI_INK), CensusLine(i)));
                 }
@@ -5303,32 +4844,81 @@ fn setup(
     // two are mutually exclusive), hidden until toggled.
     commands
         .spawn((
-            Node {
-                left: Val::Px(456.0),
-                top: Val::Px(60.0),
-                ..ui_panel_node(Val::Px(500.0))
-            },
-            GlobalZIndex(82),
+            primary_screen_node(),
+            GlobalZIndex(PRIMARY_SURFACE_Z),
             ui_panel_frame(),
             GoodsPanel,
+            UiSurfaceRoot(UiSurfaceKind::PrimaryScreen),
             WorldInputBlocker,
         ))
         .with_children(|panel| {
-            panel.spawn(ui_title_bar("Stores & Inventory"));
-            panel.spawn(ui_panel_body()).with_children(|body| {
-                // Treasury total.
+            panel.spawn(ui_title_bar("Stores"));
+            spawn_vertical_scroll_area(panel, 16.0, 12.0, |body| {
                 body.spawn((ui_text("", FS_SECTION, UI_ACCENT), GoodsTreasury));
+                body.spawn(ui_text("Resources", FS_SECTION, UI_INK));
+                body.spawn(Node {
+                    width: Val::Percent(100.0),
+                    min_width: Val::Px(0.0),
+                    flex_wrap: FlexWrap::Wrap,
+                    column_gap: Val::Px(8.0),
+                    row_gap: Val::Px(8.0),
+                    ..default()
+                })
+                .with_children(|grid| {
+                    for kind in HUD_RESOURCES {
+                        grid.spawn((
+                            Node {
+                                width: Val::Px(92.0),
+                                min_height: Val::Px(38.0),
+                                padding: UiRect::axes(Val::Px(7.0), Val::Px(5.0)),
+                                align_items: AlignItems::Center,
+                                column_gap: Val::Px(7.0),
+                                border: UiRect::all(Val::Px(1.0)),
+                                ..default()
+                            },
+                            BackgroundColor(Color::srgba(0.35, 0.24, 0.14, 0.12)),
+                            BorderColor::all(UI_DIVIDER),
+                            children![
+                                (
+                                    Node {
+                                        width: Val::Px(22.0),
+                                        height: Val::Px(22.0),
+                                        flex_shrink: 0.0,
+                                        ..default()
+                                    },
+                                    ImageNode {
+                                        image: icons.get(kind),
+                                        color: resource_icon_tint(kind),
+                                        ..default()
+                                    },
+                                ),
+                                (ui_text("-", FS_SMALL, UI_INK), StoreResourceValue(kind),),
+                            ],
+                        ));
+                    }
+                });
+                body.spawn(ui_text("Crafted inventory", FS_SECTION, UI_INK));
                 for i in 0..GOODS_LINES {
-                    body.spawn(Node {
-                        align_items: AlignItems::Center,
-                        column_gap: Val::Px(UI_GAP),
-                        ..default()
-                    })
+                    body.spawn((
+                        Node {
+                            width: Val::Percent(100.0),
+                            min_width: Val::Px(0.0),
+                            min_height: Val::Px(52.0),
+                            padding: UiRect::all(Val::Px(8.0)),
+                            align_items: AlignItems::Center,
+                            column_gap: Val::Px(10.0),
+                            border: UiRect::bottom(Val::Px(1.0)),
+                            ..default()
+                        },
+                        BackgroundColor(Color::srgba(0.35, 0.24, 0.14, 0.08)),
+                        BorderColor::all(UI_DIVIDER),
+                    ))
                     .with_children(|row| {
                         row.spawn((
                             Node {
-                                width: Val::Px(15.0),
-                                height: Val::Px(15.0),
+                                width: Val::Px(28.0),
+                                height: Val::Px(28.0),
+                                flex_shrink: 0.0,
                                 display: Display::None,
                                 ..default()
                             },
@@ -5338,9 +4928,10 @@ fn setup(
                         row.spawn((
                             Node {
                                 flex_grow: 1.0,
+                                min_width: Val::Px(0.0),
                                 ..default()
                             },
-                            children![(ui_text("", FS_BODY, UI_INK), GoodsLine(i))],
+                            children![(ui_text_wrapped("", FS_BODY, UI_INK), GoodsLine(i))],
                         ));
                         row.spawn((
                             ui_button_small(),
@@ -5354,7 +4945,7 @@ fn setup(
         });
 
     // Trade menu (centre), shown only while the wagon is physically parked at the
-    // shrine. Arrival/departure remain non-modal world/minimap movement.
+    // shrine. Arrival/departure remain non-modal world movement.
     debug_assert!(trade_panel_fits_supported_height(
         MIN_SUPPORTED_WINDOW_HEIGHT
     ));
@@ -5373,19 +4964,23 @@ fn setup(
     commands
         .spawn((
             Node {
-                left: Val::Px(390.0),
+                left: Val::Percent(50.0),
                 top: Val::Px(TRADE_PANEL_TOP),
-                max_height: Val::Px(TRADE_PANEL_MAX_HEIGHT),
+                bottom: Val::Px(10.0),
+                max_width: Val::Percent(90.0),
+                min_height: Val::Px(0.0),
                 ..ui_panel_node(Val::Px(500.0))
             },
-            GlobalZIndex(90),
+            UiTransform::from_translation(Val2::percent(-50.0, 0.0)),
+            GlobalZIndex(CONTEXT_SURFACE_Z),
             ui_panel_frame(),
             TradeMenuPanel,
+            UiSurfaceRoot(UiSurfaceKind::ContextPanel),
             WorldInputBlocker,
         ))
         .with_children(|panel| {
             panel.spawn(ui_title_bar("Trader"));
-            panel.spawn(ui_panel_body()).with_children(|body| {
+            spawn_vertical_scroll_area(panel, UI_PAD, UI_GAP, |body| {
                 body.spawn((ui_text("", FS_SECTION, UI_ACCENT), TradeCoinText));
                 body.spawn(header("- Sell your crafts -"));
                 for i in 0..TRADE_SELL_ROWS {
@@ -5469,6 +5064,7 @@ fn setup(
         ui_panel_frame(),
         GlobalZIndex(100),
         TooltipPanel,
+        UiSurfaceRoot(UiSurfaceKind::Tooltip),
         children![(ui_text_wrapped("", FS_BODY, UI_INK), TooltipText)],
     ));
 
@@ -5477,14 +5073,16 @@ fn setup(
     commands
         .spawn((
             cat_inspector_panel_node(),
+            GlobalZIndex(CONTEXT_SURFACE_Z),
             ui_panel_frame(),
             InspectorPanel,
+            UiSurfaceRoot(UiSurfaceKind::ContextPanel),
             WorldInputBlocker,
         ))
         .with_children(|panel| {
             panel.spawn(ui_title_bar("Cat"));
-            panel.spawn(ui_panel_body()).with_children(|body| {
-                body.spawn((ui_text("", FS_BODY, UI_INK), InspectorText));
+            spawn_vertical_scroll_area(panel, UI_PAD, UI_GAP, |body| {
+                body.spawn((ui_text_wrapped("", FS_BODY, UI_INK), InspectorText));
                 body.spawn(ui_text("Equipment", FS_SMALL, UI_MUTED));
                 body.spawn((
                     ui_text(
@@ -5498,7 +5096,7 @@ fn setup(
                     row.spawn((
                         ui_button_small(),
                         CycleEquipmentSlot,
-                        children![(ui_text("Tool ▶", FS_SMALL, UI_INK), EquipmentSlotText)],
+                        children![(ui_text("Tool >", FS_SMALL, UI_INK), EquipmentSlotText)],
                     ));
                     row.spawn((
                         ui_button_small(),
@@ -5623,7 +5221,7 @@ fn setup(
                     InspectorOfficerResponsive,
                     InspectorOfficerNarrow,
                     children![ui_text(
-                        "Officer appointments: Officers [O]",
+                        "Officer appointments are in Officers.",
                         FS_SMALL,
                         UI_MUTED,
                     )],
@@ -5637,16 +5235,20 @@ fn setup(
             Node {
                 right: Val::Px(10.0),
                 top: Val::Px(170.0),
+                bottom: Val::Px(BOTTOM_OVERLAY_CLEARANCE),
+                min_height: Val::Px(0.0),
                 ..ui_panel_node(Val::Px(224.0))
             },
             RemovePanel,
+            GlobalZIndex(CONTEXT_SURFACE_Z),
             ui_panel_frame(),
+            UiSurfaceRoot(UiSurfaceKind::ContextPanel),
             WorldInputBlocker,
         ))
         .with_children(|panel| {
             panel.spawn(ui_title_bar("Stockpile"));
-            panel.spawn(ui_panel_body()).with_children(|body| {
-                body.spawn((ui_text("", FS_BODY, UI_INK), RemovePanelText));
+            spawn_vertical_scroll_area(panel, UI_PAD, UI_GAP, |body| {
+                body.spawn((ui_text_wrapped("", FS_BODY, UI_INK), RemovePanelText));
                 body.spawn((
                     ui_button(),
                     RemoveStockpileButton,
@@ -5657,23 +5259,27 @@ fn setup(
 
     // Building inspector (top-right), right-click a building; hidden until one
     // is selected. Cat/building selection is mutually exclusive, so both
-    // inspectors can share this lane. Keeping it above y=232 prevents the
-    // 1024px-floor minimap (bottom-right) from obscuring its lower fields.
+    // inspectors can share this lane. The bottom inset keeps its final controls
+    // clear of the command dock at the 1024px supported floor.
     commands
         .spawn((
             Node {
                 right: Val::Px(RIGHT_PANEL_MARGIN),
-                top: Val::Px(52.0),
+                top: Val::Px(60.0),
+                bottom: Val::Px(BOTTOM_OVERLAY_CLEARANCE),
+                min_height: Val::Px(0.0),
                 ..ui_panel_node(Val::Px(BUILDING_INSPECTOR_WIDTH))
             },
             ui_panel_frame(),
+            GlobalZIndex(CONTEXT_SURFACE_Z),
             BuildingInspectorPanel,
+            UiSurfaceRoot(UiSurfaceKind::ContextPanel),
             WorldInputBlocker,
         ))
         .with_children(|panel| {
             panel.spawn(ui_title_bar("Building"));
-            panel.spawn(ui_panel_body()).with_children(|body| {
-                body.spawn((ui_text("", FS_BODY, UI_INK), BuildingInspectorText));
+            spawn_vertical_scroll_area(panel, UI_PAD, UI_GAP, |body| {
+                body.spawn((ui_text_wrapped("", FS_BODY, UI_INK), BuildingInspectorText));
                 body.spawn((
                     Node {
                         flex_direction: FlexDirection::Column,
@@ -5684,7 +5290,7 @@ fn setup(
                     StationQueueControls,
                 ))
                 .with_children(|controls| {
-                    controls.spawn((ui_text("", FS_SMALL, UI_MUTED), StationQueueText));
+                    controls.spawn((ui_text_wrapped("", FS_SMALL, UI_MUTED), StationQueueText));
                     controls.spawn(bottom_bar_row_node()).with_children(|row| {
                         for (kind, label) in [
                             (StationQueueButton::Add, "add"),
@@ -5720,24 +5326,23 @@ fn spawn_officers_panel(commands: &mut Commands) {
     commands
         .spawn((
             Node {
-                // Keep the optional roster clear of both left-column panels and
-                // the bottom command bar. At the supported 1024x768 floor this
-                // centre-left sheet has enough vertical room for all seven rows;
-                // wider windows retain the same compact, predictable placement.
-                // At the 1024px floor the Dispatches panel ends at x=440.
-                // Keep this optional sheet in the clear centre lane instead of
-                // letting equal-z UI panels occlude its upper rows.
-                left: Val::Px(450.0),
-                top: Val::Px(128.0),
+                left: Val::Percent(50.0),
+                top: Val::Px(60.0),
+                bottom: Val::Px(BOTTOM_OVERLAY_CLEARANCE),
+                max_width: Val::Percent(90.0),
+                min_height: Val::Px(0.0),
                 ..ui_panel_node(Val::Px(300.0))
             },
+            UiTransform::from_translation(Val2::percent(-50.0, 0.0)),
+            GlobalZIndex(CONTEXT_SURFACE_Z),
             ui_panel_frame(),
             OfficersPanel,
+            UiSurfaceRoot(UiSurfaceKind::ContextPanel),
             WorldInputBlocker,
         ))
         .with_children(|panel| {
-            panel.spawn(ui_title_bar("Officers  [O]"));
-            panel.spawn(ui_panel_body()).with_children(|body| {
+            panel.spawn(ui_title_bar("Officers"));
+            spawn_vertical_scroll_area(panel, UI_PAD, UI_GAP, |body| {
                 for role in ALL_OFFICER_ROLES {
                     body.spawn(Node {
                         flex_direction: FlexDirection::Row,
@@ -5751,7 +5356,7 @@ fn spawn_officers_panel(commands: &mut Commands) {
                                 flex_grow: 1.0,
                                 ..default()
                             },
-                            ui_text("", FS_BODY, UI_INK),
+                            ui_text_wrapped("", FS_BODY, UI_INK),
                             OfficerRow(role),
                         ));
                         row.spawn((
@@ -5769,17 +5374,23 @@ fn spawn_orders_panel(commands: &mut Commands) {
     commands
         .spawn((
             Node {
-                left: Val::Px(342.0),
-                top: Val::Px(128.0),
+                left: Val::Percent(50.0),
+                top: Val::Px(60.0),
+                bottom: Val::Px(BOTTOM_OVERLAY_CLEARANCE),
+                max_width: Val::Percent(96.0),
+                min_height: Val::Px(0.0),
                 ..ui_panel_node(Val::Px(660.0))
             },
+            UiTransform::from_translation(Val2::percent(-50.0, 0.0)),
+            GlobalZIndex(CONTEXT_SURFACE_Z),
             ui_panel_frame(),
             OrdersPanel,
+            UiSurfaceRoot(UiSurfaceKind::ContextPanel),
             WorldInputBlocker,
         ))
         .with_children(|panel| {
-            panel.spawn(ui_title_bar("Manual Orders  [P]"));
-            panel.spawn(ui_panel_body()).with_children(|body| {
+            panel.spawn(ui_title_bar("Manual Orders"));
+            spawn_vertical_scroll_area(panel, UI_PAD, UI_GAP, |body| {
                 body.spawn(ui_text("Field work", FS_SMALL, UI_MUTED));
                 body.spawn(bottom_bar_row_node()).with_children(|row| {
                     for action in OrderAction::JOBS {
@@ -5986,13 +5597,13 @@ fn spawn_bottom_bar(commands: &mut Commands) {
                                     ui_button_small(),
                                     OrdersDockButton,
                                     KitToggle::default(),
-                                    children![ui_text("Manual orders [P]", FS_SMALL, UI_INK)],
+                                    children![ui_text("Manual orders", FS_SMALL, UI_INK)],
                                 ));
                                 row.spawn((
                                     ui_button_small(),
                                     OfficersDockButton,
                                     KitToggle::default(),
-                                    children![ui_text("Officers [O]", FS_SMALL, UI_INK)],
+                                    children![ui_text("Officers", FS_SMALL, UI_INK)],
                                 ));
                             }
                         });
@@ -6066,9 +5677,9 @@ fn append_input_text(target: &mut String, text: &str, max_chars: usize) {
 
 fn start_input_label(value: &str, placeholder: &str, focused: bool) -> String {
     match (value.is_empty(), focused) {
-        (true, true) => format!("▌ {placeholder}"),
+        (true, true) => format!("| {placeholder}"),
         (true, false) => placeholder.to_owned(),
-        (false, true) => format!("{value} ▌"),
+        (false, true) => format!("{value} |"),
         (false, false) => value.to_owned(),
     }
 }
@@ -6332,11 +5943,10 @@ fn toggle_pause_menu(
     keys: Res<ButtonInput<KeyCode>>,
     start: Res<StartScreen>,
     mut pause: ResMut<PauseMenu>,
-    help: Res<HelpUi>,
-    announcements: Res<AnnouncementsUi>,
-    goods: Res<GoodsUi>,
-    census: Res<CensusUi>,
-    tree: Res<UpgradeTreeUi>,
+    router: Res<UiRouter>,
+    officers: Res<OfficersUi>,
+    orders: Res<OrdersUi>,
+    trade: Res<TradeUi>,
     selection: Res<Selection>,
     building: Res<BuildingSelection>,
     stockpile: Res<StockpileSelection>,
@@ -6352,11 +5962,10 @@ fn toggle_pause_menu(
         }
         return;
     }
-    let another_surface_is_open = help.visible
-        || announcements.visible
-        || goods.visible
-        || census.visible
-        || tree.visible
+    let another_surface_is_open = router.primary().is_some()
+        || officers.visible
+        || orders.visible
+        || !trade.closed
         || selection.selected.is_some()
         || building.selected.is_some()
         || stockpile.selected.is_some()
@@ -6482,31 +6091,77 @@ fn handle_pause_menu(
 
 fn apply_text_scale(
     session: Res<Session>,
-    mut text: Query<(Ref<UiFontSize>, &mut TextFont)>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    mut ui_scale: ResMut<UiScale>,
     mut label: Query<&mut Text, With<PauseTextScaleText>>,
     mut last_scale: Local<f32>,
 ) {
-    let scale_changed = (*last_scale - session.text_scale).abs() > f32::EPSILON;
-    for (base, mut font) in &mut text {
-        if scale_changed || base.is_added() {
-            font.font_size = FontSize::Px(base.0 * session.text_scale);
-        }
+    let user_scale = ui_scale_override().unwrap_or(session.text_scale);
+    let scale_changed = (*last_scale - user_scale).abs() > f32::EPSILON;
+    if let Ok(window) = windows.single() {
+        ui_scale.0 = effective_ui_scale(window.width(), window.height(), user_scale);
     }
     if (scale_changed || session.is_changed())
         && let Ok(mut text) = label.single_mut()
     {
         let name = match TEXT_SCALES
             .iter()
-            .position(|scale| (*scale - session.text_scale).abs() < f32::EPSILON)
+            .position(|scale| (*scale - user_scale).abs() < f32::EPSILON)
             .unwrap_or(0)
         {
             0 => "Normal",
             1 => "Groß",
             _ => "Sehr groß",
         };
-        text.0 = format!("{name} · {:.0} %", session.text_scale * 100.0);
+        text.0 = format!("Interface: {name} · {:.0} %", user_scale * 100.0);
     }
-    *last_scale = session.text_scale;
+    *last_scale = user_scale;
+}
+
+/// Explicit native-only visual-test override. Player settings remain persisted
+/// normally; the override lets framebuffer gates exercise the entire scale
+/// matrix without rewriting a real signed session file.
+fn ui_scale_override() -> Option<f32> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::env::var("CAT_UI_SCALE")
+            .ok()
+            .and_then(|value| parse_ui_scale_override(&value))
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        None
+    }
+}
+
+#[cfg(any(not(target_arch = "wasm32"), test))]
+fn parse_ui_scale_override(value: &str) -> Option<f32> {
+    value
+        .parse::<f32>()
+        .ok()
+        .filter(|scale| TEXT_SCALES.contains(scale))
+}
+
+/// Collapse decorative toolbar content before any navigation control can be
+/// squeezed off-screen. All primary destinations remain reachable at 1024 px
+/// and at every supported interface scale.
+fn update_top_bar_responsive(
+    windows: Query<&Window, With<PrimaryWindow>>,
+    ui_scale: Res<UiScale>,
+    mut banner: Query<&mut Node, With<TopBarBanner>>,
+) {
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let profile = UiLayoutProfile::new(window.width(), window.height(), ui_scale.0);
+    let display = if profile.compact {
+        Display::None
+    } else {
+        Display::Flex
+    };
+    if let Ok(mut node) = banner.single_mut() {
+        node.display = display;
+    }
 }
 
 fn apply_text_layout_defaults(
@@ -6997,8 +6652,8 @@ fn pending_village_rejoin(
 }
 
 /// Stream deterministic terrain chunks around the camera. The world is
-/// unbounded: panning (including a minimap jump) swaps in the new local chunks
-/// and drops chunks beyond a one-chunk retention margin.
+/// unbounded: panning swaps in the new local chunks and drops chunks beyond a
+/// one-chunk retention margin.
 fn spawn_terrain(
     mut commands: Commands,
     latest: Res<LatestSnapshot>,
@@ -8549,9 +8204,8 @@ fn build_remove_action(
     }
 }
 
-/// Toggle the officers panel with the `O` key.
+/// Toggle the officers panel from its dock button.
 fn toggle_officers(
-    keys: Res<ButtonInput<KeyCode>>,
     buttons: Query<&Interaction, (Changed<Interaction>, With<OfficersDockButton>)>,
     tree: Res<UpgradeTreeUi>,
     mut ui: ResMut<OfficersUi>,
@@ -8560,7 +8214,7 @@ fn toggle_officers(
     let clicked = buttons
         .iter()
         .any(|interaction| *interaction == Interaction::Pressed);
-    if (keys.just_pressed(OFFICERS_SHORTCUT) || clicked) && !tree.visible {
+    if clicked && !tree.visible {
         ui.visible = !ui.visible;
         if ui.visible {
             orders.visible = false;
@@ -8569,7 +8223,6 @@ fn toggle_officers(
 }
 
 fn toggle_orders(
-    keys: Res<ButtonInput<KeyCode>>,
     buttons: Query<&Interaction, (Changed<Interaction>, With<OrdersDockButton>)>,
     tree: Res<UpgradeTreeUi>,
     mut ui: ResMut<OrdersUi>,
@@ -8578,7 +8231,7 @@ fn toggle_orders(
     let clicked = buttons
         .iter()
         .any(|interaction| *interaction == Interaction::Pressed);
-    if (keys.just_pressed(ORDERS_SHORTCUT) || clicked) && !tree.visible {
+    if clicked && !tree.visible {
         ui.visible = !ui.visible;
         if ui.visible {
             officers.visible = false;
@@ -8631,49 +8284,6 @@ fn update_orders_panel(
     {
         let building = PLANNABLE_BUILDINGS[ui.planned_building % PLANNABLE_BUILDINGS.len()];
         text.0 = format!("Type: {}  [cycle]", building_label(building));
-    }
-}
-
-fn bottom_overlay_clearance(window_width: f32, category: DockCategory) -> f32 {
-    let footprint = if category == DockCategory::Inspect {
-        COLLAPSED_BOTTOM_BAR_FOOTPRINT
-    } else if window_width <= NARROW_LAYOUT_MAX_WIDTH {
-        NARROW_BOTTOM_BAR_FOOTPRINT
-    } else {
-        WIDE_BOTTOM_BAR_FOOTPRINT
-    };
-    footprint + UI_GAP
-}
-
-fn dispatches_display(window_width: f32, orders_visible: bool) -> Display {
-    if orders_visible || window_width <= NARROW_LAYOUT_MAX_WIDTH {
-        Display::None
-    } else {
-        Display::Flex
-    }
-}
-
-fn update_bottom_overlays(
-    windows: Query<&Window, With<PrimaryWindow>>,
-    orders: Res<OrdersUi>,
-    dock: Res<CommandDock>,
-    mut dispatches: Query<&mut Node, (With<DispatchesPanel>, Without<MinimapPanel>)>,
-    mut minimap: Query<&mut Node, (With<MinimapPanel>, Without<DispatchesPanel>)>,
-) {
-    let Ok(window) = windows.single() else {
-        return;
-    };
-    let width = window.width();
-    let clearance = bottom_overlay_clearance(width, dock.category);
-    if let Ok(mut node) = dispatches.single_mut() {
-        node.bottom = Val::Px(clearance);
-        // The compact always-on HUD already carries the newest announcement.
-        // At 1024px, hide the larger duplicate feed so every wrapped toolbar
-        // row remains usable; the full Log panel stays available via L/click.
-        node.display = dispatches_display(width, orders.visible);
-    }
-    if let Ok(mut node) = minimap.single_mut() {
-        node.bottom = Val::Px(clearance);
     }
 }
 
@@ -9096,7 +8706,7 @@ fn update_equipment_controls(
         .zip(selected_cat(&latest, &selection));
     let state = found.map_or_else(
         || EquipmentControlState {
-            slot_label: format!("{} ▶", ui.slot.name()),
+            slot_label: format!("{} >", ui.slot.name()),
             candidate_label: format!("no {}", ui.slot.name()),
             action_label: "Equip",
             item_id: None,
@@ -10061,6 +9671,7 @@ fn animate_sprites(time: Res<Time>, mut sprites: Query<(&AnimSprite, &mut Sprite
 /// deselect. Read-only — resolves the nearest cat within half a tile.
 #[allow(clippy::too_many_arguments)]
 fn select_cat(
+    keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window>,
     camera: Query<(&Camera, &GlobalTransform), With<WorldCamera>>,
@@ -10075,7 +9686,7 @@ fn select_cat(
     if tools.mode != ToolMode::Inspect {
         return;
     }
-    if !buttons.just_pressed(MouseButton::Left) {
+    if keys.pressed(KeyCode::Space) || !buttons.just_pressed(MouseButton::Left) {
         return;
     }
     let cursor = windows
@@ -10419,10 +10030,10 @@ fn close_inspectors_on_esc(
     mut cat: ResMut<Selection>,
     mut building: ResMut<BuildingSelection>,
     mut stockpile: ResMut<StockpileSelection>,
-    mut announcements: ResMut<AnnouncementsUi>,
-    mut goods: ResMut<GoodsUi>,
-    mut census: ResMut<CensusUi>,
-    mut tree: ResMut<UpgradeTreeUi>,
+    tree: Res<UpgradeTreeUi>,
+    mut router: ResMut<UiRouter>,
+    mut officers: ResMut<OfficersUi>,
+    mut orders: ResMut<OrdersUi>,
     mut trade: ResMut<TradeUi>,
 ) {
     if keys.just_pressed(KeyCode::Escape) {
@@ -10433,10 +10044,9 @@ fn close_inspectors_on_esc(
         building.selected = None;
         stockpile.selected = None;
         stockpile.selected_farm = None;
-        announcements.visible = false;
-        goods.visible = false;
-        census.visible = false;
-        tree.visible = false;
+        router.close_primary();
+        officers.visible = false;
+        orders.visible = false;
         trade.closed = true;
     }
 }
@@ -10461,50 +10071,88 @@ struct TooltipUi<'w, 's> {
     text: Query<'w, 's, &'static mut Text, With<TooltipText>>,
 }
 
-fn hover_tooltip(
-    windows: Query<&Window>,
-    camera: Query<(&Camera, &GlobalTransform), With<WorldCamera>>,
-    ui: Query<&Interaction, With<Button>>,
-    ui_roots: UiRootQuery,
-    latest: Res<LatestSnapshot>,
-    terrain: Res<WorldRender>,
-    mut tooltip: TooltipUi,
-) {
+#[derive(SystemParam)]
+struct TooltipContext<'w, 's> {
+    windows: Query<'w, 's, &'static Window>,
+    camera: Query<'w, 's, (&'static Camera, &'static GlobalTransform), With<WorldCamera>>,
+    ui_scale: Res<'w, UiScale>,
+    buttons: Query<'w, 's, &'static Interaction, With<Button>>,
+    ui_roots: UiRootQuery<'w, 's>,
+    latest: Res<'w, LatestSnapshot>,
+    terrain: Res<'w, WorldRender>,
+}
+
+fn hover_tooltip(context: TooltipContext, mut tooltip: TooltipUi) {
     let (Ok(mut node), Ok(mut text)) = (tooltip.panel.single_mut(), tooltip.text.single_mut())
     else {
         return;
     };
-    let cursor = windows.single().ok().and_then(|w| w.cursor_position());
+    let cursor = context
+        .windows
+        .single()
+        .ok()
+        .and_then(|window| window.cursor_position());
     // Suppress over every visible UI root, not only interactive buttons. Without
     // this hit test, pointing at a title bar or HUD still projected through to
     // the terrain and painted an unrelated biome card on top of the panel.
-    let over_button = ui.iter().any(|i| !matches!(i, Interaction::None));
+    let over_button = context
+        .buttons
+        .iter()
+        .any(|interaction| !matches!(interaction, Interaction::None));
     let over_ui = cursor.is_some_and(|cursor| {
-        ui_roots.iter().any(|(computed, transform, style)| {
+        context.ui_roots.iter().any(|(computed, transform, style)| {
             style.display != Display::None && computed.contains_point(*transform, cursor)
         })
     });
     let hovered = world_tooltip_allowed(over_button, over_ui, cursor.is_some())
         .then_some(cursor)
         .flatten()
-        .zip(cursor_world(&windows, &camera))
+        .zip(cursor_world(&context.windows, &context.camera))
         .and_then(|(cursor, world)| {
-            let snapshot = latest.0.as_ref()?;
+            let snapshot = context.latest.0.as_ref()?;
             let colony = snapshot.colonies.first()?;
             Some((
                 cursor,
-                hover_text(colony, snapshot.world_seed, world, &terrain)?,
+                hover_text(colony, snapshot.world_seed, world, &context.terrain)?,
             ))
         });
     match hovered {
         Some((cursor, tip)) => {
             text.0 = tip;
             node.display = Display::Flex;
-            node.left = Val::Px(cursor.x + 16.0);
-            node.top = Val::Px(cursor.y + 16.0);
+            let viewport = context
+                .windows
+                .single()
+                .map_or(Vec2::new(1024.0, 768.0), |window| {
+                    Vec2::new(window.width(), window.height())
+                });
+            let anchor = tooltip_anchor(cursor, viewport, context.ui_scale.0);
+            node.left = Val::Px(anchor.x);
+            node.top = Val::Px(anchor.y);
         }
         None => node.display = Display::None,
     }
+}
+
+fn tooltip_anchor(cursor: Vec2, viewport: Vec2, ui_scale: f32) -> Vec2 {
+    const OFFSET: f32 = 12.0;
+    const TOOLTIP_WIDTH: f32 = 260.0;
+    const TOOLTIP_HEIGHT_BUDGET: f32 = 132.0;
+    const EDGE: f32 = 8.0;
+    let scale = ui_scale.max(0.01);
+    let cursor = cursor / scale;
+    let viewport = viewport / scale;
+    let x = if cursor.x + OFFSET + TOOLTIP_WIDTH <= viewport.x - EDGE {
+        cursor.x + OFFSET
+    } else {
+        (cursor.x - OFFSET - TOOLTIP_WIDTH).max(EDGE)
+    };
+    let y = if cursor.y + OFFSET + TOOLTIP_HEIGHT_BUDGET <= viewport.y - EDGE {
+        cursor.y + OFFSET
+    } else {
+        (cursor.y - OFFSET - TOOLTIP_HEIGHT_BUDGET).max(EDGE)
+    };
+    Vec2::new(x, y)
 }
 
 fn world_tooltip_allowed(over_button: bool, over_ui: bool, has_cursor: bool) -> bool {
@@ -10915,6 +10563,10 @@ fn zone_paint(
     mut tools: ResMut<Tools>,
     mut outgoing: ResMut<OutgoingActions>,
 ) {
+    if keys.pressed(KeyCode::Space) {
+        tools.drag = None;
+        return;
+    }
     let Some(kind) = tools.mode.paint_kind() else {
         tools.drag = None;
         return;
@@ -11029,6 +10681,7 @@ fn zone_paint(
 /// atomically reserving the scaffold, so the preview need not predict server state.
 #[allow(clippy::too_many_arguments)]
 fn place_building(
+    keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window>,
     camera: Query<(&Camera, &GlobalTransform), With<WorldCamera>>,
@@ -11039,7 +10692,10 @@ fn place_building(
     orders: Res<OrdersUi>,
     mut outgoing: ResMut<OutgoingActions>,
 ) {
-    if tools.mode != ToolMode::Building || !buttons.just_pressed(MouseButton::Left) {
+    if keys.pressed(KeyCode::Space)
+        || tools.mode != ToolMode::Building
+        || !buttons.just_pressed(MouseButton::Left)
+    {
         return;
     }
     let cursor = windows
@@ -11113,11 +10769,12 @@ fn render_zone_preview(
 fn camera_controls(
     keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<MouseButton>>,
-    mut motion: MessageReader<MouseMotion>,
+    mut motion: MessageReader<CursorMoved>,
     mut wheel: MessageReader<MouseWheel>,
     time: Res<Time>,
     latest: Res<LatestSnapshot>,
-    research: Res<UpgradeTreeUi>,
+    mut router: ResMut<UiRouter>,
+    center_button: Query<&Interaction, (Changed<Interaction>, With<CenterVillageButton>)>,
     windows: Query<&Window>,
     blockers: WorldInputBlockerQuery,
     mut inited: Local<bool>,
@@ -11127,9 +10784,14 @@ fn camera_controls(
     mut user_adjusted: Local<bool>,
     mut camera: Query<(&mut Transform, &mut Projection), With<WorldCamera>>,
 ) {
-    if research.visible {
-        // The ledger owns WASD/arrows and wheel while open. Consume pointer
-        // deltas so closing it cannot replay stale map-camera input.
+    let center_requested = center_button
+        .iter()
+        .any(|interaction| *interaction == Interaction::Pressed);
+    if center_requested {
+        router.close_primary();
+    } else if router.primary().is_some() {
+        // Primary screens own keyboard and wheel input. Consume pointer deltas
+        // so returning to the world cannot replay stale camera input.
         motion.clear();
         wheel.clear();
         return;
@@ -11191,7 +10853,13 @@ fn camera_controls(
         *last_auto_radius = (*last_auto_radius).max(colony.village_radius);
         *last_window_size = window_size;
     }
-    let speed = 620.0 * time.delta_secs() * projection.scale;
+    let speed_multiplier = if keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight)
+    {
+        2.2
+    } else {
+        1.0
+    };
+    let speed = 720.0 * speed_multiplier * time.delta_secs() * projection.scale;
     if keys.pressed(KeyCode::KeyA) || keys.pressed(KeyCode::ArrowLeft) {
         *user_adjusted = true;
         transform.translation.x -= speed;
@@ -11208,7 +10876,7 @@ fn camera_controls(
         *user_adjusted = true;
         transform.translation.y -= speed;
     }
-    if keys.just_pressed(CAMERA_RESET_SHORTCUT) {
+    if center_requested {
         *user_adjusted = false;
         let colony = latest
             .0
@@ -11224,13 +10892,17 @@ fn camera_controls(
             village_fit_zoom(colony.village_radius, window_size.x, window_size.y)
         });
     }
-    // Middle-button drag pans the map (left = select cat, right = select
-    // building).
-    if buttons.pressed(MouseButton::Middle) && pointer_allowed {
+    // Middle-drag always pans. Space+left-drag is the larger, easier target and
+    // is suppressed in every world-action system below.
+    let space_drag = keys.pressed(KeyCode::Space) && buttons.pressed(MouseButton::Left);
+    if (buttons.pressed(MouseButton::Middle) || space_drag) && pointer_allowed {
         *user_adjusted = true;
         for ev in motion.read() {
-            transform.translation.x -= ev.delta.x * projection.scale;
-            transform.translation.y += ev.delta.y * projection.scale;
+            if let Some(pointer_delta) = ev.delta {
+                let translation_delta = world_drag_translation(pointer_delta, projection.scale);
+                transform.translation.x += translation_delta.x;
+                transform.translation.y += translation_delta.y;
+            }
         }
     } else {
         motion.clear();
@@ -11238,10 +10910,39 @@ fn camera_controls(
     for ev in wheel.read() {
         if pointer_allowed {
             *user_adjusted = true;
-            projection.scale =
-                (projection.scale * if ev.y > 0.0 { 0.9 } else { 1.1 }).clamp(MIN_ZOOM, MAX_ZOOM);
+            let old_scale = projection.scale;
+            let new_scale =
+                (old_scale * 0.9_f32.powf(ev.y.clamp(-4.0, 4.0))).clamp(MIN_ZOOM, MAX_ZOOM);
+            if let Some(cursor) = cursor {
+                transform.translation = camera_translation_for_cursor_zoom(
+                    transform.translation,
+                    cursor,
+                    window_size,
+                    old_scale,
+                    new_scale,
+                );
+            }
+            projection.scale = new_scale;
         }
     }
+}
+
+fn world_drag_translation(pointer_delta: Vec2, zoom: f32) -> Vec2 {
+    Vec2::new(-pointer_delta.x, pointer_delta.y) * zoom * WORLD_DRAG_GAIN
+}
+
+fn camera_translation_for_cursor_zoom(
+    mut translation: Vec3,
+    cursor: Vec2,
+    viewport: Vec2,
+    old_scale: f32,
+    new_scale: f32,
+) -> Vec3 {
+    let cursor_from_center = cursor - viewport * 0.5;
+    let scale_delta = old_scale - new_scale;
+    translation.x += cursor_from_center.x * scale_delta;
+    translation.y -= cursor_from_center.y * scale_delta;
+    translation
 }
 
 /// Orthographic scale that preserves the close founding view, then fits an
@@ -11478,7 +11179,7 @@ fn village_trade_draft_label(draft: &VillageTradeDraft, field: VillageTradeDraft
 
 fn village_trade_target_label(name: &str, draft: &VillageTradeDraft) -> String {
     format!(
-        "Offer to {name}\n{:.0} {} ↔ {:.0} {}",
+        "Offer to {name}\n{:.0} {} for {:.0} {}",
         draft.offered_amount,
         trade_resource_short_label(draft.offered_kind),
         draft.requested_amount,
@@ -11570,7 +11271,7 @@ fn update_village_selector(
                         Button,
                         Node {
                             width: Val::Px(150.0),
-                            height: Val::Px(30.0),
+                            min_height: Val::Px(30.0),
                             padding: UiRect::axes(Val::Px(UI_GAP), Val::Px(UI_GAP_TIGHT)),
                             justify_content: JustifyContent::Center,
                             align_items: AlignItems::Center,
@@ -11584,7 +11285,7 @@ fn update_village_selector(
                         KitButton,
                         VillageTradeDraftButton(field),
                         children![(
-                            ui_text(
+                            ui_text_wrapped(
                                 village_trade_draft_label(&trade_draft, field),
                                 FS_SMALL,
                                 UI_INK
@@ -11597,7 +11298,7 @@ fn update_village_selector(
             for colony in &snapshot.colonies {
                 let active = selection.selected_id.as_deref() == Some(colony.id.as_str());
                 let status = format!("{:?}", colony.status).to_lowercase();
-                let marker = if active { "●" } else { "○" };
+                let marker = if active { "Selected:" } else { "Village:" };
                 let group = village_group_label(colony.kind, colony.capabilities.is_owner);
                 let label = format!(
                     "{marker} {group} · {name}\n{pop} cats · {status}",
@@ -11608,7 +11309,7 @@ fn update_village_selector(
                     Button,
                     Node {
                         width: Val::Px(240.0),
-                        height: Val::Px(48.0),
+                        min_height: Val::Px(48.0),
                         padding: UiRect::axes(Val::Px(UI_GAP), Val::Px(UI_GAP_TIGHT)),
                         justify_content: JustifyContent::Center,
                         align_items: AlignItems::Center,
@@ -11623,7 +11324,7 @@ fn update_village_selector(
                     KitToggle { active },
                     VillageButton(colony.id.clone()),
                     children![(
-                        ui_text(label, FS_SMALL, UI_INK),
+                        ui_text_wrapped(label, FS_SMALL, UI_INK),
                         TextLayout::justify(Justify::Center),
                     )],
                 ));
@@ -11637,7 +11338,7 @@ fn update_village_selector(
                         Button,
                         Node {
                             width: Val::Px(240.0),
-                            height: Val::Px(38.0),
+                            min_height: Val::Px(38.0),
                             padding: UiRect::axes(Val::Px(UI_GAP), Val::Px(UI_GAP_TIGHT)),
                             justify_content: JustifyContent::Center,
                             align_items: AlignItems::Center,
@@ -11651,7 +11352,7 @@ fn update_village_selector(
                         KitButton,
                         VillageTradeProposalButton(colony.id.clone()),
                         children![(
-                            ui_text(label, FS_SMALL, UI_INK),
+                            ui_text_wrapped(label, FS_SMALL, UI_INK),
                             TextLayout::justify(Justify::Center),
                         )],
                     ));
@@ -11664,7 +11365,7 @@ fn update_village_selector(
                     .any(|colony| colony.id == village.id)
             }) {
                 let label = format!(
-                    "◇ {} @ {},{}\nOffer {:.0} {} ↔ {:.0} {}",
+                    "Caravan {} @ {},{}\nOffer {:.0} {} for {:.0} {}",
                     village.name,
                     village.anchor.x,
                     village.anchor.y,
@@ -11677,7 +11378,7 @@ fn update_village_selector(
                     Button,
                     Node {
                         width: Val::Px(240.0),
-                        height: Val::Px(48.0),
+                        min_height: Val::Px(48.0),
                         padding: UiRect::axes(Val::Px(UI_GAP), Val::Px(UI_GAP_TIGHT)),
                         justify_content: JustifyContent::Center,
                         align_items: AlignItems::Center,
@@ -11691,7 +11392,7 @@ fn update_village_selector(
                     KitButton,
                     VillageTradeProposalButton(village.id.clone()),
                     children![(
-                        ui_text(label, FS_SMALL, UI_INK),
+                        ui_text_wrapped(label, FS_SMALL, UI_INK),
                         TextLayout::justify(Justify::Center),
                     )],
                 ));
@@ -11713,7 +11414,7 @@ fn update_village_selector(
                         Button,
                         Node {
                             width: Val::Px(210.0),
-                            height: Val::Px(38.0),
+                            min_height: Val::Px(38.0),
                             padding: UiRect::axes(Val::Px(UI_GAP), Val::Px(UI_GAP_TIGHT)),
                             justify_content: JustifyContent::Center,
                             align_items: AlignItems::Center,
@@ -11730,7 +11431,7 @@ fn update_village_selector(
                         ImageNode::default(),
                         KitButton,
                         children![(
-                            ui_text(label, FS_SMALL, UI_INK),
+                            ui_text_wrapped(label, FS_SMALL, UI_INK),
                             TextLayout::justify(Justify::Center),
                         )],
                     ));
@@ -11755,7 +11456,7 @@ fn update_village_selector(
                         )
                     };
                     let label = format!(
-                        "Caravan: {} · {:.0} {} ↔ {:.0} {}{}\nworld {:.1},{:.1}",
+                        "Caravan: {} · {:.0} {} for {:.0} {}{}\nworld {:.1},{:.1}",
                         village_trade_caravan_phase_label(caravan.phase),
                         caravan.offered_amount,
                         trade_resource_short_label(caravan.offered_kind),
@@ -11783,7 +11484,7 @@ fn update_village_selector(
                         KitButton,
                         CancelVillageTradeButton(caravan.id.clone()),
                         children![(
-                            ui_text(label, FS_SMALL, UI_INK),
+                            ui_text_wrapped(label, FS_SMALL, UI_INK),
                             TextLayout::justify(Justify::Center),
                         )],
                     ));
@@ -11965,7 +11666,7 @@ fn dashboard_footer_text(colony: &ColonySnapshot, compact: bool) -> String {
         },
     );
     format!(
-        "Jobs {active_jobs}/{} · goods {physical}g · ready {trade_ready}\n{ledger} · details in Stores [G]",
+        "Jobs {active_jobs}/{} · goods {physical}g · ready {trade_ready}\n{ledger} · details in Stores",
         colony.jobs.len()
     )
 }
@@ -12032,96 +11733,36 @@ fn accounting_round_text(round: &cat_protocol::AccountingRoundSnapshot) -> Strin
     }
 }
 
-/// Reachable Stores-panel summary. It is generated from the protocol's
-/// canonical resource inventory, so adding a new kind cannot silently leave it
-/// stranded outside the UI. Four entries per line keeps the ledger scannable
-/// without turning the world HUD back into an inventory dashboard.
-fn production_stores_text(resources: &ResourceAmounts) -> String {
-    ResourceKind::ALL
-        .chunks(4)
-        .map(|kinds| {
-            kinds
-                .iter()
-                .map(|&kind| {
-                    let amount = resource_amount(kind, resources);
-                    if kind == ResourceKind::Blessings {
-                        format!("{} {amount:.1}", resource_kind_name(kind))
-                    } else {
-                        format!("{} {amount:.0}", resource_kind_name(kind))
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(" · ")
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// Toggle the announcements panel via the `L` key or the Log HUD button (closes
-/// the goods panel, which shares the centre slot).
+/// Toggle the announcements panel from the top-bar button.
 fn toggle_announcements(
-    keys: Res<ButtonInput<KeyCode>>,
     button: Query<&Interaction, (Changed<Interaction>, With<AnnouncementsButton>)>,
-    mut ui: ResMut<AnnouncementsUi>,
-    mut goods: ResMut<GoodsUi>,
-    mut census: ResMut<CensusUi>,
-    mut tree: ResMut<UpgradeTreeUi>,
+    mut router: ResMut<UiRouter>,
 ) {
     let clicked = button.iter().any(|i| *i == Interaction::Pressed);
-    let shortcut_pressed = keys.just_pressed(KeyCode::KeyL) && !tree.visible;
-    if shortcut_pressed || clicked {
-        ui.visible = !ui.visible;
-        if ui.visible {
-            goods.visible = false;
-            census.visible = false;
-            tree.visible = false;
-        }
+    if clicked {
+        router.toggle(PrimaryScreen::Log);
     }
 }
 
-/// Toggle the goods panel via the `G` key or the Goods HUD button (closes the
-/// announcements + census panels, which share the centre slot).
-#[allow(clippy::too_many_arguments)]
+/// Toggle the goods panel from the top-bar button.
 fn toggle_goods(
-    keys: Res<ButtonInput<KeyCode>>,
     button: Query<&Interaction, (Changed<Interaction>, With<GoodsButton>)>,
-    mut ui: ResMut<GoodsUi>,
-    mut announce: ResMut<AnnouncementsUi>,
-    mut census: ResMut<CensusUi>,
-    mut tree: ResMut<UpgradeTreeUi>,
+    mut router: ResMut<UiRouter>,
 ) {
     let clicked = button.iter().any(|i| *i == Interaction::Pressed);
-    let shortcut_pressed = keys.just_pressed(KeyCode::KeyG) && !tree.visible;
-    if shortcut_pressed || clicked {
-        ui.visible = !ui.visible;
-        if ui.visible {
-            announce.visible = false;
-            census.visible = false;
-            tree.visible = false;
-        }
+    if clicked {
+        router.toggle(PrimaryScreen::Stores);
     }
 }
 
-/// Toggle the census panel via the `C` key or the Census HUD button (closes the
-/// goods + announcements panels, which share the centre slot).
-#[allow(clippy::too_many_arguments)]
+/// Toggle the census panel from the top-bar button.
 fn toggle_census(
-    keys: Res<ButtonInput<KeyCode>>,
     button: Query<&Interaction, (Changed<Interaction>, With<CensusButton>)>,
-    mut ui: ResMut<CensusUi>,
-    mut goods: ResMut<GoodsUi>,
-    mut announce: ResMut<AnnouncementsUi>,
-    mut tree: ResMut<UpgradeTreeUi>,
+    mut router: ResMut<UiRouter>,
 ) {
     let clicked = button.iter().any(|i| *i == Interaction::Pressed);
-    let shortcut_pressed = keys.just_pressed(KeyCode::KeyC) && !tree.visible;
-    if shortcut_pressed || clicked {
-        ui.visible = !ui.visible;
-        if ui.visible {
-            goods.visible = false;
-            announce.visible = false;
-            tree.visible = false;
-        }
+    if clicked {
+        router.toggle(PrimaryScreen::Village);
     }
 }
 
@@ -12167,7 +11808,6 @@ fn update_goods(
     latest: Res<LatestSnapshot>,
     ui: Res<GoodsUi>,
     session: Res<Session>,
-    selection: Res<Selection>,
     icons: Res<IconArt>,
     mut panel: Query<
         &mut Node,
@@ -12177,8 +11817,22 @@ fn update_goods(
             Without<RepairGoodsButton>,
         ),
     >,
-    mut treasury: Query<&mut Text, (With<GoodsTreasury>, Without<GoodsLine>)>,
-    mut lines: Query<(&GoodsLine, &mut Text), Without<GoodsTreasury>>,
+    mut treasury: Query<
+        &mut Text,
+        (
+            With<GoodsTreasury>,
+            Without<GoodsLine>,
+            Without<StoreResourceValue>,
+        ),
+    >,
+    mut lines: Query<
+        (&GoodsLine, &mut Text),
+        (Without<GoodsTreasury>, Without<StoreResourceValue>),
+    >,
+    mut resource_values: Query<
+        (&StoreResourceValue, &mut Text),
+        (Without<GoodsTreasury>, Without<GoodsLine>),
+    >,
     mut icon_nodes: Query<
         (&GoodsLineIcon, &mut Node, &mut ImageNode),
         (Without<GoodsPanel>, Without<RepairGoodsButton>),
@@ -12194,20 +11848,8 @@ fn update_goods(
         } else {
             Display::None
         };
-        if selection.selected.is_some() {
-            node.left = Val::Auto;
-            node.right = Val::Px(320.0);
-        } else {
-            node.left = Val::Px(456.0);
-            node.right = Val::Auto;
-        }
     }
-    if !ui.visible
-        || (!latest.is_changed()
-            && !ui.is_changed()
-            && !session.is_changed()
-            && !selection.is_changed())
-    {
+    if !ui.visible || (!latest.is_changed() && !ui.is_changed() && !session.is_changed()) {
         return;
     }
     let colony = latest.0.as_ref().and_then(|w| w.colonies.first());
@@ -12217,27 +11859,27 @@ fn update_goods(
     let trade_ready = trade_ready_stored_pristine_value(&items)
         .map_or_else(|| "not reported".to_owned(), |value| format!("{value}g"));
 
+    let reported = colony.map(|colony| {
+        colony
+            .stock_ledger
+            .as_ref()
+            .map_or(colony.resources, |ledger| ledger.reported)
+    });
+    let capacities = colony.map(|colony| colony.storage.capacities);
+    for (kind, mut text) in &mut resource_values {
+        text.0 = reported.zip(capacities).map_or_else(
+            || "-".to_owned(),
+            |(reported, capacities)| hud_resource_value(kind.0, &reported, &capacities),
+        );
+    }
     if let Ok(mut text) = treasury.single_mut() {
-        text.0 = colony.map_or_else(
-            || format!(
-                "Reported physical goods: {colony_goods_value}g · trade-ready stored pristine: {trade_ready}"
-            ),
-            |colony| {
-                let stale = colony
-                    .stock_ledger
-                    .as_ref()
-                    .filter(|ledger| !ledger.accurate)
-                    .map_or("", |_| " (stale, ~)");
-                let reported = colony
-                    .stock_ledger
-                    .as_ref()
-                    .map_or(colony.resources, |ledger| ledger.reported);
-                format!(
-                    "Reported physical goods: {colony_goods_value}g · trade-ready stored pristine: {trade_ready}\nTrader wagon physical goods: {trader_goods_value}g\nReported stock{}:\n{}",
-                    stale,
-                    production_stores_text(&reported)
-                )
-            },
+        let accuracy = colony
+            .and_then(|colony| colony.stock_ledger.as_ref())
+            .map_or("uncounted", |ledger| {
+                if ledger.accurate { "exact" } else { "estimate" }
+            });
+        text.0 = format!(
+            "{colony_goods_value}g physical · {trade_ready} trade-ready · {trader_goods_value}g in trader · {accuracy}"
         );
     }
     for (line, mut text) in &mut lines {
@@ -12346,8 +11988,8 @@ fn update_trade_menu(
     let colony = latest.0.as_ref().and_then(|w| w.colonies.first());
     let trader = colony.and_then(|c| c.trader.as_ref());
     let trading = trader.is_some_and(|trader| trader.state == TraderVisitState::Trading);
-    // Approaching/departing wagons stay visible in-world and on the minimap without
-    // blocking play. The modal opens only after physical shrine contact.
+    // Approaching/departing wagons stay visible in-world without blocking play.
+    // The modal opens only after physical shrine contact.
     if trader.is_none() {
         trade_ui.closed = false;
         trade_ui.sell_page = 0;
@@ -12507,17 +12149,13 @@ fn handle_trade_buttons(
 }
 
 /// Show/hide the announcements panel and repaint its colour-coded lines
-/// newest-first, plus the HUD "latest announcement" ticker.
+/// newest-first.
 #[allow(clippy::type_complexity)]
 fn update_announcements(
     latest: Res<LatestSnapshot>,
     ui: Res<AnnouncementsUi>,
     mut panel: Query<&mut Node, With<AnnouncementsPanel>>,
-    mut lines: Query<(&AnnouncementLine, &mut Text, &mut TextColor), Without<AnnouncementTicker>>,
-    mut ticker: Query<
-        (&mut Text, &mut TextColor),
-        (With<AnnouncementTicker>, Without<AnnouncementLine>),
-    >,
+    mut lines: Query<(&AnnouncementLine, &mut Text, &mut TextColor)>,
 ) {
     if let Ok(mut node) = panel.single_mut() {
         node.display = if ui.visible {
@@ -12549,207 +12187,21 @@ fn update_announcements(
             text.0 = String::new();
         }
     }
-    if let Ok((mut text, mut color)) = ticker.single_mut() {
-        if let Some(e) = newest.first() {
-            let kind = event_kind_of(&e.kind);
-            text.0 = format!("{} {}", event_glyph(kind), attributed_event_message(e));
-            color.0 = event_color(kind);
-        } else {
-            text.0 = String::new();
-        }
-    }
 }
 
-/// Toggle the corner minimap with the `M` key.
-fn toggle_minimap(
-    keys: Res<ButtonInput<KeyCode>>,
-    tree: Res<UpgradeTreeUi>,
-    mut ui: ResMut<MinimapUi>,
+/// Keep the existing feature-specific resources as read-only view state while
+/// the router remains the single source of truth for primary screen ownership.
+fn sync_primary_screen_state(
+    router: Res<UiRouter>,
+    mut announcements: ResMut<AnnouncementsUi>,
+    mut goods: ResMut<GoodsUi>,
+    mut census: ResMut<CensusUi>,
+    mut tree: ResMut<UpgradeTreeUi>,
 ) {
-    if keys.just_pressed(KeyCode::KeyM) && !tree.visible {
-        ui.visible = !ui.visible;
-    }
-}
-
-/// Redraw the minimap texture from the snapshot each tick: revealed terrain
-/// coloured by biome, with village buildings, cats and any raiders marked.
-fn minimap_panel_visible(requested: bool, goods_open: bool, cat_selected: bool) -> bool {
-    requested && !(goods_open && cat_selected)
-}
-
-fn update_minimap(
-    latest: Res<LatestSnapshot>,
-    ui: Res<MinimapUi>,
-    goods: Res<GoodsUi>,
-    selection: Res<Selection>,
-    mut minimap: ResMut<Minimap>,
-    mut images: ResMut<Assets<Image>>,
-    mut panel: Query<&mut Node, With<MinimapPanel>>,
-) {
-    let visible = minimap_panel_visible(ui.visible, goods.visible, selection.selected.is_some());
-    if let Ok(mut node) = panel.single_mut() {
-        node.display = if visible {
-            Display::Flex
-        } else {
-            Display::None
-        };
-    }
-    if !visible
-        || (!latest.is_changed()
-            && !ui.is_changed()
-            && !goods.is_changed()
-            && !selection.is_changed())
-    {
-        return;
-    }
-    let Some((seed, colony)) = latest
-        .0
-        .as_ref()
-        .and_then(|w| w.colonies.first().map(|c| (w.world_seed, c)))
-    else {
-        return;
-    };
-
-    let view = minimap_view(&colony.revealed_tiles);
-    minimap.view = view;
-    let biomes = revealed_biomes(seed, &colony.revealed_tiles);
-
-    let mut buf = vec![0u8; (MINIMAP_PX * MINIMAP_PX * 4) as usize];
-    for px in buf.chunks_exact_mut(4) {
-        px.copy_from_slice(&MINIMAP_FOG);
-    }
-    // Revealed terrain (biome colour; grey where the chunk cap skipped sampling).
-    for t in &colony.revealed_tiles {
-        if let Some((px, py)) = world_to_minimap(view, t.x, t.y) {
-            let color = biomes
-                .get(&(t.x, t.y))
-                .map_or([72, 72, 78, 255], |b| biome_rgba(*b));
-            put_pixel(&mut buf, px, py, color);
-        }
-    }
-    // Buildings: shrine gold, others pale (2x2 so they read over terrain).
-    for b in &colony.buildings {
-        if !building_visual(b.building_type).is_map_building() {
-            continue;
-        }
-        if let Some((px, py)) = world_to_minimap(view, b.world_position.x, b.world_position.y) {
-            let color = if b.building_type == BuildingType::Shrine {
-                [236, 206, 92, 255]
-            } else {
-                [222, 222, 228, 255]
-            };
-            put_block(&mut buf, px, py, color);
-        }
-    }
-    // Cats: leader gold, warriors orange, the rest light blue.
-    let leader_id = colony.leader.as_ref().map(|l| l.id.as_str());
-    for c in colony.cats.iter().filter(|c| c.death_time.is_none()) {
-        if let Some((px, py)) = world_to_minimap(view, c.position.x, c.position.y) {
-            // Boosted cats get a bright 2x2 gold block so priority picks pop out
-            // of the dot field even on the tiny minimap.
-            if c.boosted {
-                put_block(&mut buf, px, py, [255, 236, 120, 255]);
-                continue;
-            }
-            let color = if Some(c.id.as_str()) == leader_id {
-                [236, 206, 92, 255]
-            } else if c.specialization == Some(Specialization::Warrior) {
-                [224, 128, 64, 255]
-            } else {
-                [110, 190, 236, 255]
-            };
-            put_pixel(&mut buf, px, py, color);
-        }
-    }
-    // Active raid warband, if any.
-    for r in &colony.raiders {
-        if let Some((px, py)) = world_to_minimap(view, r.position.x, r.position.y) {
-            put_block(&mut buf, px, py, [230, 60, 50, 255]);
-        }
-    }
-    // Visiting trader — friendly gold mark.
-    if let Some(trader) = &colony.trader
-        && let Some((px, py)) = world_to_minimap(view, trader.position.x, trader.position.y)
-    {
-        put_block(&mut buf, px, py, [240, 205, 90, 255]);
-    }
-
-    if let Some(mut image) = images.get_mut(&minimap.image) {
-        image.data = Some(buf);
-    }
-}
-
-/// Position the camera-viewport outline over the minimap from the camera's
-/// current world view, so it stays in sync while panning/zooming.
-fn update_minimap_viewport(
-    windows: Query<&Window>,
-    camera: Query<(&Projection, &Transform), With<WorldCamera>>,
-    ui: Res<MinimapUi>,
-    minimap: Res<Minimap>,
-    mut rect: Query<&mut Node, With<MinimapViewportRect>>,
-) {
-    let Ok(mut node) = rect.single_mut() else {
-        return;
-    };
-    if !ui.visible {
-        node.display = Display::None;
-        return;
-    }
-    let (Ok(window), Ok((proj, cam))) = (windows.single(), camera.single()) else {
-        return;
-    };
-    let Projection::Orthographic(p) = proj else {
-        return;
-    };
-    // Visible world half-extents = half the window size scaled by the zoom.
-    let half = Vec2::new(window.width(), window.height()) * p.scale * 0.5;
-    let c = cam.translation.truncate();
-    // World corners -> tiles (y flips: world -y = +tile y).
-    let (tx0, ty0) = world_to_tile(Vec2::new(c.x - half.x, c.y + half.y));
-    let (tx1, ty1) = world_to_tile(Vec2::new(c.x + half.x, c.y - half.y));
-    let (x0, y0, x1, y1) = viewport_rect(
-        minimap.view,
-        tx0.min(tx1),
-        ty0.min(ty1),
-        tx0.max(tx1),
-        ty0.max(ty1),
-    );
-    let pct = |v: i32| Val::Percent(v as f32 / MINIMAP_PX as f32 * 100.0);
-    node.display = Display::Flex;
-    node.left = pct(x0);
-    node.top = pct(y0);
-    node.width = pct(x1 - x0);
-    node.height = pct(y1 - y0);
-}
-
-/// Left-click on the minimap recenters the main camera on that world point.
-fn minimap_click_to_pan(
-    buttons: Res<ButtonInput<MouseButton>>,
-    ui: Res<MinimapUi>,
-    minimap: Res<Minimap>,
-    image: Query<&RelativeCursorPosition, With<MinimapImageNode>>,
-    mut camera: Query<&mut Transform, With<WorldCamera>>,
-) {
-    if !ui.visible || !buttons.just_pressed(MouseButton::Left) {
-        return;
-    }
-    let Ok(rel) = image.single() else {
-        return;
-    };
-    let Some(n) = rel
-        .normalized
-        .filter(|n| (0.0..=1.0).contains(&n.x) && (0.0..=1.0).contains(&n.y))
-    else {
-        return;
-    };
-    let px = (n.x * MINIMAP_PX as f32) as i32;
-    let py = (n.y * MINIMAP_PX as f32) as i32;
-    let (tx, ty) = minimap_to_world(minimap.view, px, py);
-    let world = grid_to_world(tx, ty);
-    if let Ok(mut cam) = camera.single_mut() {
-        cam.translation.x = world.x;
-        cam.translation.y = world.y;
-    }
+    announcements.visible = router.is_open(PrimaryScreen::Log);
+    goods.visible = router.is_open(PrimaryScreen::Stores);
+    census.visible = router.is_open(PrimaryScreen::Village);
+    tree.visible = router.is_open(PrimaryScreen::Research);
 }
 
 fn update_client_feedback(
@@ -12846,86 +12298,6 @@ fn update_connection_status(
         *background = BackgroundColor(Color::srgb(0.18, 0.15, 0.11));
         *border = BorderColor::all(UI_DIVIDER);
     }
-}
-
-fn help_toggle_requested(h: bool, slash: bool, shift: bool) -> bool {
-    h || (slash && shift)
-}
-
-fn handle_help_overlay(
-    keys: Res<ButtonInput<KeyCode>>,
-    tree: Res<UpgradeTreeUi>,
-    mut ui: ResMut<HelpUi>,
-    open: Query<&Interaction, (Changed<Interaction>, With<HelpButton>)>,
-    dismiss: Query<&Interaction, (Changed<Interaction>, With<HelpDismissButton>)>,
-    mut panel: Query<&mut Node, With<HelpPanel>>,
-) {
-    if tree.visible {
-        ui.visible = false;
-        if let Ok(mut node) = panel.single_mut() {
-            node.display = Display::None;
-        }
-        return;
-    }
-    let clicked_open = open
-        .iter()
-        .any(|interaction| *interaction == Interaction::Pressed);
-    let clicked_dismiss = dismiss
-        .iter()
-        .any(|interaction| *interaction == Interaction::Pressed);
-    let shortcut = help_toggle_requested(
-        keys.just_pressed(KeyCode::KeyH),
-        keys.just_pressed(KeyCode::Slash),
-        keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight),
-    );
-    if clicked_open || shortcut {
-        ui.visible = !ui.visible;
-    }
-    if clicked_dismiss || (ui.visible && keys.just_pressed(KeyCode::Escape)) {
-        ui.visible = false;
-    }
-    if let Ok(mut node) = panel.single_mut() {
-        node.display = if ui.visible {
-            Display::Flex
-        } else {
-            Display::None
-        };
-    }
-}
-
-fn update_event_log(
-    latest: Res<LatestSnapshot>,
-    alerts: Res<ClientAlerts>,
-    mut log: Query<&mut Text, With<EventLogText>>,
-) {
-    if !latest.is_changed() && !alerts.is_changed() {
-        return;
-    }
-    let Ok(mut text) = log.single_mut() else {
-        return;
-    };
-    let mut lines: Vec<String> = alerts
-        .0
-        .iter()
-        .take(4)
-        .map(|message| format!("! {message}"))
-        .collect();
-    if let Some(colony) = latest.0.as_ref().and_then(|w| w.colonies.first()) {
-        let mut events = colony.events.clone();
-        events.sort_by_key(|event| event.timestamp);
-        lines.extend(
-            events
-                .iter()
-                .rev()
-                .take(4_usize.saturating_sub(lines.len()))
-                .map(|event| format!("- {}", attributed_event_message(event))),
-        );
-    }
-    text.0 = if lines.is_empty() {
-        "no recent events".to_string()
-    } else {
-        lines.join("\n")
-    };
 }
 
 fn attributed_event_message(event: &EventSnapshot) -> String {
@@ -14108,10 +13480,37 @@ mod tests {
     }
 
     #[test]
-    fn manual_orders_shortcut_does_not_conflict_with_camera_or_officers() {
-        assert_ne!(ORDERS_SHORTCUT, CAMERA_RESET_SHORTCUT);
-        assert_ne!(ORDERS_SHORTCUT, OFFICERS_SHORTCUT);
-        assert_eq!(ORDERS_SHORTCUT, KeyCode::KeyP);
+    fn cursor_centered_zoom_keeps_the_center_still_and_moves_toward_the_pointer() {
+        let origin = Vec3::new(100.0, -40.0, CAMERA_Z);
+        assert_eq!(
+            camera_translation_for_cursor_zoom(
+                origin,
+                Vec2::new(512.0, 384.0),
+                Vec2::new(1024.0, 768.0),
+                1.0,
+                0.8,
+            ),
+            origin
+        );
+        let moved = camera_translation_for_cursor_zoom(
+            origin,
+            Vec2::new(768.0, 192.0),
+            Vec2::new(1024.0, 768.0),
+            1.0,
+            0.8,
+        );
+        assert!(moved.x > origin.x);
+        assert!(moved.y > origin.y);
+    }
+
+    #[test]
+    fn pointer_drag_moves_world_decisively_at_every_zoom() {
+        let pointer = Vec2::new(80.0, -40.0);
+        for zoom in [MIN_ZOOM, DEFAULT_ZOOM, 1.0, MAX_ZOOM] {
+            let world_delta = world_drag_translation(pointer, zoom);
+            let screen_delta = Vec2::new(-world_delta.x, world_delta.y) / zoom;
+            assert!(screen_delta.abs_diff_eq(pointer * WORLD_DRAG_GAIN, 0.001));
+        }
     }
 
     #[test]
@@ -14630,10 +14029,9 @@ mod tests {
 
     #[test]
     fn every_runtime_adventure_skin_asset_is_a_tracked_png() {
-        let images: [&[u8]; 18] = [
+        let images: [&[u8]; 15] = [
             include_bytes!("../../../public/images/game/ui/panel.png"),
             include_bytes!("../../../public/images/game/ui/panel-dark.png"),
-            include_bytes!("../../../public/images/game/ui/panel-ornate.png"),
             include_bytes!("../../../public/images/game/ui/button.png"),
             include_bytes!("../../../public/images/game/ui/button-active.png"),
             include_bytes!("../../../public/images/game/ui/button-disabled.png"),
@@ -14642,8 +14040,6 @@ mod tests {
             include_bytes!("../../../public/images/game/ui/progress-mid.png"),
             include_bytes!("../../../public/images/game/ui/progress-low.png"),
             include_bytes!("../../../public/images/game/ui/banner.png"),
-            include_bytes!("../../../public/images/game/ui/icon-frame.png"),
-            include_bytes!("../../../public/images/game/ui/minimap-ring.png"),
             include_bytes!("../../../public/images/game/ui/cursor/pointer.png"),
             include_bytes!("../../../public/images/game/ui/cursor/interact.png"),
             include_bytes!("../../../public/images/game/ui/cursor/pressed.png"),
@@ -14732,27 +14128,9 @@ mod tests {
         assert_eq!(row.justify_content, JustifyContent::Center);
         assert_eq!(row.row_gap, Val::Px(UI_GAP));
         assert_eq!(COLLAPSED_BOTTOM_BAR_FOOTPRINT, 57.0);
-        assert_eq!(WIDE_BOTTOM_BAR_FOOTPRINT, 85.0);
-        assert_eq!(NARROW_BOTTOM_BAR_FOOTPRINT, 113.0);
         assert_eq!(BOTTOM_OVERLAY_CLEARANCE, 63.0);
-        assert_eq!(
-            bottom_overlay_clearance(1024.0, DockCategory::Inspect),
-            63.0
-        );
-        assert_eq!(
-            bottom_overlay_clearance(1280.0, DockCategory::Inspect),
-            63.0
-        );
-        assert_eq!(
-            bottom_overlay_clearance(1024.0, DockCategory::Gather),
-            119.0
-        );
-        assert_eq!(bottom_overlay_clearance(1280.0, DockCategory::Gather), 91.0);
         assert!(dashboard_layout_is_compact(1024.0));
         assert!(!dashboard_layout_is_compact(1280.0));
-        assert_eq!(dispatches_display(1024.0, false), Display::None);
-        assert_eq!(dispatches_display(1280.0, false), Display::Flex);
-        assert_eq!(dispatches_display(1280.0, true), Display::None);
         assert_eq!(hud_resource_grid_rows(), 2);
         assert_eq!(hud_resource_grid_height(), 41.0);
         let grid_width = HUD_RESOURCE_COLUMNS as f32 * HUD_RESOURCE_CELL_WIDTH
@@ -14761,7 +14139,6 @@ mod tests {
             + 2.0 * UI_BORDER_W;
         assert!(grid_width <= HUD_PANEL_WIDTH);
         const { assert!(HUD_PANEL_WIDTH < 1024.0 && HUD_PANEL_WIDTH < 1280.0) };
-        const { assert!(NARROW_BOTTOM_BAR_FOOTPRINT > WIDE_BOTTOM_BAR_FOOTPRINT) };
         const { assert!(SURVIVAL_HUD_RESOURCES.len() <= 6) };
         const { assert!(HUD_RESOURCE_PILL_HEIGHT <= 20.0) };
     }
@@ -14936,38 +14313,12 @@ mod tests {
     fn permanent_hud_is_survival_only_while_stores_cover_protocol_inventory() {
         assert_eq!(SURVIVAL_HUD_RESOURCES.len(), 4);
         assert!(SURVIVAL_HUD_RESOURCES.len() < HUD_RESOURCES.len());
-        let stores = production_stores_text(&ResourceAmounts::default());
         for &kind in ResourceKind::ALL {
             assert!(
-                stores.contains(resource_kind_name(kind)),
-                "Stores omitted {kind:?}: {stores}"
+                HUD_RESOURCES.contains(&hud_res_of(kind)),
+                "Stores omitted {kind:?}"
             );
         }
-        assert_eq!(
-            stores.split('·').count(),
-            ResourceKind::ALL
-                .len()
-                .saturating_sub(stores.lines().count())
-                + 1
-        );
-    }
-
-    #[test]
-    fn selected_building_moves_minimap_beside_inspector_at_1024_width() {
-        assert_eq!(minimap_right_offset(false), RIGHT_PANEL_MARGIN);
-        assert_eq!(
-            minimap_right_offset(true),
-            RIGHT_PANEL_MARGIN + BUILDING_INSPECTOR_WIDTH + UI_GAP
-        );
-        let viewport_width = 1024.0;
-        let inspector_left = viewport_width - RIGHT_PANEL_MARGIN - BUILDING_INSPECTOR_WIDTH;
-        let minimap_right = viewport_width - minimap_right_offset(true);
-        let minimap_left = minimap_right - MINIMAP_PANEL_WIDTH;
-        assert!(minimap_left >= 0.0);
-        assert!(
-            minimap_right + UI_GAP <= inspector_left,
-            "minimap {minimap_left}..{minimap_right} overlaps inspector from {inspector_left}"
-        );
     }
 
     fn village_colony(id: &str, name: &str, population: u32, status: &str) -> ColonySnapshot {
@@ -15103,9 +14454,9 @@ mod tests {
     fn focused_start_input_has_a_visible_cursor() {
         assert_eq!(
             start_input_label("", "Name eingeben …", true),
-            "▌ Name eingeben …"
+            "| Name eingeben …"
         );
-        assert_eq!(start_input_label("Mara", "Name eingeben …", true), "Mara ▌");
+        assert_eq!(start_input_label("Mara", "Name eingeben …", true), "Mara |");
         assert_eq!(start_input_label("Mara", "Name eingeben …", false), "Mara");
     }
 
@@ -15796,7 +15147,7 @@ mod tests {
         assert_eq!(lines.len(), CENSUS_LINES);
         assert_eq!(lines[0], "Communal population: 2");
         assert_eq!(lines[1], "Leader: Bella");
-        assert!(lines[2].contains("★ Boosted: 1"));
+        assert!(lines[2].contains("Priority: 1"));
         assert_eq!(lines[3], "Expecting: 1");
         // A vacant seat renders a placeholder rather than dropping the line.
         let vacant = census_report_lines(&colony_census(&[], &[], None), VillageScale::Personal);
@@ -15816,11 +15167,8 @@ mod tests {
 
     #[test]
     fn boost_button_label_reflects_boosted_state() {
-        assert_eq!(boost_button_label(false), "★ Boost");
-        assert_eq!(boost_button_label(true), "★ Boosted (click to clear)");
-        // The star prefix ties the button to the on-map marker in both states.
-        assert!(boost_button_label(false).starts_with('★'));
-        assert!(boost_button_label(true).starts_with('★'));
+        assert_eq!(boost_button_label(false), "Set priority");
+        assert_eq!(boost_button_label(true), "Priority on (click to clear)");
     }
 
     #[test]
@@ -16024,66 +15372,6 @@ mod tests {
     }
 
     #[test]
-    fn minimap_coord_mapping_round_trips_and_scales() {
-        // A small revealed patch fits 1 tile/pixel and centres on its bbox.
-        let revealed = vec![
-            TilePoint { x: 0, y: 0 },
-            TilePoint { x: 9, y: 5 },
-            TilePoint { x: 4, y: 4 },
-        ];
-        let view = minimap_view(&revealed);
-        assert_eq!(view.tiles_per_px, 1);
-        // Every revealed tile lands inside the minimap.
-        for t in &revealed {
-            let px = world_to_minimap(view, t.x, t.y);
-            assert!(px.is_some(), "{t:?} should be on the minimap");
-            // At 1 tile/px the pixel maps straight back to the tile.
-            let (px, py) = px.unwrap();
-            assert_eq!(minimap_to_world(view, px, py), (t.x, t.y));
-        }
-        // A tile far outside the revealed area is off the minimap.
-        assert_eq!(world_to_minimap(view, 9000, 9000), None);
-
-        // A huge revealed span coarsens to >1 tile/pixel (downsample, not truncate).
-        let big = vec![TilePoint { x: -200, y: -200 }, TilePoint { x: 200, y: 200 }];
-        let bview = minimap_view(&big);
-        assert!(bview.tiles_per_px > 1);
-        // The extreme corners still map onto the minimap.
-        assert!(world_to_minimap(bview, -200, -200).is_some());
-        assert!(world_to_minimap(bview, 200, 200).is_some());
-    }
-
-    #[test]
-    fn minimap_viewport_rect_maps_and_clamps() {
-        let view = MinimapView {
-            origin_x: 0,
-            origin_y: 0,
-            tiles_per_px: 1,
-        };
-        // A viewport covering tiles 10..=19 → pixels [10,20) at 1 tile/px.
-        assert_eq!(viewport_rect(view, 10, 10, 19, 19), (10, 10, 20, 20));
-        // A viewport running off the top-left clamps to the minimap edge.
-        assert_eq!(viewport_rect(view, -50, -50, 4, 4), (0, 0, 5, 5));
-        // Off the far edge clamps to MINIMAP_PX.
-        let (_, _, x1, y1) = viewport_rect(view, 100, 100, 900, 900);
-        assert_eq!((x1, y1), (MINIMAP_PX, MINIMAP_PX));
-        // At 4 tiles/pixel the rect coarsens.
-        let coarse = MinimapView {
-            origin_x: 0,
-            origin_y: 0,
-            tiles_per_px: 4,
-        };
-        assert_eq!(viewport_rect(coarse, 0, 0, 7, 7), (0, 0, 2, 2));
-    }
-
-    #[test]
-    fn minimap_bounds_fall_back_to_the_anchor_when_empty() {
-        let (min_x, min_y, max_x, max_y) = minimap_bounds(&[]);
-        assert!(min_x < VILLAGE_ANCHOR.x && max_x > VILLAGE_ANCHOR.x);
-        assert!(min_y < VILLAGE_ANCHOR.y && max_y > VILLAGE_ANCHOR.y);
-    }
-
-    #[test]
     fn reconnect_backoff_is_exponential_and_bounded() {
         assert_eq!(reconnect_delay_secs(1), 1.0);
         assert_eq!(reconnect_delay_secs(2), 2.0);
@@ -16123,14 +15411,6 @@ mod tests {
             connection_status_label(&incompatible, true),
             ("STALE · UPDATE REQUIRED".to_owned(), true)
         );
-    }
-
-    #[test]
-    fn help_is_reachable_by_h_or_shift_question_mark_only() {
-        assert!(help_toggle_requested(true, false, false));
-        assert!(help_toggle_requested(false, true, true));
-        assert!(!help_toggle_requested(false, true, false));
-        assert!(!help_toggle_requested(false, false, true));
     }
 
     #[test]
@@ -17884,7 +17164,7 @@ mod tests {
         };
         let arriving = trader_status_line(&trader, 12.0, 1_000);
         assert!(arriving.contains("Visit #2 · ARRIVING"));
-        assert!(arriving.contains("exterior 7,20 → target 7,8"));
+        assert!(arriving.contains("exterior 7,20 to target 7,8"));
         assert!(arriving.contains("trade locked"));
         assert!(arriving.contains("merchant purse 75g"));
         assert!(arriving.contains("wagon 42.0/100.0 kg"));
@@ -17899,7 +17179,7 @@ mod tests {
         trader.state = TraderVisitState::Departing;
         trader.destination = trader.route_exterior;
         let departing = trader_status_line(&trader, 12.0, 1_000);
-        assert!(departing.contains("DEPARTING · current 9,10 → exterior 7,20"));
+        assert!(departing.contains("DEPARTING · current 9,10 to exterior 7,20"));
     }
 
     #[test]
@@ -18317,6 +17597,15 @@ mod tests {
     }
 
     #[test]
+    fn tooltip_anchor_tracks_scaled_cursor_and_flips_inside_viewport_edges() {
+        let near = tooltip_anchor(Vec2::new(390.0, 260.0), Vec2::new(1024.0, 768.0), 1.3);
+        assert_eq!(near, Vec2::new(312.0, 212.0));
+
+        let edge = tooltip_anchor(Vec2::new(1000.0, 744.0), Vec2::new(1024.0, 768.0), 1.0);
+        assert_eq!(edge, Vec2::new(728.0, 600.0));
+    }
+
+    #[test]
     fn all_building_types_have_labels() {
         for building in [
             BuildingType::Shrine,
@@ -18370,7 +17659,7 @@ mod tests {
         assert!(footer.contains("Jobs"));
         assert!(footer.contains("goods"));
         assert!(footer.contains("stores"));
-        assert!(footer.contains("Stores [G]"));
+        assert!(footer.contains("details in Stores"));
         assert_eq!(compact_hud_label("123456789", 6), "1234..");
     }
 
@@ -18419,25 +17708,6 @@ mod tests {
         assert!(exact.contains("exact"));
         assert!(exact.contains("F148"));
         assert!(!exact.contains('~'));
-
-        let production = production_stores_text(&reported);
-        for expected in [
-            "fibre 1",
-            "thread 2",
-            "hide 2",
-            "cloth 3",
-            "leather 4",
-            "ore 5",
-            "gem 7",
-            "clay 8",
-            "sand 9",
-            "metal 6",
-        ] {
-            assert!(
-                production.contains(expected),
-                "missing {expected}: {production}"
-            );
-        }
 
         let stale = ledger_hud_text(&cat_protocol::StockLedgerSnapshot {
             reported,
@@ -19157,10 +18427,11 @@ mod tests {
     }
 
     #[test]
-    fn minimap_yields_only_when_goods_and_cat_inspector_need_the_same_space() {
-        assert!(minimap_panel_visible(true, false, true));
-        assert!(minimap_panel_visible(true, true, false));
-        assert!(!minimap_panel_visible(true, true, true));
-        assert!(!minimap_panel_visible(false, false, false));
+    fn visual_matrix_scale_override_accepts_only_supported_values() {
+        assert_eq!(parse_ui_scale_override("1"), Some(1.0));
+        assert_eq!(parse_ui_scale_override("1.15"), Some(1.15));
+        assert_eq!(parse_ui_scale_override("1.3"), Some(1.3));
+        assert_eq!(parse_ui_scale_override("0.8"), None);
+        assert_eq!(parse_ui_scale_override("huge"), None);
     }
 }

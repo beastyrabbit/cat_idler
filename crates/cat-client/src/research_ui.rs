@@ -8,36 +8,40 @@ use bevy::{
 };
 use cat_protocol::ResearchSnapshot;
 use cat_sim::{
-    research_catalog::{RESEARCH_NODE_COUNT, ResearchCategory, ResearchPayload, research_catalog},
+    research_catalog::{
+        RESEARCH_NODE_COUNT, ResearchCategory, ResearchNode, ResearchPayload, research_catalog,
+    },
     upgrade_tree::UPGRADE_NODES,
 };
 use std::collections::{HashMap, HashSet};
 
-const HEADER_HEIGHT: f32 = 96.0;
-const NODE_WIDTH: f32 = 154.0;
-const NODE_HEIGHT: f32 = 64.0;
-const MAP_PADDING_X: f32 = 96.0;
-const MAP_PADDING_Y: f32 = 92.0;
-const MAP_STEP_X: f32 = 180.0;
-const MAP_STEP_Y: f32 = 88.0;
-const MAP_WIDTH: f32 = MAP_PADDING_X * 2.0 + MAP_STEP_X * 94.0;
-const MAP_HEIGHT: f32 = MAP_PADDING_Y * 2.0 + MAP_STEP_Y * 12.0;
+const HEADER_HEIGHT: f32 = 104.0;
+const NODE_WIDTH: f32 = 184.0;
+const NODE_HEIGHT: f32 = 96.0;
+const MAP_PADDING_X: f32 = 88.0;
+const MAP_PADDING_Y: f32 = 118.0;
+const MAP_STEP_X: f32 = 216.0;
+const MAP_STEP_Y: f32 = 114.0;
 const MIN_SCALE: f32 = 0.42;
 const MAX_SCALE: f32 = 1.35;
 
-// A dry research ledger: dark walnut framing, sun-faded paper and restrained
-// category inks. These are intentionally opaque so the world never competes
-// with a screen containing five hundred pieces of information.
-const LEDGER_PAPER: Color = Color::srgb(0.76, 0.70, 0.56);
-const LEDGER_PAPER_DARK: Color = Color::srgb(0.58, 0.50, 0.37);
-const LEDGER_INK: Color = Color::srgb(0.15, 0.105, 0.065);
-const LEDGER_MUTED: Color = Color::srgb(0.36, 0.31, 0.24);
-const BUILDING_INK: Color = Color::srgb(0.27, 0.39, 0.31);
-const RECIPE_INK: Color = Color::srgb(0.48, 0.31, 0.18);
-const UPGRADE_INK: Color = Color::srgb(0.27, 0.31, 0.47);
-const OWNED_INK: Color = Color::srgb(0.25, 0.48, 0.28);
-const READY_INK: Color = Color::srgb(0.68, 0.43, 0.10);
-const LOCKED_INK: Color = Color::srgb(0.39, 0.36, 0.31);
+// A cartographer's worktable: the dependency map lives on a dark forest desk,
+// while individual studies remain high-contrast paper records. Prerequisites,
+// not catalog categories, own the layout; category is only a branch accent.
+const RESEARCH_DESK: Color = Color::srgb(0.12, 0.15, 0.11);
+const LEDGER_PAPER_DARK: Color = Color::srgb(0.58, 0.46, 0.30);
+const LEDGER_INK: Color = Color::srgb(0.13, 0.095, 0.055);
+const LEDGER_MUTED: Color = Color::srgb(0.39, 0.33, 0.25);
+const BUILDING_INK: Color = Color::srgb(0.30, 0.55, 0.40);
+const RECIPE_INK: Color = Color::srgb(0.72, 0.43, 0.20);
+const UPGRADE_INK: Color = Color::srgb(0.40, 0.48, 0.70);
+const OWNED_INK: Color = Color::srgb(0.20, 0.42, 0.22);
+const READY_INK: Color = Color::srgb(0.70, 0.39, 0.08);
+const LOCKED_INK: Color = Color::srgb(0.35, 0.32, 0.27);
+const OWNED_PAPER: Color = Color::srgb(0.70, 0.79, 0.60);
+const READY_PAPER: Color = Color::srgb(0.92, 0.76, 0.45);
+const LOCKED_PAPER: Color = Color::srgb(0.76, 0.73, 0.64);
+const RESEARCH_DRAG_GAIN: f32 = 1.65;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum CatalogNodeState {
@@ -103,6 +107,94 @@ struct CatalogConnector {
     to: usize,
 }
 
+#[derive(Debug)]
+struct UnifiedTreeLayout {
+    positions: Vec<Vec2>,
+    depths: Vec<usize>,
+    size: Vec2,
+    layer_count: usize,
+}
+
+fn prerequisite_depth(
+    index: usize,
+    nodes: &[ResearchNode],
+    by_id: &HashMap<String, usize>,
+    memo: &mut [Option<usize>],
+) -> usize {
+    if let Some(depth) = memo[index] {
+        return depth;
+    }
+    let depth = nodes[index]
+        .prerequisites
+        .iter()
+        .map(|id| prerequisite_depth(by_id[id], nodes, by_id, memo) + 1)
+        .max()
+        .unwrap_or(0);
+    memo[index] = Some(depth);
+    depth
+}
+
+/// Turn the catalog DAG into one compact, left-to-right tree. Each layer is
+/// one prerequisite step farther from the root. Ordering children around the
+/// average position of their parents keeps related branches together without
+/// restoring the old category strips.
+fn build_unified_tree_layout(
+    nodes: &[ResearchNode],
+    by_id: &HashMap<String, usize>,
+) -> UnifiedTreeLayout {
+    let mut memo = vec![None; nodes.len()];
+    let depths = (0..nodes.len())
+        .map(|index| prerequisite_depth(index, nodes, by_id, &mut memo))
+        .collect::<Vec<_>>();
+    let layer_count = depths.iter().copied().max().unwrap_or(0) + 1;
+    let mut layers = vec![Vec::new(); layer_count];
+    for (index, depth) in depths.iter().copied().enumerate() {
+        layers[depth].push(index);
+    }
+    let widest_layer = layers.iter().map(Vec::len).max().unwrap_or(1);
+    let mut row_positions = vec![0.0_f32; nodes.len()];
+    let mut positions = vec![Vec2::ZERO; nodes.len()];
+    for (depth, layer) in layers.iter_mut().enumerate() {
+        layer.sort_by(|left, right| {
+            let parent_row = |index: usize| {
+                let prerequisites = &nodes[index].prerequisites;
+                if prerequisites.is_empty() {
+                    widest_layer as f32 / 2.0
+                } else {
+                    prerequisites
+                        .iter()
+                        .map(|id| row_positions[by_id[id]])
+                        .sum::<f32>()
+                        / prerequisites.len() as f32
+                }
+            };
+            parent_row(*left)
+                .total_cmp(&parent_row(*right))
+                .then_with(|| nodes[*left].layout.x.cmp(&nodes[*right].layout.x))
+                .then_with(|| nodes[*left].layout.y.cmp(&nodes[*right].layout.y))
+                .then_with(|| nodes[*left].id.cmp(&nodes[*right].id))
+        });
+        let row_offset = (widest_layer - layer.len()) as f32 / 2.0;
+        for (row, index) in layer.iter().copied().enumerate() {
+            let logical_row = row_offset + row as f32;
+            row_positions[index] = logical_row;
+            positions[index] = Vec2::new(
+                MAP_PADDING_X + depth as f32 * MAP_STEP_X,
+                MAP_PADDING_Y + logical_row * MAP_STEP_Y,
+            );
+        }
+    }
+    UnifiedTreeLayout {
+        positions,
+        depths,
+        size: Vec2::new(
+            MAP_PADDING_X * 2.0 + (layer_count - 1) as f32 * MAP_STEP_X + NODE_WIDTH,
+            MAP_PADDING_Y * 2.0 + (widest_layer - 1) as f32 * MAP_STEP_Y + NODE_HEIGHT,
+        ),
+        layer_count,
+    }
+}
+
 /// Logical catalog state is allocated once. Applying a snapshot only rewrites
 /// this fixed state vector; it can never append cards or dependency lines.
 #[derive(Resource)]
@@ -111,6 +203,8 @@ pub(super) struct ResearchUiModel {
     connectors: Vec<CatalogConnector>,
     by_id: HashMap<String, usize>,
     states: Vec<CatalogNodeState>,
+    layout: UnifiedTreeLayout,
+    root_index: usize,
 }
 
 impl ResearchUiModel {
@@ -122,6 +216,8 @@ impl ResearchUiModel {
             .enumerate()
             .map(|(index, node)| (node.id.clone(), index))
             .collect();
+        let layout = build_unified_tree_layout(catalog.nodes(), &by_id);
+        let root_index = by_id["research_hut"];
         let entries = (0..catalog.nodes().len())
             .map(|index| CatalogEntry { index })
             .collect();
@@ -145,7 +241,27 @@ impl ResearchUiModel {
             connectors,
             by_id,
             states,
+            layout,
+            root_index,
         }
+    }
+
+    fn card_position(&self, index: usize) -> Vec2 {
+        self.layout.positions[index]
+    }
+
+    fn selected_path(&self, selected: usize) -> HashSet<(usize, usize)> {
+        let mut path = HashSet::new();
+        let mut pending = vec![selected];
+        while let Some(to) = pending.pop() {
+            for prerequisite in &research_catalog().nodes()[to].prerequisites {
+                let from = self.by_id[prerequisite];
+                if path.insert((from, to)) {
+                    pending.push(from);
+                }
+            }
+        }
+        path
     }
 
     #[cfg(test)]
@@ -256,11 +372,11 @@ struct ResearchResponsiveLayout {
 impl ResearchResponsiveLayout {
     fn for_window(width: f32, height: f32) -> Self {
         let inspector_width = if width <= 1100.0 {
-            248.0
+            260.0
         } else if width <= 1500.0 {
-            280.0
+            300.0
         } else {
-            312.0
+            320.0
         };
         Self {
             root_width: width,
@@ -299,7 +415,7 @@ impl Default for UpgradeTreeUi {
             search_active: false,
             selected: 0,
             pan: Vec2::new(18.0, 16.0),
-            zoom: 0.82,
+            zoom: 1.0,
             state_dirty: true,
             filter_dirty: true,
             transform_dirty: true,
@@ -328,6 +444,8 @@ pub(super) struct ResearchConnector(usize);
 pub(super) struct CardStateText(usize);
 #[derive(Component)]
 pub(super) struct ResearchInspector;
+#[derive(Component)]
+pub(super) struct ResearchHeaderHint;
 #[derive(Component)]
 pub(super) struct InspectorTitle;
 #[derive(Component)]
@@ -372,32 +490,20 @@ fn category_color(category: ResearchCategory) -> Color {
 
 fn category_label(category: ResearchCategory) -> &'static str {
     match category {
-        ResearchCategory::Building => "BUILDING",
-        ResearchCategory::RecipeResource => "RECIPE / RESOURCE",
-        ResearchCategory::Upgrade => "UPGRADE",
+        ResearchCategory::Building => "Building",
+        ResearchCategory::RecipeResource => "Recipe / resource",
+        ResearchCategory::Upgrade => "Upgrade",
     }
 }
 
-fn card_position(index: usize) -> Vec2 {
-    let layout = research_catalog().nodes()[index].layout;
-    Vec2::new(
-        MAP_PADDING_X + layout.x as f32 * MAP_STEP_X,
-        MAP_PADDING_Y + layout.y as f32 * MAP_STEP_Y,
-    )
+fn research_drag_delta(pointer_delta: Vec2) -> Vec2 {
+    pointer_delta * RESEARCH_DRAG_GAIN
 }
 
 /// Bevy UI transforms scale around the node centre. Compensate for that fixed
 /// origin so `pan` remains the rendered top-left of this very wide canvas.
-fn canvas_translation(pan: Vec2, zoom: f32) -> Vec2 {
-    pan - Vec2::new(MAP_WIDTH, MAP_HEIGHT) * ((1.0 - zoom) / 2.0)
-}
-
-/// Keep the overview legible: nearby dependencies are always inked, while a
-/// cross-track dependency is revealed when its target is selected. The entity
-/// still exists at all times, so selection/filter changes only toggle display.
-fn connector_is_relevant(connector: CatalogConnector, selected: usize) -> bool {
-    let length = card_position(connector.to).distance(card_position(connector.from));
-    length <= MAP_STEP_X * 5.0 || connector.to == selected
+fn canvas_translation(pan: Vec2, zoom: f32, canvas_size: Vec2) -> Vec2 {
+    pan - canvas_size * ((1.0 - zoom) / 2.0)
 }
 
 fn ledger_button(label: impl Into<String>) -> impl Bundle {
@@ -427,28 +533,24 @@ pub(super) fn spawn_research_ui(commands: &mut Commands) {
     commands
         .spawn((
             Node {
-                position_type: PositionType::Absolute,
-                width: Val::Percent(100.0),
-                height: Val::Percent(100.0),
                 display: Display::None,
-                flex_direction: FlexDirection::Column,
-                ..default()
+                ..primary_screen_node()
             },
-            BackgroundColor(Color::NONE),
-            ImageNode::default(),
-            AdventurePanel::Dark,
-            GlobalZIndex(300),
+            ui_panel_frame(),
+            GlobalZIndex(PRIMARY_SURFACE_Z),
             ResearchRoot,
+            UiSurfaceRoot(UiSurfaceKind::PrimaryScreen),
             WorldInputBlocker,
         ))
         .with_children(|root| {
             root.spawn((
                 Node {
                     width: Val::Percent(100.0),
-                    height: Val::Px(HEADER_HEIGHT),
+                    height: Val::Auto,
                     min_height: Val::Px(HEADER_HEIGHT),
                     padding: UiRect::axes(Val::Px(14.0), Val::Px(10.0)),
                     flex_direction: FlexDirection::Column,
+                    row_gap: Val::Px(7.0),
                     justify_content: JustifyContent::SpaceBetween,
                     border: UiRect::bottom(Val::Px(2.0)),
                     ..default()
@@ -456,6 +558,7 @@ pub(super) fn spawn_research_ui(commands: &mut Commands) {
                 BackgroundColor(UI_HEADER),
                 BorderColor::all(Color::NONE),
                 ImageNode::default(),
+                ZIndex(10),
                 AdventurePanel::Dark,
             ))
             .with_children(|header| {
@@ -463,11 +566,13 @@ pub(super) fn spawn_research_ui(commands: &mut Commands) {
                     .spawn(Node {
                         width: Val::Percent(100.0),
                         align_items: AlignItems::Center,
+                        flex_wrap: FlexWrap::Wrap,
                         column_gap: Val::Px(14.0),
+                        row_gap: Val::Px(7.0),
                         ..default()
                     })
                     .with_children(|row| {
-                        row.spawn(ui_text("Research Ledger", 20.0, UI_TITLE_INK));
+                        row.spawn(ui_text("Research tree", 22.0, UI_TITLE_INK));
                         row.spawn((ui_text("", FS_BODY, UI_TITLE_INK), ResearchCurrency));
                         row.spawn((
                             Node {
@@ -480,13 +585,15 @@ pub(super) fn spawn_research_ui(commands: &mut Commands) {
                         row.spawn((ledger_button("-"), LedgerAction::ZoomOut));
                         row.spawn((ledger_button("+"), LedgerAction::ZoomIn));
                         row.spawn((ledger_button("Home"), LedgerAction::Home));
-                        row.spawn((ledger_button("Close [U]"), LedgerAction::Close));
+                        row.spawn((ledger_button("Close"), LedgerAction::Close));
                     });
                 header
                     .spawn(Node {
                         width: Val::Percent(100.0),
                         align_items: AlignItems::Center,
+                        flex_wrap: FlexWrap::Wrap,
                         column_gap: Val::Px(7.0),
+                        row_gap: Val::Px(7.0),
                         ..default()
                     })
                     .with_children(|row| {
@@ -508,10 +615,8 @@ pub(super) fn spawn_research_ui(commands: &mut Commands) {
                             SearchButton,
                         ))
                         .with_children(|button| {
-                            button.spawn((
-                                ui_text("Search nodes  [/]", FS_SMALL, UI_INK),
-                                SearchText,
-                            ));
+                            button
+                                .spawn((ui_text("Search research", FS_SMALL, UI_INK), SearchText));
                         });
                         for filter in ResearchFilter::ALL {
                             row.spawn((
@@ -540,10 +645,11 @@ pub(super) fn spawn_research_ui(commands: &mut Commands) {
                                 ..default()
                             },
                             ui_text(
-                                "Pan: arrows / WASD / wheel    Zoom: + / − / Ctrl+wheel",
+                                "Drag the canvas to pan  |  Scroll to move  |  Ctrl+scroll to zoom",
                                 FS_SMALL,
                                 UI_TITLE_INK,
                             ),
+                            ResearchHeaderHint,
                         ));
                     });
             });
@@ -564,7 +670,7 @@ pub(super) fn spawn_research_ui(commands: &mut Commands) {
                         overflow: Overflow::clip(),
                         ..default()
                     },
-                    BackgroundColor(LEDGER_PAPER),
+                    BackgroundColor(RESEARCH_DESK),
                     ResearchViewport,
                 ))
                 .with_children(|viewport| {
@@ -572,56 +678,71 @@ pub(super) fn spawn_research_ui(commands: &mut Commands) {
                         .spawn((
                             Node {
                                 position_type: PositionType::Absolute,
-                                width: Val::Px(MAP_WIDTH),
-                                height: Val::Px(MAP_HEIGHT),
+                                width: Val::Px(model.layout.size.x),
+                                height: Val::Px(model.layout.size.y),
                                 ..default()
                             },
+                            BackgroundColor(RESEARCH_DESK),
                             UiTransform::IDENTITY,
                             ResearchCanvas,
                         ))
                         .with_children(|canvas| {
-                            for (x, label, subtitle, color) in [
-                                (0, "FOUNDING THREAD", "The working legacy tree", READY_INK),
-                                (20, "BUILDING STUDIES", "Shelter, industry and civic works", BUILDING_INK),
-                                (50, "RECIPES & RESOURCES", "Materials, crafts and stores", RECIPE_INK),
-                                (80, "COLONY UPGRADES", "Knowledge applied to every paw", UPGRADE_INK),
-                            ] {
-                                canvas
-                                    .spawn(Node {
-                                        position_type: PositionType::Absolute,
-                                        left: Val::Px(MAP_PADDING_X + x as f32 * MAP_STEP_X),
-                                        top: Val::Px(28.0),
-                                        width: Val::Px(440.0),
-                                        flex_direction: FlexDirection::Column,
-                                        ..default()
-                                    })
-                                    .with_children(|lane| {
-                                        lane.spawn(ui_text(label, 15.0, color));
-                                        lane.spawn(ui_text(subtitle, FS_SMALL, LEDGER_MUTED));
-                                    });
-                            }
+                            let root_position = model.card_position(model.root_index);
+                            canvas
+                                .spawn(Node {
+                                    position_type: PositionType::Absolute,
+                                    left: Val::Px(root_position.x),
+                                    top: Val::Px(root_position.y - 66.0),
+                                    width: Val::Px(NODE_WIDTH),
+                                    flex_direction: FlexDirection::Column,
+                                    row_gap: Val::Px(2.0),
+                                    ..default()
+                                })
+                                .with_children(|caption| {
+                                    caption.spawn(ui_text(
+                                        "ONE TREE · 487 STUDIES",
+                                        15.0,
+                                        Color::srgb(0.88, 0.72, 0.39),
+                                    ));
+                                    caption.spawn(ui_text(
+                                        format!(
+                                            "{} dependency steps · begins here",
+                                            model.layout.layer_count
+                                        ),
+                                        FS_SMALL,
+                                        Color::srgb(0.76, 0.73, 0.64),
+                                    ));
+                                });
 
                             for (connector_index, connector) in
                                 model.connectors.iter().copied().enumerate()
                             {
-                                let from = card_position(connector.from)
+                                let from = model.card_position(connector.from)
                                     + Vec2::new(NODE_WIDTH, NODE_HEIGHT / 2.0);
-                                let to = card_position(connector.to)
+                                let to = model.card_position(connector.to)
                                     + Vec2::new(0.0, NODE_HEIGHT / 2.0);
                                 let delta = to - from;
                                 let midpoint = (from + to) / 2.0;
                                 let length = delta.length();
+                                let depth_span = model.layout.depths[connector.to]
+                                    - model.layout.depths[connector.from];
                                 canvas.spawn((
                                     Node {
+                                        display: Display::None,
                                         position_type: PositionType::Absolute,
                                         left: Val::Px(midpoint.x - length / 2.0),
-                                        top: Val::Px(midpoint.y - 1.0),
+                                        top: Val::Px(midpoint.y - 1.5),
                                         width: Val::Px(length),
-                                        height: Val::Px(2.0),
+                                        height: Val::Px(3.0),
                                         ..default()
                                     },
-                                    BackgroundColor(LEDGER_PAPER_DARK),
-                                    UiTransform::from_rotation(Rot2::radians(delta.y.atan2(delta.x))),
+                                    BackgroundColor(
+                                        category_color(catalog.nodes()[connector.to].category)
+                                            .with_alpha(if depth_span == 1 { 0.34 } else { 0.22 }),
+                                    ),
+                                    UiTransform::from_rotation(Rot2::radians(
+                                        delta.y.atan2(delta.x),
+                                    )),
                                     ResearchConnector(connector_index),
                                 ));
                             }
@@ -629,7 +750,7 @@ pub(super) fn spawn_research_ui(commands: &mut Commands) {
                             for entry in &model.entries {
                                 let index = entry.index;
                                 let node = &catalog.nodes()[index];
-                                let position = card_position(index);
+                                let position = model.card_position(index);
                                 canvas
                                     .spawn((
                                         Button,
@@ -639,23 +760,44 @@ pub(super) fn spawn_research_ui(commands: &mut Commands) {
                                             top: Val::Px(position.y),
                                             width: Val::Px(NODE_WIDTH),
                                             height: Val::Px(NODE_HEIGHT),
-                                            padding: UiRect::all(Val::Px(7.0)),
-                                            border: UiRect::all(Val::Px(2.0)),
+                                            padding: UiRect::axes(Val::Px(11.0), Val::Px(8.0)),
+                                            border: UiRect {
+                                                left: Val::Px(4.0),
+                                                right: Val::Px(1.0),
+                                                top: Val::Px(1.0),
+                                                bottom: Val::Px(1.0),
+                                            },
                                             flex_direction: FlexDirection::Column,
                                             justify_content: JustifyContent::SpaceBetween,
                                             overflow: Overflow::clip(),
                                             ..default()
                                         },
-                                        BackgroundColor(LEDGER_PAPER),
+                                        BackgroundColor(LOCKED_PAPER),
                                         BorderColor::all(category_color(node.category)),
                                         ResearchCard(index),
                                     ))
                                     .with_children(|card| {
-                                        card.spawn(ui_text(node.name.clone(), FS_BODY, LEDGER_INK));
+                                        card.spawn(ui_text(
+                                            if index == model.root_index {
+                                                "Root · Building"
+                                            } else {
+                                                category_label(node.category)
+                                            },
+                                            10.5,
+                                            category_color(node.category),
+                                        ));
+                                        card.spawn(ui_text_wrapped(
+                                            node.name.clone(),
+                                            14.0,
+                                            LEDGER_INK,
+                                        ));
                                         card.spawn((
                                             ui_text(
-                                                format!("LOCKED · E{} · {:.0}b", node.era, node.cost),
-                                                9.5,
+                                                format!(
+                                                    "Locked | Era {} | {:.0} pts",
+                                                    node.era, node.cost
+                                                ),
+                                                11.0,
                                                 LOCKED_INK,
                                             ),
                                             CardStateText(index),
@@ -667,67 +809,64 @@ pub(super) fn spawn_research_ui(commands: &mut Commands) {
 
                 body.spawn((
                     Node {
-                        width: Val::Px(280.0),
-                        min_width: Val::Px(248.0),
+                        width: Val::Px(300.0),
+                        min_width: Val::Px(260.0),
                         height: Val::Percent(100.0),
-                        padding: UiRect::all(Val::Px(16.0)),
-                        border: UiRect::left(Val::Px(2.0)),
+                        min_height: Val::Px(0.0),
+                        border: UiRect::left(Val::Px(3.0)),
                         flex_direction: FlexDirection::Column,
-                        row_gap: Val::Px(10.0),
                         ..default()
                     },
-                    BackgroundColor(UI_BG),
-                    BorderColor::all(Color::NONE),
-                    ImageNode::default(),
-                    AdventurePanel::Ornate,
+                    BackgroundColor(Color::srgb(0.94, 0.89, 0.77)),
+                    BorderColor::all(LEDGER_PAPER_DARK),
+                    ZIndex(10),
                     ResearchInspector,
                 ))
                 .with_children(|inspector| {
-                    inspector.spawn(ui_text("SELECTED STUDY", FS_SMALL, LEDGER_MUTED));
-                    inspector.spawn((ui_text("Research Hut", 19.0, LEDGER_INK), InspectorTitle));
-                    inspector.spawn((ui_text("", FS_SMALL, BUILDING_INK), InspectorMeta));
-                    inspector.spawn((
-                        ui_text_wrapped("", FS_BODY, LEDGER_INK),
-                        InspectorDescription,
-                    ));
-                    inspector.spawn(Node {
-                        width: Val::Percent(100.0),
-                        height: Val::Px(1.0),
-                        margin: UiRect::vertical(Val::Px(4.0)),
-                        ..default()
-                    })
-                    .insert(BackgroundColor(LEDGER_PAPER_DARK));
-                    inspector.spawn(ui_text("REQUIRES", FS_SMALL, LEDGER_MUTED));
-                    inspector.spawn((ui_text("", FS_BODY, LEDGER_INK), InspectorPrerequisites));
-                    inspector.spawn(ui_text("UNLOCKS", FS_SMALL, LEDGER_MUTED));
-                    inspector.spawn((ui_text("", FS_BODY, LEDGER_INK), InspectorPayloads));
-                    inspector
-                        .spawn((
-                            Button,
-                            Node {
+                    spawn_vertical_scroll_area(inspector, 16.0, 10.0, |inspector| {
+                        inspector.spawn(ui_text("Study details", FS_SECTION, LEDGER_MUTED));
+                        inspector
+                            .spawn((ui_text("Research Hut", 22.0, LEDGER_INK), InspectorTitle));
+                        inspector.spawn((ui_text("", FS_SMALL, BUILDING_INK), InspectorMeta));
+                        inspector.spawn((
+                            ui_text_wrapped("", FS_BODY, LEDGER_INK),
+                            InspectorDescription,
+                        ));
+                        inspector
+                            .spawn(Node {
                                 width: Val::Percent(100.0),
-                                height: Val::Px(32.0),
-                                padding: UiRect::horizontal(Val::Px(9.0)),
-                                justify_content: JustifyContent::Center,
-                                align_items: AlignItems::Center,
-                                border: UiRect::all(Val::Px(1.0)),
+                                height: Val::Px(1.0),
+                                margin: UiRect::vertical(Val::Px(4.0)),
                                 ..default()
-                            },
-                            BackgroundColor(UI_BUTTON_GREY),
-                            BorderColor::all(Color::NONE),
-                            ImageNode::default(),
-                            KitButton,
-                            KitDisabled { disabled: true },
-                            PurchaseButton,
-                        ))
-                        .with_children(|button| {
-                            button.spawn((ui_text("", FS_SMALL, UI_INK), PurchaseButtonText));
+                            })
+                            .insert(BackgroundColor(LEDGER_PAPER_DARK));
+                        inspector.spawn(ui_text("Requires", FS_SECTION, LEDGER_MUTED));
+                        inspector.spawn((ui_text("", FS_BODY, LEDGER_INK), InspectorPrerequisites));
+                        inspector.spawn(ui_text("Unlocks", FS_SECTION, LEDGER_MUTED));
+                        inspector.spawn((ui_text("", FS_BODY, LEDGER_INK), InspectorPayloads));
+                        inspector
+                            .spawn((
+                                Button,
+                                Node {
+                                    width: Val::Percent(100.0),
+                                    min_height: Val::Px(36.0),
+                                    padding: UiRect::horizontal(Val::Px(9.0)),
+                                    justify_content: JustifyContent::Center,
+                                    align_items: AlignItems::Center,
+                                    border: UiRect::all(Val::Px(1.0)),
+                                    ..default()
+                                },
+                                BackgroundColor(UI_BUTTON_GREY),
+                                BorderColor::all(Color::NONE),
+                                ImageNode::default(),
+                                KitButton,
+                                KitDisabled { disabled: true },
+                                PurchaseButton,
+                            ))
+                            .with_children(|button| {
+                                button.spawn((ui_text("", FS_SMALL, UI_INK), PurchaseButtonText));
+                            });
                     });
-                    inspector.spawn(ui_text(
-                        "Research labor is manual while the Loremaster office is vacant. The Leader may choose one affordable study per rolling real day; players may buy any affordable studies. Original studies may also be commissioned with shrine blessings.",
-                        FS_SMALL,
-                        LEDGER_MUTED,
-                    ));
                 });
             });
         });
@@ -750,8 +889,13 @@ fn leader_priority_copy(research: &ResearchSnapshot) -> String {
     )
 }
 
-fn center_on(ui: &mut UpgradeTreeUi, index: usize, window: Option<&Window>) {
-    let point = card_position(index) + Vec2::new(NODE_WIDTH / 2.0, NODE_HEIGHT / 2.0);
+fn center_on(
+    ui: &mut UpgradeTreeUi,
+    model: &ResearchUiModel,
+    index: usize,
+    window: Option<&Window>,
+) {
+    let point = model.card_position(index) + Vec2::new(NODE_WIDTH / 2.0, NODE_HEIGHT / 2.0);
     let (canvas_width, canvas_height) = window.map_or((760.0, 650.0), |window| {
         let layout = ResearchResponsiveLayout::for_window(window.width(), window.height());
         (layout.canvas_width, layout.canvas_height)
@@ -763,16 +907,14 @@ fn center_on(ui: &mut UpgradeTreeUi, index: usize, window: Option<&Window>) {
     ui.transform_dirty = true;
 }
 
-/// Open/close the full-page ledger from the existing Tree command or `U`.
-#[allow(clippy::too_many_arguments)]
+/// Open/close the full-page ledger from its explicit buttons.
 pub(super) fn toggle_upgrade_tree(
-    keys: Res<ButtonInput<KeyCode>>,
     button: Query<&Interaction, (Changed<Interaction>, With<TreeButton>)>,
     close: Query<(&Interaction, &LedgerAction), Changed<Interaction>>,
     mut ui: ResMut<UpgradeTreeUi>,
-    mut goods: ResMut<GoodsUi>,
-    mut announce: ResMut<AnnouncementsUi>,
-    mut census: ResMut<CensusUi>,
+    mut router: ResMut<UiRouter>,
+    model: Res<ResearchUiModel>,
+    windows: Query<&Window>,
 ) {
     let close_clicked = close.iter().any(|(interaction, action)| {
         *interaction == Interaction::Pressed && matches!(action, LedgerAction::Close)
@@ -780,14 +922,13 @@ pub(super) fn toggle_upgrade_tree(
     let toggle_clicked = button
         .iter()
         .any(|interaction| *interaction == Interaction::Pressed);
-    let shortcut_pressed = keys.just_pressed(KeyCode::KeyU) && !ui.search_active;
-    if shortcut_pressed || toggle_clicked || close_clicked {
-        ui.visible = !ui.visible;
+    if toggle_clicked || close_clicked {
+        let opening = !router.is_open(PrimaryScreen::Research);
+        router.toggle(PrimaryScreen::Research);
         ui.search_active = false;
-        if ui.visible {
-            goods.visible = false;
-            announce.visible = false;
-            census.visible = false;
+        if opening {
+            let selected = ui.selected;
+            center_on(&mut ui, &model, selected, windows.single().ok());
             ui.state_dirty = true;
             ui.filter_dirty = true;
             ui.transform_dirty = true;
@@ -798,11 +939,45 @@ pub(super) fn toggle_upgrade_tree(
 
 /// Apply full-window sizing and keep the inspector useful at all required
 /// desktop widths. This does no catalog work.
+#[allow(clippy::type_complexity)]
 pub(super) fn update_research_shell(
     ui: Res<UpgradeTreeUi>,
     windows: Query<&Window>,
-    mut root: Query<&mut Node, (With<ResearchRoot>, Without<ResearchInspector>)>,
-    mut inspector: Query<&mut Node, (With<ResearchInspector>, Without<ResearchRoot>)>,
+    ui_scale: Res<UiScale>,
+    mut root: Query<
+        &mut Node,
+        (
+            With<ResearchRoot>,
+            Without<ResearchInspector>,
+            Without<ResearchHeaderHint>,
+        ),
+    >,
+    mut inspector: Query<
+        &mut Node,
+        (
+            With<ResearchInspector>,
+            Without<ResearchRoot>,
+            Without<ResearchHeaderHint>,
+        ),
+    >,
+    mut hint: Query<
+        &mut Node,
+        (
+            With<ResearchHeaderHint>,
+            Without<ResearchRoot>,
+            Without<ResearchInspector>,
+            Without<ResearchNext>,
+        ),
+    >,
+    mut next: Query<
+        &mut Node,
+        (
+            With<ResearchNext>,
+            Without<ResearchRoot>,
+            Without<ResearchInspector>,
+            Without<ResearchHeaderHint>,
+        ),
+    >,
 ) {
     if let Ok(mut node) = root.single_mut() {
         node.display = if ui.visible {
@@ -814,9 +989,25 @@ pub(super) fn update_research_shell(
     let Ok(window) = windows.single() else {
         return;
     };
-    let layout = ResearchResponsiveLayout::for_window(window.width(), window.height());
+    let profile = UiLayoutProfile::new(window.width(), window.height(), ui_scale.0);
+    let layout =
+        ResearchResponsiveLayout::for_window(profile.effective_width, profile.effective_height);
     if let Ok(mut node) = inspector.single_mut() {
         node.width = Val::Px(layout.inspector_width);
+    }
+    if let Ok(mut node) = hint.single_mut() {
+        node.display = if profile.compact {
+            Display::None
+        } else {
+            Display::Flex
+        };
+    }
+    if let Ok(mut node) = next.single_mut() {
+        node.display = if profile.compact {
+            Display::None
+        } else {
+            Display::Flex
+        };
     }
 }
 
@@ -825,6 +1016,8 @@ pub(super) fn update_research_shell(
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub(super) fn handle_research_controls(
     mut ui: ResMut<UpgradeTreeUi>,
+    model: Res<ResearchUiModel>,
+    windows: Query<&Window>,
     search: Query<&Interaction, (Changed<Interaction>, With<SearchButton>)>,
     filters: Query<(&Interaction, &FilterButton), Changed<Interaction>>,
     cards: Query<(&Interaction, &ResearchCard), Changed<Interaction>>,
@@ -868,10 +1061,9 @@ pub(super) fn handle_research_controls(
                 ui.transform_dirty = true;
             }
             LedgerAction::Home => {
-                ui.selected = 0;
-                ui.zoom = 0.82;
-                ui.pan = Vec2::new(18.0, 16.0);
-                ui.transform_dirty = true;
+                ui.selected = model.root_index;
+                ui.zoom = 1.0;
+                center_on(&mut ui, &model, model.root_index, windows.single().ok());
                 ui.inspector_dirty = true;
                 ui.filter_dirty = true;
             }
@@ -879,8 +1071,9 @@ pub(super) fn handle_research_controls(
     }
 }
 
-/// Text entry is deliberately small and local: `/` focuses the search field,
-/// Backspace edits it, Escape clears focus and Enter jumps to the first result.
+/// Text entry is deliberately small and local: clicking focuses the search
+/// field, Backspace edits it, Escape clears focus and Enter jumps to the first
+/// result.
 pub(super) fn research_keyboard_input(
     keys: Res<ButtonInput<KeyCode>>,
     mut keyboard: MessageReader<KeyboardInput>,
@@ -893,24 +1086,15 @@ pub(super) fn research_keyboard_input(
         return;
     }
     let was_search_active = ui.search_active;
-    if keys.just_pressed(KeyCode::Slash) {
-        ui.search_active = true;
-        ui.filter_dirty = true;
-    }
     if ui.search_active {
         let old_query = ui.query.clone();
-        // The reader is intentionally idle while the ledger is closed. When `/`
-        // activates search, discard older shortcut events (notably the `U` that
-        // opened the ledger) and begin text entry after the activating slash.
         let mut accepts_text = was_search_active;
         for event in keyboard.read() {
             if event.state != ButtonState::Pressed {
                 continue;
             }
             if !accepts_text {
-                if event.key_code == KeyCode::Slash {
-                    accepts_text = true;
-                }
+                accepts_text = true;
                 continue;
             }
             match event.key_code {
@@ -928,7 +1112,7 @@ pub(super) fn research_keyboard_input(
                         .copied()
                     {
                         ui.selected = first;
-                        center_on(&mut ui, first, windows.single().ok());
+                        center_on(&mut ui, &model, first, windows.single().ok());
                         ui.inspector_dirty = true;
                         ui.filter_dirty = true;
                     }
@@ -937,7 +1121,7 @@ pub(super) fn research_keyboard_input(
                 }
                 _ => {
                     if let Some(text) = event.text.as_deref() {
-                        for character in text.chars().filter(|c| !c.is_control() && *c != '/') {
+                        for character in text.chars().filter(|c| !c.is_control()) {
                             if ui.query.chars().count() < 48 {
                                 ui.query.push(character);
                             }
@@ -960,13 +1144,41 @@ pub(super) fn research_keyboard_input(
 
 /// Keyboard and wheel navigation alter only one `UiTransform`, even though the
 /// transformed canvas contains the complete catalog.
+#[derive(SystemParam)]
+pub(super) struct ResearchPointerInput<'w, 's> {
+    buttons: Res<'w, ButtonInput<MouseButton>>,
+    windows: Query<'w, 's, &'static Window, With<PrimaryWindow>>,
+    viewport:
+        Query<'w, 's, (&'static ComputedNode, &'static UiGlobalTransform), With<ResearchViewport>>,
+}
+
+impl ResearchPointerInput<'_, '_> {
+    fn over_canvas(&self) -> bool {
+        let Some(cursor) = self
+            .windows
+            .single()
+            .ok()
+            .and_then(|window| window.cursor_position())
+        else {
+            return false;
+        };
+        self.viewport
+            .single()
+            .is_ok_and(|(computed, transform)| computed.contains_point(*transform, cursor))
+    }
+}
+
 pub(super) fn navigate_research_canvas(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
+    mut motion: MessageReader<CursorMoved>,
     mut wheel: MessageReader<MouseWheel>,
     mut ui: ResMut<UpgradeTreeUi>,
+    pointer: ResearchPointerInput,
 ) {
     if !ui.visible {
+        motion.clear();
+        wheel.clear();
         return;
     }
     let mut pan_delta = Vec2::ZERO;
@@ -984,6 +1196,20 @@ pub(super) fn navigate_research_canvas(
         if keys.pressed(KeyCode::ArrowDown) || keys.pressed(KeyCode::KeyS) {
             pan_delta.y -= speed;
         }
+        if pointer.over_canvas()
+            && (pointer.buttons.pressed(MouseButton::Left)
+                || pointer.buttons.pressed(MouseButton::Middle))
+        {
+            for event in motion.read() {
+                if let Some(pointer_delta) = event.delta {
+                    pan_delta += research_drag_delta(pointer_delta);
+                }
+            }
+        } else {
+            motion.clear();
+        }
+    } else {
+        motion.clear();
     }
 
     let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
@@ -1023,13 +1249,14 @@ pub(super) fn navigate_research_canvas(
 
 pub(super) fn update_research_transform(
     mut ui: ResMut<UpgradeTreeUi>,
+    model: Res<ResearchUiModel>,
     mut canvas: Query<&mut UiTransform, With<ResearchCanvas>>,
 ) {
     if !ui.visible || !ui.transform_dirty {
         return;
     }
     if let Ok(mut transform) = canvas.single_mut() {
-        let translation = canvas_translation(ui.pan, ui.zoom);
+        let translation = canvas_translation(ui.pan, ui.zoom, model.layout.size);
         transform.translation = Val2::px(translation.x, translation.y);
         transform.scale = Vec2::splat(ui.zoom);
     }
@@ -1043,7 +1270,10 @@ pub(super) fn update_research_filter(
     model: Res<ResearchUiModel>,
     mut ui: ResMut<UpgradeTreeUi>,
     mut cards: Query<(&ResearchCard, &mut Node, &mut BorderColor)>,
-    mut connectors: Query<(&ResearchConnector, &mut Node), Without<ResearchCard>>,
+    mut connectors: Query<
+        (&ResearchConnector, &mut Node, &mut BackgroundColor),
+        Without<ResearchCard>,
+    >,
     mut filters: Query<(&FilterButton, &mut KitToggle)>,
     mut search: Query<&mut Text, (With<SearchText>, Without<MatchCountText>)>,
     mut count: Query<&mut Text, (With<MatchCountText>, Without<SearchText>)>,
@@ -1052,6 +1282,7 @@ pub(super) fn update_research_filter(
         return;
     }
     let matches = model.filtered_indices(&ui.query, ui.filter);
+    let selected_path = model.selected_path(ui.selected);
     let mut visible = vec![false; model.entries.len()];
     for index in &matches {
         visible[*index] = true;
@@ -1069,15 +1300,24 @@ pub(super) fn update_research_filter(
         };
         *border = BorderColor::all(color);
     }
-    for (line, mut node) in &mut connectors {
+    for (line, mut node, mut background) in &mut connectors {
         let connector = model.connectors[line.0];
         node.display = if visible[connector.from]
             && visible[connector.to]
-            && connector_is_relevant(connector, ui.selected)
+            && ((ui.selected == model.root_index && connector.from == model.root_index)
+                || selected_path.contains(&(connector.from, connector.to)))
         {
             Display::Flex
         } else {
             Display::None
+        };
+        background.0 = if selected_path.contains(&(connector.from, connector.to)) {
+            READY_INK.with_alpha(0.95)
+        } else {
+            let depth_span =
+                model.layout.depths[connector.to] - model.layout.depths[connector.from];
+            category_color(research_catalog().nodes()[connector.to].category)
+                .with_alpha(if depth_span == 1 { 0.34 } else { 0.22 })
         };
     }
     for (button, mut toggle) in &mut filters {
@@ -1088,7 +1328,7 @@ pub(super) fn update_research_filter(
             if ui.search_active {
                 "Search: |".to_owned()
             } else {
-                "Search nodes  [/]".to_owned()
+                "Search research".to_owned()
             }
         } else if ui.search_active {
             format!("Search: {}|", ui.query)
@@ -1124,24 +1364,24 @@ pub(super) fn update_research_snapshot(
         model.apply_snapshot(research);
         for (card, mut background) in &mut cards {
             background.0 = match model.states[card.0] {
-                CatalogNodeState::Owned => Color::srgb(0.65, 0.72, 0.52),
-                CatalogNodeState::Available => Color::srgb(0.82, 0.72, 0.49),
-                CatalogNodeState::Locked => LEDGER_PAPER,
+                CatalogNodeState::Owned => OWNED_PAPER,
+                CatalogNodeState::Available => READY_PAPER,
+                CatalogNodeState::Locked => LOCKED_PAPER,
             };
         }
         for (marker, mut text, mut color) in &mut states {
             let node = &research_catalog().nodes()[marker.0];
             let (label, ink) = match model.states[marker.0] {
-                CatalogNodeState::Owned => ("OWNED", OWNED_INK),
-                CatalogNodeState::Available => ("AVAILABLE", READY_INK),
-                CatalogNodeState::Locked => ("LOCKED", LOCKED_INK),
+                CatalogNodeState::Owned => ("Owned", OWNED_INK),
+                CatalogNodeState::Available => ("Available", READY_INK),
+                CatalogNodeState::Locked => ("Locked", LOCKED_INK),
             };
-            text.0 = format!("{label} · E{} · {:.0}b", node.era, node.cost);
+            text.0 = format!("{label} | Era {} | {:.0} pts", node.era, node.cost);
             color.0 = ink;
         }
         if let Ok(mut text) = currency.single_mut() {
             text.0 = format!(
-                "{:.0} blessings  ·  {:.0} research  ·  {} scholars",
+                "{:.0} blessings  |  {:.0} research  |  {} scholars",
                 research.blessings, research.research_points, research.researcher_count
             );
         }
@@ -1275,7 +1515,7 @@ pub(super) fn update_research_inspector(
     }
     let node = &research_catalog().nodes()[ui.selected];
     let meta = format!(
-        "{}  ·  ERA {}  ·  {:.0} RESEARCH",
+        "{} | Era {} | {:.0} research",
         category_label(node.category),
         node.era,
         node.cost
@@ -1808,32 +2048,70 @@ mod tests {
 
     #[test]
     fn canvas_scale_compensation_keeps_map_origin_at_pan() {
+        let model = ResearchUiModel::from_catalog();
         let pan = Vec2::new(18.0, 16.0);
         let zoom = 0.82;
-        let centre = Vec2::new(MAP_WIDTH, MAP_HEIGHT) / 2.0;
+        let centre = model.layout.size / 2.0;
         for point in [
             Vec2::ZERO,
-            card_position(0),
-            Vec2::new(MAP_WIDTH, MAP_HEIGHT),
+            model.card_position(model.root_index),
+            model.layout.size,
         ] {
-            let rendered = centre + (point - centre) * zoom + canvas_translation(pan, zoom);
+            let rendered =
+                centre + (point - centre) * zoom + canvas_translation(pan, zoom, model.layout.size);
             let expected = pan + point * zoom;
             assert!(rendered.abs_diff_eq(expected, 0.01));
         }
     }
 
     #[test]
-    fn long_cross_track_connectors_appear_only_for_the_selected_target() {
+    fn pointer_drag_moves_research_canvas_faster_than_the_hand() {
+        let pointer = Vec2::new(80.0, -40.0);
+        let pan = research_drag_delta(pointer);
+        assert!(pan.abs_diff_eq(pointer * RESEARCH_DRAG_GAIN, 0.001));
+        assert!(pan.length() > pointer.length());
+    }
+
+    #[test]
+    fn unified_layout_is_one_rooted_non_overlapping_dependency_tree() {
         let model = ResearchUiModel::from_catalog();
-        let connector = model
-            .connectors
+        let roots = research_catalog()
+            .nodes()
             .iter()
-            .copied()
-            .find(|edge| {
-                card_position(edge.to).distance(card_position(edge.from)) > MAP_STEP_X * 5.0
-            })
-            .expect("catalog should include a cross-track dependency");
-        assert!(!connector_is_relevant(connector, connector.from));
-        assert!(connector_is_relevant(connector, connector.to));
+            .enumerate()
+            .filter(|(_, node)| node.prerequisites.is_empty())
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        assert_eq!(roots, [model.root_index]);
+        assert!(model.layout.layer_count < 24);
+        assert!(model.layout.size.x < 5_000.0);
+        for connector in &model.connectors {
+            assert!(model.layout.depths[connector.from] < model.layout.depths[connector.to]);
+            assert!(model.card_position(connector.from).x < model.card_position(connector.to).x);
+        }
+        for (index, position) in model.layout.positions.iter().enumerate() {
+            for other in model.layout.positions.iter().skip(index + 1) {
+                assert!(
+                    position.x != other.x || (position.y - other.y).abs() >= MAP_STEP_Y,
+                    "two studies overlap in one prerequisite layer"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn selected_branch_highlights_every_ancestor_back_to_the_root() {
+        let model = ResearchUiModel::from_catalog();
+        let selected = model
+            .layout
+            .depths
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, depth)| **depth)
+            .map(|(index, _)| index)
+            .unwrap();
+        let path = model.selected_path(selected);
+        assert!(path.len() >= model.layout.depths[selected]);
+        assert!(path.iter().any(|(from, _)| *from == model.root_index));
     }
 }
