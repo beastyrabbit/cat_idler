@@ -336,17 +336,18 @@ pub struct ColonyRuntime {
     /// reaches the shrine. This set is persisted independently of the lazily populated
     /// `world_tiles`, and its deterministic ordering is part of the snapshot contract.
     pub revealed_tiles: BTreeSet<TilePos>,
-    /// Fog-of-war P15: tentative reveal for a scout currently out on an `Explore` job
-    /// (and still on its way home) — keyed by scout cat id, holding the tiles that
-    /// scout's walk has newly uncovered but not yet delivered. Committed into
-    /// `revealed_tiles` when the scout reaches the shrine
-    /// (`commit_scout_provisional_tiles`); dropped without committing if the scout
-    /// dies before returning (`phase_25b_prune_dead_scout_provisional_tiles`).
+    /// Fog-of-war P15: the physical observations of a scout currently out on an
+    /// `Explore` job (and still on its way home), keyed by scout cat id. Previously
+    /// hidden observations are tentative reveal; already-known observations remain
+    /// here as contact provenance. Committed into `revealed_tiles` when the scout
+    /// reaches the shrine (`commit_scout_provisional_tiles`); dropped without committing
+    /// if the scout dies before returning (`phase_25b_prune_dead_scout_provisional_tiles`).
     /// Persisted by the authoritative server so a restart cannot erase or commit an
     /// in-flight notebook. Legacy saves without it recreate an empty marker for each
     /// active/returning scout and resume provisional reveal safely.
     pub provisional_tiles: BTreeMap<CatId, BTreeSet<TilePos>>,
-    /// Tiles delivered to the shrine by scouts during the current world tick.
+    /// Tiles physically observed and delivered to the shrine by scouts during the
+    /// current world tick.
     /// Discovery reconciliation consumes and clears this transient set at the end
     /// of the tick. Keeping provenance separate from `revealed_tiles` prevents
     /// expansion, recovery, or legacy map data from fabricating village contact.
@@ -20534,8 +20535,10 @@ fn reveal_and_wear_walked_tiles(
     }
 
     // Ordinary cats permanently clear a 3x3 neighborhood as they travel. A
-    // registered scout instead writes its larger skill-scaled view into the
-    // transient notebook, which commits only after the scout reaches the shrine.
+    // registered scout instead writes its larger skill-scaled physical view into
+    // the transient notebook, which commits only after the scout reaches the shrine.
+    // Keep already-revealed observations too: a shrine on the founding reveal edge
+    // still needs proof that a scout actually saw it and returned with the contact.
     let is_scout = colony.provisional_tiles.contains_key(cat_id);
     let vision_side = if is_scout {
         let scout_xp = colony
@@ -20580,15 +20583,11 @@ fn reveal_and_wear_walked_tiles(
             // Reveal regardless of whether the tile is materialised in `world_tiles`
             // (the live colony's map is sparse); only bump wear on tiles that exist.
             if is_scout {
-                // Tentative: not yet committed to the permanent map. Skip tiles the
-                // colony already knows — nothing new to hold provisionally.
-                if !colony.revealed_tiles.contains(&pos) {
-                    colony
-                        .provisional_tiles
-                        .entry(cat_id.to_owned())
-                        .or_default()
-                        .insert(pos);
-                }
+                colony
+                    .provisional_tiles
+                    .entry(cat_id.to_owned())
+                    .or_default()
+                    .insert(pos);
             } else {
                 colony.revealed_tiles.insert(pos);
             }
@@ -20654,7 +20653,15 @@ fn advance_scout_search(
         .get(cat_id)
         .cloned()
         .unwrap_or_default();
-    let observed_chunks = observed
+    // Previously known tiles remain in the notebook solely as physical contact
+    // provenance. Preserve the existing exploration/search behavior by measuring
+    // and searching only observations that were hidden when this mission saw them.
+    let newly_observed = observed
+        .iter()
+        .filter(|pos| !colony.revealed_tiles.contains(pos))
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let observed_chunks = newly_observed
         .iter()
         .map(|pos| {
             (
@@ -20675,7 +20682,7 @@ fn advance_scout_search(
                 .find(|cat| cat.id == cat_id)
                 .map(|cat| world_pos_to_tile(position_to_world(colony.anchor, cat.position)))
                 .unwrap_or_else(|| scout_search_origin(colony));
-            let mut matches = observed
+            let mut matches = newly_observed
                 .iter()
                 .filter_map(|pos| {
                     colony
@@ -20698,8 +20705,8 @@ fn advance_scout_search(
     };
 
     let surveyed_enough = match mission {
-        ScoutMission::Explore => arrived && observed.len() >= GENERAL_SCOUT_SURVEY_TILES,
-        ScoutMission::Resource(_) => arrived && observed.len() >= RESOURCE_SCOUT_SURVEY_LIMIT,
+        ScoutMission::Explore => arrived && newly_observed.len() >= GENERAL_SCOUT_SURVEY_TILES,
+        ScoutMission::Resource(_) => arrived && newly_observed.len() >= RESOURCE_SCOUT_SURVEY_LIMIT,
     };
     let timed_out = deadline.is_some_and(|deadline| now_ms >= deadline);
     if discovered_target.is_none() && !surveyed_enough && !timed_out && !route_exhausted {
@@ -20716,8 +20723,9 @@ fn advance_scout_search(
     }
 }
 
-/// P15: deliver a scout's tentative discoveries — folds `cat_id`'s
-/// `provisional_tiles` entry (if any) into the permanent `revealed_tiles` set and
+/// P15: deliver a scout's physical observations — folds `cat_id`'s
+/// `provisional_tiles` entry (if any) into the permanent `revealed_tiles` set, retains
+/// the full observation set as contact provenance for end-of-tick reconciliation, and
 /// clears the entry. A no-op for any cat that never had one (everyone but a scout
 /// returning from an `Explore` job). Idempotent: committing twice, or committing an
 /// entry that was never created, does nothing on the second call.
@@ -50349,6 +50357,43 @@ mod tests {
             }
         }
         world_tiles
+    }
+
+    #[test]
+    fn scout_observing_an_already_revealed_peer_shrine_registers_contact_on_return() {
+        let peer_anchor = pos(20, 5);
+        let peer_shrine = shrine_center_tile(peer_anchor);
+        let mut home = ColonyRuntime {
+            id: "home".to_owned(),
+            anchor: VILLAGE_ANCHOR_TILE,
+            revealed_tiles: BTreeSet::from([peer_shrine]),
+            provisional_tiles: BTreeMap::from([("scout".to_owned(), BTreeSet::new())]),
+            world_tiles: walking_leg_world_tiles(20, 22),
+            ..ColonyRuntime::default()
+        };
+        let movement = walking_leg_movement_context(&home);
+
+        reveal_and_wear_walked_tiles(
+            &mut home,
+            &movement,
+            &[WorldPos { x: 20.0, y: 6.0 }, WorldPos { x: 21.0, y: 6.0 }],
+            "scout",
+        );
+        commit_scout_provisional_tiles(&mut home, "scout", 1_000);
+
+        let mut world = new_world(123);
+        world.colonies = vec![
+            home,
+            ColonyRuntime {
+                id: "peer".to_owned(),
+                anchor: peer_anchor,
+                ..ColonyRuntime::default()
+            },
+        ];
+        reconcile_village_discoveries(&mut world);
+
+        assert!(world.colonies[0].known_village_ids.contains("peer"));
+        assert!(world.colonies[1].known_village_ids.contains("home"));
     }
 
     #[test]
