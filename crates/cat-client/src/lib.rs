@@ -30,13 +30,13 @@ use bevy::window::{CursorIcon, CustomCursor, PrimaryWindow};
 use cat_protocol::{
     ActionResult, BridgeAxis, BuildingSnapshot, BuildingType, CarryingKind, CatActivity,
     CatHousingStatus, CatNeeds, CatSnapshot, ClientAction, ColonySnapshot, CropKind, EventSnapshot,
-    FarmSnapshot, FarmStage, FootprintSize, GateSide, GatherSpotPurpose, ItemInstanceSnapshot,
-    ItemLocation, ItemStackSnapshot, JobKind, Labor, OfferingResource, OfficerRole,
-    PROTOCOL_VERSION, ProductionQueueEdit, QueueMoveDirection, RaiderStatus, ResourceAmounts,
-    ResourceCapacities, ResourceKind, ResourceStackSnapshot, RoleXp, ScoutMission, ScoutResource,
-    Specialization, StationCompartment, StockpileSnapshot, TilePoint, TraderBuyOffer,
-    TraderSellOffer, TraderSnapshot, TraderVisitState, TransportMode, VillageKind, VillageScale,
-    VillageTradeCaravanPhase, WorldSnapshot, ZoneKind,
+    FarmSnapshot, FarmStage, FoodSiteKind, FootprintSize, GateSide, GatherSpotPurpose,
+    ItemInstanceSnapshot, ItemLocation, ItemStackSnapshot, JobKind, JobSnapshot, JobStatus, Labor,
+    OfferingResource, OfficerRole, PROTOCOL_VERSION, ProductionQueueEdit, QueueMoveDirection,
+    RaiderStatus, ResourceAmounts, ResourceCapacities, ResourceKind, ResourceStackSnapshot, RoleXp,
+    ScoutMission, ScoutResource, Specialization, StationCompartment, StockpileSnapshot, TilePoint,
+    TraderBuyOffer, TraderSellOffer, TraderSnapshot, TraderVisitState, TransportMode, VillageKind,
+    VillageScale, VillageTradeCaravanPhase, WorldSnapshot, ZoneKind,
 };
 use cat_sim::climate::{Biome, ResourceHint};
 use cat_sim::terrain_gen::{
@@ -462,6 +462,12 @@ struct PauseMenu {
     page: PausePage,
 }
 
+/// Two-step confirmation state for the destructive world restart in Settings.
+#[derive(Resource, Default)]
+struct RestartWorldUi {
+    armed: bool,
+}
+
 /// Current transport lifecycle. A failed connection waits for a capped
 /// exponential delay, then tries again for as long as the idle client runs.
 #[derive(Clone, Copy, PartialEq, Debug, Default)]
@@ -603,13 +609,38 @@ struct GovernanceUi {
 }
 
 /// Whether the announcements / event-log panel is open (toggled by `L`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+enum LogFilter {
+    #[default]
+    All,
+    Work,
+    Life,
+    Danger,
+    Trade,
+}
+
+impl LogFilter {
+    const ALL: [Self; 5] = [Self::All, Self::Work, Self::Life, Self::Danger, Self::Trade];
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::All => "All",
+            Self::Work => "Work",
+            Self::Life => "Life",
+            Self::Danger => "Danger",
+            Self::Trade => "Trade",
+        }
+    }
+}
+
 #[derive(Resource, Default)]
 struct AnnouncementsUi {
     visible: bool,
+    filter: LogFilter,
 }
 
 /// Number of announcement lines the panel shows (newest first).
-const ANNOUNCEMENT_LINES: usize = 11;
+const ANNOUNCEMENT_LINES: usize = 48;
 
 /// Whether the goods / inventory panel is open (toggled by `G`).
 #[derive(Resource, Default)]
@@ -626,6 +657,7 @@ struct CommandDock {
 
 /// Number of item-stack lines the goods panel shows (most valuable first).
 const GOODS_LINES: usize = 12;
+const STOCKPILE_MANAGEMENT_LINES: usize = 16;
 
 /// Whether the colony census / demographics panel is open (toggled by `C`).
 #[derive(Resource, Default)]
@@ -634,7 +666,8 @@ struct CensusUi {
 }
 
 /// Number of text lines the census panel renders (see `census_report_lines`).
-const CENSUS_LINES: usize = 18;
+const CENSUS_LINES: usize = 19;
+const JOB_QUEUE_LINES: usize = 32;
 
 /// Trade menu (open only during physical shrine trading). `closed` lets the player
 /// dismiss the current visit, while `sell_page` makes every finite item stack reachable
@@ -1147,41 +1180,6 @@ impl BuildingArt {
             StationProp::WeaponStand => self.weapon_stand.clone(),
             StationProp::Well => self.well.clone(),
             StationProp::Workbench => self.workbench.clone(),
-        }
-    }
-}
-
-/// Pixel-art prop sprites used for stockpile piles, loaded once at startup.
-#[derive(Resource, Clone)]
-struct PropArt {
-    sack: Handle<Image>,
-    barrel: Handle<Image>,
-    haystack: Handle<Image>,
-    stone_pile: Handle<Image>,
-    gold_pile: Handle<Image>,
-    crate_box: Handle<Image>,
-}
-
-impl PropArt {
-    fn load(assets: &AssetServer) -> Self {
-        Self {
-            sack: assets.load("public/images/game/props/sack.png"),
-            barrel: assets.load("public/images/game/props/barrel.png"),
-            haystack: assets.load("public/images/game/props/haystack.png"),
-            stone_pile: assets.load("public/images/game/props/stone_pile.png"),
-            gold_pile: assets.load("public/images/game/props/gold_pile.png"),
-            crate_box: assets.load("public/images/game/props/crate.png"),
-        }
-    }
-
-    fn pile(&self, texture: PropTexture) -> Handle<Image> {
-        match texture {
-            PropTexture::Sack => self.sack.clone(),
-            PropTexture::Barrel => self.barrel.clone(),
-            PropTexture::Haystack => self.haystack.clone(),
-            PropTexture::StonePile => self.stone_pile.clone(),
-            PropTexture::GoldPile => self.gold_pile.clone(),
-            PropTexture::Crate => self.crate_box.clone(),
         }
     }
 }
@@ -1897,8 +1895,8 @@ fn update_adventure_cursor(
     let Ok((window_entity, window)) = window.single() else {
         return;
     };
-    let over_world_input_blocker =
-        research.visible || cursor_over_world_input_blocker(window.cursor_position(), &blockers);
+    let over_world_input_blocker = research.visible
+        || cursor_over_world_input_blocker(window.physical_cursor_position(), &blockers);
     let kind = adventure_cursor_kind(
         interactions,
         tools.mode.paint_kind().is_some(),
@@ -1973,17 +1971,6 @@ impl SpriteSheets {
     }
 }
 
-/// The prop sprite a stockpile's dominant resource renders as.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum PropTexture {
-    Sack,
-    Barrel,
-    Haystack,
-    StonePile,
-    GoldPile,
-    Crate,
-}
-
 /// The live WebSocket connection (kept off the render threads — the receiver is
 /// `!Sync`).
 struct WsConn {
@@ -2034,6 +2021,18 @@ struct FollowCat {
 struct AnimSprite {
     group: usize,
     moving: bool,
+    /// Stable per-actor walk-cycle offset so a crowd does not march in lockstep.
+    phase: usize,
+}
+
+fn animation_phase_for_id(id: &str) -> usize {
+    id.bytes()
+        .fold(0_usize, |phase, byte| phase.wrapping_add(usize::from(byte)))
+        % 4
+}
+
+fn walk_frame(global_frame: usize, phase: usize) -> usize {
+    (global_frame + phase) % 4
 }
 
 /// Live cat body entities keyed by cat id (persist across snapshots).
@@ -2363,6 +2362,9 @@ struct TerrainDecoration {
 /// Persisted stump/sapling prop rebuilt from each authoritative snapshot.
 #[derive(Component)]
 struct TreeLifecycleVisual;
+/// Authoritative renewable food source (cave, fruit, or fishing habitat).
+#[derive(Component)]
+struct FoodSiteVisual;
 /// A fog-of-war tile sprite, keyed by tile for incremental updates.
 #[derive(Component, Clone, Copy)]
 struct FogTile {
@@ -2424,6 +2426,10 @@ struct PauseTextLargerButton;
 struct PauseTextScaleText;
 #[derive(Component)]
 struct PauseQuitButton;
+#[derive(Component)]
+struct RestartWorldButton;
+#[derive(Component)]
+struct RestartWorldButtonLabel;
 
 /// Original, unscaled point size for text whose accessibility scale is driven
 /// by the full-screen Settings page.
@@ -2500,6 +2506,8 @@ struct StartScreenUi<'w, 's> {
 /// Marker for a paved-road tile sprite.
 #[derive(Component)]
 struct RoadTile;
+#[derive(Component)]
+struct JobWorldMarker;
 /// Marker for the cursor-following hover tooltip panel.
 #[derive(Component)]
 struct TooltipPanel;
@@ -2515,6 +2523,8 @@ struct AnnouncementLine(usize);
 /// The HUD button that toggles the announcements panel.
 #[derive(Component)]
 struct AnnouncementsButton;
+#[derive(Component, Clone, Copy)]
+struct LogFilterButton(LogFilter);
 #[derive(Component)]
 struct TopBarBanner;
 /// Marker for the goods / inventory panel node (toggled open/closed).
@@ -2523,6 +2533,8 @@ struct GoodsPanel;
 /// One goods line slot (index 0 = most valuable stack at top).
 #[derive(Component, Clone, Copy)]
 struct GoodsLine(usize);
+#[derive(Component, Clone, Copy)]
+struct StockpileManagementLine(usize);
 /// The per-kind glyph node for a goods line (tinted by material).
 #[derive(Component, Clone, Copy)]
 struct GoodsLineIcon(usize);
@@ -2544,6 +2556,8 @@ struct CensusPanel;
 /// One census text-line slot (index 0 at the top).
 #[derive(Component, Clone, Copy)]
 struct CensusLine(usize);
+#[derive(Component, Clone, Copy)]
+struct JobQueueLine(usize);
 /// The HUD button that toggles the census panel.
 #[derive(Component)]
 struct CensusButton;
@@ -2625,6 +2639,78 @@ fn event_kind_of(kind: &str) -> EventKind {
         // trader lifecycle, jobs, rituals, resets, empty (pre-taxonomy) → neutral.
         _ => EventKind::Neutral,
     }
+}
+
+fn event_matches_log_filter(kind: &str, filter: LogFilter) -> bool {
+    match filter {
+        LogFilter::All => true,
+        LogFilter::Life => matches!(event_kind_of(kind), EventKind::Birth | EventKind::Death),
+        LogFilter::Danger => matches!(event_kind_of(kind), EventKind::Raid | EventKind::Crisis),
+        LogFilter::Trade => kind.starts_with("trade_") || kind.starts_with("trader_"),
+        LogFilter::Work => matches!(
+            kind,
+            "production"
+                | "research_unlocked"
+                | "node_owned"
+                | "road_built"
+                | "forest_chopped"
+                | "discovery"
+                | "offering"
+                | "tithe"
+                | "blessing_delivered"
+        ),
+    }
+}
+
+fn job_kind_label(kind: JobKind) -> &'static str {
+    match kind {
+        JobKind::SupplyFood => "Supply food",
+        JobKind::SupplyWater => "Supply water",
+        JobKind::LeaderPlanHunt => "Plan hunt",
+        JobKind::HuntExpedition => "Hunt",
+        JobKind::GatherFood => "Gather food",
+        JobKind::LeaderPlanHouse => "Plan housing",
+        JobKind::BuildHouse => "Build",
+        JobKind::BuildRoad => "Build road",
+        JobKind::Ritual => "Ritual",
+        JobKind::Quarry => "Quarry",
+        JobKind::GatherLogs => "Gather logs",
+        JobKind::ReplantTree => "Replant tree",
+        JobKind::Fish => "Fish",
+        JobKind::ForageFibre => "Forage fibre",
+        JobKind::Explore => "Explore",
+        JobKind::FetchWater => "Fetch water",
+        JobKind::TrainWarrior => "Train warrior",
+        JobKind::ExpandVillage => "Expand village",
+        JobKind::CarryOffering => "Carry offering",
+        JobKind::PerformOffering => "Perform offering",
+        JobKind::HaulGatherSpot => "Haul goods",
+        JobKind::VillageMaintenance => "Clean and tidy",
+    }
+}
+
+fn job_queue_row(
+    kind: JobKind,
+    status: JobStatus,
+    assigned_cat: Option<&str>,
+    position: Option<TilePoint>,
+) -> String {
+    let status = match status {
+        JobStatus::Queued => "OPEN",
+        JobStatus::Active => "ACTIVE",
+        JobStatus::Completed => "DONE",
+        JobStatus::Failed => "FAILED",
+        JobStatus::Cancelled => "CANCELLED",
+    };
+    let worker = assigned_cat.unwrap_or("unassigned");
+    let target = position.map_or_else(
+        || "village-wide".to_owned(),
+        |site| format!("{},{}", site.x, site.y),
+    );
+    format!(
+        "{status:<6} · {} · {worker} · {target}",
+        job_kind_label(kind)
+    )
 }
 
 /// Aggregated colony demographics for the census panel — a pure function of the
@@ -2714,6 +2800,43 @@ fn colony_census(cats: &[CatSnapshot], events: &[EventSnapshot], leader: Option<
     c
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct VillageEmployment {
+    capable: usize,
+    working: usize,
+    idle: usize,
+}
+
+impl VillageEmployment {
+    fn line(self) -> String {
+        format!(
+            "Working {}/{}   Idle {}",
+            self.working, self.capable, self.idle
+        )
+    }
+}
+
+/// Count cats, not job records. Ambient housekeeping may move an idle cat around,
+/// but only a real task or workshop assignment counts as employment.
+fn village_employment(cats: &[CatSnapshot]) -> VillageEmployment {
+    let mut capable = 0;
+    let mut working = 0;
+    for cat in cats.iter().filter(|cat| {
+        cat.death_time.is_none()
+            && cat.age_hours.partial_cmp(&6.0) != Some(std::cmp::Ordering::Less)
+    }) {
+        capable += 1;
+        if cat.current_task.is_some() || cat.assigned_building_id.is_some() {
+            working += 1;
+        }
+    }
+    VillageEmployment {
+        capable,
+        working,
+        idle: capable.saturating_sub(working),
+    }
+}
+
 /// A proportional `#` bar `width` chars wide, scaled so the largest tally fills it.
 fn census_bar(count: u32, max: u32, width: usize) -> String {
     if max == 0 {
@@ -2726,7 +2849,11 @@ fn census_bar(count: u32, max: u32, width: usize) -> String {
 /// Render the census as a fixed block of `CENSUS_LINES` display lines — a DF-style
 /// "units" readout: population + leader + averages, a life-stage breakdown with
 /// bars, a specialization breakdown, and a recent births/deaths line.
-fn census_report_lines(c: &Census, scale: VillageScale) -> Vec<String> {
+fn census_report_lines(
+    c: &Census,
+    scale: VillageScale,
+    employment: VillageEmployment,
+) -> Vec<String> {
     let stage_max = c.kittens.max(c.young).max(c.adults).max(c.elders);
     let leader = c.leader.as_deref().unwrap_or("(vacant)");
     vec![
@@ -2738,6 +2865,7 @@ fn census_report_lines(c: &Census, scale: VillageScale) -> Vec<String> {
             },
             c.total
         ),
+        employment.line(),
         format!("Leader: {leader}"),
         format!(
             "Avg age: {:.0}h    Priority: {}",
@@ -3495,10 +3623,10 @@ fn ui_surface_blocks_world(display: Display, contains_cursor: bool) -> bool {
 }
 
 fn cursor_over_world_input_blocker(
-    cursor: Option<Vec2>,
+    physical_cursor: Option<Vec2>,
     blockers: &WorldInputBlockerQuery<'_, '_>,
 ) -> bool {
-    cursor.is_some_and(|cursor| {
+    physical_cursor.is_some_and(|cursor| {
         blockers.iter().any(|(computed, transform, style)| {
             ui_surface_blocks_world(style.display, computed.contains_point(*transform, cursor))
         })
@@ -3721,6 +3849,7 @@ pub fn run() {
         .insert_resource(VillageSelection::default())
         .insert_resource(StartScreen::default())
         .insert_resource(PauseMenu::default())
+        .insert_resource(RestartWorldUi::default())
         .insert_resource(VillageTradeDraft::default())
         .insert_resource(ConnectionState::default())
         .insert_resource(ClientFeedback::default())
@@ -3777,9 +3906,10 @@ pub fn run() {
                         sync_terrain_ground_surface,
                         sync_terrain_decoration_visibility,
                         render_tree_lifecycle,
+                        render_food_sites,
                     )
                         .after(spawn_terrain),
-                    render_roads,
+                    (render_roads, render_job_world_markers),
                     render_fog.after(spawn_terrain),
                     render_buildings,
                     render_walls,
@@ -3808,7 +3938,10 @@ pub fn run() {
                             sync_primary_screen_state,
                         )
                             .chain(),
-                        handle_pause_menu.after(toggle_pause_menu),
+                        (
+                            handle_pause_menu.after(toggle_pause_menu),
+                            handle_restart_world_button,
+                        ),
                         apply_text_layout_defaults,
                         apply_text_scale,
                         update_top_bar_responsive.after(apply_text_scale),
@@ -3832,9 +3965,12 @@ pub fn run() {
                         handle_farm_crop_button,
                         handle_gather_kind_button,
                         sync_action_button_availability,
+                        sync_restart_world_button,
                         update_kit_buttons
                             .after(sync_action_button_availability)
+                            .after(sync_restart_world_button)
                             .after(handle_tool_buttons)
+                            .after(handle_log_filters)
                             .after(sync_tab_toggles)
                             .after(research_ui::update_research_filter)
                             .after(research_ui::update_research_inspector),
@@ -4273,7 +4409,6 @@ fn setup(
     commands.insert_resource(BuildingArt::load(&asset_server));
     let icons = IconArt::load(&asset_server);
     commands.insert_resource(icons.clone());
-    commands.insert_resource(PropArt::load(&asset_server));
     commands.insert_resource(InfraArt::load(&asset_server));
     commands.insert_resource(SpriteSheets::load(&asset_server, &mut atlas_layouts));
     let ui_art = AdventureUiArt::load(&asset_server);
@@ -4576,6 +4711,22 @@ fn setup(
                                 children![ui_text("Größer", FS_BODY, UI_INK)],
                             ));
                         });
+                    panel.spawn(ui_text("Weltverwaltung", FS_SECTION, UI_INK));
+                    panel.spawn(ui_text_wrapped(
+                        "Ein Neustart löscht alle Siedlungen und erzeugt die gemeinsame Welt neu. Die Aktion muss zweimal bestätigt werden.",
+                        FS_SMALL,
+                        UI_WARNING,
+                    ));
+                    panel.spawn((
+                        ui_button(),
+                        RestartWorldButton,
+                        KitToggle::default(),
+                        KitDisabled { disabled: true },
+                        children![(
+                            ui_text("Welt neu starten", FS_BODY, UI_INK),
+                            RestartWorldButtonLabel,
+                        )],
+                    ));
                     panel.spawn((
                         ui_button(),
                         PauseSettingsBackButton,
@@ -4794,6 +4945,25 @@ fn setup(
         .with_children(|panel| {
             panel.spawn(ui_title_bar("Announcements"));
             spawn_vertical_scroll_area(panel, UI_PAD, UI_GAP, |body| {
+                body.spawn(Node {
+                    width: Val::Percent(100.0),
+                    flex_wrap: FlexWrap::Wrap,
+                    column_gap: Val::Px(UI_GAP),
+                    row_gap: Val::Px(UI_GAP),
+                    ..default()
+                })
+                .with_children(|row| {
+                    for filter in LogFilter::ALL {
+                        row.spawn((
+                            ui_button_small(),
+                            LogFilterButton(filter),
+                            KitToggle {
+                                active: filter == LogFilter::All,
+                            },
+                            children![ui_text(filter.label(), FS_SMALL, UI_INK)],
+                        ));
+                    }
+                });
                 for i in 0..ANNOUNCEMENT_LINES {
                     body.spawn((ui_text_wrapped("", FS_BODY, UI_MUTED), AnnouncementLine(i)));
                 }
@@ -4830,6 +5000,10 @@ fn setup(
                 body.spawn(ui_text("CENSUS", FS_SECTION, UI_ACCENT));
                 for i in 0..CENSUS_LINES {
                     body.spawn((ui_text("", FS_BODY, UI_INK), CensusLine(i)));
+                }
+                body.spawn(ui_text("Open jobs", FS_SECTION, UI_ACCENT));
+                for i in 0..JOB_QUEUE_LINES {
+                    body.spawn((ui_text("", FS_BODY, UI_MUTED), JobQueueLine(i)));
                 }
             });
         });
@@ -4940,6 +5114,10 @@ fn setup(
                             children![ui_text("Repair", FS_SMALL, UI_INK)],
                         ));
                     });
+                }
+                body.spawn(ui_text("World storage zones", FS_SECTION, UI_ACCENT));
+                for i in 0..STOCKPILE_MANAGEMENT_LINES {
+                    body.spawn((ui_text("", FS_SMALL, UI_MUTED), StockpileManagementLine(i)));
                 }
             });
         });
@@ -6497,6 +6675,14 @@ fn join_village_action(colony_id: &str, session: &Session) -> Option<ClientActio
     })
 }
 
+fn restart_world_action(session: &Session) -> Option<ClientAction> {
+    session.ready.then(|| ClientAction::RestartWorld {
+        session_id: session.session_id.clone(),
+        nickname: session.nickname().to_owned(),
+        sig: session.sig.clone(),
+    })
+}
+
 /// Select a village immediately for local rendering and, when authenticated,
 /// return the server action that moves this socket's mutation target to it.
 fn choose_village(
@@ -6987,6 +7173,77 @@ fn render_tree_lifecycle(
     }
 }
 
+fn render_food_sites(
+    mut commands: Commands,
+    latest: Res<LatestSnapshot>,
+    existing: Query<Entity, With<FoodSiteVisual>>,
+) {
+    if !latest.is_changed() {
+        return;
+    }
+    for entity in &existing {
+        commands.entity(entity).despawn();
+    }
+    let Some(colony) = latest.0.as_ref().and_then(|world| world.colonies.first()) else {
+        return;
+    };
+    let revealed = revealed_lookup(&colony.revealed_tiles);
+    let depth_origin = ysort_origin(colony.anchor);
+    for site in &colony.food_sites {
+        if !revealed.contains(&(site.position.x, site.position.y)) {
+            continue;
+        }
+        let pos = grid_to_world(site.position.x, site.position.y);
+        let z = ysort_z(pos.y, depth_origin) + 0.35;
+        let (main_color, main_size, accent_color, accent_size, accent_offset, label) =
+            match site.kind {
+                FoodSiteKind::Cave => (
+                    Color::srgb(0.20, 0.22, 0.25),
+                    Vec2::new(TILE * 0.95, TILE * 0.78),
+                    Color::srgb(0.025, 0.03, 0.04),
+                    Vec2::new(TILE * 0.58, TILE * 0.42),
+                    Vec2::new(0.0, -TILE * 0.08),
+                    format!("Cave level {}", site.level),
+                ),
+                FoodSiteKind::AppleTree => (
+                    Color::srgb(0.65, 0.08, 0.06),
+                    Vec2::splat(TILE * 0.34),
+                    Color::srgb(0.94, 0.36, 0.12),
+                    Vec2::splat(TILE * 0.13),
+                    Vec2::new(TILE * 0.14, TILE * 0.12),
+                    "Apple tree".to_owned(),
+                ),
+                FoodSiteKind::BerryBush => (
+                    Color::srgb(0.10, 0.37, 0.12),
+                    Vec2::new(TILE * 0.78, TILE * 0.58),
+                    Color::srgb(0.63, 0.12, 0.50),
+                    Vec2::splat(TILE * 0.20),
+                    Vec2::new(TILE * 0.16, TILE * 0.05),
+                    "Berry bush".to_owned(),
+                ),
+                FoodSiteKind::Fishing => (
+                    Color::srgba(0.14, 0.62, 0.76, 0.72),
+                    Vec2::new(TILE * 0.82, TILE * 0.24),
+                    Color::srgb(0.82, 0.95, 0.95),
+                    Vec2::new(TILE * 0.22, TILE * 0.10),
+                    Vec2::new(TILE * 0.14, 0.0),
+                    "Fishing habitat".to_owned(),
+                ),
+            };
+        commands.spawn((
+            Sprite::from_color(main_color, main_size),
+            Transform::from_xyz(pos.x, pos.y, z),
+            FoodSiteVisual,
+            Name::new(label),
+        ));
+        commands.spawn((
+            Sprite::from_color(accent_color, accent_size),
+            Transform::from_xyz(pos.x + accent_offset.x, pos.y + accent_offset.y, z + 0.02),
+            FoodSiteVisual,
+        ));
+    }
+}
+
 /// Active settlement claims render as authoritatively cleared meadow and hide
 /// procedural props. Agricultural claims are excluded deliberately: farms and
 /// future rural work remain exterior territory rather than moving the wall.
@@ -7320,6 +7577,56 @@ fn render_fog(
 /// Authored stone roads and traffic-formed dirt roads. Both use the connected
 /// road grammar, but receive deliberately cool-stone and warm-earth tints so
 /// their gameplay meaning stays legible even at the default camera zoom.
+fn job_visible_in_queue(kind: JobKind, status: JobStatus) -> bool {
+    kind != JobKind::VillageMaintenance && matches!(status, JobStatus::Queued | JobStatus::Active)
+}
+
+fn job_world_marker_visible(kind: JobKind, status: JobStatus, position: Option<TilePoint>) -> bool {
+    position.is_some() && job_visible_in_queue(kind, status)
+}
+
+fn render_job_world_markers(
+    mut commands: Commands,
+    latest: Res<LatestSnapshot>,
+    existing: Query<Entity, With<JobWorldMarker>>,
+) {
+    if !latest.is_changed() {
+        return;
+    }
+    for entity in &existing {
+        commands.entity(entity).despawn();
+    }
+    let Some(colony) = latest.0.as_ref().and_then(|world| world.colonies.first()) else {
+        return;
+    };
+    for job in &colony.jobs {
+        if !job_world_marker_visible(job.kind, job.status, job.world_position) {
+            continue;
+        }
+        let site = job.world_position.expect("visible marker has a position");
+        let center = grid_to_world(site.x, site.y);
+        let color = if job.status == JobStatus::Queued {
+            Color::srgba(0.92, 0.16, 0.12, 0.90)
+        } else {
+            Color::srgba(1.0, 0.62, 0.12, 0.90)
+        };
+        let half = TILE * 0.58;
+        let thickness = TILE * 0.12;
+        for (offset, size) in [
+            (Vec2::new(0.0, -half), Vec2::new(TILE * 1.28, thickness)),
+            (Vec2::new(0.0, half), Vec2::new(TILE * 1.28, thickness)),
+            (Vec2::new(-half, 0.0), Vec2::new(thickness, TILE * 1.28)),
+            (Vec2::new(half, 0.0), Vec2::new(thickness, TILE * 1.28)),
+        ] {
+            commands.spawn((
+                Sprite::from_color(color, size),
+                Transform::from_xyz(center.x + offset.x, center.y + offset.y, Z_FOG - 0.5),
+                JobWorldMarker,
+            ));
+        }
+    }
+}
+
 fn render_roads(
     mut commands: Commands,
     latest: Res<LatestSnapshot>,
@@ -7486,14 +7793,6 @@ fn render_buildings(
         match building_visual(building.building_type) {
             BuildingVisual::Infrastructure => {}
             BuildingVisual::Roofed(facade) => {
-                spawn_station_floor(
-                    &mut commands,
-                    &art,
-                    building.world_position,
-                    building.footprint,
-                    StationFloor::Wood,
-                    complete,
-                );
                 let layout = building_render_layout(building.world_position, building.footprint);
                 commands.spawn((
                     Sprite {
@@ -7795,7 +8094,6 @@ fn render_stockpiles(
     mut commands: Commands,
     latest: Res<LatestSnapshot>,
     selection: Res<StockpileSelection>,
-    art: Option<Res<PropArt>>,
     icons: Option<Res<IconArt>>,
     existing: Query<Entity, StockpileEntities>,
 ) {
@@ -7805,8 +8103,7 @@ fn render_stockpiles(
     for entity in &existing {
         commands.entity(entity).despawn();
     }
-    let (Some(colony), Some(art)) = (latest.0.as_ref().and_then(|w| w.colonies.first()), art)
-    else {
+    let Some(colony) = latest.0.as_ref().and_then(|w| w.colonies.first()) else {
         return;
     };
     let depth_origin = ysort_origin(colony.anchor);
@@ -7819,45 +8116,9 @@ fn render_stockpiles(
         let cx = (x0 as f32 + x1 as f32) / 2.0 * TILE;
         let cy = -(y0 as f32 + y1 as f32) / 2.0 * TILE;
 
-        let total = resource_total(&pile.contents);
-        let dominant = dominant_resource(&pile.contents);
-
-        // The shrine reservoir is de-emphasized: its pile prop floats above the
-        // village buildings so the colony's stock reads as a visible pile, but
-        // it gets no overlay rect / accept label / selection (always General,
-        // can't be removed).
-        if is_shrine {
-            if let Some(dominant) = dominant {
-                commands.spawn((
-                    Sprite {
-                        image: art.pile(pile_prop(dominant)),
-                        custom_size: Some(Vec2::splat(pile_scale(total))),
-                        ..default()
-                    },
-                    Transform::from_xyz(cx, cy, ysort_z(cy, depth_origin) + 2.0),
-                    StockpileVis,
-                ));
-                if let Some(icons) = icons.as_ref() {
-                    let hud = hud_res_of(dominant);
-                    commands.spawn((
-                        Sprite {
-                            image: icons.get(hud),
-                            color: resource_icon_tint(hud),
-                            custom_size: Some(Vec2::splat(TILE * 0.34)),
-                            ..default()
-                        },
-                        Transform::from_xyz(cx, cy, ysort_z(cy, depth_origin) + 2.1),
-                        StockpileVis,
-                    ));
-                }
-            }
-            continue;
-        }
-
-        // Player pile: selection outline, an accept-tinted overlay, an
-        // accept-type label (always — so limited piles read even while empty),
-        // and a pile prop when non-empty.
-        if selection.selected.as_deref() == Some(pile.id.as_str()) {
+        // Every pile, including the seeded general store, is a world zone. The
+        // old single pile/boat-like prop made storage look like a building.
+        if !is_shrine && selection.selected.as_deref() == Some(pile.id.as_str()) {
             commands.spawn((
                 Sprite::from_color(
                     Color::srgba(1.0, 0.85, 0.30, 0.50),
@@ -7867,11 +8128,13 @@ fn render_stockpiles(
                 StockpileHighlight,
             ));
         }
-        commands.spawn((
-            Sprite::from_color(accept_overlay_color(&pile.accepts), Vec2::new(w, h)),
-            Transform::from_xyz(cx, cy, Z_ZONE),
-            StockpileVis,
-        ));
+        if stockpile_zone_is_visible(&pile.id) {
+            commands.spawn((
+                Sprite::from_color(accept_overlay_color(&pile.accepts), Vec2::new(w, h)),
+                Transform::from_xyz(cx, cy, Z_ZONE),
+                StockpileVis,
+            ));
+        }
 
         let mut label = accepts_label(&pile.accepts);
         let reported = pile.report.as_ref();
@@ -7893,26 +8156,28 @@ fn render_stockpiles(
         } else if reported.is_none() {
             label.push_str("  uncounted");
         }
-        if let Some(dominant) = dominant {
-            commands.spawn((
-                Sprite {
-                    image: art.pile(pile_prop(dominant)),
-                    custom_size: Some(Vec2::splat(pile_scale(total))),
-                    ..default()
-                },
-                Transform::from_xyz(cx, cy, ysort_z(cy, depth_origin)),
-                StockpileVis,
-            ));
-            if let Some(icons) = icons.as_ref() {
-                let hud = hud_res_of(dominant);
+        if let Some(icons) = icons.as_ref() {
+            let tile_width = (x1 - x0 + 1) as usize;
+            let tile_count = tile_width * (y1 - y0 + 1) as usize;
+            for marker in stockpile_item_markers(&pile.contents, tile_count) {
+                let tile_x = x0 + (marker.tile_index % tile_width) as i32;
+                let tile_y = y0 + (marker.tile_index / tile_width) as i32;
+                let offset_x = if marker.slot % 2 == 0 { -0.22 } else { 0.22 };
+                let offset_y = if marker.slot < 2 { -0.22 } else { 0.22 };
+                let p = grid_to_world(tile_x, tile_y);
+                let hud = hud_res_of(marker.kind);
                 commands.spawn((
                     Sprite {
                         image: icons.get(hud),
                         color: resource_icon_tint(hud),
-                        custom_size: Some(Vec2::splat(TILE * 0.34)),
+                        custom_size: Some(Vec2::splat(TILE * 0.28)),
                         ..default()
                     },
-                    Transform::from_xyz(cx, cy, ysort_z(cy, depth_origin) + 0.1),
+                    Transform::from_xyz(
+                        p.x + offset_x * TILE,
+                        p.y + offset_y * TILE,
+                        ysort_z(p.y, depth_origin) + 0.1,
+                    ),
                     StockpileVis,
                 ));
             }
@@ -9250,6 +9515,7 @@ fn sync_cats(
                     AnimSprite {
                         group,
                         moving: false,
+                        phase: animation_phase_for_id(&cat.id),
                     },
                 ))
                 .id();
@@ -9440,7 +9706,11 @@ fn sync_raiders(
                     Transform::from_xyz(target.x, target.y, ysort_z(target.y, depth_origin)),
                     RaiderBody,
                     MoveTarget(target),
-                    AnimSprite { group, moving },
+                    AnimSprite {
+                        group,
+                        moving,
+                        phase: animation_phase_for_id(&raider.id),
+                    },
                 ))
                 .id();
             bodies.0.insert(raider.id.clone(), entity);
@@ -9504,6 +9774,7 @@ fn sync_trader(
                     AnimSprite {
                         group,
                         moving: false,
+                        phase: animation_phase_for_id("visiting-trader"),
                     },
                     children![(
                         // A gold trade-pack on the merchant's back.
@@ -9578,6 +9849,7 @@ fn sync_village_trade_caravans(
                 AnimSprite {
                     group,
                     moving: false,
+                    phase: animation_phase_for_id(&caravan.id),
                 },
                 children![(
                     Sprite::from_color(Color::srgb(0.24, 0.48, 0.72), Vec2::splat(TILE * 0.55)),
@@ -9662,7 +9934,14 @@ fn animate_sprites(time: Res<Time>, mut sprites: Query<(&AnimSprite, &mut Sprite
     let frame = (time.elapsed_secs() * 8.0) as usize % 4;
     for (anim, mut sprite) in &mut sprites {
         if let Some(atlas) = sprite.texture_atlas.as_mut() {
-            atlas.index = atlas_index(anim.group, if anim.moving { frame } else { 0 });
+            atlas.index = atlas_index(
+                anim.group,
+                if anim.moving {
+                    walk_frame(frame, anim.phase)
+                } else {
+                    0
+                },
+            );
         }
     }
 }
@@ -9693,7 +9972,11 @@ fn select_cat(
         .single()
         .ok()
         .and_then(|window| window.cursor_position());
-    let over_world_input_blocker = cursor_over_world_input_blocker(cursor, &blockers);
+    let physical_cursor = windows
+        .single()
+        .ok()
+        .and_then(Window::physical_cursor_position);
+    let over_world_input_blocker = cursor_over_world_input_blocker(physical_cursor, &blockers);
     if !world_pointer_input_allowed(research.visible, over_world_input_blocker, cursor.is_some()) {
         return;
     }
@@ -9766,7 +10049,11 @@ fn select_building(
         .single()
         .ok()
         .and_then(|window| window.cursor_position());
-    let over_world_input_blocker = cursor_over_world_input_blocker(cursor, &blockers);
+    let physical_cursor = windows
+        .single()
+        .ok()
+        .and_then(Window::physical_cursor_position);
+    let over_world_input_blocker = cursor_over_world_input_blocker(physical_cursor, &blockers);
     if !world_pointer_input_allowed(research.visible, over_world_input_blocker, cursor.is_some()) {
         return;
     }
@@ -9777,18 +10064,13 @@ fn select_building(
         return;
     };
     // Skip Walls (rendered as the palisade, not a point marker).
-    let buildings: Vec<(String, Vec2)> = colony
+    let tile = world_to_tile(world);
+    let picked = colony
         .buildings
         .iter()
         .filter(|b| building_visual(b.building_type).is_map_building())
-        .map(|b| {
-            (
-                b.id.clone(),
-                grid_to_world(b.world_position.x, b.world_position.y),
-            )
-        })
-        .collect();
-    let picked = nearest_id(world, &buildings, TILE * 0.9);
+        .find(|building| point_in_building(tile, building))
+        .map(|building| building.id.clone());
     selection.selected = toggle_selection(selection.selected.as_deref(), picked);
 }
 
@@ -9817,7 +10099,11 @@ fn cycle_stacked_selection(
         .single()
         .ok()
         .and_then(|window| window.cursor_position());
-    let over_world_input_blocker = cursor_over_world_input_blocker(cursor, &blockers);
+    let physical_cursor = windows
+        .single()
+        .ok()
+        .and_then(Window::physical_cursor_position);
+    let over_world_input_blocker = cursor_over_world_input_blocker(physical_cursor, &blockers);
     if !world_pointer_input_allowed(research.visible, over_world_input_blocker, cursor.is_some()) {
         return;
     }
@@ -9845,8 +10131,7 @@ fn cycle_stacked_selection(
         .iter()
         .filter(|b| building_visual(b.building_type).is_map_building())
     {
-        let p = grid_to_world(b.world_position.x, b.world_position.y);
-        if p.distance_squared(world) <= (TILE * 0.9).powi(2) {
+        if point_in_building(tile, b) {
             stack.push(PickCandidate {
                 id: b.id.clone(),
                 kind: PickKind::Building,
@@ -10159,6 +10444,29 @@ fn world_tooltip_allowed(over_button: bool, over_ui: bool, has_cursor: bool) -> 
     has_cursor && !over_button && !over_ui
 }
 
+fn point_in_building(tile: (i32, i32), building: &BuildingSnapshot) -> bool {
+    let width = building.footprint.width.max(1);
+    let height = building.footprint.height.max(1);
+    tile.0 >= building.world_position.x
+        && tile.0 < building.world_position.x.saturating_add(width)
+        && tile.1 >= building.world_position.y
+        && tile.1 < building.world_position.y.saturating_add(height)
+}
+
+fn decoration_covering_tile(
+    decorations: &BTreeMap<(i32, i32), DecorationRole>,
+    tile: (i32, i32),
+) -> Option<DecorationRole> {
+    decorations.get(&tile).copied().or_else(|| {
+        decorations.iter().find_map(|(&(x, y), &decoration)| {
+            decoration_footprint(x, y, decoration)
+                .iter()
+                .any(|point| (point.x, point.y) == tile)
+                .then_some(decoration)
+        })
+    })
+}
+
 /// The tooltip text for whatever sits under `world` — cats first, then buildings,
 /// then stockpiles, and finally the terrain tile itself (biome + resource), so a
 /// hover always reads something.
@@ -10167,6 +10475,81 @@ fn hover_text(
     world_seed: i64,
     world: Vec2,
     terrain: &WorldRender,
+) -> Option<String> {
+    let tile = world_to_tile(world);
+    let marked_work = marked_work_tooltip(&colony.jobs, tile);
+    let subject = hover_subject_text(colony, world_seed, world, terrain, tile);
+    match (marked_work, subject) {
+        (Some(work), Some(subject)) => Some(format!("{work}\n\n{subject}")),
+        (Some(work), None) => Some(work),
+        (None, subject) => subject,
+    }
+}
+
+/// Explain the authoritative job behind a red/orange tile border. The wording
+/// deliberately answers both "what is marked?" and "why does it exist?" without
+/// requiring the player to cross-reference the full Village job queue.
+fn marked_work_tooltip(jobs: &[JobSnapshot], tile: (i32, i32)) -> Option<String> {
+    let mut matching = jobs.iter().filter(|job| {
+        job_world_marker_visible(job.kind, job.status, job.world_position)
+            && job.world_position.is_some_and(|at| (at.x, at.y) == tile)
+    });
+    let job = matching.next()?;
+    let status = if job.status == JobStatus::Queued {
+        "OPEN"
+    } else {
+        "ACTIVE"
+    };
+    let worker = job.assigned_cat_name.as_deref().unwrap_or("unassigned");
+    let additional = matching.count();
+    let more = if additional > 0 {
+        format!("\nAlso here: {additional} more job(s)")
+    } else {
+        String::new()
+    };
+    Some(format!(
+        "MARKED WORK - {status}\n{}\nWhy: {}\nWorker: {worker}\nTile: {},{}{}",
+        job_kind_label(job.kind),
+        job_reason(job.kind),
+        tile.0,
+        tile.1,
+        more,
+    ))
+}
+
+fn job_reason(kind: JobKind) -> &'static str {
+    match kind {
+        JobKind::SupplyFood => "the village food reserve needs replenishing",
+        JobKind::SupplyWater => "the village water reserve needs replenishing",
+        JobKind::LeaderPlanHunt => "the leader is planning a food expedition",
+        JobKind::HuntExpedition => "the village needs hunted food",
+        JobKind::GatherFood => "ripe apples or berries are ready to gather",
+        JobKind::LeaderPlanHouse => "the leader is planning more housing",
+        JobKind::BuildHouse => "the village needs more housing",
+        JobKind::BuildRoad => "the village ordered this road tile",
+        JobKind::Ritual => "the shrine has requested ritual work",
+        JobKind::Quarry => "stone is needed for village construction",
+        JobKind::GatherLogs => "logs are needed for construction and workshops",
+        JobKind::ReplantTree => "the forest needs a replacement tree",
+        JobKind::Fish => "the village needs food from this fishing spot",
+        JobKind::ForageFibre => "fibre is needed by the textile workshops",
+        JobKind::Explore => "the village needs nearby land revealed",
+        JobKind::FetchWater => "cats need water in village storage",
+        JobKind::TrainWarrior => "the village needs another trained defender",
+        JobKind::ExpandVillage => "the village needs usable territory",
+        JobKind::CarryOffering => "village needs are met, so surplus can serve the shrine",
+        JobKind::PerformOffering => "the delivered offering is ready for the shrine",
+        JobKind::HaulGatherSpot => "gathered goods are waiting to enter storage",
+        JobKind::VillageMaintenance => "urgent needs are met, so this cat can clean and tidy",
+    }
+}
+
+fn hover_subject_text(
+    colony: &ColonySnapshot,
+    world_seed: i64,
+    world: Vec2,
+    terrain: &WorldRender,
+    tile: (i32, i32),
 ) -> Option<String> {
     let cats: Vec<(String, Vec2)> = colony
         .cats
@@ -10180,24 +10563,15 @@ fn hover_text(
         return Some(cat_tooltip(cat));
     }
 
-    let buildings: Vec<(String, Vec2)> = colony
+    if let Some(building) = colony
         .buildings
         .iter()
         .filter(|b| building_visual(b.building_type).is_map_building())
-        .map(|b| {
-            (
-                b.id.clone(),
-                grid_to_world(b.world_position.x, b.world_position.y),
-            )
-        })
-        .collect();
-    if let Some(id) = nearest_id(world, &buildings, TILE * 0.9)
-        && let Some(b) = colony.buildings.iter().find(|b| b.id == id)
+        .find(|building| point_in_building(tile, building))
     {
-        return Some(building_tooltip(b));
+        return Some(building_tooltip(building));
     }
 
-    let tile = world_to_tile(world);
     if let Some(pile) = colony
         .stockpiles
         .iter()
@@ -10206,13 +10580,60 @@ fn hover_text(
         return Some(stockpile_tooltip(pile));
     }
 
+    if let Some(site) = colony
+        .food_sites
+        .iter()
+        .find(|site| (site.position.x, site.position.y) == tile)
+    {
+        return Some(food_site_tooltip(site));
+    }
+
+    if colony
+        .road_tiles
+        .iter()
+        .any(|road| (road.x, road.y) == tile)
+    {
+        return Some("street\npaved road".to_owned());
+    }
+    if colony
+        .dirt_road_tiles
+        .iter()
+        .any(|path| (path.x, path.y) == tile)
+    {
+        return Some("path\nworn footpath".to_owned());
+    }
+
+    let decoration = decoration_covering_tile(&terrain.decorations, tile);
     Some(terrain.climate_biomes.get(&tile).copied().map_or_else(
-        || tile_tooltip(world_seed, tile.0, tile.1),
-        |biome| tile_tooltip_for(biome, terrain.decorations.get(&tile).copied()),
+        || {
+            let biome = tile_climate_biome(world_seed as u32, tile.0, tile.1);
+            tile_tooltip_for(
+                biome,
+                decoration.or_else(|| rendered_decoration(world_seed as u32, tile.0, tile.1)),
+            )
+        },
+        |biome| tile_tooltip_for(biome, decoration),
     ))
 }
 
+fn food_site_tooltip(site: &cat_protocol::FoodSiteSnapshot) -> String {
+    let stock = format!(
+        "food {:.0} / {:.0}\nregen {:.2} / hour",
+        site.stock, site.capacity, site.regen_per_game_hour
+    );
+    match site.kind {
+        FoodSiteKind::Cave => format!(
+            "Cave · level {}\n{stock}\nHunting + fighting\nHigher levels can injure cats; use skilled groups and weapons.",
+            site.level
+        ),
+        FoodSiteKind::AppleTree => format!("Apple tree\n{stock}\nGathering trains farming."),
+        FoodSiteKind::BerryBush => format!("Berry bush\n{stock}\nGathering trains farming."),
+        FoodSiteKind::Fishing => format!("Fishing habitat\n{stock}\nFishing trains fishing."),
+    }
+}
+
 /// Hover text for a bare terrain tile: its climate biome and what it offers.
+#[cfg(test)]
 fn tile_tooltip(world_seed: i64, x: i32, y: i32) -> String {
     let biome = tile_climate_biome(world_seed as u32, x, y);
     tile_tooltip_for(biome, rendered_decoration(world_seed as u32, x, y))
@@ -10582,7 +11003,11 @@ fn zone_paint(
         .single()
         .ok()
         .and_then(|window| window.cursor_position());
-    let over_world_input_blocker = cursor_over_world_input_blocker(cursor, &blockers);
+    let physical_cursor = windows
+        .single()
+        .ok()
+        .and_then(Window::physical_cursor_position);
+    let over_world_input_blocker = cursor_over_world_input_blocker(physical_cursor, &blockers);
     if !world_pointer_input_allowed(research.visible, over_world_input_blocker, cursor.is_some()) {
         // A drag that ends over a panel is cancelled instead of committing a
         // rectangle to the obscured world beneath it.
@@ -10702,7 +11127,11 @@ fn place_building(
         .single()
         .ok()
         .and_then(|window| window.cursor_position());
-    let over_world_input_blocker = cursor_over_world_input_blocker(cursor, &blockers);
+    let physical_cursor = windows
+        .single()
+        .ok()
+        .and_then(Window::physical_cursor_position);
+    let over_world_input_blocker = cursor_over_world_input_blocker(physical_cursor, &blockers);
     if !session.ready
         || !world_pointer_input_allowed(
             research.visible,
@@ -10815,9 +11244,13 @@ fn camera_controls(
         .single()
         .ok()
         .and_then(|window| window.cursor_position());
+    let physical_cursor = windows
+        .single()
+        .ok()
+        .and_then(Window::physical_cursor_position);
     let pointer_allowed = world_pointer_input_allowed(
         false,
-        cursor_over_world_input_blocker(cursor, &blockers),
+        cursor_over_world_input_blocker(physical_cursor, &blockers),
         cursor.is_some(),
     );
     if let Some(colony) = latest
@@ -11646,10 +12079,11 @@ fn dashboard_header_text(colony: &ColonySnapshot, online: u32, compact: bool) ->
 
 /// The HUD footer (job counts + stock ledger) shown below the resource rows.
 fn dashboard_footer_text(colony: &ColonySnapshot, compact: bool) -> String {
-    let active_jobs = colony
+    let employment = village_employment(&colony.cats);
+    let visible_jobs = colony
         .jobs
         .iter()
-        .filter(|j| matches!(j.status, cat_protocol::JobStatus::Active))
+        .filter(|job| job_visible_in_queue(job.kind, job.status))
         .count();
     let _ = compact;
     let physical = physical_goods_total(&colony.items);
@@ -11666,8 +12100,8 @@ fn dashboard_footer_text(colony: &ColonySnapshot, compact: bool) -> String {
         },
     );
     format!(
-        "Jobs {active_jobs}/{} · goods {physical}g · ready {trade_ready}\n{ledger} · details in Stores",
-        colony.jobs.len()
+        "Working {}/{} · idle {} · open jobs {visible_jobs}\ngoods {physical}g · ready {trade_ready} · {ledger} · details in Stores",
+        employment.working, employment.capable, employment.idle,
     )
 }
 
@@ -11772,7 +12206,8 @@ fn update_census(
     latest: Res<LatestSnapshot>,
     ui: Res<CensusUi>,
     mut panel: Query<&mut Node, With<CensusPanel>>,
-    mut lines: Query<(&CensusLine, &mut Text)>,
+    mut lines: Query<(&CensusLine, &mut Text), Without<JobQueueLine>>,
+    mut job_lines: Query<(&JobQueueLine, &mut Text), Without<CensusLine>>,
 ) {
     if let Ok(mut node) = panel.single_mut() {
         node.display = if ui.visible {
@@ -11794,10 +12229,33 @@ fn update_census(
                 &c.events,
                 c.leader.as_ref().map(|l| l.name.as_str()),
             );
-            census_report_lines(&census, c.scale)
+            census_report_lines(&census, c.scale, village_employment(&c.cats))
         });
     for (line, mut text) in &mut lines {
         text.0 = report.get(line.0).cloned().unwrap_or_default();
+    }
+    let jobs = latest
+        .0
+        .as_ref()
+        .and_then(|world| world.colonies.first())
+        .map(|colony| {
+            colony
+                .jobs
+                .iter()
+                .filter(|job| job_visible_in_queue(job.kind, job.status))
+                .map(|job| {
+                    job_queue_row(
+                        job.kind,
+                        job.status,
+                        job.assigned_cat_name.as_deref(),
+                        job.world_position,
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    for (line, mut text) in &mut job_lines {
+        text.0 = jobs.get(line.0).cloned().unwrap_or_default();
     }
 }
 
@@ -11828,6 +12286,14 @@ fn update_goods(
     mut lines: Query<
         (&GoodsLine, &mut Text),
         (Without<GoodsTreasury>, Without<StoreResourceValue>),
+    >,
+    mut stockpile_lines: Query<
+        (&StockpileManagementLine, &mut Text),
+        (
+            Without<GoodsTreasury>,
+            Without<GoodsLine>,
+            Without<StoreResourceValue>,
+        ),
     >,
     mut resource_values: Query<
         (&StoreResourceValue, &mut Text),
@@ -11889,6 +12355,28 @@ fn update_goods(
             (0, None) if items.is_empty() => "No crafted goods yet".to_string(),
             _ => String::new(),
         };
+    }
+    let pile_rows = colony
+        .map(|colony| {
+            colony
+                .stockpiles
+                .iter()
+                .map(|pile| {
+                    stockpile_management_row(
+                        &pile.id,
+                        pile.x1,
+                        pile.y1,
+                        pile.x2,
+                        pile.y2,
+                        &pile.accepts,
+                        &resource_contents_summary(&pile.contents),
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    for (line, mut text) in &mut stockpile_lines {
+        text.0 = pile_rows.get(line.0).cloned().unwrap_or_default();
     }
     // Per-kind glyph tinted by material, hidden on empty slots.
     for (icon, mut node, mut image) in &mut icon_nodes {
@@ -12150,6 +12638,21 @@ fn handle_trade_buttons(
 
 /// Show/hide the announcements panel and repaint its colour-coded lines
 /// newest-first.
+fn handle_log_filters(
+    mut ui: ResMut<AnnouncementsUi>,
+    mut buttons: Query<(&Interaction, &LogFilterButton, &mut KitToggle)>,
+) {
+    let selected = buttons.iter().find_map(|(interaction, filter, _)| {
+        (*interaction == Interaction::Pressed).then_some(filter.0)
+    });
+    if let Some(selected) = selected {
+        ui.filter = selected;
+    }
+    for (_, filter, mut toggle) in &mut buttons {
+        toggle.active = filter.0 == ui.filter;
+    }
+}
+
 #[allow(clippy::type_complexity)]
 fn update_announcements(
     latest: Res<LatestSnapshot>,
@@ -12176,7 +12679,11 @@ fn update_announcements(
         .unwrap_or_default();
     events.sort_by_key(|e| e.timestamp);
     // Newest first.
-    let newest: Vec<_> = events.iter().rev().collect();
+    let newest: Vec<_> = events
+        .iter()
+        .rev()
+        .filter(|event| event_matches_log_filter(&event.kind, ui.filter))
+        .collect();
 
     for (line, mut text, mut color) in &mut lines {
         if let Some(e) = newest.get(line.0) {
@@ -12187,6 +12694,58 @@ fn update_announcements(
             text.0 = String::new();
         }
     }
+}
+
+fn sync_restart_world_button(
+    session: Res<Session>,
+    restart: Res<RestartWorldUi>,
+    mut button: Query<(&mut KitToggle, &mut KitDisabled), With<RestartWorldButton>>,
+    mut label: Query<&mut Text, With<RestartWorldButtonLabel>>,
+) {
+    let Ok((mut toggle, mut disabled)) = button.single_mut() else {
+        return;
+    };
+    toggle.active = restart.armed;
+    disabled.disabled = !session.ready;
+    if let Ok(mut text) = label.single_mut() {
+        text.0 = if !session.ready {
+            "Welt neu starten (zuerst verbinden)"
+        } else if restart.armed {
+            "Bestätigen: alle Siedlungen löschen"
+        } else {
+            "Welt neu starten"
+        }
+        .to_owned();
+    }
+}
+
+fn handle_restart_world_button(
+    button: Query<&Interaction, (Changed<Interaction>, With<RestartWorldButton>)>,
+    session: Res<Session>,
+    mut restart: ResMut<RestartWorldUi>,
+    mut outgoing: ResMut<OutgoingActions>,
+    mut feedback: ResMut<ClientFeedback>,
+) {
+    if !button
+        .iter()
+        .any(|interaction| *interaction == Interaction::Pressed)
+    {
+        return;
+    }
+    if !restart.armed {
+        restart.armed = true;
+        feedback.message = Some("Zum Löschen der Welt den roten Knopf erneut drücken.".to_owned());
+        feedback.level = FeedbackLevel::Error;
+        feedback.remaining_secs = 5.0;
+        return;
+    }
+    if let Some(action) = restart_world_action(&session) {
+        outgoing.0.push(action);
+        feedback.message = Some("Neustart der Welt angefordert …".to_owned());
+        feedback.level = FeedbackLevel::Info;
+        feedback.remaining_secs = 5.0;
+    }
+    restart.armed = false;
 }
 
 /// Keep the existing feature-specific resources as read-only view state while
@@ -12749,6 +13308,34 @@ fn resource_contents_summary(resources: &ResourceAmounts) -> String {
     }
 }
 
+fn stockpile_management_row(
+    id: &str,
+    x1: i32,
+    y1: i32,
+    x2: i32,
+    y2: i32,
+    accepts: &[ResourceKind],
+    contents: &str,
+) -> String {
+    let (min_x, max_x) = (x1.min(x2), x1.max(x2));
+    let (min_y, max_y) = (y1.min(y2), y1.max(y2));
+    let tiles = ((max_x - min_x + 1) * (max_y - min_y + 1)).max(0) as usize;
+    let accepts = if accepts.is_empty() {
+        "all".to_owned()
+    } else {
+        accepts
+            .iter()
+            .copied()
+            .map(resource_kind_name)
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    format!(
+        "{id} @ {min_x},{min_y}..{max_x},{max_y} · {tiles} tiles / {} loose slots · accepts {accepts} · {contents}",
+        tiles * 4
+    )
+}
+
 /// Sum of the storable goods held in a stockpile (blessings excluded).
 fn resource_total(c: &ResourceAmounts) -> f64 {
     MAINTAINED_RESOURCE_KINDS
@@ -12771,38 +13358,50 @@ fn dominant_resource(c: &ResourceAmounts) -> Option<ResourceKind> {
         .map(|(kind, _)| kind)
 }
 
-/// The pile prop sprite for a dominant resource.
-fn pile_prop(kind: ResourceKind) -> PropTexture {
-    match kind {
-        ResourceKind::Food => PropTexture::Sack,
-        ResourceKind::Fish => PropTexture::Sack,
-        ResourceKind::Water => PropTexture::Barrel,
-        ResourceKind::Herbs => PropTexture::Haystack,
-        ResourceKind::Catnip | ResourceKind::Grain | ResourceKind::Flour => PropTexture::Sack,
-        ResourceKind::Preserves => PropTexture::Crate,
-        ResourceKind::Medicine => PropTexture::Haystack,
-        ResourceKind::Brew => PropTexture::Barrel,
-        ResourceKind::Materials => PropTexture::StonePile,
-        ResourceKind::Stone => PropTexture::StonePile,
-        ResourceKind::Refined => PropTexture::GoldPile,
-        ResourceKind::Logs | ResourceKind::Lumber | ResourceKind::Planks => PropTexture::Crate,
-        ResourceKind::Blocks => PropTexture::StonePile,
-        ResourceKind::Tools => PropTexture::GoldPile,
-        ResourceKind::Fibre | ResourceKind::Thread | ResourceKind::Cloth => PropTexture::Haystack,
-        ResourceKind::Hide | ResourceKind::Bone | ResourceKind::Leather => PropTexture::Sack,
-        ResourceKind::Ore => PropTexture::StonePile,
-        ResourceKind::Gem => PropTexture::GoldPile,
-        ResourceKind::Clay | ResourceKind::Sand => PropTexture::StonePile,
-        ResourceKind::Metal => PropTexture::GoldPile,
-        ResourceKind::Weapons | ResourceKind::Armor | ResourceKind::Blessings => PropTexture::Crate,
-    }
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct StockpileItemMarker {
+    tile_index: usize,
+    slot: usize,
+    kind: ResourceKind,
 }
 
-/// Pile sprite size scaled by total contents: ~0.5 tile when nearly empty up to
-/// ~1.4 tiles when full.
-fn pile_scale(total: f64) -> f32 {
-    let t = (total / 200.0).clamp(0.0, 1.0) as f32;
-    TILE * (0.5 + t * 0.9)
+/// Turn aggregate contents into a bounded physical-looking display: each world
+/// tile owns four loose-item positions. Containers can later replace a marker
+/// with a denser same-kind stack without changing this spatial contract.
+fn stockpile_item_markers(
+    contents: &ResourceAmounts,
+    tile_count: usize,
+) -> Vec<StockpileItemMarker> {
+    let capacity = tile_count.saturating_mul(4);
+    let mut remaining = MAINTAINED_RESOURCE_KINDS
+        .iter()
+        .copied()
+        .filter(|kind| *kind != ResourceKind::Blessings)
+        .filter_map(|kind| {
+            let units = resource_amount(kind, contents).ceil().max(0.0) as usize;
+            (units > 0).then_some((kind, units))
+        })
+        .collect::<Vec<_>>();
+    let mut markers = Vec::with_capacity(capacity.min(remaining.len().saturating_mul(4)));
+    while markers.len() < capacity && remaining.iter().any(|(_, units)| *units > 0) {
+        for (kind, units) in &mut remaining {
+            if *units == 0 || markers.len() == capacity {
+                continue;
+            }
+            let index = markers.len();
+            markers.push(StockpileItemMarker {
+                tile_index: index / 4,
+                slot: index % 4,
+                kind: *kind,
+            });
+            *units -= 1;
+        }
+    }
+    markers
+}
+
+fn stockpile_zone_is_visible(_id: &str) -> bool {
+    true
 }
 
 fn resource_kind_name(kind: ResourceKind) -> &'static str {
@@ -13466,6 +14065,50 @@ mod tests {
             ready: true,
             ..default()
         }
+    }
+
+    #[test]
+    fn restart_world_action_uses_the_ready_signed_session() {
+        assert_eq!(
+            restart_world_action(&ready_session()),
+            Some(ClientAction::RestartWorld {
+                session_id: "session-1".to_owned(),
+                nickname: CLIENT_ACTOR_LABEL.to_owned(),
+                sig: "signed".to_owned(),
+            })
+        );
+        assert_eq!(restart_world_action(&Session::default()), None);
+    }
+
+    #[test]
+    fn restart_world_button_requires_two_distinct_presses() {
+        let mut app = App::new();
+        app.insert_resource(ready_session())
+            .insert_resource(RestartWorldUi::default())
+            .insert_resource(OutgoingActions::default())
+            .insert_resource(ClientFeedback::default())
+            .add_systems(Update, handle_restart_world_button);
+        let button = app
+            .world_mut()
+            .spawn((RestartWorldButton, Interaction::Pressed))
+            .id();
+
+        app.update();
+        assert!(app.world().resource::<RestartWorldUi>().armed);
+        assert!(app.world().resource::<OutgoingActions>().0.is_empty());
+
+        app.world_mut().entity_mut(button).insert(Interaction::None);
+        app.update();
+        app.world_mut()
+            .entity_mut(button)
+            .insert(Interaction::Pressed);
+        app.update();
+
+        assert!(!app.world().resource::<RestartWorldUi>().armed);
+        assert!(matches!(
+            app.world().resource::<OutgoingActions>().0.as_slice(),
+            [ClientAction::RestartWorld { .. }]
+        ));
     }
 
     #[test]
@@ -15143,18 +15786,28 @@ mod tests {
             &[],
             Some("Bella"),
         );
-        let lines = census_report_lines(&c, VillageScale::Communal);
+        let lines = census_report_lines(
+            &c,
+            VillageScale::Communal,
+            village_employment(&[census_cat(3.0, None, false), census_cat(30.0, None, false)]),
+        );
         assert_eq!(lines.len(), CENSUS_LINES);
         assert_eq!(lines[0], "Communal population: 2");
-        assert_eq!(lines[1], "Leader: Bella");
-        assert!(lines[2].contains("Priority: 1"));
-        assert_eq!(lines[3], "Expecting: 1");
+        assert_eq!(lines[1], "Working 0/1   Idle 1");
+        assert_eq!(lines[2], "Leader: Bella");
+        assert!(lines[3].contains("Priority: 1"));
+        assert_eq!(lines[4], "Expecting: 1");
         // A vacant seat renders a placeholder rather than dropping the line.
-        let vacant = census_report_lines(&colony_census(&[], &[], None), VillageScale::Personal);
+        let vacant = census_report_lines(
+            &colony_census(&[], &[], None),
+            VillageScale::Personal,
+            village_employment(&[]),
+        );
         assert_eq!(vacant.len(), CENSUS_LINES);
         assert_eq!(vacant[0], "Personal population: 0");
-        assert_eq!(vacant[1], "Leader: (vacant)");
-        assert_eq!(vacant[3], "Expecting: 0");
+        assert_eq!(vacant[1], "Working 0/0   Idle 0");
+        assert_eq!(vacant[2], "Leader: (vacant)");
+        assert_eq!(vacant[4], "Expecting: 0");
     }
 
     #[test]
@@ -15559,6 +16212,22 @@ mod tests {
         }
     }
 
+    #[test]
+    fn cat_walk_animation_has_a_stable_per_cat_phase() {
+        let moss = animation_phase_for_id("moss");
+        let fern = animation_phase_for_id("fern");
+        assert!(moss < 4);
+        assert!(fern < 4);
+        assert_eq!(moss, animation_phase_for_id("moss"));
+        assert_ne!(moss, fern, "unrelated cats should not march in lockstep");
+    }
+
+    #[test]
+    fn moving_cats_with_different_phases_render_different_frames() {
+        assert_ne!(walk_frame(0, 1), walk_frame(0, 3));
+        assert_eq!(walk_frame(3, 1), 0);
+    }
+
     fn png_dimensions(path: &std::path::Path) -> (u32, u32) {
         let bytes = std::fs::read(path).expect("tracked sprite sheet");
         assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
@@ -15617,6 +16286,7 @@ mod tests {
                 AnimSprite {
                     group: 0,
                     moving: false,
+                    phase: animation_phase_for_id(id),
                 },
             ))
             .id()
@@ -15793,7 +16463,7 @@ mod tests {
     }
 
     #[test]
-    fn dominant_resource_and_pile_prop() {
+    fn dominant_resource_finds_the_largest_physical_stack() {
         assert_eq!(dominant_resource(&amounts(0.0, 0.0, 0.0)), None);
         assert_eq!(
             dominant_resource(&amounts(10.0, 4.0, 0.0)),
@@ -15803,20 +16473,6 @@ mod tests {
             dominant_resource(&amounts(3.0, 20.0, 0.0)),
             Some(ResourceKind::Materials)
         );
-        assert_eq!(pile_prop(ResourceKind::Food), PropTexture::Sack);
-        assert_eq!(pile_prop(ResourceKind::Materials), PropTexture::StonePile);
-        assert_eq!(pile_prop(ResourceKind::Refined), PropTexture::GoldPile);
-    }
-
-    #[test]
-    fn pile_scale_grows_with_contents_and_clamps() {
-        let empty = pile_scale(0.0);
-        let some = pile_scale(100.0);
-        let full = pile_scale(200.0);
-        let over = pile_scale(9999.0);
-        assert!(empty < some && some < full);
-        assert_eq!(full, over); // clamps at the cap
-        assert!(empty > 0.0);
     }
 
     #[test]
@@ -15827,7 +16483,7 @@ mod tests {
     }
 
     #[test]
-    fn each_new_single_resource_pile_has_a_visible_total_and_dominant_prop() {
+    fn each_new_single_resource_pile_has_a_loose_item_marker() {
         type ResourceSetter = fn(&mut ResourceAmounts);
         let cases: [(ResourceKind, ResourceSetter); 10] = [
             (ResourceKind::Fibre, |a: &mut ResourceAmounts| a.fibre = 3.0),
@@ -15848,8 +16504,28 @@ mod tests {
             set(&mut amounts);
             assert_eq!(resource_total(&amounts), 3.0, "{kind:?}");
             assert_eq!(dominant_resource(&amounts), Some(kind));
-            assert!(pile_scale(resource_total(&amounts)) > pile_scale(0.0));
+            assert!(
+                stockpile_item_markers(&amounts, 1)
+                    .iter()
+                    .any(|marker| marker.kind == kind)
+            );
         }
+    }
+
+    #[test]
+    fn stockpile_tiles_show_at_most_four_loose_item_markers_each() {
+        let mut contents = amounts(12.0, 7.0, 3.0);
+        contents.water = 8.0;
+        let markers = stockpile_item_markers(&contents, 2);
+        assert_eq!(markers.len(), 8);
+        assert!(markers.iter().all(|marker| marker.slot < 4));
+        assert!(markers.iter().all(|marker| marker.tile_index < 2));
+    }
+
+    #[test]
+    fn seeded_general_storage_is_rendered_as_a_zone_too() {
+        assert!(stockpile_zone_is_visible("storehouse"));
+        assert!(stockpile_zone_is_visible("player-pile"));
     }
 
     #[test]
@@ -16047,6 +16723,37 @@ mod tests {
         );
         let mut labels = world.query_filtered::<Entity, (With<BuildingSprite>, With<Text2d>)>();
         assert_eq!(labels.iter(world).count(), 0);
+    }
+
+    #[test]
+    fn compact_den_renders_one_two_by_two_roof_and_no_exposed_floor_tiles() {
+        let mut snapshot = village_world(&["alpha"]);
+        snapshot.colonies[0].buildings.push(BuildingSnapshot {
+            id: "compact-den".to_owned(),
+            building_type: BuildingType::Den,
+            level: 1,
+            construction_progress: 100.0,
+            world_position: TilePoint { x: 6, y: 6 },
+            position: TilePoint { x: 6, y: 6 },
+            footprint: FootprintSize {
+                width: 2,
+                height: 2,
+            },
+            ..default()
+        });
+
+        let mut app = App::new();
+        app.insert_resource(LatestSnapshot(Some(snapshot)))
+            .insert_resource(BuildingArt::default())
+            .add_systems(Update, render_buildings);
+        app.update();
+
+        let world = app.world_mut();
+        let mut floors = world.query_filtered::<Entity, With<StationFloorSprite>>();
+        assert_eq!(floors.iter(world).count(), 0);
+        let mut roofs = world.query_filtered::<&Sprite, With<RoofedBuildingSprite>>();
+        let roof = roofs.single(world).expect("one compact den roof");
+        assert_eq!(roof.custom_size, Some(Vec2::splat(2.0 * TILE)));
     }
 
     #[test]
@@ -17528,6 +18235,31 @@ mod tests {
     }
 
     #[test]
+    fn food_site_tooltips_explain_level_stock_and_regeneration() {
+        let cave = cat_protocol::FoodSiteSnapshot {
+            position: TilePoint { x: 4, y: 9 },
+            kind: cat_protocol::FoodSiteKind::Cave,
+            level: 73,
+            stock: 42.0,
+            capacity: 90.0,
+            regen_per_game_hour: 0.35,
+        };
+        let cave_tip = food_site_tooltip(&cave);
+        assert!(cave_tip.contains("Cave · level 73"));
+        assert!(cave_tip.contains("food 42 / 90"));
+        assert!(cave_tip.contains("regen 0.35 / hour"));
+        assert!(cave_tip.contains("Hunting + fighting"));
+
+        let apple = cat_protocol::FoodSiteSnapshot {
+            kind: cat_protocol::FoodSiteKind::AppleTree,
+            level: 0,
+            ..cave
+        };
+        assert!(food_site_tooltip(&apple).contains("Apple tree"));
+        assert!(food_site_tooltip(&apple).contains("trains farming"));
+    }
+
+    #[test]
     fn production_bar_and_pct_and_line() {
         assert_eq!(progress_pct(0.0), 0);
         assert_eq!(progress_pct(0.5), 50);
@@ -17606,6 +18338,110 @@ mod tests {
     }
 
     #[test]
+    fn a_marked_tile_tooltip_explains_the_job_and_why_it_exists() {
+        let mut colony = empty_inspector_test_colony();
+        colony.jobs.push(JobSnapshot {
+            id: "fell-oak-1".to_owned(),
+            kind: JobKind::GatherLogs,
+            status: JobStatus::Queued,
+            ends_at: 0,
+            started_at: 0,
+            click_time_reduced_sec: 0.0,
+            assigned_cat_name: None,
+            world_position: Some(TilePoint { x: 10, y: 11 }),
+        });
+        let mut terrain = WorldRender::default();
+        terrain
+            .decorations
+            .insert((10, 11), DecorationRole::Tree { species: 0 });
+        terrain.climate_biomes.insert((10, 11), Biome::OakForest);
+
+        let tip =
+            hover_text(&colony, 1, grid_to_world(10, 11), &terrain).expect("marked work tooltip");
+        assert!(
+            tip.starts_with("MARKED WORK - OPEN"),
+            "unexpected tooltip: {tip}"
+        );
+        assert!(tip.contains("Gather logs"), "unexpected tooltip: {tip}");
+        assert!(
+            tip.contains("Why: logs are needed"),
+            "unexpected tooltip: {tip}"
+        );
+        assert!(
+            tip.contains("Worker: unassigned"),
+            "unexpected tooltip: {tip}"
+        );
+        assert!(tip.contains("Tile: 10,11"), "unexpected tooltip: {tip}");
+        assert!(
+            tip.ends_with("trees"),
+            "underlying tile should remain visible: {tip}"
+        );
+    }
+
+    #[test]
+    fn workshop_hover_uses_the_whole_three_by_three_footprint() {
+        let mut colony = empty_inspector_test_colony();
+        colony.buildings.push(BuildingSnapshot {
+            id: "workshop-hover".to_owned(),
+            building_type: BuildingType::Workshop,
+            level: 1,
+            construction_progress: 100.0,
+            world_position: TilePoint { x: 10, y: 10 },
+            position: TilePoint { x: 10, y: 10 },
+            footprint: FootprintSize {
+                width: 3,
+                height: 3,
+            },
+            ..BuildingSnapshot::default()
+        });
+
+        let tip = hover_text(&colony, 1, grid_to_world(12, 12), &WorldRender::default())
+            .expect("workshop tooltip");
+        assert!(tip.starts_with("workshop"), "unexpected tooltip: {tip}");
+    }
+
+    #[test]
+    fn workshop_selection_hitbox_uses_the_whole_three_by_three_footprint() {
+        let building = BuildingSnapshot {
+            world_position: TilePoint { x: 10, y: 10 },
+            footprint: FootprintSize {
+                width: 3,
+                height: 3,
+            },
+            ..BuildingSnapshot::default()
+        };
+        assert!(point_in_building((10, 10), &building));
+        assert!(point_in_building((12, 12), &building));
+        assert!(!point_in_building((13, 12), &building));
+    }
+
+    #[test]
+    fn paved_streets_and_worn_paths_keep_their_world_type_on_hover() {
+        let mut colony = empty_inspector_test_colony();
+        colony.road_tiles.push(TilePoint { x: 3, y: 4 });
+        colony.dirt_road_tiles.push(TilePoint { x: 5, y: 6 });
+        let terrain = WorldRender::default();
+
+        let street = hover_text(&colony, 1, grid_to_world(3, 4), &terrain).unwrap();
+        let path = hover_text(&colony, 1, grid_to_world(5, 6), &terrain).unwrap();
+        assert!(street.starts_with("street"), "unexpected tooltip: {street}");
+        assert!(path.starts_with("path"), "unexpected tooltip: {path}");
+    }
+
+    #[test]
+    fn tree_canopy_is_hoverable_across_its_full_footprint() {
+        let colony = empty_inspector_test_colony();
+        let mut terrain = WorldRender::default();
+        terrain
+            .decorations
+            .insert((10, 10), DecorationRole::Tree { species: 0 });
+        terrain.climate_biomes.insert((11, 12), Biome::OakForest);
+
+        let tip = hover_text(&colony, 1, grid_to_world(11, 12), &terrain).unwrap();
+        assert!(tip.ends_with("\ntrees"), "unexpected tooltip: {tip}");
+    }
+
+    #[test]
     fn all_building_types_have_labels() {
         for building in [
             BuildingType::Shrine,
@@ -17656,7 +18492,7 @@ mod tests {
         let footer = dashboard_footer_text(&snap.colonies[0], true);
         assert_eq!(footer.lines().count(), 2);
         assert!(!footer.contains("\n\n"));
-        assert!(footer.contains("Jobs"));
+        assert!(footer.contains("Working 0/2 · idle 2 · open jobs 0"));
         assert!(footer.contains("goods"));
         assert!(footer.contains("stores"));
         assert!(footer.contains("details in Stores"));
@@ -18433,5 +19269,119 @@ mod tests {
         assert_eq!(parse_ui_scale_override("1.3"), Some(1.3));
         assert_eq!(parse_ui_scale_override("0.8"), None);
         assert_eq!(parse_ui_scale_override("huge"), None);
+    }
+
+    #[test]
+    fn log_filters_group_authoritative_events_without_dropping_all_view() {
+        assert!(event_matches_log_filter("birth", LogFilter::All));
+        assert!(event_matches_log_filter("death_old_age", LogFilter::Life));
+        assert!(event_matches_log_filter("raid_started", LogFilter::Danger));
+        assert!(event_matches_log_filter("trade_sell", LogFilter::Trade));
+        assert!(event_matches_log_filter("production", LogFilter::Work));
+        assert!(!event_matches_log_filter("production", LogFilter::Danger));
+    }
+
+    #[test]
+    fn only_open_physical_jobs_receive_world_markers() {
+        let site = Some(TilePoint { x: 4, y: 5 });
+        assert!(job_world_marker_visible(
+            JobKind::GatherLogs,
+            JobStatus::Queued,
+            site
+        ));
+        assert!(job_world_marker_visible(
+            JobKind::GatherLogs,
+            JobStatus::Active,
+            site
+        ));
+        assert!(!job_world_marker_visible(
+            JobKind::GatherLogs,
+            JobStatus::Completed,
+            site
+        ));
+        assert!(!job_world_marker_visible(
+            JobKind::GatherLogs,
+            JobStatus::Queued,
+            None
+        ));
+        assert!(!job_world_marker_visible(
+            JobKind::VillageMaintenance,
+            JobStatus::Active,
+            site
+        ));
+    }
+
+    #[test]
+    fn village_job_queue_excludes_ambient_cleaning_and_closed_history() {
+        assert!(job_visible_in_queue(JobKind::GatherLogs, JobStatus::Queued));
+        assert!(job_visible_in_queue(JobKind::Fish, JobStatus::Active));
+        assert!(!job_visible_in_queue(
+            JobKind::VillageMaintenance,
+            JobStatus::Active
+        ));
+        assert!(!job_visible_in_queue(
+            JobKind::GatherLogs,
+            JobStatus::Completed
+        ));
+    }
+
+    #[test]
+    fn village_employment_counts_cats_not_job_records_and_ignores_ambient_motion() {
+        let mut working_job = census_cat(30.0, None, false);
+        working_job.id = "job-cat".to_owned();
+        working_job.current_task = Some("job-1".to_owned());
+        let mut working_building = census_cat(30.0, None, false);
+        working_building.id = "building-cat".to_owned();
+        working_building.assigned_building_id = Some("workshop-1".to_owned());
+        let mut ambient = census_cat(30.0, None, false);
+        ambient.id = "ambient-cat".to_owned();
+        ambient.activity = CatActivity::Traveling;
+        let kitten = census_cat(3.0, None, false);
+
+        let summary = village_employment(&[working_job, working_building, ambient, kitten]);
+
+        assert_eq!(summary.capable, 3);
+        assert_eq!(summary.working, 2);
+        assert_eq!(summary.idle, 1);
+        assert_eq!(summary.line(), "Working 2/3   Idle 1");
+    }
+
+    #[test]
+    fn job_queue_rows_show_status_worker_and_world_target() {
+        let row = job_queue_row(
+            JobKind::GatherLogs,
+            JobStatus::Queued,
+            None,
+            Some(TilePoint { x: 4, y: 5 }),
+        );
+        assert!(row.contains("Gather logs"));
+        assert!(row.contains("OPEN"));
+        assert!(row.contains("4,5"));
+
+        let assigned = job_queue_row(
+            JobKind::BuildRoad,
+            JobStatus::Active,
+            Some("Moss"),
+            Some(TilePoint { x: 8, y: 3 }),
+        );
+        assert!(assigned.contains("Moss"));
+        assert!(assigned.contains("ACTIVE"));
+    }
+
+    #[test]
+    fn stores_zone_rows_explain_world_footprint_and_loose_slots() {
+        let row = stockpile_management_row(
+            "pantry",
+            2,
+            3,
+            3,
+            4,
+            &[ResourceKind::Food, ResourceKind::Preserves],
+            "food 6",
+        );
+        assert!(row.contains("pantry"));
+        assert!(row.contains("2,3..3,4"));
+        assert!(row.contains("4 tiles / 16 loose slots"));
+        assert!(row.contains("food, preserves"));
     }
 }

@@ -198,6 +198,7 @@ define_wire_enum! {
         SupplyWater => "supply_water",
         LeaderPlanHunt => "leader_plan_hunt",
         HuntExpedition => "hunt_expedition",
+        GatherFood => "gather_food",
         LeaderPlanHouse => "leader_plan_house",
         BuildHouse => "build_house",
         BuildRoad => "build_road",
@@ -214,6 +215,7 @@ define_wire_enum! {
         CarryOffering => "carry_offering",
         PerformOffering => "perform_offering",
         HaulGatherSpot => "haul_gather_spot",
+        VillageMaintenance => "village_maintenance",
     }
 }
 
@@ -417,6 +419,7 @@ mod tests {
             (JobKind::CarryOffering, "carry_offering"),
             (JobKind::PerformOffering, "perform_offering"),
             (JobKind::HaulGatherSpot, "haul_gather_spot"),
+            (JobKind::VillageMaintenance, "village_maintenance"),
         ];
 
         assert_wire_round_trip(&cases, JobKind::as_str);

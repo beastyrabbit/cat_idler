@@ -11,6 +11,7 @@ use cat_protocol as proto;
 use crate::{
     entities::{self, Cat, CatActivity, MapType, Position},
     farming::{self, FarmPlot, FarmStage},
+    food_ecology::{self, FoodSiteKind},
     housing::{self, HousingBuilding},
     idle_engine, idle_rules,
     items::{
@@ -50,7 +51,7 @@ use crate::{
         found_global_colony, has_frontier, has_logging_site, has_quarry_site, has_replant_site,
         has_water_site, inside_village_interior, is_farm_gather_spot_id, legal_farm_gather_spots,
         migration_game_minute_at, occupied_farm_tiles, offering_amount, offering_metadata,
-        offering_reserve, publish_colony_spatial, reconcile_colony_stockpiles,
+        offering_reserve, publish_colony_spatial, reconcile_colony_stockpiles, regenerate_world,
         register_colony_spatial, release_farm_worker, release_role_automation,
         road_material_reservations, sync_all_colonies_from_shared, sync_colony_from_shared,
         village_exterior_is_road_connected, visible_offering_resource, world_tick,
@@ -99,6 +100,17 @@ pub fn apply_action(
         proto::ClientAction::Ensure => {
             ensure_colony(world, ctx.now_ms);
             ok()
+        }
+        proto::ClientAction::RestartWorld { .. } => {
+            if !world
+                .colonies
+                .iter()
+                .any(|colony| colony.kind == VillageKind::Global)
+            {
+                return fail("The global village is unavailable.");
+            }
+            let colony_id = regenerate_world(world, ctx.now_ms);
+            ok_for_colony(&colony_id)
         }
         proto::ClientAction::Presence { .. } => ok(),
         proto::ClientAction::RequestJob { kind, .. } => {
@@ -418,7 +430,7 @@ pub fn build_snapshot(world: &WorldState, now_ms: i64, online_count: u32) -> pro
         colonies: world
             .colonies
             .iter()
-            .map(|colony| colony_snapshot(colony, now_ms))
+            .map(|colony| colony_snapshot(colony, world.world_seed, now_ms))
             .collect(),
         selected_colony_id: None,
         known_villages: Vec::new(),
@@ -496,6 +508,7 @@ fn request_job(
         JobKind::SupplyFood
             | JobKind::SupplyWater
             | JobKind::LeaderPlanHunt
+            | JobKind::GatherFood
             | JobKind::LeaderPlanHouse
             | JobKind::GatherLogs
             | JobKind::ReplantTree
@@ -532,6 +545,12 @@ fn request_job(
     }
     if kind == JobKind::Fish && !crate::world_tick::has_fishable_stock(colony) {
         return fail("The designated fish habitat is depleted and replenishing.");
+    }
+    if kind == JobKind::GatherFood && !crate::world_tick::has_gatherable_fruit(colony) {
+        return fail("No revealed apple tree or berry bush has ripe food.");
+    }
+    if kind == JobKind::HuntExpedition && !crate::world_tick::has_runnable_cave_hunt(colony) {
+        return fail("No cave is safe enough for the available hunters and research.");
     }
     if kind == JobKind::Quarry && !has_quarry_site(colony) {
         return fail("No explored quarry site is available.");
@@ -602,6 +621,7 @@ fn request_job(
         }
         JobKind::GatherLogs
         | JobKind::ReplantTree
+        | JobKind::GatherFood
         | JobKind::Fish
         | JobKind::ForageFibre
         | JobKind::Explore
@@ -615,6 +635,7 @@ fn request_job(
             | JobKind::Quarry
             | JobKind::GatherLogs
             | JobKind::ReplantTree
+            | JobKind::GatherFood
             | JobKind::Fish
             | JobKind::ForageFibre
             | JobKind::Explore
@@ -2146,12 +2167,13 @@ fn designate_fishing_spot(
     let id = format!("gather-fish-{}-{}", ctx.now_ms, colony.stockpiles.len() + 1);
     let habitat = crate::world_tick::fishing_habitat_tile(colony, site)
         .expect("a validated fishing shore has adjacent water");
+    let habitat_profile = food_ecology::fishing_profile(world_seed, habitat.x, habitat.y);
     colony
         .fish_habitats
         .entry(habitat)
         .or_insert(stockpiles::FishPopulation {
-            stock: stockpiles::FISH_POPULATION_CAPACITY,
-            capacity: stockpiles::FISH_POPULATION_CAPACITY,
+            stock: f64::from(habitat_profile.initial_stock),
+            capacity: f64::from(habitat_profile.capacity),
             last_replenished_at_ms: ctx.now_ms,
         });
     colony.stockpiles.push(stockpiles::Stockpile {
@@ -4368,7 +4390,7 @@ fn set_test_acceleration(world: &mut WorldState, preset: proto::AccelerationPres
     }
 }
 
-fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot {
+fn colony_snapshot(colony: &ColonyRuntime, world_seed: u32, now_ms: i64) -> proto::ColonySnapshot {
     let alive_cats = alive_cats_sorted(colony);
     let effects = upgrade_tree::resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
     let storage_buildings = storage_buildings(colony);
@@ -4644,6 +4666,7 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
             })
             .map(|(pos, _)| tile_point(pos))
             .collect(),
+        food_sites: food_sites_snapshot(colony, world_seed),
         village_gate: village_gate_snapshot(colony),
         wall_segments: crate::world_tick::effective_wall_segments(colony)
             .into_iter()
@@ -4708,6 +4731,61 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
         coin: finite_snapshot_value(colony.coin),
         trader: trader_snapshot(colony),
     }
+}
+
+fn food_sites_snapshot(colony: &ColonyRuntime, world_seed: u32) -> Vec<proto::FoodSiteSnapshot> {
+    let mut sites = colony
+        .world_tiles
+        .iter()
+        .filter(|(pos, _)| colony.revealed_tiles.contains(pos))
+        .filter_map(|(pos, tile)| {
+            let kind = match tile.overlay_feature.as_deref()? {
+                "cave_food_site" => FoodSiteKind::Cave,
+                "apple_tree" => FoodSiteKind::AppleTree,
+                "berry_bush" => FoodSiteKind::BerryBush,
+                _ => return None,
+            };
+            let profile = match kind {
+                FoodSiteKind::Cave => food_ecology::cave_profile(world_seed, pos.x, pos.y),
+                FoodSiteKind::AppleTree | FoodSiteKind::BerryBush => {
+                    food_ecology::terrestrial_food_site(world_seed, pos.x, pos.y, tile.tile_type)?
+                }
+                FoodSiteKind::Fishing => unreachable!("water habitats are appended below"),
+            };
+            Some(proto::FoodSiteSnapshot {
+                position: tile_point(pos),
+                kind: match kind {
+                    FoodSiteKind::Cave => proto::FoodSiteKind::Cave,
+                    FoodSiteKind::AppleTree => proto::FoodSiteKind::AppleTree,
+                    FoodSiteKind::BerryBush => proto::FoodSiteKind::BerryBush,
+                    FoodSiteKind::Fishing => proto::FoodSiteKind::Fishing,
+                },
+                level: profile.level,
+                stock: f64::from(tile.resources.food),
+                capacity: f64::from(tile.max_resources.food),
+                regen_per_game_hour: profile.regen_per_game_hour,
+            })
+        })
+        .collect::<Vec<_>>();
+    sites.extend(
+        colony
+            .fish_habitats
+            .iter()
+            .filter(|(pos, _)| colony.revealed_tiles.contains(pos))
+            .map(|(pos, population)| {
+                let profile = food_ecology::fishing_profile(world_seed, pos.x, pos.y);
+                proto::FoodSiteSnapshot {
+                    position: tile_point(pos),
+                    kind: proto::FoodSiteKind::Fishing,
+                    level: 0,
+                    stock: finite_snapshot_value(population.stock),
+                    capacity: finite_snapshot_value(population.capacity),
+                    regen_per_game_hour: profile.regen_per_game_hour,
+                }
+            }),
+    );
+    sites.sort_by_key(|site| (site.position.y, site.position.x, site.kind as u8));
+    sites
 }
 
 /// Builds the visiting-trader snapshot (P19 slice 3), or `None` when no trader is
@@ -5216,8 +5294,34 @@ fn jobs_snapshot(colony: &ColonyRuntime) -> Vec<proto::JobSnapshot> {
                 .as_ref()
                 .and_then(|cat_id| colony.cats.iter().find(|cat| cat.id == *cat_id))
                 .map(|cat| cat.name.clone()),
+            world_position: job_world_marker(job).map(|site| proto::TilePoint {
+                x: site.x,
+                y: site.y,
+            }),
         })
         .collect()
+}
+
+fn job_world_marker(job: &JobRuntime) -> Option<TilePos> {
+    match &job.metadata {
+        JobMetadata::None | JobMetadata::OfferingRitual { .. } => None,
+        JobMetadata::Construction { site, .. }
+        | JobMetadata::Hauling { site, .. }
+        | JobMetadata::GatherHaul { site, .. }
+        | JobMetadata::StockpileHaul { site, .. }
+        | JobMetadata::OfferingCarry { site, .. } => *site,
+        JobMetadata::RoadConstruction {
+            tiles, next_tile, ..
+        } => tiles.get(*next_tile).copied(),
+        JobMetadata::Expansion { target, .. } | JobMetadata::Site { site: target, .. } => {
+            Some(*target)
+        }
+        JobMetadata::Scout {
+            destination,
+            target,
+            ..
+        } => destination.or(*target),
+    }
 }
 
 fn upgrades_snapshot(colony: &ColonyRuntime) -> Vec<proto::UpgradeSnapshot> {
@@ -5678,6 +5782,7 @@ fn queue_job(
             | JobKind::BuildRoad
             | JobKind::Quarry
             | JobKind::GatherLogs
+            | JobKind::GatherFood
             | JobKind::Fish
             | JobKind::HaulGatherSpot
     )
@@ -5717,6 +5822,7 @@ fn queue_job(
             | JobKind::BuildRoad
             | JobKind::Quarry
             | JobKind::GatherLogs
+            | JobKind::GatherFood
             | JobKind::Fish
             | JobKind::HaulGatherSpot
     ) {
@@ -6139,6 +6245,7 @@ fn task_for_job(kind: JobKind) -> Option<TaskType> {
         JobKind::SupplyFood | JobKind::LeaderPlanHunt | JobKind::HuntExpedition => {
             Some(TaskType::Hunt)
         }
+        JobKind::GatherFood => Some(TaskType::Farm),
         JobKind::Fish => Some(TaskType::Fish),
         JobKind::SupplyWater | JobKind::FetchWater => Some(TaskType::FetchWater),
         JobKind::LeaderPlanHouse | JobKind::BuildHouse | JobKind::BuildRoad | JobKind::Quarry => {
@@ -6152,6 +6259,7 @@ fn task_for_job(kind: JobKind) -> Option<TaskType> {
         JobKind::TrainWarrior => Some(TaskType::Guard),
         JobKind::ExpandVillage => Some(TaskType::Patrol),
         JobKind::HaulGatherSpot => Some(TaskType::Build),
+        JobKind::VillageMaintenance => Some(TaskType::Clean),
     }
 }
 
@@ -6513,6 +6621,7 @@ fn proto_to_sim_job_kind(kind: proto::JobKind) -> JobKind {
         proto::JobKind::SupplyWater => JobKind::SupplyWater,
         proto::JobKind::LeaderPlanHunt => JobKind::LeaderPlanHunt,
         proto::JobKind::HuntExpedition => JobKind::HuntExpedition,
+        proto::JobKind::GatherFood => JobKind::GatherFood,
         proto::JobKind::LeaderPlanHouse => JobKind::LeaderPlanHouse,
         proto::JobKind::BuildHouse => JobKind::BuildHouse,
         proto::JobKind::BuildRoad => JobKind::BuildRoad,
@@ -6529,6 +6638,7 @@ fn proto_to_sim_job_kind(kind: proto::JobKind) -> JobKind {
         proto::JobKind::CarryOffering => JobKind::CarryOffering,
         proto::JobKind::PerformOffering => JobKind::PerformOffering,
         proto::JobKind::HaulGatherSpot => JobKind::HaulGatherSpot,
+        proto::JobKind::VillageMaintenance => JobKind::VillageMaintenance,
     }
 }
 
@@ -6538,6 +6648,7 @@ fn sim_to_proto_job_kind(kind: JobKind) -> proto::JobKind {
         JobKind::SupplyWater => proto::JobKind::SupplyWater,
         JobKind::LeaderPlanHunt => proto::JobKind::LeaderPlanHunt,
         JobKind::HuntExpedition => proto::JobKind::HuntExpedition,
+        JobKind::GatherFood => proto::JobKind::GatherFood,
         JobKind::LeaderPlanHouse => proto::JobKind::LeaderPlanHouse,
         JobKind::BuildHouse => proto::JobKind::BuildHouse,
         JobKind::BuildRoad => proto::JobKind::BuildRoad,
@@ -6554,6 +6665,7 @@ fn sim_to_proto_job_kind(kind: JobKind) -> proto::JobKind {
         JobKind::CarryOffering => proto::JobKind::CarryOffering,
         JobKind::PerformOffering => proto::JobKind::PerformOffering,
         JobKind::HaulGatherSpot => proto::JobKind::HaulGatherSpot,
+        JobKind::VillageMaintenance => proto::JobKind::VillageMaintenance,
     }
 }
 
@@ -8044,6 +8156,80 @@ mod tests {
             "founded colony should have starter cats"
         );
         assert_eq!(res.colony_id.as_deref(), Some(personal.id.as_str()));
+    }
+
+    #[test]
+    fn restart_world_action_replaces_every_village_from_the_global_village() {
+        let mut world = world_with_one_colony();
+        assert!(
+            apply_action(
+                &mut world,
+                &proto::ClientAction::FoundVillage {
+                    name: "Newford".to_owned(),
+                    session_id: "sess_1".to_owned(),
+                    sig: None,
+                },
+                &ctx(),
+            )
+            .ok
+        );
+        assert_eq!(world.colonies.len(), 2);
+        let global_id = world.colonies[0].id.clone();
+        let old_seed = world.world_seed;
+
+        let result = apply_action(
+            &mut world,
+            &proto::ClientAction::RestartWorld {
+                session_id: "sess_1".to_owned(),
+                nickname: "Tester".to_owned(),
+                sig: "server-verified".to_owned(),
+            },
+            &ctx(),
+        );
+
+        assert!(result.ok, "{result:?}");
+        assert_eq!(result.colony_id.as_deref(), Some(global_id.as_str()));
+        assert_ne!(world.world_seed, old_seed);
+        assert_eq!(world.colonies.len(), 1);
+        assert_eq!(world.colonies[0].kind, VillageKind::Global);
+        assert_eq!(world.colonies[0].scale, VillageScale::Communal);
+    }
+
+    #[test]
+    fn restart_world_action_also_returns_a_personal_player_to_the_new_global_village() {
+        let mut world = world_with_one_colony();
+        assert!(
+            apply_action(
+                &mut world,
+                &proto::ClientAction::FoundVillage {
+                    name: "Newford".to_owned(),
+                    session_id: "sess_1".to_owned(),
+                    sig: None,
+                },
+                &ctx(),
+            )
+            .ok
+        );
+        let personal_id = world.colonies[1].id.clone();
+        let global_id = world.colonies[0].id.clone();
+        let personal_ctx = ActionCtx {
+            colony_id: personal_id,
+            ..ctx()
+        };
+        let result = apply_action(
+            &mut world,
+            &proto::ClientAction::RestartWorld {
+                session_id: "sess_1".to_owned(),
+                nickname: "Tester".to_owned(),
+                sig: "server-verified".to_owned(),
+            },
+            &personal_ctx,
+        );
+
+        assert!(result.ok, "{result:?}");
+        assert_eq!(result.colony_id.as_deref(), Some(global_id.as_str()));
+        assert_eq!(world.colonies.len(), 1);
+        assert_eq!(world.colonies[0].kind, VillageKind::Global);
     }
 
     #[test]
@@ -13031,10 +13217,10 @@ mod tests {
             .unwrap();
         assert_eq!(visible.purpose, proto::GatherSpotPurpose::Fishing);
         assert_eq!(visible.kind, proto::ResourceKind::Fish);
-        assert_eq!(
-            visible.fish_population.unwrap().stock,
-            stockpiles::FISH_POPULATION_CAPACITY
-        );
+        let profile = crate::food_ecology::fishing_profile(world.world_seed, water.x, water.y);
+        let population = visible.fish_population.unwrap();
+        assert_eq!(population.stock, f64::from(profile.initial_stock));
+        assert_eq!(population.capacity, f64::from(profile.capacity));
     }
 
     #[test]

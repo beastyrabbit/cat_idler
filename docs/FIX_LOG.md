@@ -7,16 +7,8 @@ and any changed Bevy visuals have been verified.
 
 ## Open fix queue
 
-### 2026-07-22 — Research still reads as several catalogs instead of one tree
-
-**Problem:** The first Research-atlas correction improved contrast and navigation but retained the
-catalog's authoring coordinates as four wide category regions. The resulting 20,000 px strip still
-looks and behaves like several adjacent lists, obscures the single-root prerequisite structure,
-and makes distant studies unnecessarily laborious to reach.
-
-**Required correction:** Derive presentation coordinates from the prerequisite DAG, render one
-continuous root-to-leaf tree, retain category only as a card/branch accent, keep every study and
-dependency searchable, and verify the complete tree at the supported desktop scale matrix.
+No reproduced client-layout finding remains open after the 2026-07-22 unified research-tree and
+feature-merge gate.
 
 ## Playtest cadence
 
@@ -34,6 +26,31 @@ including one body per authoritative cat and every visible road junction—not o
 sprite that motivated the change.
 
 ## Verified fixes
+
+## 2026-07-22 — Research is one prerequisite-derived tree
+
+**Problem:** The first Research-atlas correction improved contrast and navigation but retained the
+catalog's authoring coordinates as four wide category regions. The resulting 20,000 px strip still
+looked and behaved like several adjacent lists, obscured the single-root prerequisite structure,
+and made distant studies unnecessarily laborious to reach.
+
+**Fix:** Research presentation coordinates are now derived from the prerequisite DAG rather than
+authoring categories. All 487 studies form one continuous, single-root tree across 17 topological
+layers; category survives only as card and branch color. Opening the page or pressing **Home**
+centers the root, search retains the complete catalog, and selecting a study highlights its full
+ancestry to the root. Layer ordering minimizes crossings, cards have stable readable dimensions,
+and the layout tests reject overlap or backward dependency edges. The P21 gameplay feature merge
+retains this routed interface and the requested removal of Map, Help, Dispatches, the moving ticker,
+and letter-key screen shortcuts while adding food ecology, caves, evergreen work, world job markers,
+building interactions, employment/storage detail, Log filters, and signed world restart.
+
+**Evidence:** Playwright exercised the merged WASM client on isolated ports `18083` and `18791` at
+1024×768 with 100% and 130% interface scale. Settled captures confirmed one centered root, readable
+cards and ancestry, a contained inspector, usable Stores/Village pages, and no page overflow; the
+fresh browser session reported zero application errors. All 184 `cat-client` tests and all 76
+workspace smoke tests pass. Strict Clippy for the four touched crates, formatting, the diff check,
+and the `cat-web` wasm32 build pass. The Playwright page and both temporary game servers
+were closed after capture.
 
 ## 2026-07-22 — Pointer panning is decisive and Research is a readable dependency atlas
 

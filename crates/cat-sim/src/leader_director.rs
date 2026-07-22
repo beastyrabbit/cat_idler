@@ -207,6 +207,8 @@ fn survival_score_for_horizon(
 #[serde(rename_all = "snake_case")]
 pub enum LaborGoalKind {
     Hunt,
+    /// A Farmer food-relief slot resolved to an apple tree or berry bush.
+    GatherFood,
     /// A Farmer food-relief slot resolved to a designated shoreline fishery.
     /// The director itself still emits `Hunt`; the world layer substitutes this
     /// typed goal before matching so worker fit uses Fishing, not Hunt.
@@ -218,6 +220,8 @@ pub enum LaborGoalKind {
     AssignWorkshop,
     AssignResearch,
     AssignSmithy,
+    /// Evergreen cleaning, tidying, and local hauling after higher-priority work.
+    MaintainVillage,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -242,6 +246,10 @@ pub fn goal_skill(kind: LaborGoalKind) -> GoalSkill {
         LaborGoalKind::Hunt => GoalSkill {
             skill: GoalStat::Hunting,
             prefer_specialization: Some(CatSpecialization::Hunter),
+        },
+        LaborGoalKind::GatherFood => GoalSkill {
+            skill: GoalStat::Building,
+            prefer_specialization: None,
         },
         LaborGoalKind::Fish => GoalSkill {
             skill: GoalStat::Hunting,
@@ -275,6 +283,10 @@ pub fn goal_skill(kind: LaborGoalKind) -> GoalSkill {
             skill: GoalStat::Building,
             prefer_specialization: Some(CatSpecialization::Architect),
         },
+        LaborGoalKind::MaintainVillage => GoalSkill {
+            skill: GoalStat::Building,
+            prefer_specialization: None,
+        },
     }
 }
 
@@ -284,13 +296,14 @@ pub fn goal_skill(kind: LaborGoalKind) -> GoalSkill {
 #[must_use]
 pub fn officer_role_for(kind: LaborGoalKind) -> OfficerRole {
     match kind {
-        LaborGoalKind::Hunt | LaborGoalKind::Fish | LaborGoalKind::FetchWater => {
-            OfficerRole::Farmer
-        }
+        LaborGoalKind::Hunt
+        | LaborGoalKind::GatherFood
+        | LaborGoalKind::Fish
+        | LaborGoalKind::FetchWater => OfficerRole::Farmer,
         LaborGoalKind::Quarry => OfficerRole::Forester,
         LaborGoalKind::TrainWarrior | LaborGoalKind::AssignSmithy => OfficerRole::Captain,
         LaborGoalKind::AssignResearch | LaborGoalKind::Scout => OfficerRole::Loremaster,
-        LaborGoalKind::AssignWorkshop => OfficerRole::Steward,
+        LaborGoalKind::AssignWorkshop | LaborGoalKind::MaintainVillage => OfficerRole::Steward,
     }
 }
 
@@ -377,6 +390,7 @@ const LABOR_PREFERENCE_FIT_MULTIPLIER: f64 = 2.0;
 const fn labor_for_goal(goal: LaborGoalKind) -> Labor {
     match goal {
         LaborGoalKind::Hunt => Labor::Hunt,
+        LaborGoalKind::GatherFood => Labor::Farm,
         LaborGoalKind::Fish => Labor::Fishing,
         LaborGoalKind::FetchWater => Labor::FetchWater,
         LaborGoalKind::Quarry => Labor::Quarry,
@@ -385,6 +399,7 @@ const fn labor_for_goal(goal: LaborGoalKind) -> Labor {
         LaborGoalKind::AssignWorkshop => Labor::Process,
         LaborGoalKind::AssignResearch => Labor::Research,
         LaborGoalKind::AssignSmithy => Labor::Metalwork,
+        LaborGoalKind::MaintainVillage => Labor::Haul,
     }
 }
 
@@ -647,7 +662,10 @@ fn allocate_labor(snapshot: &LeaderSnapshot, goals: &[LaborGoal]) -> Vec<OpenSlo
 const fn is_baseline_leader_goal(goal: LaborGoalKind) -> bool {
     matches!(
         goal,
-        LaborGoalKind::Hunt | LaborGoalKind::FetchWater | LaborGoalKind::Scout
+        LaborGoalKind::Hunt
+            | LaborGoalKind::FetchWater
+            | LaborGoalKind::Scout
+            | LaborGoalKind::MaintainVillage
     )
 }
 
@@ -658,6 +676,7 @@ fn baseline_leader_cap(goal: LaborGoalKind, population: u32) -> Option<u32> {
         LaborGoalKind::Hunt => Some(proportional_cap(BASELINE_HUNT_MAX_SLOTS)),
         LaborGoalKind::FetchWater => Some(proportional_cap(BASELINE_WATER_MAX_SLOTS)),
         LaborGoalKind::Scout => Some(proportional_cap(BASELINE_SCOUT_MAX_SLOTS)),
+        LaborGoalKind::MaintainVillage => Some(population),
         _ => None,
     }
 }
@@ -694,6 +713,17 @@ pub fn automated_plan(snapshot: &LeaderSnapshot) -> DirectorPlan {
                 .map_or(0, goal_open_slots);
             slot.count = slot.count.min(available);
         }
+    }
+    // Preserve every concrete TS-derived allocation above, then absorb only the
+    // adults it leaves behind. Maintenance can therefore never displace a need.
+    let assigned = slots.iter().map(|slot| slot.count).sum::<u32>();
+    let maintenance = snapshot.idle_cats.saturating_sub(assigned);
+    if maintenance > 0 {
+        slots.push(OpenSlots {
+            goal: LaborGoalKind::MaintainVillage,
+            count: maintenance,
+            score: 0.0,
+        });
     }
     let scored = direct_colony(snapshot);
     let decisions = scored
@@ -733,7 +763,9 @@ pub fn plan_leader_actions(snapshot: &LeaderSnapshot) -> Vec<LeaderDecision> {
     }
 
     decisions.extend(plan.slots.iter().map(|slot| match slot.goal {
-        LaborGoalKind::Hunt | LaborGoalKind::Fish => LeaderDecision::Hunt { count: slot.count },
+        LaborGoalKind::Hunt | LaborGoalKind::GatherFood | LaborGoalKind::Fish => {
+            LeaderDecision::Hunt { count: slot.count }
+        }
         LaborGoalKind::FetchWater => LeaderDecision::FetchWater { count: slot.count },
         LaborGoalKind::Quarry => LeaderDecision::Quarry { count: slot.count },
         LaborGoalKind::Scout => LeaderDecision::Scout { count: slot.count },
@@ -741,6 +773,7 @@ pub fn plan_leader_actions(snapshot: &LeaderSnapshot) -> Vec<LeaderDecision> {
         LaborGoalKind::AssignWorkshop => LeaderDecision::AssignWorkshop { count: slot.count },
         LaborGoalKind::AssignResearch => LeaderDecision::AssignResearch { count: slot.count },
         LaborGoalKind::AssignSmithy => LeaderDecision::AssignSmithy { count: slot.count },
+        LaborGoalKind::MaintainVillage => LeaderDecision::MaintainVillage { count: slot.count },
     }));
 
     for decision in plan.decisions {
@@ -937,13 +970,14 @@ fn able_cats(snapshot: &LeaderSnapshot) -> u32 {
 fn goal_order(kind: LaborGoalKind) -> usize {
     match kind {
         LaborGoalKind::FetchWater => 0,
-        LaborGoalKind::Hunt | LaborGoalKind::Fish => 1,
+        LaborGoalKind::Hunt | LaborGoalKind::GatherFood | LaborGoalKind::Fish => 1,
         LaborGoalKind::Quarry => 2,
         LaborGoalKind::TrainWarrior => 3,
         LaborGoalKind::AssignSmithy => 4,
         LaborGoalKind::AssignWorkshop => 5,
         LaborGoalKind::AssignResearch => 6,
         LaborGoalKind::Scout => 7,
+        LaborGoalKind::MaintainVillage => 8,
     }
 }
 
@@ -1594,10 +1628,7 @@ mod tests {
         assert!(plan.slots.iter().all(|slot| {
             baseline_leader_cap(slot.goal, snapshot.population).is_some_and(|cap| slot.count <= cap)
         }));
-        assert!(
-            total_slots(&plan)
-                <= BASELINE_HUNT_MAX_SLOTS + BASELINE_WATER_MAX_SLOTS + BASELINE_SCOUT_MAX_SLOTS
-        );
+        assert_eq!(total_slots(&plan), 10);
         assert!(plan.decisions.is_empty());
     }
 
@@ -1641,10 +1672,14 @@ mod tests {
         for role in OfficerRole::ALL {
             all_filled.officers.insert(*role, format!("{role:?}"));
         }
+        let mut automated = automated_plan(&all_filled);
+        automated
+            .slots
+            .retain(|slot| slot.goal != LaborGoalKind::MaintainVillage);
         assert_plan_eq(
-            &automated_plan(&all_filled),
+            &automated,
             &direct_colony(&base),
-            "all roles reproduce pure scoring without a bonus",
+            "all roles preserve pure concrete scoring before maintenance",
         );
     }
 
@@ -1732,19 +1767,27 @@ mod tests {
     }
 
     #[test]
-    fn idle_employment_floor_is_ninety_five_percent() {
-        assert!((IDLE_EMPLOYMENT_FLOOR - 0.95).abs() < 1e-12);
+    fn autonomous_plan_has_evergreen_work_beyond_the_parity_floor() {
+        let snapshot = healthy_snapshot(20, 0);
+        assert_eq!(total_slots(&automated_plan(&snapshot)), 20);
     }
 
     #[test]
-    fn healthy_twenty_cat_colony_leaves_at_most_one_idle() {
-        // 20 work-capable cats, all idle, resources comfortable: the fill pass should
-        // saturate labour so at most one cat stands idle (ceil(20 * 0.95) = 19 employed).
+    fn healthy_twenty_cat_colony_employs_every_adult() {
+        // Work is part of village life, not an arbitrary 95% quota. When ordinary
+        // demand is exhausted the evergreen maintenance goal must absorb the rest.
         let snapshot = healthy_snapshot(20, 0);
-        let plan = direct_colony(&snapshot);
+        let plan = automated_plan(&snapshot);
         let employed = total_slots(&plan);
-        assert_eq!(employed, 19, "expected 19 of 20 employed, got {employed}");
-        assert!(20 - employed <= 1, "idle count must be <= 1");
+        assert_eq!(
+            employed, 20,
+            "expected every adult employed, got {employed}"
+        );
+        assert!(
+            plan.slots
+                .iter()
+                .any(|slot| slot.goal == LaborGoalKind::MaintainVillage)
+        );
     }
 
     #[test]
@@ -1762,14 +1805,16 @@ mod tests {
         // With most cats already busy, the fill pass tops up only the remaining idle
         // cats toward the floor rather than over-committing beyond the workforce.
         let snapshot = healthy_snapshot(4, 16);
-        let plan = direct_colony(&snapshot);
+        let plan = automated_plan(&snapshot);
         let newly_employed = total_slots(&plan);
         assert!(
             newly_employed <= 4,
             "must not open more slots than idle cats ({newly_employed} > 4)"
         );
-        // Floor target is ceil(20 * 0.95) = 19; 16 already busy -> up to 3 more opened.
-        assert!(newly_employed >= 3, "should top up toward the floor");
+        assert_eq!(
+            newly_employed, 4,
+            "all remaining adults should receive work"
+        );
     }
 
     #[test]

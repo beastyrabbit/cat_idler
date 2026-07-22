@@ -572,11 +572,16 @@ pub fn destination_for_job(kind: &str, context: &JobDestinationContext<'_>) -> O
         "carry_offering" => context.site.or(Some(context.shrine)),
         "build_house" => Some(context.site.unwrap_or(context.anchor)),
         "expand_village" => context.expansion_site,
-        "quarry" | "gather_logs" | "replant_tree" | "fish" => context.quarry_site,
+        "quarry" | "gather_logs" | "replant_tree" | "gather_food" | "fish" => context.quarry_site,
         "fetch_water" => context.water_site,
         "explore" => context.explore_site,
         "hunt_expedition" => hunt_destination(context),
         "haul_gather_spot" => context.gather_spot_site,
+        "village_maintenance" => Some(pick_wander_target(
+            context.anchor,
+            context.roll,
+            (context.roll * 0.754_877_666_246_692_7).fract(),
+        )),
         _ => None,
     }
 }

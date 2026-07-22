@@ -157,6 +157,10 @@ pub enum LeaderDecision {
     AssignSmithy {
         count: u32,
     },
+    /// Evergreen low-priority work used only after concrete village needs are met.
+    MaintainVillage {
+        count: u32,
+    },
     TrainWarrior {
         count: u32,
     },

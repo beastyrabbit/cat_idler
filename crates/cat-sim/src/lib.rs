@@ -44,6 +44,7 @@ pub mod survival;
 // P5 economy/housing/roads modules.
 pub mod depletion;
 pub mod farming;
+pub mod food_ecology;
 pub mod housing;
 pub mod idle_engine;
 pub mod idle_rules;
