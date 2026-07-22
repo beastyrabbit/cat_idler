@@ -4545,13 +4545,15 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
         claimed_tiles: colony.claimed_tiles.iter().map(tile_point).collect(),
         agricultural_tiles: colony.agricultural_tiles.iter().map(tile_point).collect(),
         revealed_tiles: colony.revealed_tiles.iter().map(tile_point).collect(),
-        // Merge every out scout's tentative tiles into one deterministic, deduped,
-        // sorted set (matching `revealed_tiles`'s `BTreeSet` ordering) rather than
-        // exposing per-scout grouping the client doesn't need.
+        // Merge every out scout's still-hidden tentative tiles into one deterministic,
+        // deduped, sorted set (matching `revealed_tiles`'s `BTreeSet` ordering) rather
+        // than exposing per-scout grouping or already-known contact observations the
+        // client doesn't need.
         provisional_tiles: colony
             .provisional_tiles
             .values()
             .flatten()
+            .filter(|tile| !colony.revealed_tiles.contains(tile))
             .copied()
             .collect::<BTreeSet<_>>()
             .iter()
@@ -12082,6 +12084,10 @@ mod tests {
         // distinctly from `revealed_tiles`, merged across every currently-out scout
         // into one deterministic, deduped, sorted set.
         let mut world = world_with_one_colony();
+        let already_revealed_contact = TilePos { x: 42, y: 40 };
+        world.colonies[0]
+            .revealed_tiles
+            .insert(already_revealed_contact);
         world.colonies[0].provisional_tiles = BTreeMap::from([
             (
                 "scout_a".to_owned(),
@@ -12090,7 +12096,11 @@ mod tests {
             (
                 "scout_b".to_owned(),
                 // Overlaps scout_a's tile — must not appear twice in the snapshot.
-                BTreeSet::from([TilePos { x: 41, y: 40 }, TilePos { x: -5, y: 90 }]),
+                BTreeSet::from([
+                    TilePos { x: 41, y: 40 },
+                    TilePos { x: -5, y: 90 },
+                    already_revealed_contact,
+                ]),
             ),
         ]);
 
@@ -12112,6 +12122,10 @@ mod tests {
                 .revealed_tiles
                 .contains(&proto::TilePoint { x: 40, y: 40 }),
             "provisional tiles must not leak into the committed revealed set"
+        );
+        assert!(
+            !provisional.contains(&tile_point(&already_revealed_contact)),
+            "already-revealed contact observations must not dim the committed fog overlay"
         );
     }
 
