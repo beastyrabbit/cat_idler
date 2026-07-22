@@ -200,6 +200,30 @@ impl StockLedger {
         );
         self.last_counted = now_ms;
     }
+
+    /// Record one resource amount that a signed physical operation has made known.
+    ///
+    /// Unlike an Accountant visit, this preserves the report timestamps and does not
+    /// sample unrelated resources from the pile. The aggregate report moves by the same
+    /// delta so socket projections remain internally consistent with the observed pile.
+    pub fn record_known_resource(&mut self, pile: &Stockpile, kind: ResourceKind) {
+        if pile.is_station_local() {
+            return;
+        }
+        let mut report = self
+            .pile_reports
+            .get(&pile.id)
+            .cloned()
+            .unwrap_or_else(|| PileReport {
+                last_counted: self.last_counted,
+                ..PileReport::default()
+            });
+        let previous = crate::stockpiles::resource_amount(&report.reported, kind);
+        let current = crate::stockpiles::resource_amount(&pile.contents, kind);
+        crate::stockpiles::add_resource(&mut self.reported, kind, current - previous);
+        crate::stockpiles::set_resource(&mut report.reported, kind, current);
+        self.pile_reports.insert(pile.id.clone(), report);
+    }
 }
 
 fn visible_piles(piles: &[Stockpile]) -> impl Iterator<Item = &Stockpile> {

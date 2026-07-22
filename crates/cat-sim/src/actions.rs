@@ -3259,6 +3259,12 @@ fn create_transport_route(
         ctx.now_ms,
         colony.transport.routes.len() + 1
     );
+    let source = source.clone();
+    let destination = destination.clone();
+    colony.stock_ledger.record_known_resource(&source, resource);
+    colony
+        .stock_ledger
+        .record_known_resource(&destination, resource);
     let position = path[0];
     colony.transport.routes.insert(
         route_id.clone(),
@@ -3266,7 +3272,7 @@ fn create_transport_route(
             id: route_id.clone(),
             mode,
             source_stockpile_id: source_stockpile_id.to_owned(),
-            destination_stockpile_id: destination.id.clone(),
+            destination_stockpile_id: destination.id,
             resource,
             amount,
             assigned_cat_id: cat_id.to_owned(),
@@ -6926,6 +6932,20 @@ mod tests {
         };
         let result = apply_action(&mut world, &action, &ctx());
         assert!(result.ok, "guided route failed: {:?}", result.message);
+        assert_eq!(
+            world.colonies[0].stock_ledger.pile_reports["rail-source"]
+                .reported
+                .food,
+            10.0,
+            "planning a signed route makes its validated source cargo observable"
+        );
+        assert_eq!(
+            world.colonies[0].stock_ledger.pile_reports["rail-destination"]
+                .reported
+                .food,
+            0.0,
+            "planning a signed route establishes its destination report"
+        );
         let route = world.colonies[0].transport.routes.values().next().unwrap();
         assert_eq!(route.assigned_cat_id, cat_id);
         assert_eq!(route.amount, 4.0);
