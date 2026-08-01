@@ -53,8 +53,9 @@ use crate::{
         migration_game_minute_at, occupied_farm_tiles, offering_amount, offering_metadata,
         offering_reserve, publish_colony_spatial, reconcile_colony_stockpiles, regenerate_world,
         register_colony_spatial, release_farm_worker, release_role_automation,
-        road_material_reservations, sync_all_colonies_from_shared, sync_colony_from_shared,
-        village_exterior_is_road_connected, visible_offering_resource, world_tick,
+        research_infrastructure_multipliers, research_workforce, road_material_reservations,
+        sync_all_colonies_from_shared, sync_colony_from_shared, village_exterior_is_road_connected,
+        visible_offering_resource, world_tick,
     },
     zones,
 };
@@ -166,8 +167,33 @@ pub fn apply_action(
         proto::ClientAction::UnlockNode { node_id, .. } => {
             with_colony(world, ctx, |colony| unlock_node(colony, node_id, ctx))
         }
-        proto::ClientAction::ResearchNode { node_id, .. } => {
-            with_colony(world, ctx, |colony| research_node(colony, node_id, ctx))
+        proto::ClientAction::ResearchNode { node_id, .. } => with_colony(world, ctx, |colony| {
+            queue_research_path(colony, node_id, ctx)
+        }),
+        proto::ClientAction::QueueResearchPath { node_id, .. } => {
+            with_colony(world, ctx, |colony| {
+                queue_research_path(colony, node_id, ctx)
+            })
+        }
+        proto::ClientAction::QueueRepeatableResearch { track_id, .. } => {
+            with_colony(world, ctx, |colony| {
+                queue_repeatable_research(colony, track_id, ctx)
+            })
+        }
+        proto::ClientAction::MoveQueuedResearch { key, direction, .. } => {
+            with_colony(world, ctx, |colony| {
+                move_queued_research(colony, key, *direction, ctx)
+            })
+        }
+        proto::ClientAction::RemoveQueuedResearch { key, .. } => {
+            with_colony(world, ctx, |colony| {
+                remove_queued_research(colony, key, ctx)
+            })
+        }
+        proto::ClientAction::UpgradeBuilding { building_id, .. } => {
+            with_colony(world, ctx, |colony| {
+                upgrade_building(colony, building_id, ctx)
+            })
         }
         proto::ClientAction::OfferTithe { .. } => {
             with_colony(world, ctx, |colony| offer_tithe(colony, ctx))
@@ -1050,23 +1076,276 @@ fn unlock_node(colony: &mut ColonyRuntime, node_id: &str, ctx: &ActionCtx) -> pr
     ok()
 }
 
-fn research_node(
+fn queue_research_path(
     colony: &mut ColonyRuntime,
     node_id: &str,
     ctx: &ActionCtx,
 ) -> proto::ActionResult {
-    let result = upgrade_tree::cat_purchase(&colony.upgrade_tree, node_id);
-    if !result.ok {
-        return fail("That technology is locked, owned, or lacks research points.");
+    let result = upgrade_tree::queue_research_path(
+        &mut colony.upgrade_tree,
+        node_id,
+        upgrade_tree::ResearchQueueSource::Player,
+    );
+    let Ok(added) = result else {
+        return fail(result.expect_err("checked error"));
+    };
+    if added == 0 {
+        return fail("That technology is already completed or queued.");
     }
-    colony.upgrade_tree = result.state;
     colony.last_player_activity_at = Some(ctx.now_ms);
-    let node_name = upgrade_tree::get_node(node_id).map_or(node_id, |node| node.name);
+    let node_name = crate::research_catalog::research_catalog()
+        .get(node_id)
+        .map_or(node_id, |node| node.name.as_str());
     append_event(
         colony,
         ctx.now_ms,
         EventKind::ResearchUnlocked,
-        format!("The scholars completed {node_name}!"),
+        format!("The scholars planned {node_name} and {added} required studies."),
+    );
+    ok()
+}
+
+fn queue_repeatable_research(
+    colony: &mut ColonyRuntime,
+    track_id: &str,
+    ctx: &ActionCtx,
+) -> proto::ActionResult {
+    let result = upgrade_tree::queue_repeatable_level(
+        &mut colony.upgrade_tree,
+        track_id,
+        upgrade_tree::ResearchQueueSource::Player,
+    );
+    let Ok(level) = result else {
+        return fail(result.expect_err("checked error"));
+    };
+    colony.last_player_activity_at = Some(ctx.now_ms);
+    append_event(
+        colony,
+        ctx.now_ms,
+        EventKind::ResearchUnlocked,
+        format!("The scholars planned {track_id} level {level}."),
+    );
+    ok()
+}
+
+fn move_queued_research(
+    colony: &mut ColonyRuntime,
+    key: &str,
+    direction: i8,
+    ctx: &ActionCtx,
+) -> proto::ActionResult {
+    if let Err(message) =
+        upgrade_tree::move_queued_research(&mut colony.upgrade_tree, key, direction)
+    {
+        return fail(message);
+    }
+    colony.last_player_activity_at = Some(ctx.now_ms);
+    ok()
+}
+
+fn remove_queued_research(
+    colony: &mut ColonyRuntime,
+    key: &str,
+    ctx: &ActionCtx,
+) -> proto::ActionResult {
+    let removed = match upgrade_tree::remove_queued_research(&mut colony.upgrade_tree, key) {
+        Ok(removed) => removed,
+        Err(message) => return fail(message),
+    };
+    colony.last_player_activity_at = Some(ctx.now_ms);
+    append_event(
+        colony,
+        ctx.now_ms,
+        EventKind::ResearchUnlocked,
+        format!("Removed {removed} planned studies and refunded reserved research."),
+    );
+    ok()
+}
+
+fn building_level_cap(colony: &ColonyRuntime, building_type: BuildingType) -> u32 {
+    let track_id = if building_type == BuildingType::ResearchHut {
+        "research_hut_building"
+    } else {
+        building_type.as_str()
+    };
+    crate::research_tracks::technology_catalog()
+        .get(track_id)
+        .map_or(1, |track| {
+            track
+                .displayed_finite_level(&colony.upgrade_tree.owned_node_ids)
+                .max(1)
+        })
+        .min(10)
+}
+
+fn spend_upgrade_timber(colony: &mut ColonyRuntime, amount: f64) -> bool {
+    let lumber = visible_resource_amount(colony, stockpiles::ResourceKind::Lumber).min(amount);
+    if lumber > 0.0 && !deduct_visible_resource(colony, stockpiles::ResourceKind::Lumber, lumber) {
+        return false;
+    }
+    let remaining = amount - lumber;
+    remaining <= f64::EPSILON
+        || deduct_visible_resource(colony, stockpiles::ResourceKind::Planks, remaining)
+}
+
+fn upgrade_building(
+    colony: &mut ColonyRuntime,
+    building_id: &str,
+    ctx: &ActionCtx,
+) -> proto::ActionResult {
+    let Some(building) = colony
+        .buildings
+        .iter()
+        .find(|building| building.id == building_id)
+        .cloned()
+    else {
+        return fail("Building not found.");
+    };
+    if !building.is_complete || building.construction_progress < 100 {
+        return fail("Finish construction before upgrading this building.");
+    }
+    let target_level = building.level.saturating_add(1);
+    if target_level > 10 {
+        return fail("This building has reached level 10.");
+    }
+    if target_level > building_level_cap(colony, building.building_type) {
+        return fail("Research the next building level first.");
+    }
+    if active_or_queued_jobs(colony).iter().any(|job| {
+        job.kind == JobKind::BuildHouse
+            && matches!(
+                &job.metadata,
+                JobMetadata::Construction {
+                    building_id: Some(active_id),
+                    ..
+                } if active_id == building_id
+            )
+    }) {
+        return fail("That building is already being upgraded.");
+    }
+    if active_or_queued_jobs(colony)
+        .iter()
+        .any(|job| job.kind == JobKind::BuildHouse)
+    {
+        return fail("Finish the current building project first.");
+    }
+    let Some(architect) = select_best_cat(colony, Some(CatSpecialization::Architect)) else {
+        return fail("No available architect.");
+    };
+
+    let units = (2.0 * f64::from(target_level).powf(1.5)).ceil();
+    let tools = if target_level >= 10 {
+        units
+    } else if target_level >= 8 {
+        (units / 2.0).ceil()
+    } else if target_level >= 6 {
+        (units / 3.0).ceil()
+    } else if target_level >= 4 {
+        (units / 4.0).ceil()
+    } else {
+        0.0
+    };
+    let metal = if target_level >= 10 {
+        units
+    } else if target_level >= 8 {
+        (units / 2.0).ceil()
+    } else if target_level >= 6 {
+        (units / 3.0).ceil()
+    } else {
+        0.0
+    };
+    let refined = if target_level >= 10 {
+        (units / 2.0).ceil()
+    } else if target_level >= 8 {
+        (units / 4.0).ceil()
+    } else {
+        0.0
+    };
+    let gem = f64::from(target_level == 10);
+
+    let mut paid = colony.clone();
+    if !spend_upgrade_timber(&mut paid, units)
+        || !deduct_visible_resource(&mut paid, stockpiles::ResourceKind::Blocks, units)
+        || tools > 0.0
+            && !deduct_visible_resource(&mut paid, stockpiles::ResourceKind::Tools, tools)
+        || metal > 0.0
+            && !deduct_visible_resource(&mut paid, stockpiles::ResourceKind::Metal, metal)
+        || refined > 0.0
+            && !deduct_visible_resource(&mut paid, stockpiles::ResourceKind::Refined, refined)
+        || gem > 0.0 && !deduct_visible_resource(&mut paid, stockpiles::ResourceKind::Gem, gem)
+    {
+        return fail("The stores lack the timber, blocks, tools, or advanced materials.");
+    }
+    *colony = paid;
+
+    let released_workers = colony
+        .buildings
+        .iter()
+        .find(|candidate| candidate.id == building_id)
+        .map(|candidate| {
+            std::iter::once(candidate.assigned_cat.clone())
+                .chain(
+                    candidate
+                        .additional_work_slots
+                        .iter()
+                        .map(|slot| Some(slot.assigned_cat.clone())),
+                )
+                .flatten()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if let Some(target) = colony
+        .buildings
+        .iter_mut()
+        .find(|candidate| candidate.id == building_id)
+    {
+        target.production_paused = true;
+        // Existing runtime systems already treat an incomplete building as
+        // unavailable for housing, storage, services and production. Reuse
+        // that invariant for upgrades instead of maintaining a second,
+        // inevitably incomplete list of "offline" checks.
+        target.construction_progress = 99;
+        target.is_complete = false;
+        target.assigned_cat = None;
+        target.automated_by = None;
+        target.additional_work_slots.clear();
+    }
+    for worker_id in released_workers {
+        if let Some(cat) = colony.cats.iter_mut().find(|cat| cat.id == worker_id) {
+            cat.current_task = None;
+            cat.activity = CatActivity::Idle;
+            cat.destination = None;
+        }
+    }
+    queue_job(
+        colony,
+        ctx.now_ms,
+        JobKind::BuildHouse,
+        JobRequester::Player,
+        Some(architect),
+        JobMetadata::Construction {
+            phase: ConstructionPhase::ConstructHouse,
+            building_type: building.building_type,
+            building_id: Some(building.id.clone()),
+            site: Some(building.position),
+        },
+    );
+    if let Some(job) = colony.jobs.last_mut() {
+        let multiplier = f64::from(target_level.saturating_sub(1)).powf(1.25);
+        job.duration_ms = ((8.0 * 60.0 * 60.0 * 1000.0 * multiplier) as i64).max(1_000);
+        if let Some(started_at) = job.started_at {
+            job.ends_at = Some(started_at.saturating_add(job.duration_ms));
+        }
+    }
+    colony.last_player_activity_at = Some(ctx.now_ms);
+    append_event(
+        colony,
+        ctx.now_ms,
+        EventKind::JobQueued,
+        format!(
+            "{} began upgrading to level {target_level}.",
+            building.building_type.as_str().replace('_', " ")
+        ),
     );
     ok()
 }
@@ -1098,8 +1377,7 @@ fn offer_tithe(colony: &mut ColonyRuntime, ctx: &ActionCtx) -> proto::ActionResu
         return fail("No safe food or refined surplus is available.");
     }
     let shrine_yield = if has_complete_building(colony, BuildingType::Shrine) {
-        upgrade_tree::resolve_effects(colony.upgrade_tree.owned_node_ids.iter())
-            .shrine_blessing_yield_mult
+        upgrade_tree::resolve_effects_for_state(&colony.upgrade_tree).shrine_blessing_yield_mult
     } else {
         1.0
     };
@@ -2276,7 +2554,7 @@ fn sell_goods(
     if cargo_weight + added_weight > trader::TRADER_CARGO_CAPACITY_GRAMS + f64::EPSILON {
         return fail("The trader's wagon has no room for that load.");
     }
-    let effects = upgrade_tree::resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let effects = upgrade_tree::resolve_effects_for_state(&colony.upgrade_tree);
     let payout = trader::trader_buy_price(item, count) * effects.trade_value_mult;
     if trader_unit.coin + f64::EPSILON < payout {
         return fail("The trader cannot afford that load.");
@@ -2449,7 +2727,7 @@ fn repair_item(colony: &mut ColonyRuntime, item_id: &str, ctx: &ActionCtx) -> pr
     if !deduct_visible_resource(colony, resource_kind, 1.0) {
         return fail("The repair material must be in player-visible storage.");
     }
-    let effects = upgrade_tree::resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let effects = upgrade_tree::resolve_effects_for_state(&colony.upgrade_tree);
     let durability_mult = effects
         .building(item_workshop_id(instance.item))
         .durability_mult;
@@ -4392,7 +4670,7 @@ fn set_test_acceleration(world: &mut WorldState, preset: proto::AccelerationPres
 
 fn colony_snapshot(colony: &ColonyRuntime, world_seed: u32, now_ms: i64) -> proto::ColonySnapshot {
     let alive_cats = alive_cats_sorted(colony);
-    let effects = upgrade_tree::resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let effects = upgrade_tree::resolve_effects_for_state(&colony.upgrade_tree);
     let storage_buildings = storage_buildings(colony);
     let caps =
         storage::authoritative_storage_capacities(&storage_buildings, &colony.stockpiles, &effects);
@@ -4794,7 +5072,7 @@ fn food_sites_snapshot(colony: &ColonyRuntime, world_seed: u32) -> Vec<proto::Fo
 fn trader_snapshot(colony: &ColonyRuntime) -> Option<proto::TraderSnapshot> {
     let trader_unit = colony.trader.as_ref()?;
     let is_trading = trader_unit.state == trader::TraderState::Trading;
-    let effects = upgrade_tree::resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let effects = upgrade_tree::resolve_effects_for_state(&colony.upgrade_tree);
     let stock = stockpiles::ResourceKind::ALL
         .iter()
         .copied()
@@ -5353,6 +5631,82 @@ fn events_snapshot(colony: &ColonyRuntime) -> Vec<proto::EventSnapshot> {
 
 fn research_snapshot(colony: &ColonyRuntime) -> proto::ResearchSnapshot {
     let next_target = upgrade_tree::next_research_target(&colony.upgrade_tree);
+    let workforce = research_workforce(colony);
+    let effects = upgrade_tree::resolve_effects_for_state(&colony.upgrade_tree);
+    let (cost_multiplier, time_multiplier) = research_infrastructure_multipliers(colony);
+    let queue = colony
+        .upgrade_tree
+        .research_queue
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            let ready = match &entry.target {
+                upgrade_tree::QueuedResearchTarget::Finite { node_id } => {
+                    upgrade_tree::prerequisites_met(&colony.upgrade_tree, node_id)
+                }
+                upgrade_tree::QueuedResearchTarget::Repeatable { track_id, level } => {
+                    colony
+                        .upgrade_tree
+                        .repeatable_levels
+                        .get(track_id)
+                        .copied()
+                        .unwrap_or(crate::research_tracks::FINITE_TRACK_LEVELS)
+                        .saturating_add(1)
+                        == *level
+                }
+            };
+            let status = if !ready {
+                proto::ResearchQueueStatus::WaitingForPrerequisite
+            } else if index == 0 && workforce <= 0.0 {
+                proto::ResearchQueueStatus::WaitingForResearchers
+            } else if entry.funded_cost.is_none()
+                && colony.upgrade_tree.research_points + f64::EPSILON
+                    < (entry.base_cost * cost_multiplier * 2.0).ceil() / 2.0
+            {
+                proto::ResearchQueueStatus::WaitingForPoints
+            } else if index == 0 {
+                proto::ResearchQueueStatus::Active
+            } else {
+                proto::ResearchQueueStatus::WaitingForPrerequisite
+            };
+            let (target, name) = match &entry.target {
+                upgrade_tree::QueuedResearchTarget::Finite { node_id } => (
+                    proto::ResearchQueueTargetSnapshot::Finite {
+                        node_id: node_id.clone(),
+                    },
+                    crate::research_catalog::research_catalog()
+                        .get(node_id)
+                        .map_or_else(|| node_id.clone(), |node| node.name.clone()),
+                ),
+                upgrade_tree::QueuedResearchTarget::Repeatable { track_id, level } => (
+                    proto::ResearchQueueTargetSnapshot::Repeatable {
+                        track_id: track_id.clone(),
+                        level: *level,
+                    },
+                    crate::research_tracks::technology_catalog()
+                        .get(track_id)
+                        .map_or_else(
+                            || format!("{track_id} {level}"),
+                            |track| format!("{} {level}", track.name),
+                        ),
+                ),
+            };
+            proto::ResearchQueueEntrySnapshot {
+                key: entry.target.stable_key(),
+                target,
+                name,
+                source: match entry.source {
+                    upgrade_tree::ResearchQueueSource::Player => proto::ResearchQueueSource::Player,
+                    upgrade_tree::ResearchQueueSource::Leader => proto::ResearchQueueSource::Leader,
+                },
+                status,
+                base_cost: entry.base_cost,
+                funded_cost: entry.funded_cost,
+                progress_seconds: entry.progress_seconds,
+                required_seconds: entry.required_seconds,
+            }
+        })
+        .collect();
     proto::ResearchSnapshot {
         owned_node_ids: colony
             .upgrade_tree
@@ -5366,13 +5720,20 @@ fn research_snapshot(colony: &ColonyRuntime) -> proto::ResearchSnapshot {
             .cloned()
             .collect(),
         research_points: finite_snapshot_value(colony.upgrade_tree.research_points),
-        researcher_count: 0,
+        researcher_count: workforce.max(0.0).floor() as u32,
         blessings: finite_snapshot_value(colony.global_upgrade_points),
         next_target: next_target.map(|node| proto::ResearchTarget {
             id: node.id.to_owned(),
             name: node.name.to_owned(),
             cost: node.cost,
         }),
+        queue,
+        repeatable_levels: colony.upgrade_tree.repeatable_levels.clone(),
+        research_cost_multiplier: cost_multiplier,
+        research_time_multiplier: time_multiplier,
+        points_per_hour: workforce.max(0.0) * upgrade_tree::RESEARCH_POINTS_PER_RESEARCHER_PER_WEEK
+            / (7.0 * 24.0)
+            * effects.research_rate_mult.max(0.0),
     }
 }
 
@@ -9057,7 +9418,7 @@ mod tests {
         let mut personal = found_colony(world.world_seed, "personal", 1_000_000, 55);
         personal.kind = VillageKind::Personal;
         personal.owner_player_id = Some("owner".to_owned());
-        let effects = upgrade_tree::resolve_effects(personal.upgrade_tree.owned_node_ids.iter());
+        let effects = upgrade_tree::resolve_effects_for_state(&personal.upgrade_tree);
         let capacity = storage::storage_capacities(
             &storage_buildings(&personal),
             effects.storage_per_level_mult,

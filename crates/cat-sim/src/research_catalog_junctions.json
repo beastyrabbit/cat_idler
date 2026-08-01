@@ -1,0 +1,116 @@
+{
+  "nodes": [
+    {
+      "id": "stone_tools",
+      "name": "Stone Tools",
+      "description": "Workshop practice and deliberate stone shaping converge into durable axes, hammers, and cutting edges.",
+      "category": "upgrade",
+      "cost": 22.0,
+      "prerequisites": ["workshop_foundations", "stonecraft_preparation"],
+      "era": 3,
+      "layout": { "x": 10, "y": 1 },
+      "leaderPriority": 230,
+      "payloads": [
+        { "kind": "modify", "effect_id": "materialYieldMult", "operation": "add", "value": 0.05 }
+      ]
+    },
+    {
+      "id": "metal_tools",
+      "name": "Metal Tools",
+      "description": "Stone-tool patterns, a working smithy, and refined metal become reliable tools for every physical trade.",
+      "category": "upgrade",
+      "cost": 32.0,
+      "prerequisites": ["stone_tools", "smithy_foundations", "metallurgy_preparation"],
+      "era": 3,
+      "layout": { "x": 11, "y": 1 },
+      "leaderPriority": 231,
+      "payloads": [
+        { "kind": "modify", "effect_id": "productionRate", "operation": "add", "value": 0.05 }
+      ]
+    },
+    {
+      "id": "precision_tools",
+      "name": "Precision Tools",
+      "description": "Metal instruments, written measurements, and practiced craftsmanship establish repeatable precision work.",
+      "category": "upgrade",
+      "cost": 48.0,
+      "prerequisites": ["metal_tools", "scholarship_training", "craftsmanship_training"],
+      "era": 4,
+      "layout": { "x": 12, "y": 1 },
+      "leaderPriority": 232,
+      "payloads": [
+        { "kind": "modify", "effect_id": "productionRate", "operation": "add", "value": 0.08 }
+      ]
+    },
+    {
+      "id": "civil_engineering",
+      "name": "Civil Engineering",
+      "description": "Construction records, masonry, and carpentry are reconciled into load-bearing public works.",
+      "category": "upgrade",
+      "cost": 44.0,
+      "prerequisites": ["construction_training", "stonecraft_preparation", "carpentry_preparation"],
+      "era": 4,
+      "layout": { "x": 13, "y": 1 },
+      "leaderPriority": 233,
+      "payloads": [
+        { "kind": "modify", "effect_id": "constructionSpeed", "operation": "add", "value": 0.08 }
+      ]
+    },
+    {
+      "id": "preservation_science",
+      "name": "Preservation Science",
+      "description": "Sealed stores, herb lore, and food preparation become one discipline for keeping supplies usable.",
+      "category": "upgrade",
+      "cost": 36.0,
+      "prerequisites": ["food_preservation_preparation", "herbalism_preparation", "advanced_storage"],
+      "era": 3,
+      "layout": { "x": 14, "y": 1 },
+      "leaderPriority": 234,
+      "payloads": [
+        { "kind": "modify", "effect_id": "spoilageResistance", "operation": "add", "value": 0.08 }
+      ]
+    },
+    {
+      "id": "organized_provisioning",
+      "name": "Organized Provisioning",
+      "description": "Expedition kits, preserved food, and hauling standards form dependable supply lines beyond the walls.",
+      "category": "upgrade",
+      "cost": 40.0,
+      "prerequisites": ["expedition_supplies_preparation", "logistics_training", "food_preservation_preparation"],
+      "era": 3,
+      "layout": { "x": 15, "y": 1 },
+      "leaderPriority": 235,
+      "payloads": [
+        { "kind": "modify", "effect_id": "haulCapacity", "operation": "add", "value": 1.0 }
+      ]
+    },
+    {
+      "id": "public_administration",
+      "name": "Public Administration",
+      "description": "Accountants, scholars, and civic standards establish records the whole colony can act upon.",
+      "category": "upgrade",
+      "cost": 48.0,
+      "prerequisites": ["accounting_tent_foundations", "governance_training", "scholars_guild"],
+      "era": 4,
+      "layout": { "x": 16, "y": 1 },
+      "leaderPriority": 236,
+      "payloads": [
+        { "kind": "modify", "effect_id": "tradeValue", "operation": "add", "value": 0.08 }
+      ]
+    },
+    {
+      "id": "combined_arms",
+      "name": "Combined Arms",
+      "description": "Weapons, armor, and defensive doctrine are trained as one coordinated battlefield discipline.",
+      "category": "upgrade",
+      "cost": 50.0,
+      "prerequisites": ["weaponsmithing", "armorsmithing", "defense_doctrine_training"],
+      "era": 4,
+      "layout": { "x": 17, "y": 1 },
+      "leaderPriority": 237,
+      "payloads": [
+        { "kind": "modify", "effect_id": "combatPower", "operation": "add", "value": 0.08 }
+      ]
+    }
+  ]
+}

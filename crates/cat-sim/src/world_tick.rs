@@ -101,9 +101,9 @@ use crate::{
         UpgradeKey,
     },
     upgrade_tree::{
-        JobResearchEntitlement, UpgradeTreeState, accrue_research, cat_auto_unlock,
-        create_upgrade_tree_state, is_owned, job_research_entitlement, points_per_tick_for,
-        resolve_effects,
+        JobResearchEntitlement, QueuedResearchTarget, ResearchQueueSource, UpgradeTreeState,
+        accrue_research, create_upgrade_tree_state, is_owned, job_research_entitlement,
+        points_per_tick_for, queue_research_path, resolve_effects_for_state,
     },
     village_area::{
         ExpandOptions, FenceSegment, GatePlacement as AreaGatePlacement, Side, expand_village,
@@ -1413,7 +1413,7 @@ impl SpatialOccupancyContext {
             })
             .flat_map(tree_footprint_tiles)
             .collect();
-        let mountain_tiles = if resolve_effects(colony.upgrade_tree.owned_node_ids.iter())
+        let mountain_tiles = if resolve_effects_for_state(&colony.upgrade_tree)
             .unlocked_capabilities
             .contains("mountain_travel")
         {
@@ -2694,7 +2694,7 @@ impl ColonyRuntime {
     /// Credit newly crafted finite units with the durability modifier owned by the
     /// exact workshop that made them.
     pub fn add_crafted_item(&mut self, item: Item, count: u32) {
-        let effects = resolve_effects(self.upgrade_tree.owned_node_ids.iter());
+        let effects = resolve_effects_for_state(&self.upgrade_tree);
         let durability_mult = effects
             .building(items::item_workshop_id(item))
             .durability_mult;
@@ -2738,7 +2738,7 @@ fn functional_resource_amount(resources: &Resources, kind: ItemKind) -> f64 {
 /// credited legacy-treasury units; rerunning this function never creates another id.
 pub fn migrate_finite_equipment_authority(colony: &mut ColonyRuntime) {
     if colony.finite_equipment_rules_version < CURRENT_FINITE_EQUIPMENT_RULES_VERSION {
-        let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+        let effects = resolve_effects_for_state(&colony.upgrade_tree);
 
         // Old mid-route saves can hold completed-but-uncredited gear outside the
         // aggregate scalar. Preserve that exact station identity before migrating
@@ -4895,7 +4895,7 @@ fn phase_6_life_simulation(colony: &mut ColonyRuntime, gate: TickGate) {
     }
 
     let mut life_rng_seed = life_seed(colony.test_rng_seed.unwrap_or(1));
-    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let effects = resolve_effects_for_state(&colony.upgrade_tree);
     let nursery_active = has_complete_building(colony, BuildingType::Nursery);
     let elder_corner_active = has_complete_building(colony, BuildingType::ElderCorner);
     let leader_id = colony.leader_id.clone();
@@ -5294,7 +5294,7 @@ fn phase_7_consumption_spoilage_resource_pre_patch_minute_cadence(
     gate: TickGate,
 ) {
     let elapsed_for_decay = gate.elapsed_sec as f64 * normalize_resource_decay_multiplier(colony);
-    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let effects = resolve_effects_for_state(&colony.upgrade_tree);
     let baking_preservation_mult = if effects.unlocked_resources.contains("baking_preservation") {
         0.5
     } else {
@@ -5640,7 +5640,7 @@ const FIELD_LINKED_EXPANSION_MS: i64 = 60_000;
 const TOOL_BUILD_MATERIAL_RESERVE: f64 = 4.0;
 
 fn current_construction_speed(colony: &ColonyRuntime) -> f64 {
-    resolve_effects(colony.upgrade_tree.owned_node_ids.iter())
+    resolve_effects_for_state(&colony.upgrade_tree)
         .construction_speed_mult
         .max(f64::EPSILON)
 }
@@ -7512,7 +7512,7 @@ fn phase_15b_physical_scaffold_inputs(colony: &mut ColonyRuntime, gate: TickGate
         // gathering trip. The two-unit founding load keeps a baseline scaffold
         // multi-trip once repeated-building premiums grow beyond one paw-load.
         let carry_capacity = (SCAFFOLD_PLANK_COST
-            * resolve_effects(colony.upgrade_tree.owned_node_ids.iter()).haul_capacity_mult)
+            * resolve_effects_for_state(&colony.upgrade_tree).haul_capacity_mult)
             .max(f64::EPSILON);
         let amount = available.min(reservation.amount).min(carry_capacity);
         let Some(carrying_kind) = carrying_kind_for_resource(reservation.kind) else {
@@ -8276,7 +8276,7 @@ fn phase_18_leader_snapshot_assembly(
         })
         .count() as u32;
 
-    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let effects = resolve_effects_for_state(&colony.upgrade_tree);
     let den_stewardship =
         completed_building_multiplier(colony, BuildingType::Den, effects.den_stewardship_mult);
     let committed_capacity = (f64::from(committed_den_capacity(colony, effects.housing_per_den))
@@ -9538,8 +9538,7 @@ fn phase_21_leader_capital_decisions_and_tithe(
                 colony.resources.food -= f64::from(food);
                 colony.resources.refined -= f64::from(refined);
                 let shrine_yield = if has_complete_building(colony, BuildingType::Shrine) {
-                    resolve_effects(colony.upgrade_tree.owned_node_ids.iter())
-                        .shrine_blessing_yield_mult
+                    resolve_effects_for_state(&colony.upgrade_tree).shrine_blessing_yield_mult
                 } else {
                     1.0
                 };
@@ -9875,7 +9874,7 @@ fn advance_designated_farms(
         })
         .filter_map(|building| assigned_worker(colony, &building.id).map(|cat| cat.id.clone()))
         .collect::<Vec<_>>();
-    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let effects = resolve_effects_for_state(&colony.upgrade_tree);
     let field_modifiers = effects.building(BuildingType::Field.as_str());
     let base_work_elapsed = production_elapsed * field_modifiers.output_mult
         / field_modifiers.cycle_time_mult.max(f64::EPSILON);
@@ -10667,7 +10666,7 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
         auto_staff_runnable_smithies(colony, gate.processed_through, usize::MAX);
     }
 
-    let research_effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let research_effects = resolve_effects_for_state(&colony.upgrade_tree);
     let production_elapsed = gate.elapsed_sec as f64
         * normalize_time_scale(colony)
         * research_effects.production_rate_mult;
@@ -11061,7 +11060,7 @@ fn advance_accounting_round(colony: &mut ColonyRuntime, gate: TickGate, world_se
     };
 
     let tent_point = station_work_point(&tent);
-    let accounting_speed = resolve_effects(colony.upgrade_tree.owned_node_ids.iter())
+    let accounting_speed = resolve_effects_for_state(&colony.upgrade_tree)
         .accounting_speed_mult
         .max(f64::EPSILON);
     let previous_round = colony.stock_ledger.active_round.take();
@@ -11353,7 +11352,7 @@ fn accounting_topology_signature(colony: &ColonyRuntime, world_seed: u32) -> u64
             mix(&[u8::from(wall_work_ms > 0)]);
         }
     }
-    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let effects = resolve_effects_for_state(&colony.upgrade_tree);
     mix(&[u8::from(
         effects.unlocked_capabilities.contains("mountain_travel"),
     )]);
@@ -11421,7 +11420,7 @@ fn accounting_reachable_component(
         .values()
         .map(walk_tile_from_runtime)
         .collect::<Vec<_>>();
-    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let effects = resolve_effects_for_state(&colony.upgrade_tree);
     let grid = build_colony_walk_grid(ColonyGridParams {
         tiles: &walk_tiles,
         anchor: PathTilePos {
@@ -11499,7 +11498,7 @@ const LEADER_RESEARCH_CHOICE_INTERVAL_MS: i64 = 24 * 60 * 60 * 1000;
 /// still spend research points directly at any time.
 fn phase_24_research(colony: &mut ColonyRuntime, gate: TickGate) {
     let research_workforce = research_workforce(colony);
-    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let effects = resolve_effects_for_state(&colony.upgrade_tree);
     let elapsed_game_sec = gate.elapsed_sec as f64 * normalize_time_scale(colony);
     let gained = points_per_tick_for(
         research_workforce,
@@ -11526,33 +11525,135 @@ fn phase_24_research(colony: &mut ColonyRuntime, gate: TickGate) {
             .iter()
             .any(|cat| cat.id == *leader_id && cat.death_time.is_none())
     });
-    if !has_living_leader
-        || colony.last_leader_research_choice_at.is_some_and(|last| {
-            gate.processed_through.saturating_sub(last) < LEADER_RESEARCH_CHOICE_INTERVAL_MS
-        })
-    {
+    let leader_may_choose = has_living_leader
+        && colony.upgrade_tree.research_queue.is_empty()
+        && colony.last_leader_research_choice_at.is_none_or(|last| {
+            gate.processed_through.saturating_sub(last) >= LEADER_RESEARCH_CHOICE_INTERVAL_MS
+        });
+    if leader_may_choose {
+        let target = crate::upgrade_tree::unlockable_catalog_nodes(&colony.upgrade_tree)
+            .into_iter()
+            .min_by(|left, right| {
+                left.cost
+                    .total_cmp(&right.cost)
+                    .then_with(|| left.id.cmp(&right.id))
+            });
+        if let Some(target) = target
+            && queue_research_path(
+                &mut colony.upgrade_tree,
+                &target.id,
+                ResearchQueueSource::Leader,
+            )
+            .is_ok()
+        {
+            colony.last_leader_research_choice_at = Some(gate.processed_through);
+            append_event(
+                colony,
+                gate.processed_through,
+                EventKind::JobQueued,
+                format!("The Leader added {} to the research queue.", target.name),
+            );
+        }
+    }
+    advance_research_queue(colony, elapsed_game_sec, gate.processed_through);
+}
+
+fn research_discounted_cost(base_cost: f64, multiplier: f64) -> f64 {
+    (base_cost * multiplier * 2.0).ceil() / 2.0
+}
+
+fn queued_target_ready(state: &UpgradeTreeState, target: &QueuedResearchTarget) -> bool {
+    match target {
+        QueuedResearchTarget::Finite { node_id } => {
+            crate::upgrade_tree::prerequisites_met(state, node_id)
+        }
+        QueuedResearchTarget::Repeatable { track_id, level } => {
+            let finite_complete = crate::research_tracks::technology_catalog()
+                .get(track_id)
+                .is_some_and(|track| {
+                    track.node_indices.iter().all(|index| {
+                        is_owned(
+                            state,
+                            &crate::research_catalog::research_catalog().nodes()[*index].id,
+                        )
+                    })
+                });
+            let current = state
+                .repeatable_levels
+                .get(track_id)
+                .copied()
+                .unwrap_or(crate::research_tracks::FINITE_TRACK_LEVELS);
+            finite_complete && *level == current.saturating_add(1)
+        }
+    }
+}
+
+fn complete_queued_research(colony: &mut ColonyRuntime, now_ms: i64) {
+    let Some(entry) = colony.upgrade_tree.research_queue.first().cloned() else {
+        return;
+    };
+    let name = match entry.target {
+        QueuedResearchTarget::Finite { node_id } => {
+            if !is_owned(&colony.upgrade_tree, &node_id) {
+                colony.upgrade_tree.owned_node_ids.push(node_id.clone());
+            }
+            crate::research_catalog::research_catalog()
+                .get(&node_id)
+                .map_or(node_id, |node| node.name.clone())
+        }
+        QueuedResearchTarget::Repeatable { track_id, level } => {
+            colony
+                .upgrade_tree
+                .repeatable_levels
+                .insert(track_id.clone(), level);
+            crate::research_tracks::technology_catalog()
+                .get(&track_id)
+                .map_or(track_id, |track| format!("{} {level}", track.name))
+        }
+    };
+    colony.upgrade_tree.research_queue.remove(0);
+    append_event(
+        colony,
+        now_ms,
+        EventKind::ResearchUnlocked,
+        format!("The cats completed {name}."),
+    );
+}
+
+fn advance_research_queue(colony: &mut ColonyRuntime, elapsed_game_sec: f64, now_ms: i64) {
+    if elapsed_game_sec <= 0.0 || research_workforce(colony) <= 0.0 {
         return;
     }
+    let (cost_multiplier, time_multiplier) = research_infrastructure_multipliers(colony);
+    let mut real_seconds_left = elapsed_game_sec;
+    while real_seconds_left > f64::EPSILON {
+        let Some(front) = colony.upgrade_tree.research_queue.first() else {
+            break;
+        };
+        if !queued_target_ready(&colony.upgrade_tree, &front.target) {
+            break;
+        }
+        if front.funded_cost.is_none() {
+            let cost = research_discounted_cost(front.base_cost, cost_multiplier);
+            if colony.upgrade_tree.research_points + f64::EPSILON < cost {
+                break;
+            }
+            colony.upgrade_tree.research_points -= cost;
+            colony.upgrade_tree.research_queue[0].funded_cost = Some(cost);
+        }
 
-    let result = cat_auto_unlock(&colony.upgrade_tree);
-    if result.ok {
-        let node_name = result
-            .node_id
-            .as_deref()
-            .and_then(|id| crate::research_catalog::research_catalog().get(id))
-            .map_or_else(
-                || result.node_id.as_deref().unwrap_or("something"),
-                |node| node.name.as_str(),
-            )
-            .to_owned();
-        colony.upgrade_tree = result.state;
-        colony.last_leader_research_choice_at = Some(gate.processed_through);
-        append_event(
-            colony,
-            gate.processed_through,
-            EventKind::ResearchUnlocked,
-            format!("The cats discovered {node_name}!"),
-        );
+        let remaining_work = {
+            let front = &colony.upgrade_tree.research_queue[0];
+            (front.required_seconds - front.progress_seconds).max(0.0)
+        };
+        let real_seconds_needed = remaining_work * time_multiplier;
+        if real_seconds_left + f64::EPSILON < real_seconds_needed {
+            colony.upgrade_tree.research_queue[0].progress_seconds +=
+                real_seconds_left / time_multiplier;
+            break;
+        }
+        real_seconds_left = (real_seconds_left - real_seconds_needed).max(0.0);
+        complete_queued_research(colony, now_ms);
     }
 }
 
@@ -11651,7 +11752,7 @@ fn personal_food_serving(colony: &ColonyRuntime) -> f64 {
 }
 
 fn personal_water_serving(colony: &ColonyRuntime) -> f64 {
-    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let effects = resolve_effects_for_state(&colony.upgrade_tree);
     let hourly = consumption_for_tick(
         1.0,
         3_600.0,
@@ -11884,7 +11985,7 @@ fn phase_25_survival_deaths_and_carried_yield_salvage(
     policy: TickPolicy,
 ) {
     let elapsed_sec = gate.elapsed_sec as f64 * normalize_resource_decay_multiplier(colony);
-    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let effects = resolve_effects_for_state(&colony.upgrade_tree);
     let beds_active = has_complete_building(colony, BuildingType::Beds);
     let herb_garden_active = has_complete_building(colony, BuildingType::HerbGarden);
     let cat_ids: Vec<CatId> = active_resident_cats(colony)
@@ -12473,7 +12574,7 @@ fn migrant_exterior_is_passable(colony: &ColonyRuntime, candidate: TilePos) -> b
     if colony.claimed_tiles.contains(&candidate) {
         return false;
     }
-    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let effects = resolve_effects_for_state(&colony.upgrade_tree);
     colony.world_tiles.get(&candidate).is_some_and(|tile| {
         !tile_has_water(Some(tile))
             && (tile.tile_type != TileType::Mountains
@@ -14432,7 +14533,7 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
         .ensure_chunks(movement.world_seed, &decoration_chunks);
     let decoration_obstacles = MovementDecorationObstacles::new(colony, movement.world_seed);
     let surface_factors = movement_surface_factors(colony, movement.world_seed);
-    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let effects = resolve_effects_for_state(&colony.upgrade_tree);
     let walk_grid = build_colony_walk_grid(ColonyGridParams {
         tiles: &movement.walk_tiles,
         anchor: PathTilePos {
@@ -15612,7 +15713,7 @@ fn phase_35_bridge_crossings(colony: &mut ColonyRuntime, gate: TickGate, world_s
         area_gate: None,
         extra_fence_edges: None,
         terrain: None,
-        mountains_unlocked: resolve_effects(colony.upgrade_tree.owned_node_ids.iter())
+        mountains_unlocked: resolve_effects_for_state(&colony.upgrade_tree)
             .unlocked_capabilities
             .contains("mountain_travel"),
         shipping_researched: is_owned(&colony.upgrade_tree, "shipping"),
@@ -16616,7 +16717,7 @@ fn walk_trader_route_for_elapsed(
     let path_soft_obstacles = pathfinding_tile_set(&soft_obstacles);
     let decoration_obstacles = MovementDecorationObstacles::new(colony, movement.world_seed);
     let surface_factors = movement_surface_factors(colony, movement.world_seed);
-    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let effects = resolve_effects_for_state(&colony.upgrade_tree);
     let walk_grid = build_colony_walk_grid(ColonyGridParams {
         tiles: &movement.walk_tiles,
         anchor: PathTilePos {
@@ -18416,7 +18517,7 @@ fn resolve_active_raid(
 /// Resolve the combat multipliers used by the physical raid muster. Building-family
 /// service studies are deliberately inert until their matching civic structure exists.
 fn active_raid_combat_modifiers(colony: &ColonyRuntime) -> CombatModifiers {
-    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let effects = resolve_effects_for_state(&colony.upgrade_tree);
     CombatModifiers {
         combat_power_mult: effects.combat_power_mult
             * if has_complete_building(colony, BuildingType::Barracks) {
@@ -18664,7 +18765,7 @@ fn colony_housing_capacity(colony: &ColonyRuntime) -> f64 {
             )
         })
         .collect();
-    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let effects = resolve_effects_for_state(&colony.upgrade_tree);
     crate::housing::housing_capacity(&housing_buildings, effects.housing_per_den)
         * effects.housing_capacity_mult
         * completed_building_multiplier(colony, BuildingType::Den, effects.den_stewardship_mult)
@@ -19066,7 +19167,7 @@ pub(crate) fn building_station_capacity(colony: &ColonyRuntime, building: &Build
     if !is_physical_station(building.building_type) {
         return 0.0;
     }
-    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let effects = resolve_effects_for_state(&colony.upgrade_tree);
     let multiplier = effects
         .building(building.building_type.as_str())
         .capacity_mult
@@ -20360,7 +20461,7 @@ fn scout_navigation_tile_is_passable(colony: &ColonyRuntime, pos: TilePos) -> bo
         tile.tile_type != TileType::River
             && tile.overlay_feature.as_deref() != Some("river")
             && (tile.tile_type != TileType::Mountains
-                || resolve_effects(colony.upgrade_tree.owned_node_ids.iter())
+                || resolve_effects_for_state(&colony.upgrade_tree)
                     .unlocked_capabilities
                     .contains("mountain_travel"))
     })
@@ -21245,7 +21346,7 @@ fn construction_geometry_signature(colony: &ColonyRuntime, world_seed: u32) -> u
         mix(&edge.bx.to_le_bytes());
         mix(&edge.by.to_le_bytes());
     }
-    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let effects = resolve_effects_for_state(&colony.upgrade_tree);
     mix(&[u8::from(
         effects.unlocked_capabilities.contains("mountain_travel"),
     )]);
@@ -21604,7 +21705,7 @@ fn is_reachable_work_site(colony: &ColonyRuntime, site: TilePos, world_seed: u32
         .flatten();
     let gate = movement_gate(colony.anchor, area_gate, ring_radius);
     let area = pathfinding_area(&claimed);
-    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let effects = resolve_effects_for_state(&colony.upgrade_tree);
     let walk_tiles = colony
         .world_tiles
         .values()
@@ -22233,7 +22334,7 @@ fn water_work_site(colony: &ColonyRuntime, water_source: TilePos) -> Option<Tile
     {
         return None;
     }
-    let mountain_travel = resolve_effects(colony.upgrade_tree.owned_node_ids.iter())
+    let mountain_travel = resolve_effects_for_state(&colony.upgrade_tree)
         .unlocked_capabilities
         .contains("mountain_travel");
     [(0, -1), (1, 0), (0, 1), (-1, 0)]
@@ -23298,7 +23399,7 @@ pub fn building_staff_cap(colony: &ColonyRuntime, building: &BuildingRuntime) ->
     if base == 0 || !supports_researched_worker_slots(building.building_type) {
         return base;
     }
-    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let effects = resolve_effects_for_state(&colony.upgrade_tree);
     base.saturating_add(
         effects
             .building(building.building_type.as_str())
@@ -23352,8 +23453,8 @@ fn grant_building_skill(colony: &mut ColonyRuntime, building_id: &str, labor: La
 /// job, and a dead/absent assignee contributes nothing. This is the sole input to
 /// [`phase_24_research`]'s point accrual; a colony with no staffed hut/school yields 0.0 and
 /// is byte-identical to the pre-wiring behaviour.
-fn research_workforce(colony: &ColonyRuntime) -> f64 {
-    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+pub(crate) fn research_workforce(colony: &ColonyRuntime) -> f64 {
+    let effects = resolve_effects_for_state(&colony.upgrade_tree);
     colony
         .buildings
         .iter()
@@ -23362,6 +23463,7 @@ fn research_workforce(colony: &ColonyRuntime) -> f64 {
                 building.building_type,
                 BuildingType::ResearchHut | BuildingType::School
             ) && building.construction_progress >= 100
+                && !building.production_paused
         })
         .flat_map(|building| {
             let modifiers = effects.building(building.building_type.as_str());
@@ -23384,6 +23486,48 @@ fn research_workforce(colony: &ColonyRuntime) -> f64 {
                 * service_rate
         })
         .sum()
+}
+
+/// Every operational, staffed research building contributes its physical level.
+/// This deliberately has a soft floor so infrastructure helps without erasing
+/// the strategic cost and time of late-game research.
+pub(crate) fn research_infrastructure_score(colony: &ColonyRuntime) -> u32 {
+    colony
+        .buildings
+        .iter()
+        .filter(|building| {
+            matches!(
+                building.building_type,
+                BuildingType::ResearchHut | BuildingType::School
+            ) && building.construction_progress >= 100
+                && !building.production_paused
+                && building_worker_ids(building).next().is_some()
+        })
+        .map(|building| building.level.max(1))
+        .sum()
+}
+
+#[must_use]
+pub(crate) fn research_infrastructure_multipliers(colony: &ColonyRuntime) -> (f64, f64) {
+    let score = f64::from(research_infrastructure_score(colony));
+    let scholarship = crate::research_tracks::technology_catalog()
+        .get("scholarship")
+        .map_or(0, |track| {
+            track.displayed_finite_level(&colony.upgrade_tree.owned_node_ids)
+        });
+    let repeatable = colony
+        .upgrade_tree
+        .repeatable_levels
+        .get("scholarship")
+        .copied()
+        .unwrap_or(crate::research_tracks::FINITE_TRACK_LEVELS)
+        .saturating_sub(crate::research_tracks::FINITE_TRACK_LEVELS);
+    let scholarship_multiplier =
+        0.99_f64.powf(f64::from(scholarship)) * 0.9975_f64.powf(f64::from(repeatable));
+    (
+        (0.9975_f64.powf(score).max(0.80) * scholarship_multiplier).max(0.50),
+        (0.995_f64.powf(score).max(0.60) * scholarship_multiplier).max(0.30),
+    )
 }
 
 fn research_worker_ids(colony: &ColonyRuntime) -> Vec<CatId> {
@@ -23966,7 +24110,7 @@ fn complete_fibre_forage(colony: &mut ColonyRuntime, job: &JobRuntime, gate: Tic
         return;
     };
     let cap = storage_caps(colony).fibre;
-    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let effects = resolve_effects_for_state(&colony.upgrade_tree);
     let in_flight = colony
         .cats
         .iter()
@@ -24224,8 +24368,15 @@ fn complete_build(colony: &mut ColonyRuntime, job: &JobRuntime, gate: TickGate) 
                     .iter_mut()
                     .find(|building| building.id == *building_id)
             {
-                building.construction_progress = 100;
-                building.is_complete = true;
+                if building.production_paused && building.construction_progress >= 99 {
+                    building.level = building.level.saturating_add(1).min(10);
+                    building.construction_progress = 100;
+                    building.is_complete = true;
+                    building.production_paused = false;
+                } else {
+                    building.construction_progress = 100;
+                    building.is_complete = true;
+                }
             }
             colony.automation_tier =
                 ((colony.automation_tier + 0.05).min(10.0) * 100.0).round() / 100.0;
@@ -24298,7 +24449,7 @@ fn complete_ritual(colony: &mut ColonyRuntime, job: &JobRuntime, gate: TickGate)
         return;
     };
     let shrine_yield = if has_complete_building(colony, BuildingType::Shrine) {
-        resolve_effects(colony.upgrade_tree.owned_node_ids.iter()).shrine_blessing_yield_mult
+        resolve_effects_for_state(&colony.upgrade_tree).shrine_blessing_yield_mult
     } else {
         1.0
     };
@@ -24384,7 +24535,7 @@ fn complete_offering(colony: &mut ColonyRuntime, job: &JobRuntime, gate: TickGat
     });
     colony.last_offering_at = Some(gate.processed_through);
     let shrine_yield = if has_complete_building(colony, BuildingType::Shrine) {
-        resolve_effects(colony.upgrade_tree.owned_node_ids.iter()).shrine_blessing_yield_mult
+        resolve_effects_for_state(&colony.upgrade_tree).shrine_blessing_yield_mult
     } else {
         1.0
     };
@@ -24495,7 +24646,7 @@ fn hauling_metadata(job: &JobRuntime) -> (Option<TilePos>, Option<f64>, u32) {
 }
 
 fn hunt_yield_for(cat: &Cat, colony: &ColonyRuntime) -> f64 {
-    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let effects = resolve_effects_for_state(&colony.upgrade_tree);
     let base = idle_engine::get_hunt_reward(
         cat.stats.hunting,
         cat.specialization,
@@ -24535,7 +24686,7 @@ fn total_yield_for_job(
     world_seed: u32,
 ) -> f64 {
     let cat = &colony.cats[cat_index];
-    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let effects = resolve_effects_for_state(&colony.upgrade_tree);
     let haul_mult = effects.haul_capacity_mult.max(0.0);
     match job.kind {
         JobKind::FetchWater => {
@@ -25763,7 +25914,7 @@ fn farm_designation_exterior_component(
         .values()
         .map(walk_tile_from_runtime)
         .collect::<Vec<_>>();
-    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let effects = resolve_effects_for_state(&colony.upgrade_tree);
     let grid = build_colony_walk_grid(ColonyGridParams {
         tiles: &walk_tiles,
         anchor: PathTilePos {
@@ -26016,7 +26167,7 @@ fn farm_routes_are_reachable_projected(
         .values()
         .map(walk_tile_from_runtime)
         .collect::<Vec<_>>();
-    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let effects = resolve_effects_for_state(&colony.upgrade_tree);
     let mut component_key = farm_designation_geometry_signature(colony, world_seed);
     let mut mix = |bytes: &[u8]| {
         for byte in bytes {
@@ -26478,7 +26629,7 @@ fn add_functional_station_output(
     let Some(item) = item else {
         return;
     };
-    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let effects = resolve_effects_for_state(&colony.upgrade_tree);
     let durability_mult = effects
         .building(items::item_workshop_id(item))
         .durability_mult;
@@ -27070,7 +27221,7 @@ fn advance_physical_item_recipe_slot(
         stockpiles::add_resource(&mut input.contents, recipe.input_kind, -input_used);
     }
     stockpiles::add_resource(&mut colony.resources, recipe.input_kind, -input_used);
-    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let effects = resolve_effects_for_state(&colony.upgrade_tree);
     let durability_mult = effects
         .building(items::item_workshop_id(recipe.output_item))
         .durability_mult
@@ -29434,6 +29585,7 @@ mod tests {
         entities::{CatActivity, CatNeeds, CatStats, MapType},
         items::{ItemKind, Material},
         storage::BASE_CAPACITY,
+        upgrade_tree::{cat_auto_unlock, resolve_effects},
     };
     use cat_protocol as proto;
 
@@ -32277,7 +32429,7 @@ mod tests {
             assert_eq!(guided, twin, "signed study {node_id} diverged");
         }
 
-        let effects = resolve_effects(guided.colonies[0].upgrade_tree.owned_node_ids.iter());
+        let effects = resolve_effects_for_state(&guided.colonies[0].upgrade_tree);
         assert!(effects.unlocked_capabilities.contains("rail_logistics"));
         assert!(effects.unlocked_capabilities.contains("water_travel"));
         assert_eq!(guided.colonies[0].last_leader_research_choice_at, None);
@@ -41978,6 +42130,8 @@ mod tests {
                 upgrade_tree: UpgradeTreeState {
                     owned_node_ids: vec![format!("{family}_sources"), format!("{family}_bulk")],
                     research_points: 0.0,
+                    research_queue: Vec::new(),
+                    repeatable_levels: BTreeMap::new(),
                 },
                 ..ColonyRuntime::default()
             };
@@ -42019,6 +42173,8 @@ mod tests {
                 upgrade_tree: UpgradeTreeState {
                     owned_node_ids: vec![format!("{family}_sources"), format!("{family}_bulk")],
                     research_points: 0.0,
+                    research_queue: Vec::new(),
+                    repeatable_levels: BTreeMap::new(),
                 },
                 ..ColonyRuntime::default()
             };
@@ -49903,7 +50059,7 @@ mod tests {
 
         phase_23_production(&mut colony, production_gate(3_600, 3_600_000), 123);
         let expected = MOUSE_FARM_FOOD_PER_GAME_HOUR
-            * resolve_effects(colony.upgrade_tree.owned_node_ids.iter()).mouse_farm_food_mult;
+            * resolve_effects_for_state(&colony.upgrade_tree).mouse_farm_food_mult;
         assert_eq!(
             colony.resources.food, 0.0,
             "local output is not yet edible stock"
@@ -63499,7 +63655,7 @@ mod tests {
         complete_ritual(&mut colony, &job, production_gate(1, 2_000));
         assert_eq!(
             colony.cats[0].carrying.as_ref().unwrap().amount,
-            resolve_effects(colony.upgrade_tree.owned_node_ids.iter()).shrine_blessing_yield_mult
+            resolve_effects_for_state(&colony.upgrade_tree).shrine_blessing_yield_mult
         );
     }
 
@@ -63834,7 +63990,7 @@ mod tests {
         ] {
             let mut colony = ColonyRuntime::default();
             colony.upgrade_tree.owned_node_ids.push(node_id.to_owned());
-            let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+            let effects = resolve_effects_for_state(&colony.upgrade_tree);
             let promised = match building_type {
                 BuildingType::Den => effects.den_stewardship_mult,
                 BuildingType::FoodStorage => 1.0 + effects.food_storekeeping,

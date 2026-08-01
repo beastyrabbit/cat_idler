@@ -72,6 +72,7 @@ pub mod village_trade_routes;
 pub mod combat;
 pub mod elections;
 pub mod research_catalog;
+pub mod research_tracks;
 pub mod threat;
 pub mod upgrade_tree;
 pub mod warriors;

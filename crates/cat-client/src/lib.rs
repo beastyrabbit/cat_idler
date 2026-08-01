@@ -56,10 +56,14 @@ use std::{
     path::{Path, PathBuf},
 };
 
+mod landing_showcase;
 mod research_ui;
+mod start_screen;
 mod station_layout;
 mod ui_shell;
+use landing_showcase::*;
 use research_ui::UpgradeTreeUi;
+use start_screen::*;
 use station_layout::{
     BuildingVisual, PropPlacement, ResidentialFacade, StationFloor, StationLayout, StationProp,
     building_visual,
@@ -96,6 +100,8 @@ const VILLAGE_INTERIOR_RADIUS: u32 = 6;
 /// The permanent wall core already fits comfortably at DEFAULT_ZOOM. Larger
 /// villages auto-fit once, until the player deliberately pans or zooms.
 const STARTER_CAMERA_RADIUS: u32 = VILLAGE_INTERIOR_RADIUS;
+/// Fixed width of the authored landing showcase at every supported resolution.
+const LANDING_OVERVIEW_MIN_TILES: f32 = 72.0;
 /// Top command strip + bottom toolbar space kept clear by mature-village fitting.
 const CAMERA_VERTICAL_UI_RESERVE: f32 = 160.0;
 /// The mature view centres in the unobscured world rectangle to the right of
@@ -407,46 +413,6 @@ fn persist_session(session: &Session, selection: &VillageSelection) -> Result<()
 struct VillageSelection {
     selected_id: Option<String>,
     join_required: bool,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum StartMode {
-    Global,
-    Personal,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum StartInput {
-    PlayerName,
-    VillageName,
-}
-
-/// Full-window entry flow. The player deliberately chooses the shared commons
-/// or their private village on every launch; the persisted signed session only
-/// proves which private village this installation may access.
-#[derive(Resource, Debug)]
-struct StartScreen {
-    visible: bool,
-    mode: Option<StartMode>,
-    focused_input: StartInput,
-    player_name: String,
-    village_name: String,
-    pending_foundation: bool,
-    error: Option<String>,
-}
-
-impl Default for StartScreen {
-    fn default() -> Self {
-        Self {
-            visible: true,
-            mode: None,
-            focused_input: StartInput::PlayerName,
-            player_name: String::new(),
-            village_name: String::new(),
-            pending_foundation: false,
-            error: None,
-        }
-    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -2038,6 +2004,7 @@ fn walk_frame(global_frame: usize, phase: usize) -> usize {
 /// Live cat body entities keyed by cat id (persist across snapshots).
 #[derive(Resource, Default)]
 struct CatBodies(HashMap<String, Entity>);
+
 /// Live raider body entities keyed by raider id.
 #[derive(Resource, Default)]
 struct RaiderBodies(HashMap<String, Entity>);
@@ -2164,6 +2131,10 @@ struct BuildingInspectorPanel;
 /// Marker for the building-inspector text.
 #[derive(Component)]
 struct BuildingInspectorText;
+#[derive(Component)]
+struct BuildingUpgradeButton;
+#[derive(Component)]
+struct BuildingUpgradeButtonText;
 /// Container whose children are rebuilt from the snapshot's village list.
 #[derive(Component)]
 struct VillageSelectorRows;
@@ -2384,29 +2355,6 @@ struct ConnectionStatusPanel;
 struct ConnectionStatusText;
 
 #[derive(Component)]
-struct StartScreenRoot;
-#[derive(Component)]
-struct StartPlayerInput;
-#[derive(Component)]
-struct StartVillageInput;
-#[derive(Component)]
-struct StartPlayerInputText;
-#[derive(Component)]
-struct StartVillageInputText;
-#[derive(Component)]
-struct StartGlobalButton;
-#[derive(Component)]
-struct StartPersonalButton;
-#[derive(Component)]
-struct StartContinueButton;
-#[derive(Component)]
-struct StartContinueText;
-#[derive(Component)]
-struct StartVillageField;
-#[derive(Component)]
-struct StartErrorText;
-
-#[derive(Component)]
 struct PauseMenuRoot;
 #[derive(Component)]
 struct PauseMainPage;
@@ -2440,69 +2388,6 @@ struct UiFontSize;
 #[derive(Component)]
 struct UiWrappedText;
 
-#[derive(SystemParam)]
-#[allow(clippy::type_complexity)]
-struct StartScreenUi<'w, 's> {
-    player_input:
-        Query<'w, 's, &'static Interaction, (Changed<Interaction>, With<StartPlayerInput>)>,
-    village_input:
-        Query<'w, 's, &'static Interaction, (Changed<Interaction>, With<StartVillageInput>)>,
-    global_button:
-        Query<'w, 's, &'static Interaction, (Changed<Interaction>, With<StartGlobalButton>)>,
-    personal_button:
-        Query<'w, 's, &'static Interaction, (Changed<Interaction>, With<StartPersonalButton>)>,
-    continue_button:
-        Query<'w, 's, &'static Interaction, (Changed<Interaction>, With<StartContinueButton>)>,
-    root: Query<'w, 's, &'static mut Node, With<StartScreenRoot>>,
-    village_field:
-        Query<'w, 's, &'static mut Node, (With<StartVillageField>, Without<StartScreenRoot>)>,
-    player_text: Query<'w, 's, &'static mut Text, With<StartPlayerInputText>>,
-    village_text: Query<
-        'w,
-        's,
-        &'static mut Text,
-        (With<StartVillageInputText>, Without<StartPlayerInputText>),
-    >,
-    continue_text: Query<
-        'w,
-        's,
-        &'static mut Text,
-        (
-            With<StartContinueText>,
-            Without<StartPlayerInputText>,
-            Without<StartVillageInputText>,
-        ),
-    >,
-    error_text: Query<
-        'w,
-        's,
-        &'static mut Text,
-        (
-            With<StartErrorText>,
-            Without<StartPlayerInputText>,
-            Without<StartVillageInputText>,
-            Without<StartContinueText>,
-        ),
-    >,
-    borders: ParamSet<
-        'w,
-        's,
-        (
-            Query<'w, 's, &'static mut BorderColor, With<StartGlobalButton>>,
-            Query<'w, 's, &'static mut BorderColor, With<StartPersonalButton>>,
-            Query<'w, 's, &'static mut BorderColor, With<StartPlayerInput>>,
-            Query<'w, 's, &'static mut BorderColor, With<StartVillageInput>>,
-        ),
-    >,
-    input_backgrounds: ParamSet<
-        'w,
-        's,
-        (
-            Query<'w, 's, &'static mut BackgroundColor, With<StartPlayerInput>>,
-            Query<'w, 's, &'static mut BackgroundColor, With<StartVillageInput>>,
-        ),
-    >,
-}
 /// Marker for a paved-road tile sprite.
 #[derive(Component)]
 struct RoadTile;
@@ -2527,6 +2412,9 @@ struct AnnouncementsButton;
 struct LogFilterButton(LogFilter);
 #[derive(Component)]
 struct TopBarBanner;
+/// Gameplay HUD chrome hidden while the entry charter exposes the showcase.
+#[derive(Component)]
+struct GameplayChrome;
 /// Marker for the goods / inventory panel node (toggled open/closed).
 #[derive(Component)]
 struct GoodsPanel;
@@ -3618,6 +3506,14 @@ type WorldInputBlockerQuery<'w, 's> = Query<
     With<WorldInputBlocker>,
 >;
 
+#[derive(SystemParam)]
+struct CameraWorldContext<'w, 's> {
+    latest: Res<'w, LatestSnapshot>,
+    start: Res<'w, StartScreen>,
+    windows: Query<'w, 's, &'static Window>,
+    blockers: WorldInputBlockerQuery<'w, 's>,
+}
+
 fn ui_surface_blocks_world(display: Display, contains_cursor: bool) -> bool {
     display != Display::None && contains_cursor
 }
@@ -3915,7 +3811,7 @@ pub fn run() {
                     render_walls,
                     render_zones,
                     render_stockpiles,
-                    sync_cats,
+                    (sync_cats, animate_landing_showcase).before(move_bodies),
                     sync_raiders,
                     (sync_trader, sync_village_trade_caravans),
                     move_bodies,
@@ -3928,6 +3824,9 @@ pub fn run() {
                 (
                     (
                         handle_start_screen,
+                        update_start_screen_layout.after(handle_start_screen),
+                        sync_start_screen_gameplay_chrome.after(handle_start_screen),
+                        scroll_start_screen.after(update_start_screen_layout),
                         (
                             toggle_pause_menu,
                             close_inspectors_on_esc,
@@ -3953,6 +3852,7 @@ pub fn run() {
                         update_building_inspector,
                         update_station_queue_controls.after(update_building_inspector),
                     ),
+                    handle_building_upgrade_button,
                     handle_station_queue_buttons,
                     update_remove_panel,
                     handle_remove_button,
@@ -4018,6 +3918,7 @@ pub fn run() {
                     handle_labor_preference_buttons,
                     update_census.after(sync_primary_screen_state),
                     (
+                        research_ui::load_research_icons,
                         research_ui::update_research_shell,
                         research_ui::handle_research_controls,
                         research_ui::research_keyboard_input,
@@ -4027,6 +3928,7 @@ pub fn run() {
                         research_ui::update_research_snapshot,
                         research_ui::update_research_inspector,
                         research_ui::handle_research_purchase,
+                        research_ui::handle_research_queue_controls,
                     )
                         .after(sync_primary_screen_state),
                 ),
@@ -4405,14 +4307,25 @@ fn setup(
         warn!("failed to install UI font: {err:?}");
     }
 
-    commands.insert_resource(TerrainArt::load(&asset_server));
-    commands.insert_resource(BuildingArt::load(&asset_server));
+    let terrain_art = TerrainArt::load(&asset_server);
+    commands.insert_resource(terrain_art.clone());
+    let building_art = BuildingArt::load(&asset_server);
+    commands.insert_resource(building_art.clone());
     let icons = IconArt::load(&asset_server);
     commands.insert_resource(icons.clone());
-    commands.insert_resource(InfraArt::load(&asset_server));
-    commands.insert_resource(SpriteSheets::load(&asset_server, &mut atlas_layouts));
+    let infra_art = InfraArt::load(&asset_server);
+    commands.insert_resource(infra_art.clone());
+    let sheets = SpriteSheets::load(&asset_server, &mut atlas_layouts);
+    commands.insert_resource(sheets.clone());
     let ui_art = AdventureUiArt::load(&asset_server);
     commands.insert_resource(ui_art.clone());
+    spawn_landing_showcase(
+        &mut commands,
+        &terrain_art,
+        &building_art,
+        &infra_art,
+        &sheets,
+    );
 
     // Camera at Z=1000: a default Camera2d sits at Z=0 and clips sprites at
     // Z>0. Centre on the village anchor.
@@ -4423,187 +4336,7 @@ fn setup(
         WorldCamera,
     ));
 
-    // Full-window entry surface. It owns identity naming and the shared/private
-    // world choice before any game controls become relevant.
-    commands
-        .spawn((
-            Node {
-                position_type: PositionType::Absolute,
-                left: Val::Px(0.0),
-                right: Val::Px(0.0),
-                top: Val::Px(0.0),
-                bottom: Val::Px(0.0),
-                width: Val::Percent(100.0),
-                height: Val::Percent(100.0),
-                padding: UiRect::all(Val::Px(24.0)),
-                align_items: AlignItems::Center,
-                justify_content: JustifyContent::Center,
-                ..default()
-            },
-            GlobalZIndex(START_SURFACE_Z),
-            BackgroundColor(Color::srgb(0.055, 0.075, 0.055)),
-            StartScreenRoot,
-            UiSurfaceRoot(UiSurfaceKind::Modal),
-            WorldInputBlocker,
-        ))
-        .with_children(|screen| {
-            screen
-                .spawn((
-                    Node {
-                        width: Val::Px(720.0),
-                        max_width: Val::Percent(96.0),
-                        height: Val::Percent(96.0),
-                        max_height: Val::Percent(96.0),
-                        min_height: Val::Px(0.0),
-                        flex_direction: FlexDirection::Column,
-                        border: UiRect::all(Val::Px(UI_BORDER_W)),
-                        ..default()
-                    },
-                    ui_panel_frame(),
-                ))
-                .with_children(|panel| {
-                    spawn_vertical_scroll_area(panel, 28.0, 16.0, |panel| {
-                    panel.spawn(ui_text("IDLE CAT FOREST", 30.0, UI_ACCENT));
-                    panel.spawn(ui_text_wrapped(
-                        "Wähle, wo du heute spielen möchtest. Deine private Siedlung bleibt über einen lokal gespeicherten, signierten Zugang mit diesem Gerät verbunden.",
-                        14.0,
-                        UI_MUTED,
-                    ));
-                    panel.spawn(ui_text_wrapped(
-                        "Datenschutz: Name und eine zufällige Installationskennung werden serverseitig gespeichert. Es werden keine Hardwaremerkmale ausgelesen.",
-                        FS_SMALL,
-                        UI_MUTED,
-                    ));
-                    panel.spawn(ui_text("Dein Name", FS_SECTION, UI_INK));
-                    panel.spawn((
-                        Button,
-                        Node {
-                            width: Val::Percent(100.0),
-                            min_height: Val::Px(48.0),
-                            padding: UiRect::horizontal(Val::Px(14.0)),
-                            align_items: AlignItems::Center,
-                            border: UiRect::all(Val::Px(2.0)),
-                            ..default()
-                        },
-                        BackgroundColor(Color::srgb(0.89, 0.83, 0.68)),
-                        BorderColor::all(UI_DIVIDER),
-                        StartPlayerInput,
-                        children![(
-                            ui_text("Name eingeben …", 15.0, UI_MUTED),
-                            StartPlayerInputText,
-                        )],
-                    ));
-                    panel.spawn(ui_text("Spielwelt", FS_SECTION, UI_INK));
-                    panel
-                        .spawn(Node {
-                            width: Val::Percent(100.0),
-                            flex_direction: FlexDirection::Row,
-                            flex_wrap: FlexWrap::Wrap,
-                            column_gap: Val::Px(12.0),
-                            row_gap: Val::Px(12.0),
-                            ..default()
-                        })
-                        .with_children(|row| {
-                            row.spawn((
-                                Button,
-                                Node {
-                                    width: Val::Px(316.0),
-                                    min_height: Val::Px(92.0),
-                                    flex_grow: 1.0,
-                                    padding: UiRect::all(Val::Px(14.0)),
-                                    flex_direction: FlexDirection::Column,
-                                    row_gap: Val::Px(7.0),
-                                    border: UiRect::all(Val::Px(2.0)),
-                                    ..default()
-                                },
-                                BackgroundColor(UI_BUTTON_BROWN),
-                                BorderColor::all(Color::NONE),
-                                ImageNode::default(),
-                                AdventurePanel::Dark,
-                                StartGlobalButton,
-                                children![
-                                    ui_text("Global spielen", 16.0, UI_TITLE_INK),
-                                    ui_text_wrapped(
-                                        "Gemeinsam in den Grand Commons spielen.",
-                                        FS_BODY,
-                                        Color::srgb(0.87, 0.79, 0.65),
-                                    ),
-                                ],
-                            ));
-                            row.spawn((
-                                Button,
-                                Node {
-                                    width: Val::Px(316.0),
-                                    min_height: Val::Px(92.0),
-                                    flex_grow: 1.0,
-                                    padding: UiRect::all(Val::Px(14.0)),
-                                    flex_direction: FlexDirection::Column,
-                                    row_gap: Val::Px(7.0),
-                                    border: UiRect::all(Val::Px(2.0)),
-                                    ..default()
-                                },
-                                BackgroundColor(UI_BUTTON_BROWN),
-                                BorderColor::all(Color::NONE),
-                                ImageNode::default(),
-                                AdventurePanel::Dark,
-                                StartPersonalButton,
-                                children![
-                                    ui_text("Eigene Siedlung", 16.0, UI_TITLE_INK),
-                                    ui_text_wrapped(
-                                        "Deine private Siedlung gründen oder fortsetzen.",
-                                        FS_BODY,
-                                        Color::srgb(0.87, 0.79, 0.65),
-                                    ),
-                                ],
-                            ));
-                        });
-                    panel
-                        .spawn((
-                            Node {
-                                width: Val::Percent(100.0),
-                                flex_direction: FlexDirection::Column,
-                                row_gap: Val::Px(7.0),
-                                display: Display::None,
-                                ..default()
-                            },
-                            StartVillageField,
-                        ))
-                        .with_children(|field| {
-                            field.spawn(ui_text("Name deiner Siedlung", FS_SECTION, UI_INK));
-                            field.spawn((
-                                Button,
-                                Node {
-                                    width: Val::Percent(100.0),
-                                    height: Val::Px(48.0),
-                                    padding: UiRect::horizontal(Val::Px(14.0)),
-                                    align_items: AlignItems::Center,
-                                    border: UiRect::all(Val::Px(2.0)),
-                                    ..default()
-                                },
-                                BackgroundColor(Color::srgb(0.89, 0.83, 0.68)),
-                                BorderColor::all(UI_DIVIDER),
-                                StartVillageInput,
-                                children![(
-                                    ui_text("Siedlungsname eingeben …", 15.0, UI_MUTED),
-                                    StartVillageInputText,
-                                )],
-                            ));
-                        });
-                    panel.spawn((
-                        ui_text("", FS_BODY, UI_WARNING),
-                        StartErrorText,
-                    ));
-                    panel.spawn((
-                        ui_button(),
-                        StartContinueButton,
-                        children![(
-                            ui_text("Auswahl treffen", 15.0, UI_INK),
-                            StartContinueText,
-                        )],
-                    ));
-                    });
-                });
-        });
+    spawn_start_screen(&mut commands, &asset_server, &ui_art);
 
     // Esc owns a second full-window surface. Settings deliberately replace the
     // menu rather than nesting a small modal, keeping accessibility controls
@@ -4776,6 +4509,7 @@ fn setup(
                 ..ui_panel_node(Val::Px(HUD_PANEL_WIDTH))
             },
             ui_panel_frame(),
+            GameplayChrome,
             UiSurfaceRoot(UiSurfaceKind::Hud),
             WorldInputBlocker,
         ))
@@ -4850,6 +4584,7 @@ fn setup(
             BorderColor::all(Color::NONE),
             ImageNode::default(),
             AdventurePanel::Paper,
+            GameplayChrome,
             UiSurfaceRoot(UiSurfaceKind::Hud),
             WorldInputBlocker,
         ))
@@ -5459,6 +5194,15 @@ fn setup(
             spawn_vertical_scroll_area(panel, UI_PAD, UI_GAP, |body| {
                 body.spawn((ui_text_wrapped("", FS_BODY, UI_INK), BuildingInspectorText));
                 body.spawn((
+                    ui_button(),
+                    KitDisabled { disabled: true },
+                    BuildingUpgradeButton,
+                    children![(
+                        ui_text("Upgrade building", FS_BODY, UI_INK),
+                        BuildingUpgradeButtonText,
+                    )],
+                ));
+                body.spawn((
                     Node {
                         flex_direction: FlexDirection::Column,
                         row_gap: Val::Px(UI_GAP_TIGHT),
@@ -5665,14 +5409,17 @@ fn bottom_bar_row_node() -> Node {
 
 fn spawn_bottom_bar(commands: &mut Commands) {
     commands
-        .spawn(Node {
-            position_type: PositionType::Absolute,
-            bottom: Val::Px(10.0),
-            left: Val::Px(0.0),
-            width: Val::Percent(100.0),
-            justify_content: JustifyContent::Center,
-            ..default()
-        })
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                bottom: Val::Px(10.0),
+                left: Val::Px(0.0),
+                width: Val::Percent(100.0),
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            GameplayChrome,
+        ))
         .with_children(|center| {
             center
                 .spawn((bottom_bar_panel_node(), ui_panel_frame(), WorldInputBlocker))
@@ -5820,299 +5567,6 @@ fn server_ws_url() -> String {
                 Some(format!("{scheme}://{}/ws", loc.host().ok()?))
             })
             .unwrap_or_else(|| DEFAULT.to_string())
-    }
-}
-
-fn initialize_start_screen(session: Res<Session>, mut start: ResMut<StartScreen>) {
-    start.player_name.clone_from(&session.nickname);
-}
-
-fn normalized_required_name(raw: &str, label: &str, max_chars: usize) -> Result<String, String> {
-    let normalized = raw.split_whitespace().collect::<Vec<_>>().join(" ");
-    let count = normalized.chars().count();
-    if count < 2 {
-        return Err(format!("{label} muss mindestens 2 Zeichen lang sein."));
-    }
-    if count > max_chars {
-        return Err(format!(
-            "{label} darf höchstens {max_chars} Zeichen lang sein."
-        ));
-    }
-    if normalized.chars().any(char::is_control) {
-        return Err(format!("{label} enthält ungültige Zeichen."));
-    }
-    Ok(normalized)
-}
-
-fn append_input_text(target: &mut String, text: &str, max_chars: usize) {
-    for character in text.chars().filter(|character| !character.is_control()) {
-        if target.chars().count() >= max_chars {
-            break;
-        }
-        target.push(character);
-    }
-}
-
-fn start_input_label(value: &str, placeholder: &str, focused: bool) -> String {
-    match (value.is_empty(), focused) {
-        (true, true) => format!("| {placeholder}"),
-        (true, false) => placeholder.to_owned(),
-        (false, true) => format!("{value} |"),
-        (false, false) => value.to_owned(),
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn handle_start_screen(
-    mut keyboard: MessageReader<KeyboardInput>,
-    mut start: ResMut<StartScreen>,
-    mut session: ResMut<Session>,
-    mut latest: ResMut<LatestSnapshot>,
-    mut selection: ResMut<VillageSelection>,
-    mut outgoing: ResMut<OutgoingActions>,
-    mut ui: StartScreenUi,
-) {
-    let Ok(mut root) = ui.root.single_mut() else {
-        return;
-    };
-    root.display = if start.visible {
-        Display::Flex
-    } else {
-        Display::None
-    };
-    if !start.visible {
-        keyboard.clear();
-        return;
-    }
-
-    if ui
-        .player_input
-        .iter()
-        .any(|interaction| *interaction == Interaction::Pressed)
-    {
-        start.focused_input = StartInput::PlayerName;
-    }
-    if ui
-        .village_input
-        .iter()
-        .any(|interaction| *interaction == Interaction::Pressed)
-    {
-        start.focused_input = StartInput::VillageName;
-    }
-    if ui
-        .global_button
-        .iter()
-        .any(|interaction| *interaction == Interaction::Pressed)
-    {
-        start.mode = Some(StartMode::Global);
-        start.error = None;
-    }
-    if ui
-        .personal_button
-        .iter()
-        .any(|interaction| *interaction == Interaction::Pressed)
-    {
-        start.mode = Some(StartMode::Personal);
-        start.focused_input = if start.player_name.trim().is_empty() {
-            StartInput::PlayerName
-        } else {
-            StartInput::VillageName
-        };
-        start.error = None;
-    }
-
-    let mut submit = ui
-        .continue_button
-        .iter()
-        .any(|interaction| *interaction == Interaction::Pressed);
-    for event in keyboard.read() {
-        if event.state != ButtonState::Pressed {
-            continue;
-        }
-        match event.key_code {
-            KeyCode::Backspace => match start.focused_input {
-                StartInput::PlayerName => {
-                    start.player_name.pop();
-                }
-                StartInput::VillageName => {
-                    start.village_name.pop();
-                }
-            },
-            KeyCode::Tab => {
-                start.focused_input = match start.focused_input {
-                    StartInput::PlayerName if start.mode == Some(StartMode::Personal) => {
-                        StartInput::VillageName
-                    }
-                    _ => StartInput::PlayerName,
-                };
-            }
-            KeyCode::Enter | KeyCode::NumpadEnter => submit = true,
-            _ => {
-                if let Some(text) = event.text.as_deref() {
-                    match start.focused_input {
-                        StartInput::PlayerName => {
-                            append_input_text(&mut start.player_name, text, PLAYER_NAME_MAX_CHARS)
-                        }
-                        StartInput::VillageName => {
-                            append_input_text(&mut start.village_name, text, VILLAGE_NAME_MAX_CHARS)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    let owned_personal = latest.0.as_ref().and_then(|snapshot| {
-        snapshot
-            .colonies
-            .iter()
-            .find(|colony| colony.kind == VillageKind::Personal && colony.capabilities.is_owner)
-            .map(|colony| colony.id.clone())
-    });
-    let needs_village_name = start.mode == Some(StartMode::Personal) && owned_personal.is_none();
-
-    if submit && !start.pending_foundation {
-        let result = (|| -> Result<(), String> {
-            let nickname =
-                normalized_required_name(&start.player_name, "Dein Name", PLAYER_NAME_MAX_CHARS)?;
-            let mode = start
-                .mode
-                .ok_or_else(|| "Bitte wähle Global oder Eigene Siedlung.".to_owned())?;
-            if !session.ready {
-                return Err("Die Verbindung wird noch hergestellt …".to_owned());
-            }
-            let snapshot = latest
-                .0
-                .as_mut()
-                .ok_or_else(|| "Die Spielwelt wird noch geladen …".to_owned())?;
-            session.nickname = nickname;
-            // Presence is also the authenticated display-name handshake. Queue
-            // it before entering/founding so the server can attribute every
-            // following action to the name chosen on this screen.
-            outgoing.0.push(presence_action(&session));
-            match mode {
-                StartMode::Global => {
-                    let global_id = snapshot
-                        .colonies
-                        .iter()
-                        .find(|colony| colony.kind == VillageKind::Global)
-                        .map(|colony| colony.id.clone())
-                        .ok_or_else(|| "Die globale Siedlung ist nicht verfügbar.".to_owned())?;
-                    if let Some(action) =
-                        choose_village(&global_id, snapshot, &mut selection, &session)
-                    {
-                        outgoing.0.push(action);
-                    }
-                    start.visible = false;
-                }
-                StartMode::Personal => {
-                    if let Some(personal_id) = owned_personal.as_deref() {
-                        if let Some(action) =
-                            choose_village(personal_id, snapshot, &mut selection, &session)
-                        {
-                            outgoing.0.push(action);
-                        }
-                        start.visible = false;
-                    } else {
-                        let name = normalized_required_name(
-                            &start.village_name,
-                            "Der Siedlungsname",
-                            VILLAGE_NAME_MAX_CHARS,
-                        )?;
-                        outgoing.0.push(ClientAction::FoundVillage {
-                            name,
-                            session_id: session.session_id.clone(),
-                            sig: Some(session.sig.clone()),
-                        });
-                        start.pending_foundation = true;
-                    }
-                }
-            }
-            persist_session(&session, &selection)
-                .map_err(|err| format!("Zugang konnte nicht gespeichert werden: {err}"))?;
-            Ok(())
-        })();
-        start.error = result.err();
-    }
-
-    if let Ok(mut node) = ui.village_field.single_mut() {
-        node.display = if needs_village_name {
-            Display::Flex
-        } else {
-            Display::None
-        };
-    }
-    if let Ok(mut text) = ui.player_text.single_mut() {
-        text.0 = start_input_label(
-            &start.player_name,
-            "Name eingeben …",
-            start.focused_input == StartInput::PlayerName,
-        );
-    }
-    if let Ok(mut text) = ui.village_text.single_mut() {
-        text.0 = start_input_label(
-            &start.village_name,
-            "Siedlungsname eingeben …",
-            start.focused_input == StartInput::VillageName,
-        );
-    }
-    if let Ok(mut text) = ui.continue_text.single_mut() {
-        text.0 = if start.pending_foundation {
-            "Siedlung wird gegründet …"
-        } else {
-            match (start.mode, owned_personal.is_some()) {
-                (Some(StartMode::Global), _) => "Grand Commons betreten",
-                (Some(StartMode::Personal), true) => "Eigene Siedlung fortsetzen",
-                (Some(StartMode::Personal), false) => "Eigene Siedlung gründen",
-                (None, _) => "Auswahl treffen",
-            }
-        }
-        .to_owned();
-    }
-    if let Ok(mut text) = ui.error_text.single_mut() {
-        text.0 = start.error.clone().unwrap_or_default();
-    }
-    if let Ok(mut border) = ui.borders.p0().single_mut() {
-        *border = BorderColor::all(if start.mode == Some(StartMode::Global) {
-            UI_ACCENT
-        } else {
-            Color::NONE
-        });
-    }
-    if let Ok(mut border) = ui.borders.p1().single_mut() {
-        *border = BorderColor::all(if start.mode == Some(StartMode::Personal) {
-            UI_ACCENT
-        } else {
-            Color::NONE
-        });
-    }
-    if let Ok(mut border) = ui.borders.p2().single_mut() {
-        *border = BorderColor::all(if start.focused_input == StartInput::PlayerName {
-            UI_ACCENT
-        } else {
-            UI_DIVIDER
-        });
-    }
-    if let Ok(mut border) = ui.borders.p3().single_mut() {
-        *border = BorderColor::all(if start.focused_input == StartInput::VillageName {
-            UI_ACCENT
-        } else {
-            UI_DIVIDER
-        });
-    }
-    if let Ok(mut background) = ui.input_backgrounds.p0().single_mut() {
-        background.0 = if start.focused_input == StartInput::PlayerName {
-            Color::srgb(1.0, 0.93, 0.72)
-        } else {
-            Color::srgb(0.89, 0.83, 0.68)
-        };
-    }
-    if let Ok(mut background) = ui.input_backgrounds.p1().single_mut() {
-        background.0 = if start.focused_input == StartInput::VillageName {
-            Color::srgb(1.0, 0.93, 0.72)
-        } else {
-            Color::srgb(0.89, 0.83, 0.68)
-        };
     }
 }
 
@@ -6843,11 +6297,18 @@ fn pending_village_rejoin(
 fn spawn_terrain(
     mut commands: Commands,
     latest: Res<LatestSnapshot>,
+    start: Res<StartScreen>,
     art: Option<Res<TerrainArt>>,
     mut render: ResMut<WorldRender>,
     camera: Query<&Transform, With<WorldCamera>>,
     visuals: Query<(Entity, &TerrainVisual)>,
 ) {
+    // The authored showcase fully owns the entry backdrop and sits at a
+    // deliberately remote coordinate. Do not spend thousands of terrain
+    // entities streaming the authoritative world underneath it.
+    if start.visible {
+        return;
+    }
     let (Some(world), Some(art)) = (latest.0.as_ref(), art) else {
         return;
     };
@@ -7588,13 +7049,19 @@ fn job_world_marker_visible(kind: JobKind, status: JobStatus, position: Option<T
 fn render_job_world_markers(
     mut commands: Commands,
     latest: Res<LatestSnapshot>,
+    start: Res<StartScreen>,
     existing: Query<Entity, With<JobWorldMarker>>,
 ) {
-    if !latest.is_changed() {
+    if !latest.is_changed() && !start.is_changed() {
         return;
     }
     for entity in &existing {
         commands.entity(entity).despawn();
+    }
+    // These red/orange outlines explain actionable orders during play. The
+    // landing showcase has no player command state.
+    if start.visible {
+        return;
     }
     let Some(colony) = latest.0.as_ref().and_then(|world| world.colonies.first()) else {
         return;
@@ -9890,7 +9357,7 @@ fn lift_village_caravans_above_fog(mut caravans: Query<&mut Transform, With<Vill
 fn move_bodies(
     time: Res<Time>,
     latest: Res<LatestSnapshot>,
-    mut bodies: Query<(&mut Transform, &MoveTarget, &mut AnimSprite)>,
+    mut bodies: Query<(&mut Transform, &MoveTarget, &mut AnimSprite), Without<LandingShowcaseCat>>,
 ) {
     let step = BODY_WALK_SPEED * time.delta_secs();
     let depth_origin = latest
@@ -10173,13 +9640,32 @@ fn cycle_stacked_selection(
 
 /// Re-resolve the selected building each tick and repaint its inspector panel;
 /// hide it (and clear the selection) when the building is gone.
+#[allow(clippy::type_complexity)]
 fn update_building_inspector(
     latest: Res<LatestSnapshot>,
     mut selection: ResMut<BuildingSelection>,
-    mut panel: Query<&mut Node, With<BuildingInspectorPanel>>,
-    mut text: Query<&mut Text, With<BuildingInspectorText>>,
+    session: Res<Session>,
+    mut panel: Query<&mut Node, (With<BuildingInspectorPanel>, Without<BuildingUpgradeButton>)>,
+    mut text: Query<
+        &mut Text,
+        (
+            With<BuildingInspectorText>,
+            Without<BuildingUpgradeButtonText>,
+        ),
+    >,
+    mut upgrade: Query<
+        (&mut Node, &mut KitDisabled),
+        (With<BuildingUpgradeButton>, Without<BuildingInspectorPanel>),
+    >,
+    mut upgrade_text: Query<
+        &mut Text,
+        (
+            With<BuildingUpgradeButtonText>,
+            Without<BuildingInspectorText>,
+        ),
+    >,
 ) {
-    if !latest.is_changed() && !selection.is_changed() {
+    if !latest.is_changed() && !selection.is_changed() && !session.is_changed() {
         return;
     }
     let (Ok(mut node), Ok(mut text)) = (panel.single_mut(), text.single_mut()) else {
@@ -10196,14 +9682,58 @@ fn update_building_inspector(
         Some((building, colony)) => {
             node.display = Display::Flex;
             text.0 = building_inspector_text(building, colony);
+            if let Ok((mut button, mut disabled)) = upgrade.single_mut() {
+                button.display = if building.construction_progress >= 100.0 && building.level < 10 {
+                    Display::Flex
+                } else {
+                    Display::None
+                };
+                disabled.disabled = !session.ready
+                    || building.construction_progress < 100.0
+                    || building.level >= 10;
+            }
+            if let Ok(mut label) = upgrade_text.single_mut() {
+                label.0 = if building.production_paused {
+                    format!("Upgrade in progress · level {}", building.level)
+                } else {
+                    format!("Upgrade to level {}", building.level + 1)
+                };
+            }
         }
         None => {
             node.display = Display::None;
+            if let Ok((mut button, _)) = upgrade.single_mut() {
+                button.display = Display::None;
+            }
             if selection.selected.is_some() {
                 selection.selected = None;
             }
         }
     }
+}
+
+fn handle_building_upgrade_button(
+    session: Res<Session>,
+    selection: Res<BuildingSelection>,
+    mut outgoing: ResMut<OutgoingActions>,
+    button: Query<&Interaction, (Changed<Interaction>, With<BuildingUpgradeButton>)>,
+) {
+    if !session.ready
+        || !button
+            .iter()
+            .any(|interaction| *interaction == Interaction::Pressed)
+    {
+        return;
+    }
+    let Some(building_id) = selection.selected.clone() else {
+        return;
+    };
+    outgoing.0.push(ClientAction::UpgradeBuilding {
+        session_id: session.session_id.clone(),
+        nickname: session.nickname().to_owned(),
+        sig: session.sig.clone(),
+        building_id,
+    });
 }
 
 /// Re-resolve the selected cat by id each tick and repaint the inspector panel;
@@ -11201,15 +10731,14 @@ fn camera_controls(
     mut motion: MessageReader<CursorMoved>,
     mut wheel: MessageReader<MouseWheel>,
     time: Res<Time>,
-    latest: Res<LatestSnapshot>,
+    context: CameraWorldContext,
     mut router: ResMut<UiRouter>,
     center_button: Query<&Interaction, (Changed<Interaction>, With<CenterVillageButton>)>,
-    windows: Query<&Window>,
-    blockers: WorldInputBlockerQuery,
     mut inited: Local<bool>,
     mut last_auto_radius: Local<u32>,
     mut last_colony_id: Local<Option<String>>,
     mut last_window_size: Local<Vec2>,
+    mut last_start_visible: Local<Option<bool>>,
     mut user_adjusted: Local<bool>,
     mut camera: Query<(&mut Transform, &mut Projection), With<WorldCamera>>,
 ) {
@@ -11236,39 +10765,50 @@ fn camera_controls(
         *inited = true;
         projection.scale = DEFAULT_ZOOM;
     }
-    let window_size = windows
+    let window_size = context
+        .windows
         .single()
         .map(|window| Vec2::new(window.width(), window.height()))
         .unwrap_or(Vec2::new(1280.0, 800.0));
-    let cursor = windows
+    let cursor = context
+        .windows
         .single()
         .ok()
         .and_then(|window| window.cursor_position());
-    let physical_cursor = windows
+    let physical_cursor = context
+        .windows
         .single()
         .ok()
         .and_then(Window::physical_cursor_position);
     let pointer_allowed = world_pointer_input_allowed(
         false,
-        cursor_over_world_input_blocker(physical_cursor, &blockers),
+        cursor_over_world_input_blocker(physical_cursor, &context.blockers),
         cursor.is_some(),
     );
-    if let Some(colony) = latest
+    if let Some(colony) = context
+        .latest
         .0
         .as_ref()
         .and_then(|snapshot| snapshot.colonies.first())
     {
         let village_changed = last_colony_id.as_deref() != Some(colony.id.as_str());
-        if village_changed {
+        let start_visibility_changed = *last_start_visible != Some(context.start.visible);
+        if village_changed || start_visibility_changed {
             // A selected village can be arbitrarily far from the prior one.
             // Always move to the newly selected map, even when the player had
             // panned or zoomed the old village by hand.
             *user_adjusted = false;
             *last_auto_radius = colony.village_radius;
-            projection.scale =
-                village_fit_zoom(colony.village_radius, window_size.x, window_size.y);
-            let center =
-                village_camera_center(colony.anchor, colony.village_radius, projection.scale);
+            projection.scale = if context.start.visible {
+                landing_village_zoom(colony.village_radius, window_size.x)
+            } else {
+                village_fit_zoom(colony.village_radius, window_size.x, window_size.y)
+            };
+            let center = if context.start.visible {
+                landing_showcase_camera_center()
+            } else {
+                village_camera_center(colony.anchor, colony.village_radius, projection.scale)
+            };
             transform.translation.x = center.x;
             transform.translation.y = center.y;
             *last_colony_id = Some(colony.id.clone());
@@ -11276,15 +10816,27 @@ fn camera_controls(
         let radius_grew = colony.village_radius > *last_auto_radius;
         let window_changed = window_size != *last_window_size;
         if !*user_adjusted && (radius_grew || window_changed) {
-            projection.scale =
-                village_fit_zoom(colony.village_radius, window_size.x, window_size.y);
-            let center =
-                village_camera_center(colony.anchor, colony.village_radius, projection.scale);
+            projection.scale = if context.start.visible {
+                landing_village_zoom(colony.village_radius, window_size.x)
+            } else {
+                village_fit_zoom(colony.village_radius, window_size.x, window_size.y)
+            };
+            let center = if context.start.visible {
+                landing_showcase_camera_center()
+            } else {
+                village_camera_center(colony.anchor, colony.village_radius, projection.scale)
+            };
             transform.translation.x = center.x;
             transform.translation.y = center.y;
         }
         *last_auto_radius = (*last_auto_radius).max(colony.village_radius);
         *last_window_size = window_size;
+    }
+    *last_start_visible = Some(context.start.visible);
+    if context.start.visible {
+        motion.clear();
+        wheel.clear();
+        return;
     }
     let speed_multiplier = if keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight)
     {
@@ -11311,7 +10863,8 @@ fn camera_controls(
     }
     if center_requested {
         *user_adjusted = false;
-        let colony = latest
+        let colony = context
+            .latest
             .0
             .as_ref()
             .and_then(|snapshot| snapshot.colonies.first());
@@ -11391,6 +10944,11 @@ fn village_fit_zoom(radius: u32, window_width: f32, window_height: f32) -> f32 {
         .max(world_span / window_width.max(1.0))
         .max(world_span / usable_height.max(1.0))
         .clamp(MIN_ZOOM, MAX_ZOOM)
+}
+
+/// Resolution-independent framing for the authored mature showcase.
+fn landing_village_zoom(_radius: u32, window_width: f32) -> f32 {
+    (LANDING_OVERVIEW_MIN_TILES * TILE / window_width.max(1.0)).clamp(0.055, MAX_ZOOM)
 }
 
 fn village_camera_center(anchor: TilePoint, radius: u32, zoom: f32) -> Vec2 {
@@ -12765,6 +12323,7 @@ fn sync_primary_screen_state(
 
 fn update_client_feedback(
     time: Res<Time>,
+    start: Res<StartScreen>,
     mut feedback: ResMut<ClientFeedback>,
     mut panel: Query<
         (
@@ -12782,6 +12341,14 @@ fn update_client_feedback(
     else {
         return;
     };
+    if start.visible {
+        node.display = Display::None;
+        feedback.remaining_secs = (feedback.remaining_secs - time.delta_secs()).max(0.0);
+        if feedback.remaining_secs == 0.0 {
+            feedback.message = None;
+        }
+        return;
+    }
     let Some(message) = feedback.message.as_ref() else {
         node.display = Display::None;
         return;
@@ -16779,6 +16346,25 @@ mod tests {
     }
 
     #[test]
+    fn landing_camera_uses_a_resolution_independent_showcase_overview() {
+        let compact = landing_village_zoom(STARTER_CAMERA_RADIUS, 1024.0);
+        let hd = landing_village_zoom(STARTER_CAMERA_RADIUS, 1920.0);
+        let four_k = landing_village_zoom(STARTER_CAMERA_RADIUS, 3840.0);
+        assert!(hd > DEFAULT_ZOOM);
+        assert!(four_k < hd);
+        assert!(compact > hd);
+        let hd_world_width = hd * 1920.0;
+        let four_k_world_width = four_k * 3840.0;
+        assert!((hd_world_width - four_k_world_width).abs() < 0.001);
+        assert!((hd_world_width - LANDING_OVERVIEW_MIN_TILES * TILE).abs() < 0.001);
+        assert!(
+            hd_world_width
+                > STARTER_CAMERA_RADIUS.saturating_mul(2).saturating_add(2) as f32 * TILE * 2.0,
+            "landing must show substantially more than the old close crop"
+        );
+    }
+
+    #[test]
     fn footprint_sprite_spans_tiles_and_sits_on_front_edge() {
         let nw = TilePoint { x: 6, y: 6 };
         // A 3x3 square building: 3 tiles wide, 3 tall (aspect 1).
@@ -19309,6 +18895,21 @@ mod tests {
             JobStatus::Active,
             site
         ));
+    }
+
+    #[test]
+    fn landing_removes_gameplay_order_markers() {
+        let mut app = App::new();
+        app.insert_resource(LatestSnapshot::default())
+            .insert_resource(StartScreen::default())
+            .add_systems(Update, render_job_world_markers);
+        app.world_mut().spawn(JobWorldMarker);
+
+        app.update();
+
+        let world = app.world_mut();
+        let mut markers = world.query_filtered::<Entity, With<JobWorldMarker>>();
+        assert_eq!(markers.iter(world).count(), 0);
     }
 
     #[test]

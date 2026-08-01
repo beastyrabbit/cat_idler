@@ -1,8 +1,8 @@
 //! Expanded research catalog for the post-cutover design.
 //!
-//! The 24 legacy nodes from `upgrade_tree.rs` are owned records in an embedded
-//! data file. Compact, named family templates deterministically expand the rest
-//! of the roughly 500-node graph. This module is deliberately additive: it performs no
+//! The 24 original milestones from `upgrade_tree.rs`, curated cross-discipline
+//! junctions, and compact named family templates deterministically form the
+//! roughly 500-node graph. This module is deliberately additive: it performs no
 //! research ticks and grants no unlocks until later integration slices consume
 //! its typed payloads.
 
@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::JobKind;
 
-pub const RESEARCH_NODE_COUNT: usize = 487;
+pub const RESEARCH_NODE_COUNT: usize = 495;
 pub const APPROVED_BUILDING_IDS: &[&str] = &[
     "den",
     "food_storage",
@@ -85,6 +85,7 @@ pub const APPROVED_EFFECT_IDS: &[&str] = &[
     "denStewardship",
 ];
 const LEGACY_SOURCE: &str = include_str!("research_catalog_legacy.json");
+const JUNCTION_SOURCE: &str = include_str!("research_catalog_junctions.json");
 const TRACK_SOURCE: &str = include_str!("research_catalog_tracks.json");
 
 const BUILDING_SERVICE_EFFECT_IDS: &[&str] = &[
@@ -405,7 +406,7 @@ static RESEARCH_CATALOG: OnceLock<ResearchCatalog> = OnceLock::new();
 #[must_use]
 pub fn research_catalog() -> &'static ResearchCatalog {
     RESEARCH_CATALOG.get_or_init(|| {
-        build_catalog(LEGACY_SOURCE, TRACK_SOURCE)
+        build_catalog(LEGACY_SOURCE, JUNCTION_SOURCE, TRACK_SOURCE)
             .unwrap_or_else(|error| panic!("embedded research catalog is invalid: {error}"))
     })
 }
@@ -448,6 +449,8 @@ struct BuildingFamily {
     #[serde(default)]
     available_at_founding: bool,
     root_prerequisites: Vec<String>,
+    #[serde(default)]
+    stage_prerequisites: std::collections::BTreeMap<String, Vec<String>>,
     era_start: u8,
     cost_base: f64,
     layout_x: i32,
@@ -488,6 +491,8 @@ struct RecipeFamily {
     display_name: String,
     count: usize,
     root_prerequisites: Vec<String>,
+    #[serde(default)]
+    stage_prerequisites: std::collections::BTreeMap<String, Vec<String>>,
     era_start: u8,
     cost_base: f64,
     layout_x: i32,
@@ -523,6 +528,8 @@ struct UpgradeFamily {
     #[serde(default = "upgrade_research_category")]
     category: ResearchCategory,
     root_prerequisites: Vec<String>,
+    #[serde(default)]
+    stage_prerequisites: std::collections::BTreeMap<String, Vec<String>>,
     era_start: u8,
     cost_base: f64,
     layout_x: i32,
@@ -533,10 +540,19 @@ const fn upgrade_research_category() -> ResearchCategory {
     ResearchCategory::Upgrade
 }
 
-fn build_catalog(legacy_source: &str, track_source: &str) -> Result<ResearchCatalog, String> {
+fn build_catalog(
+    legacy_source: &str,
+    junction_source: &str,
+    track_source: &str,
+) -> Result<ResearchCatalog, String> {
     let mut nodes = serde_json::from_str::<LegacyData>(legacy_source)
         .map_err(|error| format!("legacy JSON: {error}"))?
         .nodes;
+    nodes.extend(
+        serde_json::from_str::<LegacyData>(junction_source)
+            .map_err(|error| format!("junction JSON: {error}"))?
+            .nodes,
+    );
     let templates = serde_json::from_str::<TemplateData>(track_source)
         .map_err(|error| format!("track JSON: {error}"))?;
     for family in &templates.building_families {
@@ -551,6 +567,41 @@ fn build_catalog(legacy_source: &str, track_source: &str) -> Result<ResearchCata
     validate_and_index(nodes)
 }
 
+fn validate_stage_prerequisite_keys<T>(
+    family_id: &str,
+    configured: &std::collections::BTreeMap<String, Vec<String>>,
+    stages: &[T],
+    stage_id: impl Fn(&T) -> &str,
+    count: usize,
+) -> Result<(), String> {
+    for configured_stage in configured.keys() {
+        if !stages
+            .iter()
+            .take(count)
+            .any(|stage| stage_id(stage) == configured_stage)
+        {
+            return Err(format!(
+                "{family_id} configures prerequisites for missing stage {configured_stage}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn add_stage_prerequisites(
+    prerequisites: &mut Vec<String>,
+    configured: &std::collections::BTreeMap<String, Vec<String>>,
+    stage_id: &str,
+) {
+    if let Some(additional) = configured.get(stage_id) {
+        for prerequisite in additional {
+            if !prerequisites.contains(prerequisite) {
+                prerequisites.push(prerequisite.clone());
+            }
+        }
+    }
+}
+
 fn expand_building_family(
     family: &BuildingFamily,
     stages: &[BuildingStage],
@@ -558,6 +609,13 @@ fn expand_building_family(
     if family.count == 0 || family.count > stages.len() {
         return Err(format!("invalid stage count for {}", family.building_id));
     }
+    validate_stage_prerequisite_keys(
+        &family.building_id,
+        &family.stage_prerequisites,
+        stages,
+        |stage| stage.id.as_str(),
+        family.count,
+    )?;
     let mut nodes: Vec<ResearchNode> = Vec::with_capacity(family.count);
     let mut legacy_predecessor: Option<String> = None;
     for (index, stage) in stages.iter().take(family.count).enumerate() {
@@ -565,9 +623,10 @@ fn expand_building_family(
             continue;
         }
         let id = format!("{}_{}", family.building_id, stage.id);
-        let prerequisites = legacy_predecessor
+        let mut prerequisites = legacy_predecessor
             .as_ref()
             .map_or_else(|| family.root_prerequisites.clone(), |id| vec![id.clone()]);
+        add_stage_prerequisites(&mut prerequisites, &family.stage_prerequisites, &stage.id);
         let era_offset = u8::try_from(index / 2)
             .map_err(|_| format!("building era overflow for {}", family.building_id))?;
         let era = family
@@ -847,6 +906,13 @@ fn expand_recipe_family(
     if family.count == 0 || family.count > stages.len() {
         return Err(format!("invalid stage count for {}", family.id));
     }
+    validate_stage_prerequisite_keys(
+        &family.id,
+        &family.stage_prerequisites,
+        stages,
+        |stage| stage.id.as_str(),
+        family.count,
+    )?;
     let mut nodes: Vec<ResearchNode> = Vec::with_capacity(family.count);
     for (index, stage) in stages.iter().take(family.count).enumerate() {
         let id = format!("{}_{}", family.id, stage.id);
@@ -879,11 +945,12 @@ fn expand_recipe_family(
                         Some(ResearchPayload::UnlockResource { .. })
                     ))
         });
-        let prerequisites = if index == 0 || bypass_registry_predecessor {
+        let mut prerequisites = if index == 0 || bypass_registry_predecessor {
             family.root_prerequisites.clone()
         } else {
             vec![nodes[index - 1].id.clone()]
         };
+        add_stage_prerequisites(&mut prerequisites, &family.stage_prerequisites, &stage.id);
         let description = subsistence_frontier_payload_description(family, stage, &payload)
             .unwrap_or_else(|| format!("{} {}", family.display_name, stage.description));
         let mut payloads = vec![payload];
@@ -937,14 +1004,22 @@ fn expand_upgrade_family(
             family.id
         ));
     }
+    validate_stage_prerequisite_keys(
+        &family.id,
+        &family.stage_prerequisites,
+        stages,
+        |stage| stage.id.as_str(),
+        stages.len(),
+    )?;
     let mut nodes: Vec<ResearchNode> = Vec::with_capacity(stages.len());
     for (index, stage) in stages.iter().enumerate() {
         let id = format!("{}_{}", family.id, stage.id);
-        let prerequisites = if index == 0 {
+        let mut prerequisites = if index == 0 {
             family.root_prerequisites.clone()
         } else {
             vec![nodes[index - 1].id.clone()]
         };
+        add_stage_prerequisites(&mut prerequisites, &family.stage_prerequisites, &stage.id);
         nodes.push(ResearchNode {
             id,
             name: format!("{} {}", family.display_name, stage.name),
@@ -1158,6 +1233,13 @@ fn validate_topology(nodes: &[ResearchNode], by_id: &StableIndex) -> Result<(), 
     let mut indegree = vec![0_usize; nodes.len()];
     let mut dependents = vec![Vec::new(); nodes.len()];
     for (index, node) in nodes.iter().enumerate() {
+        if node.prerequisites.len() > 3 {
+            return Err(format!(
+                "node {} has {} direct prerequisites; the readable maximum is three",
+                node.id,
+                node.prerequisites.len()
+            ));
+        }
         if node.prerequisites.is_empty() && node.id != "research_hut" {
             return Err(format!(
                 "node {} is disconnected from the research root",
@@ -1231,7 +1313,7 @@ mod tests {
         let recipes = catalog.category_count(ResearchCategory::RecipeResource);
         assert_eq!(buildings, 165);
         assert_eq!(recipes, 167);
-        assert_eq!(catalog.category_count(ResearchCategory::Upgrade), 155);
+        assert_eq!(catalog.category_count(ResearchCategory::Upgrade), 163);
         assert!(
             buildings * 3 >= RESEARCH_NODE_COUNT,
             "building research must remain at least one third of the catalog"
@@ -1253,11 +1335,13 @@ mod tests {
         assert_eq!(ids.first(), Some(&"research_hut"));
         assert_eq!(ids.get(22), Some(&"shipping"));
         assert_eq!(ids.get(23), Some(&"milling"));
-        assert_eq!(ids.get(24), Some(&"den_foundations"));
-        assert_eq!(ids.get(168), Some(&"sawmill_crews"));
-        assert_eq!(ids.get(169), Some(&"hunting_sources"));
-        assert_eq!(ids.get(332), Some(&"expedition_supplies_masterwork"));
-        assert_eq!(ids.get(333), Some(&"logistics_basics"));
+        assert_eq!(ids.get(24), Some(&"stone_tools"));
+        assert_eq!(ids.get(31), Some(&"combined_arms"));
+        assert_eq!(ids.get(32), Some(&"den_foundations"));
+        assert_eq!(ids.get(176), Some(&"sawmill_crews"));
+        assert_eq!(ids.get(177), Some(&"hunting_sources"));
+        assert_eq!(ids.get(340), Some(&"expedition_supplies_masterwork"));
+        assert_eq!(ids.get(341), Some(&"logistics_basics"));
         assert_eq!(ids.last(), Some(&"resilience_mastery"));
         for (index, node) in catalog.nodes().iter().enumerate() {
             assert!(std::ptr::eq(
@@ -1286,6 +1370,120 @@ mod tests {
             }
         }
         validate_topology(catalog.nodes(), &catalog.by_id).expect("acyclic reachable graph");
+    }
+
+    #[test]
+    fn curated_junctions_converge_multiple_real_disciplines() {
+        let catalog = research_catalog();
+        let expected = [
+            (
+                "stone_tools",
+                &["workshop_foundations", "stonecraft_preparation"][..],
+            ),
+            (
+                "metal_tools",
+                &[
+                    "stone_tools",
+                    "smithy_foundations",
+                    "metallurgy_preparation",
+                ][..],
+            ),
+            (
+                "precision_tools",
+                &[
+                    "metal_tools",
+                    "scholarship_training",
+                    "craftsmanship_training",
+                ][..],
+            ),
+            (
+                "civil_engineering",
+                &[
+                    "construction_training",
+                    "stonecraft_preparation",
+                    "carpentry_preparation",
+                ][..],
+            ),
+            (
+                "preservation_science",
+                &[
+                    "food_preservation_preparation",
+                    "herbalism_preparation",
+                    "advanced_storage",
+                ][..],
+            ),
+            (
+                "organized_provisioning",
+                &[
+                    "expedition_supplies_preparation",
+                    "logistics_training",
+                    "food_preservation_preparation",
+                ][..],
+            ),
+            (
+                "public_administration",
+                &[
+                    "accounting_tent_foundations",
+                    "governance_training",
+                    "scholars_guild",
+                ][..],
+            ),
+            (
+                "combined_arms",
+                &[
+                    "weaponsmithing",
+                    "armorsmithing",
+                    "defense_doctrine_training",
+                ][..],
+            ),
+        ];
+        for (id, prerequisites) in expected {
+            let node = catalog.get(id).unwrap_or_else(|| panic!("missing {id}"));
+            assert_eq!(node.prerequisites, prerequisites, "{id}");
+            assert!(!node.is_future_content(), "{id}");
+        }
+    }
+
+    #[test]
+    fn family_stage_gates_create_midgame_and_capstone_convergence() {
+        let catalog = research_catalog();
+        for (id, prerequisites) in [
+            ("toolmaking_sources", &["stone_tools"][..]),
+            (
+                "toolmaking_staples",
+                &["toolmaking_preparation", "metal_tools"][..],
+            ),
+            (
+                "toolmaking_masterwork",
+                &["toolmaking_specialty", "precision_tools"][..],
+            ),
+            (
+                "construction_training",
+                &["construction_instruments", "stone_tools"][..],
+            ),
+            (
+                "construction_specialization",
+                &["construction_networks", "civil_engineering"][..],
+            ),
+            (
+                "craftsmanship_specialization",
+                &["craftsmanship_networks", "metal_tools"][..],
+            ),
+            (
+                "craftsmanship_mastery",
+                &["craftsmanship_excellence", "precision_tools"][..],
+            ),
+            ("combat_doctrine_basics", &["combined_arms"][..]),
+        ] {
+            assert_eq!(
+                catalog
+                    .get(id)
+                    .unwrap_or_else(|| panic!("missing {id}"))
+                    .prerequisites,
+                prerequisites,
+                "{id}"
+            );
+        }
     }
 
     #[test]
@@ -1406,13 +1604,13 @@ mod tests {
             (
                 "stone_prep",
                 "stone_prep_foundations",
-                &["masonry"][..],
+                &["masonry", "workshop_foundations"][..],
                 16.0,
             ),
             (
                 "woodworking",
                 "woodworking_foundations",
-                &["sawmill", "basic_tools"][..],
+                &["sawmill", "workshop_foundations"][..],
                 15.0,
             ),
         ];
@@ -1471,7 +1669,7 @@ mod tests {
             catalog.category_count(ResearchCategory::RecipeResource),
             167
         );
-        assert_eq!(catalog.category_count(ResearchCategory::Upgrade), 155);
+        assert_eq!(catalog.category_count(ResearchCategory::Upgrade), 163);
     }
 
     #[test]
@@ -2056,8 +2254,8 @@ mod tests {
 
     #[test]
     fn rebuilding_embedded_sources_is_deterministic() {
-        let left = build_catalog(LEGACY_SOURCE, TRACK_SOURCE).unwrap();
-        let right = build_catalog(LEGACY_SOURCE, TRACK_SOURCE).unwrap();
+        let left = build_catalog(LEGACY_SOURCE, JUNCTION_SOURCE, TRACK_SOURCE).unwrap();
+        let right = build_catalog(LEGACY_SOURCE, JUNCTION_SOURCE, TRACK_SOURCE).unwrap();
         assert_eq!(left.nodes, right.nodes);
         for node in &left.nodes {
             assert_eq!(left.by_id.get(&node.id), right.by_id.get(&node.id));

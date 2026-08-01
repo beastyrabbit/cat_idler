@@ -251,7 +251,7 @@ pub const UPGRADE_NODES: &[UpgradeNode] = &[
         description: "Raise the clothier and tannery. Fibre and hunt hides become cloth, leather, and warm clothing.",
         era: 2,
         cost: 12.0,
-        prerequisites: &["foraging_lore"],
+        prerequisites: &["foraging_lore", "basic_tools"],
         unlocks: UpgradeUnlocks {
             buildings: Some(&[
                 BuildingType::Clothier.as_str(),
@@ -267,7 +267,7 @@ pub const UPGRADE_NODES: &[UpgradeNode] = &[
         description: "Raise the Sägewerk. Felled timber becomes usable materials far faster.",
         era: 2,
         cost: 12.0,
-        prerequisites: &["foraging_lore"],
+        prerequisites: &["foraging_lore", "basic_tools"],
         unlocks: UpgradeUnlocks {
             buildings: Some(&[BuildingType::Sawmill.as_str()]),
             jobs: Some(&[JobKind::GatherLogs.as_str()]),
@@ -283,7 +283,7 @@ pub const UPGRADE_NODES: &[UpgradeNode] = &[
         description: "Stacked stone stores. Every storehouse level holds more.",
         era: 2,
         cost: 12.0,
-        prerequisites: &["sawmill"],
+        prerequisites: &["sawmill", "water_carriers"],
         unlocks: UpgradeUnlocks {
             buildings: None,
             jobs: None,
@@ -312,7 +312,7 @@ pub const UPGRADE_NODES: &[UpgradeNode] = &[
         description: "A proper forge-hearth for the ore mountaineering finally opened up. Raw stone off the peak comes back down as metal bars.",
         era: 3,
         cost: 22.0,
-        prerequisites: &[MOUNTAINEERING_NODE_ID],
+        prerequisites: &[MOUNTAINEERING_NODE_ID, "smithy_foundations"],
         unlocks: UpgradeUnlocks {
             buildings: Some(&[BuildingType::Smelter.as_str()]),
             jobs: None,
@@ -325,7 +325,7 @@ pub const UPGRADE_NODES: &[UpgradeNode] = &[
         description: "Build the smithy. Metal tools open the path to weapons.",
         era: 2,
         cost: 15.0,
-        prerequisites: &["sawmill"],
+        prerequisites: &["masonry", "workshop_foundations"],
         unlocks: UpgradeUnlocks {
             buildings: Some(&[BuildingType::Smithy.as_str()]),
             jobs: None,
@@ -338,7 +338,7 @@ pub const UPGRADE_NODES: &[UpgradeNode] = &[
         description: "Raise the barracks so cats can drill into real warriors.",
         era: 2,
         cost: 18.0,
-        prerequisites: &["basic_tools"],
+        prerequisites: &["basic_tools", "den_insulation"],
         unlocks: UpgradeUnlocks {
             buildings: Some(&[BuildingType::Barracks.as_str()]),
             jobs: None,
@@ -351,7 +351,7 @@ pub const UPGRADE_NODES: &[UpgradeNode] = &[
         description: "Build the school. Kittens sit and learn, feeding the research effort while they grow.",
         era: 2,
         cost: 15.0,
-        prerequisites: &["den_insulation"],
+        prerequisites: &["den_insulation", "foraging_lore"],
         unlocks: UpgradeUnlocks {
             buildings: Some(&["school"]),
             jobs: None,
@@ -367,7 +367,7 @@ pub const UPGRADE_NODES: &[UpgradeNode] = &[
         description: "Dug channels feed the fields. Crops come in heavier.",
         era: 2,
         cost: 10.0,
-        prerequisites: &["water_carriers"],
+        prerequisites: &["water_carriers", "basic_tools"],
         unlocks: UpgradeUnlocks {
             buildings: Some(&[BuildingType::Field.as_str()]),
             jobs: None,
@@ -383,7 +383,7 @@ pub const UPGRADE_NODES: &[UpgradeNode] = &[
         description: "Raise the mill. Grain is ground into flour, then baked into food by the same staffed works.",
         era: 2,
         cost: 14.0,
-        prerequisites: &["irrigation"],
+        prerequisites: &["irrigation", "masonry", "workshop_foundations"],
         unlocks: UpgradeUnlocks {
             buildings: Some(&[BuildingType::Mill.as_str()]),
             jobs: None,
@@ -412,7 +412,7 @@ pub const UPGRADE_NODES: &[UpgradeNode] = &[
         description: "Forge claws of iron. Warriors strike far harder.",
         era: 3,
         cost: 22.0,
-        prerequisites: &["smithy"],
+        prerequisites: &["metal_tools"],
         unlocks: UpgradeUnlocks {
             buildings: None,
             jobs: None,
@@ -428,7 +428,11 @@ pub const UPGRADE_NODES: &[UpgradeNode] = &[
         description: "Hammered plate. Defenders shrug off blows that once felled them.",
         era: 3,
         cost: 22.0,
-        prerequisites: &["smithy"],
+        prerequisites: &[
+            "metal_tools",
+            "textile_work_preparation",
+            "leatherworking_preparation",
+        ],
         unlocks: UpgradeUnlocks {
             buildings: None,
             jobs: None,
@@ -444,7 +448,7 @@ pub const UPGRADE_NODES: &[UpgradeNode] = &[
         description: "Sealed cellars and lofts. Storehouses hold half again as much.",
         era: 3,
         cost: 18.0,
-        prerequisites: &["masonry"],
+        prerequisites: &["masonry", "carpentry_preparation"],
         unlocks: UpgradeUnlocks {
             buildings: None,
             jobs: None,
@@ -476,7 +480,11 @@ pub const UPGRADE_NODES: &[UpgradeNode] = &[
         description: "Trained runners cover far more ground between waypoints.",
         era: 3,
         cost: 20.0,
-        prerequisites: &["barracks"],
+        prerequisites: &[
+            "barracks",
+            "animal_husbandry_preparation",
+            "organized_provisioning",
+        ],
         unlocks: UpgradeUnlocks {
             buildings: None,
             jobs: None,
@@ -490,9 +498,13 @@ pub const UPGRADE_NODES: &[UpgradeNode] = &[
         id: "grand_housing",
         name: "Grand Housing",
         description: "Stone halls. A single den now houses a whole lineage.",
-        era: 3,
+        era: 4,
         cost: 25.0,
-        prerequisites: &["housing_tier_2"],
+        prerequisites: &[
+            "housing_tier_2",
+            "construction_training",
+            "welfare_training",
+        ],
         unlocks: UpgradeUnlocks {
             buildings: None,
             jobs: None,
@@ -506,12 +518,10 @@ pub const UPGRADE_NODES: &[UpgradeNode] = &[
         id: RAIL_NODE_ID,
         name: "Rail Line",
         description: "Survey grades and draft rail blueprints. Physical tracks, rolling stock, and staffed routes are still required before cats travel faster.",
-        era: 3,
+        era: 4,
         cost: 20.0,
-        // Rails follow the graded routes mountaineering's switchbacks already cut,
-        // so the line only makes narrative (and pathing) sense once mountains are
-        // crossable at all.
-        prerequisites: &[MOUNTAINEERING_NODE_ID],
+        // Rails merge surveyed mountain routes, civil works, and metal tooling.
+        prerequisites: &[MOUNTAINEERING_NODE_ID, "civil_engineering", "metal_tools"],
         unlocks: UpgradeUnlocks {
             buildings: None,
             jobs: None,
@@ -522,10 +532,14 @@ pub const UPGRADE_NODES: &[UpgradeNode] = &[
         id: SHIPPING_NODE_ID,
         name: "Shipping",
         description: "Draft hull and dock blueprints. Physical vessels and staffed routes are still required before cats can cross open water.",
-        era: 3,
+        era: 4,
         cost: 24.0,
-        // Timber for hulls comes from the sawmill's output chain.
-        prerequisites: &["sawmill"],
+        // Shipping merges hull craft, civil works, and dependable provisions.
+        prerequisites: &[
+            "carpentry_preparation",
+            "civil_engineering",
+            "organized_provisioning",
+        ],
         unlocks: UpgradeUnlocks {
             buildings: None,
             jobs: None,
@@ -560,6 +574,51 @@ pub fn get_node(id: &str) -> Option<&'static UpgradeNode> {
 pub struct UpgradeTreeState {
     pub owned_node_ids: Vec<String>,
     pub research_points: f64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub research_queue: Vec<QueuedResearch>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub repeatable_levels: BTreeMap<String, u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResearchQueueSource {
+    #[default]
+    Player,
+    Leader,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum QueuedResearchTarget {
+    Finite { node_id: String },
+    Repeatable { track_id: String, level: u32 },
+}
+
+impl QueuedResearchTarget {
+    #[must_use]
+    pub fn stable_key(&self) -> String {
+        match self {
+            Self::Finite { node_id } => format!("finite:{node_id}"),
+            Self::Repeatable { track_id, level } => {
+                format!("repeatable:{track_id}:{level}")
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueuedResearch {
+    pub target: QueuedResearchTarget,
+    #[serde(default)]
+    pub source: ResearchQueueSource,
+    pub base_cost: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub funded_cost: Option<f64>,
+    pub required_seconds: f64,
+    #[serde(default)]
+    pub progress_seconds: f64,
 }
 
 #[must_use]
@@ -567,6 +626,8 @@ pub fn create_upgrade_tree_state() -> UpgradeTreeState {
     UpgradeTreeState {
         owned_node_ids: Vec::new(),
         research_points: 0.0,
+        research_queue: Vec::new(),
+        repeatable_levels: BTreeMap::new(),
     }
 }
 
@@ -575,6 +636,8 @@ pub fn serialize_upgrade_tree_state(state: &UpgradeTreeState) -> UpgradeTreeStat
     UpgradeTreeState {
         owned_node_ids: state.owned_node_ids.clone(),
         research_points: state.research_points,
+        research_queue: state.research_queue.clone(),
+        repeatable_levels: state.repeatable_levels.clone(),
     }
 }
 
@@ -623,10 +686,55 @@ pub fn deserialize_upgrade_tree_state(raw: impl DeserializeUpgradeTreeInput) -> 
         .and_then(Value::as_f64)
         .filter(|points| points.is_finite())
         .map_or(0.0, |points| js_max(0.0, points));
+    let research_queue = obj
+        .get("researchQueue")
+        .cloned()
+        .and_then(|value| serde_json::from_value::<Vec<QueuedResearch>>(value).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|entry| {
+            entry.base_cost.is_finite()
+                && entry.base_cost >= 0.0
+                && entry.required_seconds.is_finite()
+                && entry.required_seconds >= 60.0
+                && entry.progress_seconds.is_finite()
+                && entry.progress_seconds >= 0.0
+                && entry
+                    .funded_cost
+                    .is_none_or(|cost| cost.is_finite() && cost >= 0.0)
+                && match &entry.target {
+                    QueuedResearchTarget::Finite { node_id } => {
+                        research_catalog().contains(node_id)
+                    }
+                    QueuedResearchTarget::Repeatable { track_id, level } => {
+                        crate::research_tracks::technology_catalog()
+                            .get(track_id)
+                            .is_some_and(|track| track.is_repeatable())
+                            && *level > crate::research_tracks::FINITE_TRACK_LEVELS
+                    }
+                }
+        })
+        .take(crate::research_tracks::MAX_RESEARCH_QUEUE)
+        .collect();
+    let repeatable_levels = obj
+        .get("repeatableLevels")
+        .cloned()
+        .and_then(|value| serde_json::from_value::<BTreeMap<String, u32>>(value).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(track_id, level)| {
+            crate::research_tracks::technology_catalog()
+                .get(track_id)
+                .is_some_and(|track| track.is_repeatable())
+                && *level >= crate::research_tracks::FINITE_TRACK_LEVELS
+        })
+        .collect();
 
     UpgradeTreeState {
         owned_node_ids,
         research_points,
+        research_queue,
+        repeatable_levels,
     }
 }
 
@@ -745,6 +853,261 @@ pub fn unlockable_nodes(state: &UpgradeTreeState) -> Vec<&'static UpgradeNode> {
         .collect()
 }
 
+fn append_missing_path(
+    state: &UpgradeTreeState,
+    node_id: &str,
+    visiting: &mut BTreeSet<String>,
+    ordered: &mut Vec<String>,
+) -> Result<(), &'static str> {
+    let Some(node) = research_catalog().get(node_id) else {
+        return Err("Unknown technology.");
+    };
+    if is_owned(state, node_id)
+        || state.research_queue.iter().any(|entry| {
+            matches!(
+                &entry.target,
+                QueuedResearchTarget::Finite { node_id: queued } if queued == node_id
+            )
+        })
+        || ordered.iter().any(|queued| queued == node_id)
+    {
+        return Ok(());
+    }
+    if !visiting.insert(node_id.to_owned()) {
+        return Err("Research path is cyclic.");
+    }
+    for prerequisite in &node.prerequisites {
+        append_missing_path(state, prerequisite, visiting, ordered)?;
+    }
+    visiting.remove(node_id);
+    ordered.push(node_id.to_owned());
+    Ok(())
+}
+
+/// Add a complete prerequisite path in stable topological order.
+pub fn queue_research_path(
+    state: &mut UpgradeTreeState,
+    node_id: &str,
+    source: ResearchQueueSource,
+) -> Result<usize, &'static str> {
+    let mut path = Vec::new();
+    append_missing_path(state, node_id, &mut BTreeSet::new(), &mut path)?;
+    if state.research_queue.len().saturating_add(path.len())
+        > crate::research_tracks::MAX_RESEARCH_QUEUE
+    {
+        return Err("The research queue can hold at most 64 studies.");
+    }
+    let added = path.len();
+    for node_id in path {
+        let node = research_catalog()
+            .get(&node_id)
+            .expect("validated queued node exists");
+        state.research_queue.push(QueuedResearch {
+            target: QueuedResearchTarget::Finite { node_id },
+            source,
+            base_cost: node.cost,
+            funded_cost: None,
+            required_seconds: crate::research_tracks::base_research_duration_seconds(node.cost),
+            progress_seconds: 0.0,
+        });
+    }
+    Ok(added)
+}
+
+/// Queue the next repeatable level after every owned and already-planned level.
+pub fn queue_repeatable_level(
+    state: &mut UpgradeTreeState,
+    track_id: &str,
+    source: ResearchQueueSource,
+) -> Result<u32, &'static str> {
+    let Some(track) = crate::research_tracks::technology_catalog().get(track_id) else {
+        return Err("Unknown technology track.");
+    };
+    if !track.is_repeatable()
+        || track
+            .node_indices
+            .iter()
+            .any(|index| !is_owned(state, &research_catalog().nodes()[*index].id))
+    {
+        return Err("Complete the finite technology levels first.");
+    }
+    if state.research_queue.len() >= crate::research_tracks::MAX_RESEARCH_QUEUE {
+        return Err("The research queue can hold at most 64 studies.");
+    }
+    let planned = state
+        .research_queue
+        .iter()
+        .filter_map(|entry| match &entry.target {
+            QueuedResearchTarget::Repeatable {
+                track_id: queued,
+                level,
+            } if queued == track_id => Some(*level),
+            _ => None,
+        })
+        .max()
+        .unwrap_or_else(|| {
+            state
+                .repeatable_levels
+                .get(track_id)
+                .copied()
+                .unwrap_or(crate::research_tracks::FINITE_TRACK_LEVELS)
+        });
+    let level = planned.saturating_add(1);
+    let Some(cost) = crate::research_tracks::repeatable_cost(track_id, level) else {
+        return Err("That technology cannot repeat.");
+    };
+    state.research_queue.push(QueuedResearch {
+        target: QueuedResearchTarget::Repeatable {
+            track_id: track_id.to_owned(),
+            level,
+        },
+        source,
+        base_cost: cost,
+        funded_cost: None,
+        required_seconds: crate::research_tracks::base_research_duration_seconds(cost),
+        progress_seconds: 0.0,
+    });
+    Ok(level)
+}
+
+fn target_depends_on(target: &QueuedResearchTarget, removed: &BTreeSet<String>) -> bool {
+    match target {
+        QueuedResearchTarget::Finite { node_id } => research_catalog()
+            .get(node_id)
+            .is_some_and(|node| node.prerequisites.iter().any(|id| removed.contains(id))),
+        QueuedResearchTarget::Repeatable { track_id, level } => removed.contains(&format!(
+            "repeatable:{track_id}:{}",
+            level.saturating_sub(1)
+        )),
+    }
+}
+
+/// Remove one entry and queued descendants, refunding every reserved cost.
+pub fn remove_queued_research(
+    state: &mut UpgradeTreeState,
+    stable_key: &str,
+) -> Result<usize, &'static str> {
+    let Some(index) = state
+        .research_queue
+        .iter()
+        .position(|entry| entry.target.stable_key() == stable_key)
+    else {
+        return Err("Queued technology not found.");
+    };
+    let mut removed_keys = BTreeSet::new();
+    let removed_target = &state.research_queue[index].target;
+    match removed_target {
+        QueuedResearchTarget::Finite { node_id } => {
+            removed_keys.insert(node_id.clone());
+        }
+        target => {
+            removed_keys.insert(target.stable_key());
+        }
+    }
+    let mut remove = vec![false; state.research_queue.len()];
+    remove[index] = true;
+    loop {
+        let mut changed = false;
+        for (entry_index, entry) in state.research_queue.iter().enumerate() {
+            if remove[entry_index] || !target_depends_on(&entry.target, &removed_keys) {
+                continue;
+            }
+            remove[entry_index] = true;
+            match &entry.target {
+                QueuedResearchTarget::Finite { node_id } => {
+                    removed_keys.insert(node_id.clone());
+                }
+                target => {
+                    removed_keys.insert(target.stable_key());
+                }
+            }
+            changed = true;
+        }
+        if !changed {
+            break;
+        }
+    }
+    let mut refund = 0.0;
+    let mut removed = 0;
+    let mut kept = Vec::with_capacity(state.research_queue.len());
+    for (entry_index, entry) in state.research_queue.drain(..).enumerate() {
+        if remove[entry_index] {
+            refund += entry.funded_cost.unwrap_or(0.0);
+            removed += 1;
+        } else {
+            kept.push(entry);
+        }
+    }
+    state.research_queue = kept;
+    state.research_points += refund;
+    Ok(removed)
+}
+
+fn queue_order_is_valid(state: &UpgradeTreeState, queue: &[QueuedResearch]) -> bool {
+    let mut planned = state
+        .owned_node_ids
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let mut repeatable = state.repeatable_levels.clone();
+    for entry in queue {
+        match &entry.target {
+            QueuedResearchTarget::Finite { node_id } => {
+                let Some(node) = research_catalog().get(node_id) else {
+                    return false;
+                };
+                if !node
+                    .prerequisites
+                    .iter()
+                    .all(|prerequisite| planned.contains(prerequisite))
+                {
+                    return false;
+                }
+                planned.insert(node_id.clone());
+            }
+            QueuedResearchTarget::Repeatable { track_id, level } => {
+                let current = repeatable
+                    .get(track_id)
+                    .copied()
+                    .unwrap_or(crate::research_tracks::FINITE_TRACK_LEVELS);
+                if *level != current.saturating_add(1) {
+                    return false;
+                }
+                repeatable.insert(track_id.clone(), *level);
+            }
+        }
+    }
+    true
+}
+
+pub fn move_queued_research(
+    state: &mut UpgradeTreeState,
+    stable_key: &str,
+    direction: i8,
+) -> Result<(), &'static str> {
+    let Some(index) = state
+        .research_queue
+        .iter()
+        .position(|entry| entry.target.stable_key() == stable_key)
+    else {
+        return Err("Queued technology not found.");
+    };
+    let target_index = if direction < 0 {
+        index.checked_sub(1)
+    } else {
+        index
+            .checked_add(1)
+            .filter(|next| *next < state.research_queue.len())
+    }
+    .ok_or("That technology is already at the queue edge.")?;
+    state.research_queue.swap(index, target_index);
+    if !queue_order_is_valid(state, &state.research_queue) {
+        state.research_queue.swap(index, target_index);
+        return Err("A technology cannot move across its prerequisite.");
+    }
+    Ok(())
+}
+
 fn with_owned(state: &UpgradeTreeState, id: &str) -> Vec<String> {
     let mut owned = state.owned_node_ids.clone();
     owned.push(id.to_owned());
@@ -801,6 +1164,8 @@ pub fn god_purchase(state: &UpgradeTreeState, id: &str) -> PurchaseResult {
         state: UpgradeTreeState {
             owned_node_ids: with_owned(state, id),
             research_points: state.research_points,
+            research_queue: state.research_queue.clone(),
+            repeatable_levels: state.repeatable_levels.clone(),
         },
         blessings_cost: node.cost,
         reason: None,
@@ -837,6 +1202,8 @@ pub fn accrue_research(state: &UpgradeTreeState, points: f64) -> UpgradeTreeStat
     UpgradeTreeState {
         owned_node_ids: state.owned_node_ids.clone(),
         research_points: js_max(0.0, state.research_points + points),
+        research_queue: state.research_queue.clone(),
+        repeatable_levels: state.repeatable_levels.clone(),
     }
 }
 
@@ -889,6 +1256,8 @@ pub fn cat_purchase(state: &UpgradeTreeState, id: &str) -> AutoUnlockResult {
         state: UpgradeTreeState {
             owned_node_ids: with_owned(state, id),
             research_points: state.research_points - node.cost,
+            research_queue: state.research_queue.clone(),
+            repeatable_levels: state.repeatable_levels.clone(),
         },
         node_id: Some(id.to_owned()),
     }
@@ -924,6 +1293,8 @@ pub fn cat_auto_unlock(state: &UpgradeTreeState) -> AutoUnlockResult {
         state: UpgradeTreeState {
             owned_node_ids: with_owned(state, &node.id),
             research_points: state.research_points - node.cost,
+            research_queue: state.research_queue.clone(),
+            repeatable_levels: state.repeatable_levels.clone(),
         },
         node_id: Some(node.id.clone()),
     }
@@ -1185,6 +1556,38 @@ where
     resolved
 }
 
+/// Resolve finite node payloads plus approved infinite global modifiers.
+#[must_use]
+pub fn resolve_effects_for_state(state: &UpgradeTreeState) -> ResolvedEffects {
+    let mut resolved = resolve_effects(state.owned_node_ids.iter());
+    for (track_id, level) in &state.repeatable_levels {
+        let extra = level.saturating_sub(crate::research_tracks::FINITE_TRACK_LEVELS);
+        if extra == 0 {
+            continue;
+        }
+        let Some(track) = crate::research_tracks::technology_catalog().get(track_id) else {
+            continue;
+        };
+        if !track.is_repeatable() {
+            continue;
+        }
+        let Some(effect_id) = track.node_indices.last().and_then(|index| {
+            research_catalog().nodes()[*index]
+                .payloads
+                .iter()
+                .find_map(|payload| match payload {
+                    ResearchPayload::Modify { effect_id, .. } => Some(effect_id.as_str()),
+                    _ => None,
+                })
+        }) else {
+            continue;
+        };
+        resolved.apply_named_effect(effect_id, EffectOperation::Add, 0.03 * f64::from(extra));
+    }
+    resolved.spoilage_resistance = resolved.spoilage_resistance.clamp(0.0, 0.95);
+    resolved
+}
+
 fn js_max(left: f64, right: f64) -> f64 {
     if left.is_nan() || right.is_nan() {
         f64::NAN
@@ -1219,6 +1622,8 @@ mod tests {
                 .map(|node_id| (*node_id).to_owned())
                 .collect(),
             research_points,
+            research_queue: Vec::new(),
+            repeatable_levels: std::collections::BTreeMap::new(),
         }
     }
 
@@ -1237,19 +1642,29 @@ mod tests {
     }
 
     #[test]
-    fn rail_and_shipping_nodes_are_era_3_escalating_cost_with_the_documented_prerequisites() {
+    fn rail_and_shipping_nodes_are_era_4_convergence_points() {
         let rail = get_node(RAIL_NODE_ID).expect("rail node exists");
-        assert_eq!(rail.era, 3);
+        assert_eq!(rail.era, 4);
         assert_eq!(rail.cost, 20.0);
-        assert_eq!(rail.prerequisites, [MOUNTAINEERING_NODE_ID]);
+        assert_eq!(
+            rail.prerequisites,
+            [MOUNTAINEERING_NODE_ID, "civil_engineering", "metal_tools"]
+        );
         assert!(rail.unlocks.buildings.is_none());
         assert!(rail.unlocks.jobs.is_none());
         assert!(rail.unlocks.effects.is_none());
 
         let shipping = get_node(SHIPPING_NODE_ID).expect("shipping node exists");
-        assert_eq!(shipping.era, 3);
+        assert_eq!(shipping.era, 4);
         assert_eq!(shipping.cost, 24.0);
-        assert_eq!(shipping.prerequisites, ["sawmill"]);
+        assert_eq!(
+            shipping.prerequisites,
+            [
+                "carpentry_preparation",
+                "civil_engineering",
+                "organized_provisioning"
+            ]
+        );
         assert!(shipping.unlocks.buildings.is_none());
         assert!(shipping.unlocks.jobs.is_none());
         assert!(shipping.unlocks.effects.is_none());
@@ -1305,7 +1720,10 @@ mod tests {
             assert_eq!(UPGRADE_NODE_BY_ID.get(node.id), Some(node));
             assert_eq!(get_node(node.id), Some(node));
             for prerequisite in node.prerequisites {
-                assert!(UPGRADE_NODE_BY_ID.contains_key(prerequisite));
+                assert!(
+                    crate::research_catalog::research_catalog().contains(prerequisite),
+                    "{prerequisite} is missing from the authoritative catalog"
+                );
             }
         }
         assert!(get_node("does-not-exist").is_none());
@@ -1333,7 +1751,10 @@ mod tests {
             Some(&[BuildingType::Field.as_str()][..])
         );
         let mill = get_node("milling").expect("milling node");
-        assert_eq!(mill.prerequisites, ["irrigation"]);
+        assert_eq!(
+            mill.prerequisites,
+            ["irrigation", "masonry", "workshop_foundations"]
+        );
         assert_eq!(
             mill.unlocks.buildings,
             Some(&[BuildingType::Mill.as_str()][..])
@@ -1730,7 +2151,10 @@ mod tests {
             .iter()
             .filter(|node| crate::research_catalog::research_node_is_implemented(node))
             .count();
-        assert_eq!(implemented_count, 487);
+        assert_eq!(
+            implemented_count,
+            crate::research_catalog::RESEARCH_NODE_COUNT
+        );
         while state.owned_node_ids.len() < implemented_count {
             let next = crate::research_catalog::research_catalog()
                 .nodes()
@@ -1838,7 +2262,10 @@ mod tests {
     #[test]
     fn every_generated_recipe_resource_and_building_service_is_live() {
         let catalog = crate::research_catalog::research_catalog();
-        assert_eq!(catalog.nodes().len(), 487);
+        assert_eq!(
+            catalog.nodes().len(),
+            crate::research_catalog::RESEARCH_NODE_COUNT
+        );
         assert!(catalog.nodes().iter().all(|node| !node.is_future_content()));
         let textile_sources = catalog.get("textile_work_sources").unwrap();
         let state = state_with(
@@ -1909,5 +2336,115 @@ mod tests {
             ]
         );
         assert_eq!(restored.research_points, 12.5);
+    }
+
+    #[test]
+    fn queue_path_is_topological_and_removal_cascades_with_reserved_refund() {
+        let mut state = create_upgrade_tree_state();
+        let added =
+            super::queue_research_path(&mut state, "masonry", super::ResearchQueueSource::Player)
+                .unwrap();
+        assert!(added >= 4);
+        assert_eq!(
+            state.research_queue[0].target,
+            super::QueuedResearchTarget::Finite {
+                node_id: "research_hut".to_owned()
+            }
+        );
+        assert_eq!(
+            state.research_queue.last().unwrap().target,
+            super::QueuedResearchTarget::Finite {
+                node_id: "masonry".to_owned()
+            }
+        );
+        assert!(
+            super::move_queued_research(&mut state, "finite:masonry", -1).is_err(),
+            "a target must not cross its prerequisite"
+        );
+
+        state.research_queue[0].funded_cost = Some(4.5);
+        let removed = super::remove_queued_research(&mut state, "finite:research_hut").unwrap();
+        assert_eq!(removed, added);
+        assert!(state.research_queue.is_empty());
+        assert_eq!(state.research_points, 4.5);
+    }
+
+    #[test]
+    fn queue_path_collects_every_branch_of_a_multi_prerequisite_tool_gate() {
+        let mut state = create_upgrade_tree_state();
+        super::queue_research_path(
+            &mut state,
+            "toolmaking_staples",
+            super::ResearchQueueSource::Player,
+        )
+        .unwrap();
+        let queued = state
+            .research_queue
+            .iter()
+            .filter_map(|entry| match &entry.target {
+                super::QueuedResearchTarget::Finite { node_id } => Some(node_id.as_str()),
+                super::QueuedResearchTarget::Repeatable { .. } => None,
+            })
+            .collect::<Vec<_>>();
+        for required in [
+            "workshop_foundations",
+            "stonecraft_preparation",
+            "stone_tools",
+            "smithy_foundations",
+            "metallurgy_preparation",
+            "metal_tools",
+            "toolmaking_staples",
+        ] {
+            assert!(queued.contains(&required), "missing {required}: {queued:?}");
+        }
+        for (index, node_id) in queued.iter().enumerate() {
+            let node = crate::research_catalog::research_catalog()
+                .get(node_id)
+                .unwrap();
+            for prerequisite in &node.prerequisites {
+                assert!(
+                    queued[..index].contains(&prerequisite.as_str()),
+                    "{node_id} precedes {prerequisite}: {queued:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn repeatable_queue_uses_sequential_levels_and_survives_save_round_trip() {
+        let track = crate::research_tracks::technology_catalog()
+            .get("scholarship")
+            .unwrap();
+        let mut state = create_upgrade_tree_state();
+        state.owned_node_ids = track
+            .node_indices
+            .iter()
+            .map(|index| {
+                crate::research_catalog::research_catalog().nodes()[*index]
+                    .id
+                    .clone()
+            })
+            .collect();
+        assert_eq!(
+            super::queue_repeatable_level(
+                &mut state,
+                "scholarship",
+                super::ResearchQueueSource::Player
+            )
+            .unwrap(),
+            11
+        );
+        assert_eq!(
+            super::queue_repeatable_level(
+                &mut state,
+                "scholarship",
+                super::ResearchQueueSource::Player
+            )
+            .unwrap(),
+            12
+        );
+        let encoded = serde_json::to_value(&state).unwrap();
+        let restored = deserialize_upgrade_tree_state(encoded);
+        assert_eq!(restored.research_queue, state.research_queue);
     }
 }

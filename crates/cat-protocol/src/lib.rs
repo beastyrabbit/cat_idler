@@ -1238,6 +1238,20 @@ pub struct ResearchSnapshot {
     pub researcher_count: u32,
     pub blessings: f64,
     pub next_target: Option<ResearchTarget>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub queue: Vec<ResearchQueueEntrySnapshot>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub repeatable_levels: BTreeMap<String, u32>,
+    #[serde(default = "one_f64")]
+    pub research_cost_multiplier: f64,
+    #[serde(default = "one_f64")]
+    pub research_time_multiplier: f64,
+    #[serde(default)]
+    pub points_per_hour: f64,
+}
+
+const fn one_f64() -> f64 {
+    1.0
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1246,6 +1260,46 @@ pub struct ResearchTarget {
     pub id: String,
     pub name: String,
     pub cost: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResearchQueueSource {
+    #[default]
+    Player,
+    Leader,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ResearchQueueTargetSnapshot {
+    Finite { node_id: String },
+    Repeatable { track_id: String, level: u32 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResearchQueueStatus {
+    #[default]
+    WaitingForPoints,
+    WaitingForPrerequisite,
+    WaitingForResearchers,
+    Active,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResearchQueueEntrySnapshot {
+    pub key: String,
+    pub target: ResearchQueueTargetSnapshot,
+    pub name: String,
+    pub source: ResearchQueueSource,
+    pub status: ResearchQueueStatus,
+    pub base_cost: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub funded_cost: Option<f64>,
+    pub progress_seconds: f64,
+    pub required_seconds: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1901,6 +1955,40 @@ pub enum ClientAction {
         nickname: String,
         sig: String,
         node_id: String,
+    },
+    /// Queue one finite target together with every missing prerequisite.
+    QueueResearchPath {
+        session_id: String,
+        nickname: String,
+        sig: String,
+        node_id: String,
+    },
+    /// Queue the next level of a completed global-modifier track.
+    QueueRepeatableResearch {
+        session_id: String,
+        nickname: String,
+        sig: String,
+        track_id: String,
+    },
+    MoveQueuedResearch {
+        session_id: String,
+        nickname: String,
+        sig: String,
+        key: String,
+        direction: i8,
+    },
+    RemoveQueuedResearch {
+        session_id: String,
+        nickname: String,
+        sig: String,
+        key: String,
+    },
+    /// Begin the next physically permitted level of one completed building.
+    UpgradeBuilding {
+        session_id: String,
+        nickname: String,
+        sig: String,
+        building_id: String,
     },
     /// Convert a safe food/refined surplus into shrine blessings immediately.
     OfferTithe {
@@ -3145,6 +3233,11 @@ mod tests {
                         name: "Water Wisdom".to_string(),
                         cost: 5.0,
                     }),
+                    queue: Vec::new(),
+                    repeatable_levels: BTreeMap::new(),
+                    research_cost_multiplier: 1.0,
+                    research_time_multiplier: 1.0,
+                    points_per_hour: 0.0,
                 },
                 election: Some(ElectionSnapshot {
                     id: "election_1".to_string(),

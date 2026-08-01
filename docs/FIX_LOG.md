@@ -27,6 +27,169 @@ sprite that motivated the change.
 
 ## Verified fixes
 
+## 2026-07-24 — Entry screen stages a mature showcase village
+
+**Problem:** The old loading screen was one oversized parchment form. Input focus was a subtle
+border change, selected destinations were easy to miss, server readiness was hidden behind failed
+submissions, returning players could not see their remembered village, and compact layouts could
+clip the required action. Showing the player's new founding village behind the charter was
+truthful but visually communicated an empty beginning rather than the long-term fantasy.
+
+**Fix:** `landing_showcase.rs` now owns a deterministic, client-only "two years later" settlement
+at a dedicated off-map coordinate. It reuses the shipped grass, flower, road-autotile, wall,
+residential, cutaway-station, prop, cat-atlas, hat, animation, and depth grammar without creating a
+simulation snapshot. The 69×43-tile scene contains 42 authored lots across more than 18 building
+types, four farm districts, warehouse yards, civic plazas, orchards, two gates, over 400 connected
+street tiles, and 60 independently routed cats. It fills the 72-tile landing overview at both
+1920×1080 and 3840×2160. Entering the game moves the camera back to the authoritative village and
+stops showcase traffic; no showcase entity can send an action, mutate `LatestSnapshot`, advance
+`cat-sim`, persist, or affect the player save.
+
+The banner now contains only `IDLE CAT FOREST` in one explicitly bounded title row. Focus uses an
+accent border, fill, label, rail, and visible cursor.
+Destination cards show real village names and populations, an `AUSGEWÄHLT` badge, and an explicit
+selection summary. Persisted destinations are preselected only after the live snapshot confirms
+them and never auto-enter. Loading and every incomplete state have adjacent helper copy and a
+disabled primary action. Compact layouts stack cards, give the body cursor-bounded wheel ownership,
+and keep the helper/action in a fixed footer.
+
+**Evidence:** Eight focused start-screen tests, three mature-showcase structure tests, and all 189
+`cat-client` library tests pass. Strict
+Clippy passes for `cat-client`, `cat-sim`, `cat-protocol`, and `cat-server`; formatting, the diff
+check, all 76 workspace smoke tests, and the final optimized WASM build pass. Playwright exercised
+the fresh development bundle at 3840×2160 and 1920×1080 against isolated custom ports. Captures
+verified the full-screen mature settlement, title-only banner at 100% and 130% interface scale,
+resolution-stable framing, absent gameplay chrome, and visibly changing cat traffic.
+The final run reported zero application errors and one Chromium preload warning. The browser,
+static host, authoritative server, both custom ports, and temporary captures were closed or
+removed after inspection.
+
+## 2026-07-23 — Research paths converge across disciplines
+
+**Problem:** The vertical tree made progression direction readable, but most choices still had one
+incoming line. A player could follow a branch downward without comparing dependencies elsewhere,
+and cross-discipline gates on later stages of collapsed building and production tracks were hidden
+from the player-facing graph.
+
+**Fix:** Eight live junction studies now merge practical disciplines: Stone Tools, Metal Tools,
+Precision Tools, Civil Engineering, Preservation Science, Organized Provisioning, Public
+Administration, and Combined Arms. Early milestones and late transport/housing advances also use
+logical multi-prerequisite gates. Collapsed family cards project external requirements from every
+stage, while a regression guard keeps the displayed graph acyclic and requires at least 24 visible
+convergence choices. The authoritative catalog now contains 495 raw studies, normalized to 88
+catalog rows and 228 graph nodes. Every junction has distinct tracked art, a live modifier, and two
+or three independently meaningful prerequisites.
+
+**Evidence:** The focused catalog, track, queue, and research-UI suites pass 59 tests; all 176
+`cat-client` library tests, strict Clippy for `cat-sim`, `cat-protocol`, `cat-server`, and
+`cat-client`, formatting, the diff check, and all 76 workspace smoke tests pass. A fresh release
+WASM bundle ran in Playwright at 1024×768 on isolated ports `18088` and `18796`. Settled captures
+verified the 228-node overview; the two-input Stone Tools path; the three-input Metal Tools path;
+semantic junction icons; readable forward connectors; fixed catalog/inspector columns; and
+mouse-wheel tree panning. The browser reported zero application errors. Its five warnings were
+one Chromium preload limitation and four expected WebGL screenshot readback stalls. The game page,
+static host, authoritative server, custom ports, temporary database, and temporary captures were
+closed or removed after inspection.
+
+## 2026-07-23 — Research uses a vertical focusable progression tree
+
+**Problem:** The normalized research planner still rendered one large information-heavy card per
+track in a left-to-right graph. It hid the actual level progression, mixed details into every
+node, made dependency direction difficult to follow, and let canvas wheel handling compete with
+the independently scrollable catalog.
+
+**Fix:** The canvas now uses compact icon-and-name nodes. Ordinary milestones, buildings, and
+production families keep one recognizable node; global modifiers expose levels 1–10 followed by
+their own infinite terminal. Prerequisites flow top-to-bottom at a fixed readable scale with
+larger tier gaps. No selection shows the full graph; selection shows the complete ancestor-and-
+descendant subgraph and moves all detail into the inspector. The **Full tree** action clears that
+focus. Focus mode compacts the induced graph around the canvas centre instead of leaving relevant
+cards at their full-tree coordinates. Wheel input pans the graph only while the pointer is over the
+graph, so the catalog and inspector retain their own natural scroll ownership.
+
+**Evidence:** The focused research regression suite passes all eight layout, closure, level,
+icon, queue, and compact-focus tests; all 174 `cat-client` library tests and strict client Clippy
+pass. A booted native client at 1024×768 verified the full 220-study overview, icon-and-name cards,
+separate catalog, selected inspector, centered `Research Hut → Scholarship 1 → Scholarship 2 → …`
+focus chain, and fast direct drag panning against the isolated game server on port `18795`.
+Playwright also loaded the optimized WASM module and complete asset set from custom port `18087`;
+the shared Chromium renderer was then lost under host resource pressure before it returned a
+frame, without a Rust or JavaScript application error. The native game, Playwright pages, static
+server, game server, both custom ports, test databases, and temporary captures were closed or
+removed after inspection.
+
+## 2026-07-23 — Research is a durable technology planner
+
+**Problem:** Even after the dependency layout improvements, the screen exposed all 487 generated
+ledger nodes. Players could not compare meaningful paths, could not plan unaffordable prerequisites,
+and research completed as an instant currency purchase. Building research also had no physical
+follow-through, so a permit and an upgraded building were effectively the same thing.
+
+**Fix:** The stable raw ledger is now normalized into 80 player-facing tracks with semantic icons:
+milestones, building families, production families, and finite-then-repeatable global modifiers.
+The screen uses a scrollable catalog/queue, one connected reactive graph, and a selected-track
+inspector. Selecting a target queues its complete missing path. Funding, partial timed progress,
+reorder constraints, removal refunds, offline catch-up, daily Leader fallback, time/cost reductions,
+and infinite levels persist authoritatively. Physical buildings have researched level permits but
+must still be upgraded through an offline construction job from their inspector.
+
+**Evidence:** Playwright exercised the WASM client at 1024×768 on isolated ports `18086` and
+`18794`. It caught and drove the fix for one Bevy query-conflict panic, then the fresh final run
+reported zero console errors. Settled captures verified the 80-track catalog scrollbar, contained
+queue controls, disabled edge moves, connected overview, stronger selected-branch zoom, concise
+inspector action, and physical **Upgrade to level 2** building button. Strict Clippy passes for the
+four touched crates, the workspace smoke profile passes all 76 tests, focused normalized-track and
+queue tests pass, formatting and the WASM build pass. The Playwright page, static server,
+authoritative game server, custom ports, and temporary database were closed or removed afterward.
+
+## 2026-07-23 — Research progression is spaced and icon-led
+
+**Problem:** The persistent dependency backbone made the graph truthful, but dense layers still
+read as one large text block. Branch changes had the same spacing as sibling stages, card
+silhouettes were nearly identical, and players had to read every title before they could recognize
+the route toward water, housing, craft, food, defense, or knowledge outcomes.
+
+**Fix:** The prerequisite-derived layout now inserts large gaps between the four root branches and
+smaller gaps when a visual parent or semantic family changes. Cards name their main branch and
+step, lead with a semantic pixel-art icon, and reserve text for the study title and compact state.
+All 487 studies resolve through `research_icon_path()` to tracked existing game art; more than 30
+icons cover buildings, resources, work, travel, farming, scholarship, storage, and combat. Stages
+within one family deliberately share an icon so they read as a progression track. The inspector
+mirrors the selected icon, and the scale-aware root overview fits all four first-level branches at
+100% and 130%.
+
+**Evidence:** Playwright exercised the WASM client against isolated ports `18085` and `18793` at
+1024×768. Root and selected-path captures at 100% and 130% showed distinct branch gaps, complete
+first-level cards, readable icons, continuous routes, and a contained inspector. Selecting
+Waterworks Sources visibly traced Research Hut → Water Carriers → Waterworks Sources with the
+shared water icon. A fresh settled browser session reported zero application errors. All 186
+`cat-client` tests and all 76 workspace smoke tests pass; strict `cat-client` Clippy, formatting,
+the diff check, and the `cat-web` wasm32 build pass. The Playwright page and both temporary game
+servers were closed after capture.
+
+## 2026-07-23 — Research has a persistent visual backbone
+
+**Problem:** The prerequisite-derived layout was technically one tree, but almost every connector
+was hidden until its study was selected. Cards therefore looked like floating columns rather than
+one hierarchy, filtering removed their context, and raw-window centering pushed the root toward
+the inspector at enlarged interface scales.
+
+**Fix:** Every non-root study now receives one deterministic primary visual parent from its nearest
+prerequisites. Those 486 elbow routes remain visible as the tree's category-accented backbone;
+additional DAG prerequisites appear as selected-path cross-links. Alternating depth bands and
+`Step N` card labels expose progression, the root overview shows three levels and four main
+branches, and search/category results retain muted prerequisite ancestors. Root centering and
+overview zoom now use the shell's effective scaled viewport, preserving the same physical
+readability and structural extent at 100% and 130%.
+
+**Evidence:** Playwright exercised the WASM client against isolated ports `18084` and `18792` at
+1024×768. Root, selected-path, filtered-context, and 130% captures showed a centered single tree,
+three visible levels, persistent routes, a contained inspector, and no page overflow. A fresh
+settled browser session reported zero application errors. All 185 `cat-client` tests and all 76
+workspace smoke tests pass; strict `cat-client` Clippy, formatting, the diff check, and the
+`cat-web` wasm32 build pass. The Playwright page and both temporary game servers were closed after
+capture.
+
 ## 2026-07-22 — Research is one prerequisite-derived tree
 
 **Problem:** The first Research-atlas correction improved contrast and navigation but retained the

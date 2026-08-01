@@ -1425,6 +1425,21 @@ fn action_authentication(action: &ClientAction) -> ActionAuthentication<'_> {
         | ClientAction::ResearchNode {
             session_id, sig, ..
         }
+        | ClientAction::QueueResearchPath {
+            session_id, sig, ..
+        }
+        | ClientAction::QueueRepeatableResearch {
+            session_id, sig, ..
+        }
+        | ClientAction::MoveQueuedResearch {
+            session_id, sig, ..
+        }
+        | ClientAction::RemoveQueuedResearch {
+            session_id, sig, ..
+        }
+        | ClientAction::UpgradeBuilding {
+            session_id, sig, ..
+        }
         | ClientAction::OfferTithe {
             session_id, sig, ..
         }

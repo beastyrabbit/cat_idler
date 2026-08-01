@@ -7,8 +7,10 @@
 > expanded category in the compact command dock rather than an exhaustive resource/button wall.
 > Research is presented as one single-root, left-to-right dependency tree on a dark
 > cartographer's worktable, with high-contrast paper studies, category accents, actionable state
-> colors, a complete highlighted ancestor path, and a plain paper inspector. The compact layout is
-> derived from prerequisites instead of category coordinate strips, and its canvas supports direct
+> colors, a complete highlighted ancestor path, and a plain paper inspector. Persistent elbow
+> routes, root-branch/family spacing, short branch labels, and tracked semantic pixel-art icons make
+> progression scannable without splitting the graph into catalogs. The compact layout is derived
+> from prerequisites instead of category coordinate strips, and its canvas supports direct
 > accelerated left- or middle-drag navigation.
 > The maintained surface, scrolling, scaling, and navigation rules live in
 > [`../../UI_ARCHITECTURE.md`](../../UI_ARCHITECTURE.md).

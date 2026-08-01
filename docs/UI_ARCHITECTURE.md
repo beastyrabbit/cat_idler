@@ -39,6 +39,44 @@ Never create an independently toggled full-window Boolean.
 Layer order is centralized in `ui_shell.rs`: HUD < primary screen < context panel < feedback <
 modal/start. Avoid unexplained numeric `GlobalZIndex` values for new surfaces.
 
+### Start-screen contract
+
+The entry form lives in `cat-client/src/start_screen.rs`; the staged background lives separately in
+`cat-client/src/landing_showcase.rs`. The surface is one blocking `Modal` charter over a
+save-independent, deliberately aspirational mature village. The showcase must reuse the tracked
+game art and established road, cutaway-station, prop, cat-atlas, animation, and depth grammar; it
+must not introduce a parallel visual language.
+
+The showcase occupies a dedicated off-map coordinate and a resolution-independent 72-tile camera
+overview. Wide layouts place the charter beside it; compact layouts centre the charter. The scene
+may be deterministic and authored, but it must remain strictly presentational: no
+`WorldSnapshot`/`ColonySnapshot`, server action, simulation tick, persistence write, player
+selection, or save-state mutation. Entering the game must restore the authoritative village camera
+and stop showcase motion immediately.
+
+The scene should communicate a settlement that has succeeded for roughly two in-game years:
+multiple districts, mature production chains, civic buildings, storage yards, agriculture,
+defences, connected but imperfect streets, and enough independently moving cats to feel inhabited.
+Tests enforce minimum scene dimensions, building/type diversity, road density, population, and
+route containment. Gameplay HUD, feedback, order markers, and other actionable annotations must
+not leak into the showcase.
+
+The charter owns all required information. Its banner contains only the game title; status or
+tagline copy belongs in the body. Its primary action remains outside visual competition with the
+showcase, and its body uses `spawn_vertical_scroll_area()`. Destination cards
+show the authoritative village name and population when known, keep a persistent `AUSGEWÄHLT`
+state plus the explicit `Ausgewählt: …` summary, and never auto-enter. A persisted village may be
+preselected only after the snapshot proves that destination still exists. The connection state,
+disabled primary action, and nearby helper copy must explain loading, missing name, missing
+destination, missing settlement name, and pending foundation without relying on a toast.
+
+Text inputs require a four-part focus treatment: accent border, lighter field fill, accent label,
+and left focus rail. Responsive decisions use effective dimensions. Destination cards stack below
+860 effective pixels wide or 640 high; the charter stays within 92% of the effective viewport and
+the scroll body keeps every action reachable. When adding another entry destination or field,
+extend the typed start state, readiness tests, selected-summary copy, focus order, and compact
+layout test together.
+
 ## Scrolling and sizing
 
 Use `primary_screen_node()` for a primary-screen root. Keep the title/navigation outside the
@@ -92,18 +130,46 @@ Before merging a new surface:
 
 ### Research-tree contract
 
-Research is one prerequisite graph, not one panel or lane per content category. Its presentation
-layout is derived from the catalog DAG: `research_hut` is the only root, every dependency moves to
-a later left-to-right layer, and studies in the same layer are packed without overlap around their
-parents. Building, recipe/resource, and upgrade colors are accents only; never use them to split
-the graph into separate coordinate ranges or full-height regions.
+Research is one vertical prerequisite graph shown through normalized technology tracks. The 495
+raw catalog nodes remain the stable save/effect ledger. The left catalog has 88 meaningful
+technologies. Milestones, buildings, and production families each keep one recognizable graph
+node; global modifiers expand into explicit levels 1–10 and a separate infinite terminal. This
+avoids ten visually duplicated copies of every ordinary technology while keeping the finite-to-
+infinite transition explicit. Grouping and finite-level projection live in
+`cat-sim::research_tracks`; the client must not maintain a second family list.
 
-Adding a study requires catalog data only. The client recomputes the layer count, widest layer,
-canvas bounds, centered root, cards, and connectors from that data. Do not add a screen-specific
-coordinate or resize the canvas by hand. At rest, show only the root's first branches; selecting a
-study reveals its complete prerequisite path back to the root. This keeps the 487-node overview
-legible while preserving every dependency in the model and search. Tests must retain the
-single-root, dependency-order, non-overlap, fixed-entity-count, and selected-ancestry invariants.
+The screen has three durable regions: a scrollable catalog and active queue on the left, the
+fixed-scale dependency canvas in the center, and the selected technology inspector on the right.
+With no selection the complete graph is visible. Selecting a catalog row or graph node isolates
+the selected node, every transitive prerequisite, and every transitive downstream unlock. Every
+graph node uses `research_icon_path()` and contains only its icon and name; type, description,
+requirements, effects, state, and cost belong in the inspector. Focus mode recentres and compacts
+each visible depth layer instead of preserving the wide overview coordinates.
+
+Layout is derived from prerequisites. Every dependency moves to a later top-to-bottom tier, cards
+in a tier cannot overlap, and the larger vertical gap must leave connector routes readable.
+Categories are accents, never separate trees. Scale is fixed and deliberately legible. Root
+centering and panning use the effective scaled viewport after both side columns—not raw window
+pixels.
+
+Prerequisites use AND semantics and must be visibly projected. Curated junction studies merge
+independent disciplines, and later family-stage gates are included on their collapsed card so the
+screen does not hide a real requirement. The client regression floor requires at least 24
+player-facing cards with two or more incoming paths. Raw and projected graphs must both remain
+acyclic.
+
+Wheel ownership follows pointer location. Wheel/trackpad input over the left scroll area scrolls
+only the catalog; over the canvas it pans only the tree; over the inspector it scrolls only the
+details. Canvas drag remains available for two-dimensional travel. Do not restore global wheel
+handling or Ctrl-wheel zoom.
+
+The inspector queues a full missing prerequisite path. It does not purchase immediately and does
+not require the current point balance. Queue order, funding, partial time, and repeatable level are
+authoritative snapshot state; the UI only dispatches signed queue actions. Queue controls remain
+buttons, never letter shortcuts.
+
+See [`RESEARCH_ARCHITECTURE.md`](RESEARCH_ARCHITECTURE.md) for progression, persistence, formulas,
+and the checklist for adding technologies or upgradeable buildings.
 
 ## Verification
 
