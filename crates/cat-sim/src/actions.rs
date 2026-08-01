@@ -9,6 +9,10 @@ use std::{
 use cat_protocol as proto;
 
 use crate::{
+    black_hole::{
+        BlackHoleAxis, item_darkness_requirement, resource_darkness_requirement,
+        resource_unit_value_micros, upgrade_recipe,
+    },
     entities::{self, Cat, CatActivity, MapType, Position},
     farming::{self, FarmPlot, FarmStage},
     housing::{self, HousingBuilding},
@@ -16,10 +20,6 @@ use crate::{
     items::{
         Item, ItemInstance, ItemKind, ItemLocation, ItemStore, Material, StationCompartment,
         item_weight_grams, item_workshop_id,
-    },
-    leader_director::{
-        TITHE_FOOD_AMOUNT, TITHE_FOOD_RESERVE_FLOOR, TITHE_FOOD_RESERVE_PER_CAT,
-        TITHE_REFINED_AMOUNT,
     },
     life_sim::{can_work, get_life_stage},
     migration::MigrantSpatialPhase,
@@ -49,11 +49,10 @@ use crate::{
         farm_rect_touches_claim_boundary, farm_route_is_reachable, found_colony_at,
         found_global_colony, has_frontier, has_logging_site, has_quarry_site, has_replant_site,
         has_water_site, inside_village_interior, is_farm_gather_spot_id, legal_farm_gather_spots,
-        migration_game_minute_at, occupied_farm_tiles, offering_amount, offering_metadata,
-        offering_reserve, publish_colony_spatial, reconcile_colony_stockpiles,
-        register_colony_spatial, release_farm_worker, release_role_automation,
-        road_material_reservations, sync_all_colonies_from_shared, sync_colony_from_shared,
-        village_exterior_is_road_connected, visible_offering_resource, world_tick,
+        migration_game_minute_at, occupied_farm_tiles, publish_colony_spatial,
+        reconcile_colony_stockpiles, register_colony_spatial, release_farm_worker,
+        release_role_automation, road_material_reservations, sync_all_colonies_from_shared,
+        sync_colony_from_shared, village_exterior_is_road_connected, world_tick,
     },
     zones,
 };
@@ -156,6 +155,12 @@ pub fn apply_action(
         }
         proto::ClientAction::ResearchNode { node_id, .. } => {
             with_colony(world, ctx, |colony| research_node(colony, node_id, ctx))
+        }
+        proto::ClientAction::NudgeBlackHole { .. } => {
+            with_colony(world, ctx, |colony| nudge_black_hole(colony, ctx))
+        }
+        proto::ClientAction::NudgeHuntingSite { site_id, .. } => {
+            nudge_hunting_site(world, site_id.as_deref(), ctx)
         }
         proto::ClientAction::OfferTithe { .. } => {
             with_colony(world, ctx, |colony| offer_tithe(colony, ctx))
@@ -418,7 +423,7 @@ pub fn build_snapshot(world: &WorldState, now_ms: i64, online_count: u32) -> pro
         colonies: world
             .colonies
             .iter()
-            .map(|colony| colony_snapshot(colony, now_ms))
+            .map(|colony| colony_snapshot(world, colony, now_ms))
             .collect(),
         selected_colony_id: None,
         known_villages: Vec::new(),
@@ -491,6 +496,14 @@ fn request_job(
     world_seed: u32,
     ctx: &ActionCtx,
 ) -> proto::ActionResult {
+    if matches!(
+        kind,
+        JobKind::Ritual | JobKind::CarryOffering | JobKind::PerformOffering
+    ) {
+        return fail(
+            "Shrine rituals and direct offerings were retired. Urge the Leader to feed the Hole.",
+        );
+    }
     if !matches!(
         kind,
         JobKind::SupplyFood
@@ -501,15 +514,12 @@ fn request_job(
             | JobKind::ReplantTree
             | JobKind::Fish
             | JobKind::ForageFibre
-            | JobKind::Ritual
             | JobKind::HuntExpedition
             | JobKind::Quarry
             | JobKind::Explore
             | JobKind::FetchWater
             | JobKind::TrainWarrior
             | JobKind::ExpandVillage
-            | JobKind::CarryOffering
-            | JobKind::PerformOffering
             | JobKind::HaulGatherSpot
             | JobKind::BuildHouse
     ) {
@@ -550,33 +560,10 @@ fn request_job(
         if idle_rules::has_conflicting_strategic_job(kind, &jobs) {
             return fail("That request is already in progress.");
         }
-        if kind == JobKind::Ritual
-            && (idle_rules::ritual_request_is_fresh(colony.ritual_requested_at, ctx.now_ms)
-                || jobs.iter().any(|job| job.kind == JobKind::Ritual))
-        {
-            return fail("Ritual request already pending or active.");
-        }
-    }
-
-    if kind == JobKind::Ritual {
-        colony.ritual_requested_at = Some(ctx.now_ms);
-        append_event(
-            colony,
-            ctx.now_ms,
-            EventKind::RitualReady,
-            "A ritual was requested.",
-        );
-        return ok();
     }
 
     if kind == JobKind::TrainWarrior {
         return train_warrior(colony, None, ctx);
-    }
-    if kind == JobKind::CarryOffering {
-        return offer_resource(colony, stockpiles::ResourceKind::Materials, ctx);
-    }
-    if kind == JobKind::PerformOffering {
-        return fail("An offering ritual begins only after physical shrine delivery.");
     }
     if kind == JobKind::HaulGatherSpot {
         return fail("Choose a gather spot to haul.");
@@ -1034,13 +1021,33 @@ fn research_node(
     node_id: &str,
     ctx: &ActionCtx,
 ) -> proto::ActionResult {
-    let result = upgrade_tree::cat_purchase(&colony.upgrade_tree, node_id);
+    let Some(node) = crate::research_catalog::research_catalog().get(node_id) else {
+        return fail("That technology is locked or unknown.");
+    };
+    let original_research_points = colony.upgrade_tree.research_points;
+    let uses_void_insight = node.axis_entitlement.is_some();
+    let purchase_state = if uses_void_insight {
+        let mut state = colony.upgrade_tree.clone();
+        state.research_points = colony.global_upgrade_points;
+        state
+    } else {
+        colony.upgrade_tree.clone()
+    };
+    let result = upgrade_tree::cat_purchase(&purchase_state, node_id);
     if !result.ok {
-        return fail("That technology is locked, owned, or lacks research points.");
+        return fail(if uses_void_insight {
+            "That Hole study is locked, owned, or lacks Void Insight."
+        } else {
+            "That technology is locked, owned, or lacks Research Notes."
+        });
     }
     colony.upgrade_tree = result.state;
+    if uses_void_insight {
+        colony.global_upgrade_points = colony.upgrade_tree.research_points;
+        colony.upgrade_tree.research_points = original_research_points;
+    }
     colony.last_player_activity_at = Some(ctx.now_ms);
-    let node_name = upgrade_tree::get_node(node_id).map_or(node_id, |node| node.name);
+    let node_name = node.name.as_str();
     append_event(
         colony,
         ctx.now_ms,
@@ -1050,53 +1057,92 @@ fn research_node(
     ok()
 }
 
-fn offer_tithe(colony: &mut ColonyRuntime, ctx: &ActionCtx) -> proto::ActionResult {
-    if !has_complete_building(colony, BuildingType::Shrine) {
-        return fail("This village needs a completed shrine.");
-    }
-    let population = colony
-        .cats
+fn nudge_black_hole(colony: &mut ColonyRuntime, ctx: &ActionCtx) -> proto::ActionResult {
+    let Some(building_id) = colony
+        .buildings
         .iter()
-        .filter(|cat| cat.death_time.is_none())
-        .count() as f64;
-    let food_reserve = (population * TITHE_FOOD_RESERVE_PER_CAT).max(TITHE_FOOD_RESERVE_FLOOR);
-    let food = if population > 0.0
-        && colony.resources.food >= food_reserve + f64::from(TITHE_FOOD_AMOUNT)
-    {
-        TITHE_FOOD_AMOUNT
-    } else {
-        0
+        .filter(|building| building.building_type == BuildingType::Shrine && building.is_complete)
+        .map(|building| building.id.clone())
+        .min()
+    else {
+        return fail("The Hole must be complete before the Leader can be urged to feed it.");
     };
-    let refined = if colony.resources.refined >= f64::from(TITHE_REFINED_AMOUNT) {
-        TITHE_REFINED_AMOUNT
-    } else {
-        0
-    };
-    let base_blessings = u32::from(food > 0) + u32::from(refined > 0);
-    if base_blessings == 0 {
-        return fail("No safe food or refined surplus is available.");
-    }
-    let shrine_yield = if has_complete_building(colony, BuildingType::Shrine) {
-        upgrade_tree::resolve_effects(colony.upgrade_tree.owned_node_ids.iter())
-            .shrine_blessing_yield_mult
-    } else {
-        1.0
-    };
-    let blessings = f64::from(base_blessings) * shrine_yield;
-
-    colony.resources.food -= f64::from(food);
-    colony.resources.refined -= f64::from(refined);
-    colony.global_upgrade_points += blessings;
-    colony.last_tithe_at = Some(ctx.now_ms);
-    reconcile_colony_stockpiles(colony);
+    let runtime = colony
+        .black_holes
+        .entry(building_id.clone())
+        .or_insert_with(|| crate::black_hole::BlackHoleRuntime::for_building(building_id));
+    runtime.urged_at = Some(ctx.now_ms);
     colony.last_player_activity_at = Some(ctx.now_ms);
-    append_event(
-        colony,
-        ctx.now_ms,
-        EventKind::Tithe,
-        format!("The players offered surplus stores (+{blessings} blessings)."),
-    );
     ok()
+}
+
+fn nudge_hunting_site(
+    world: &mut WorldState,
+    site_id: Option<&str>,
+    ctx: &ActionCtx,
+) -> proto::ActionResult {
+    let Some(colony_index) = world
+        .colonies
+        .iter()
+        .position(|colony| colony.id == ctx.colony_id)
+    else {
+        return fail("Selected village not found.");
+    };
+    let Some(site_id) = site_id else {
+        world.shared_spatial.hunting_nudges.remove(&ctx.colony_id);
+        world
+            .shared_spatial
+            .hunting_general_nudges
+            .insert(ctx.colony_id.clone());
+        world
+            .shared_spatial
+            .hunting_next_review_at
+            .insert(ctx.colony_id.clone(), ctx.now_ms);
+        world.colonies[colony_index].last_player_activity_at = Some(ctx.now_ms);
+        return ok();
+    };
+    let Some(site) = parse_hunting_site_id(site_id) else {
+        return fail("That Hunting Lair id is invalid.");
+    };
+    let colony = &world.colonies[colony_index];
+    if !colony.revealed_tiles.contains(&site)
+        || !world
+            .shared_spatial
+            .tiles
+            .get(&site)
+            .is_some_and(|tile| tile.tile_type == TileType::EnemyLair)
+    {
+        return fail("The village has not revealed that Hunting Lair.");
+    }
+    world
+        .shared_spatial
+        .hunting_nudges
+        .insert(ctx.colony_id.clone(), site);
+    world
+        .shared_spatial
+        .hunting_general_nudges
+        .remove(&ctx.colony_id);
+    world
+        .shared_spatial
+        .hunting_next_review_at
+        .insert(ctx.colony_id.clone(), ctx.now_ms);
+    world.colonies[colony_index].last_player_activity_at = Some(ctx.now_ms);
+    ok()
+}
+
+fn parse_hunting_site_id(site_id: &str) -> Option<TilePos> {
+    let mut parts = site_id.split(':');
+    if parts.next()? != "enemy-lair" {
+        return None;
+    }
+    let x = parts.next()?.parse().ok()?;
+    let y = parts.next()?.parse().ok()?;
+    parts.next().is_none().then_some(TilePos { x, y })
+}
+
+fn offer_tithe(colony: &mut ColonyRuntime, ctx: &ActionCtx) -> proto::ActionResult {
+    let _ = (colony, ctx);
+    fail("Tithes were retired. The Leader now decides what may safely feed the Hole.")
 }
 
 fn offer_resource(
@@ -1104,62 +1150,8 @@ fn offer_resource(
     kind: stockpiles::ResourceKind,
     ctx: &ActionCtx,
 ) -> proto::ActionResult {
-    if !has_complete_building(colony, BuildingType::Shrine) {
-        return fail("This village needs a completed shrine.");
-    }
-    let Some(amount) = offering_amount(kind) else {
-        return fail("That resource cannot be offered at the shrine.");
-    };
-    let reserve = offering_reserve(colony, kind).expect("supported offering has a reserve");
-    let resource_name = match kind {
-        stockpiles::ResourceKind::Food => "food",
-        stockpiles::ResourceKind::Herbs => "herbs",
-        stockpiles::ResourceKind::Materials => "materials",
-        _ => unreachable!("offering_amount accepted only supported resources"),
-    };
-    if stockpiles::resource_amount(&colony.resources, kind) + f64::EPSILON < reserve + amount
-        || visible_offering_resource(colony, kind) + f64::EPSILON < reserve + amount
-    {
-        return fail(format!(
-            "Not enough physically stored surplus {resource_name} for an offering."
-        ));
-    }
-    if active_or_queued_jobs(colony)
-        .iter()
-        .any(|job| matches!(job.kind, JobKind::CarryOffering | JobKind::PerformOffering))
-    {
-        return fail("A shrine offering is already in progress.");
-    }
-    let Some(cat_id) = select_best_cat(colony, Some(CatSpecialization::Ritualist)) else {
-        return fail("No available ritualist.");
-    };
-    let from = colony
-        .cats
-        .iter()
-        .find(|cat| cat.id == cat_id)
-        .map(|cat| crate::movement::WorldPos {
-            x: cat.position.x + f64::from(colony.anchor.x),
-            y: cat.position.y + f64::from(colony.anchor.y),
-        })
-        .unwrap_or_else(|| crate::movement::WorldPos {
-            x: f64::from(colony.anchor.x),
-            y: f64::from(colony.anchor.y),
-        });
-    let Some(metadata) = offering_metadata(colony, from, ctx.now_ms, kind) else {
-        return fail(format!(
-            "No reachable physical {resource_name} pile is available."
-        ));
-    };
-    queue_job(
-        colony,
-        ctx.now_ms,
-        JobKind::CarryOffering,
-        JobRequester::Player,
-        Some(cat_id),
-        metadata,
-    );
-    colony.last_player_activity_at = Some(ctx.now_ms);
-    ok()
+    let _ = (colony, kind, ctx);
+    fail("Direct offerings were retired. Use “Urge another feeding” to nudge the Leader.")
 }
 
 fn haul_gather_spot(
@@ -4368,7 +4360,521 @@ fn set_test_acceleration(world: &mut WorldState, preset: proto::AccelerationPres
     }
 }
 
-fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot {
+fn proto_black_hole_axis(axis: BlackHoleAxis) -> proto::BlackHoleAxis {
+    match axis {
+        BlackHoleAxis::Width => proto::BlackHoleAxis::Width,
+        BlackHoleAxis::Depth => proto::BlackHoleAxis::Depth,
+        BlackHoleAxis::Darkness => proto::BlackHoleAxis::Darkness,
+    }
+}
+
+fn black_hole_snapshot(
+    world: &WorldState,
+    colony: &ColonyRuntime,
+    now_ms: i64,
+) -> Option<proto::BlackHoleSnapshot> {
+    let runtime = colony.black_holes.values().next()?;
+    let level = |value| proto::BlackHoleLevel::new(value).expect("domain levels are bounded");
+    let mut researched = crate::black_hole::BlackHoleAxes::default();
+    let catalog = crate::research_catalog::research_catalog();
+    for node_id in &colony.upgrade_tree.owned_node_ids {
+        let Some(entitlement) = catalog.get(node_id).and_then(|node| node.axis_entitlement) else {
+            continue;
+        };
+        match entitlement.axis {
+            crate::research_catalog::ResearchAxis::Width => {
+                researched.width = researched.width.max(entitlement.tier);
+            }
+            crate::research_catalog::ResearchAxis::Depth => {
+                researched.depth = researched.depth.max(entitlement.tier);
+            }
+            crate::research_catalog::ResearchAxis::Darkness => {
+                researched.darkness = researched.darkness.max(entitlement.tier);
+            }
+        }
+    }
+    let axes = [
+        (BlackHoleAxis::Width, runtime.axes.width, researched.width),
+        (BlackHoleAxis::Depth, runtime.axes.depth, researched.depth),
+        (
+            BlackHoleAxis::Darkness,
+            runtime.axes.darkness,
+            researched.darkness,
+        ),
+    ]
+    .into_iter()
+    .map(
+        |(axis, physical_level, researched_level)| proto::BlackHoleAxisState {
+            axis: proto_black_hole_axis(axis),
+            physical_level: level(physical_level),
+            researched_level: level(researched_level),
+        },
+    )
+    .collect();
+    let active_feed_order = runtime.active_feed.as_ref().map(|order| {
+        let carrier_cat_id = order.job_id.as_deref().and_then(|job_id| {
+            colony
+                .jobs
+                .iter()
+                .find(|job| job.id == job_id)
+                .and_then(|job| job.assigned_cat.clone())
+        });
+        proto::BlackHoleFeedOrder {
+            id: order.id.clone(),
+            opening_index: runtime.intake.next_opening_index,
+            line: proto::BlackHoleFeedLine {
+                resource: sim_to_proto_resource_kind(order.resource),
+                planned_units: order.target_units,
+                delivered_units: order.delivered_units,
+                credited_units: order.credited_units,
+                credited_value_micros: order.credited_value_micros,
+            },
+            carrier_cat_id,
+            waiting_for_opening: runtime.next_opening_at.is_some_and(|next| next > now_ms),
+        }
+    });
+    let active_project = runtime.active_upgrade.as_ref().map(|project| {
+        let requirements = upgrade_recipe(runtime.axes, project.axis)
+            .map(|recipe| {
+                let mut requirements = recipe
+                    .consumed_resources
+                    .into_iter()
+                    .map(|requirement| proto::BlackHoleUpgradeRequirement {
+                        descriptor_id: format!("{:?}", requirement.resource).to_lowercase(),
+                        required_units: requirement.quantity,
+                    })
+                    .collect::<Vec<_>>();
+                requirements.extend(recipe.consumed_tools.into_iter().map(|requirement| {
+                    proto::BlackHoleUpgradeRequirement {
+                        descriptor_id: format!("tool_quality_{}", requirement.minimum_quality),
+                        required_units: requirement.quantity,
+                    }
+                }));
+                requirements
+            })
+            .unwrap_or_default();
+        proto::BlackHoleUpgradeProject {
+            job_id: project.job_id.clone(),
+            axis: proto_black_hole_axis(project.axis),
+            current_level: level(runtime.axes.level(project.axis)),
+            target_level: level(project.target_level),
+            requirements,
+        }
+    });
+    let accepted_resources = stockpiles::ResourceKind::ALL
+        .iter()
+        .copied()
+        .filter_map(|resource| {
+            let required = resource_darkness_requirement(resource)?;
+            (required <= runtime.axes.darkness).then(|| {
+                let visible = colony
+                    .stockpiles
+                    .iter()
+                    .filter(|pile| !pile.is_station_local())
+                    .map(|pile| stockpiles::resource_amount(&pile.contents, resource))
+                    .sum::<f64>()
+                    .floor()
+                    .max(0.0) as u32;
+                proto::BlackHoleResourceDescriptor {
+                    resource: sim_to_proto_resource_kind(resource),
+                    darkness_required: level(required),
+                    reward_micros_per_unit: resource_unit_value_micros(resource),
+                    visible_units: visible,
+                    orderable: visible > 0,
+                }
+            })
+        })
+        .collect();
+    let mut accepted_items = ItemKind::ALL
+        .iter()
+        .copied()
+        .filter_map(|kind| {
+            let required = item_darkness_requirement(kind)?;
+            (required <= runtime.axes.darkness).then(|| {
+                let stored_count = colony
+                    .items
+                    .instances()
+                    .filter(|instance| {
+                        instance.item.kind == kind
+                            && instance.item.quality <= runtime.axes.max_quality()
+                            && instance.credited
+                            && instance.active_job_id.is_none()
+                            && matches!(instance.location, ItemLocation::Stockpile { .. })
+                    })
+                    .count()
+                    .try_into()
+                    .unwrap_or(u32::MAX);
+                proto::BlackHoleItemDescriptor {
+                    kind_id: kind.as_str().to_owned(),
+                    darkness_required: level(required),
+                    maximum_quality: level(runtime.axes.max_quality()),
+                    stored_count,
+                    // The temporary current-Leader adapter only issues scalar-resource
+                    // feed orders. Item acceptance is authoritative domain data for the
+                    // replacement AI, but must not be advertised as actionable yet.
+                    orderable: false,
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    accepted_items.extend(
+        crate::hunting_runtime::material_inventory(&world.shared_spatial, &colony.id)
+            .into_iter()
+            .filter_map(|(material, stored_count)| {
+                let required = crate::hunting_runtime::species_material_darkness_required(material);
+                (required <= runtime.axes.darkness).then(|| {
+                    let kind_id = match material {
+                        crate::hunting_lair::SpeciesMaterial::FoxPelt => "fox_pelt",
+                        crate::hunting_lair::SpeciesMaterial::BadgerPelt => "badger_pelt",
+                        crate::hunting_lair::SpeciesMaterial::BearPelt => "bear_pelt",
+                        crate::hunting_lair::SpeciesMaterial::BeastCore => "beast_core",
+                    };
+                    proto::BlackHoleItemDescriptor {
+                        kind_id: kind_id.to_owned(),
+                        darkness_required: level(required),
+                        maximum_quality: level(1),
+                        stored_count,
+                        // The inventory and unlock are authoritative now. Transporting
+                        // these typed trophies is left to the replacement Leader adapter.
+                        orderable: false,
+                    }
+                })
+            }),
+    );
+    Some(proto::BlackHoleSnapshot {
+        building_id: runtime.building_id.clone(),
+        axes,
+        intake: proto::BlackHoleIntakeTiming {
+            opening_index: runtime.intake.next_opening_index,
+            next_opens_at_ms: runtime.next_opening_at,
+        },
+        active_feed_order,
+        active_project,
+        accepted_resources,
+        accepted_items,
+        lifetime_totals: proto::BlackHoleLifetimeTotals {
+            credited_units: runtime.intake.lifetime.quantity,
+            credited_value_micros: runtime.intake.lifetime.value_micros,
+            opening_count: runtime.intake.lifetime.openings,
+        },
+        next_review_at_ms: runtime.next_review_at,
+        urged: runtime.urged_at.is_some(),
+    })
+}
+
+fn hunting_lair_snapshot(
+    world: &WorldState,
+    colony: &ColonyRuntime,
+    _now_ms: i64,
+) -> Option<proto::HuntingLairSnapshot> {
+    let revealed_sites = world
+        .shared_spatial
+        .hunting_lairs
+        .iter()
+        .filter(|(site, _)| colony.revealed_tiles.contains(site))
+        .map(|(site, lair)| {
+            let site_id = hunting_site_id(*site);
+            let claim = world.shared_spatial.hunting_trophies.get(site);
+            let first_clear_trophy = claim
+                .map(|claim| proto::HuntingFirstClearTrophySnapshot {
+                    trophy_id: format!("{site_id}:first-clear"),
+                    display_name: format!(
+                        "{} First-Clear Trophy",
+                        hunting_species_name(claim.species)
+                    ),
+                    status: proto::HuntingTrophyStatus::Claimed {
+                        colony_id: claim.colony_id.clone(),
+                        party_id: format!("hunt:{site_id}:{}", claim.claimed_at_ms),
+                        claimed_at_ms: claim.claimed_at_ms,
+                    },
+                })
+                .or_else(|| {
+                    (!lair.first_clear_claimed).then(|| proto::HuntingFirstClearTrophySnapshot {
+                        trophy_id: format!("{site_id}:first-clear"),
+                        display_name: "Unclaimed First-Clear Trophy".to_owned(),
+                        status: proto::HuntingTrophyStatus::Available,
+                    })
+                });
+            proto::RevealedHuntingSiteSnapshot {
+                id: site_id,
+                display_name: hunting_site_name(lair),
+                position: tile_point(site),
+                danger: hunting_danger(lair.current_danger()),
+                monsters: hunting_monster_snapshots(*site, lair),
+                first_clear_trophy,
+                loot_preview: hunting_loot_preview(lair),
+            }
+        })
+        .collect::<Vec<_>>();
+    if revealed_sites.is_empty() {
+        return None;
+    }
+
+    let has_captain = colony
+        .officers
+        .get(&OfficerRole::Captain)
+        .is_some_and(|cat_id| {
+            colony
+                .cats
+                .iter()
+                .any(|cat| cat.id == *cat_id && cat.death_time.is_none())
+        });
+    let captain_advice = if has_captain {
+        revealed_sites
+            .iter()
+            .filter_map(|site| {
+                let position = TilePos {
+                    x: site.position.x,
+                    y: site.position.y,
+                };
+                let party_ids =
+                    crate::hunting_runtime::recommended_party_ids(world, &colony.id, position)
+                        .ok()?;
+                if party_ids.is_empty() {
+                    return None;
+                }
+                let recommendation = crate::hunting_runtime::captain_recommendation(
+                    world, &colony.id, position, &party_ids,
+                )
+                .ok()?;
+                let (risk_band, summary) = match recommendation.advice {
+                    crate::hunting_lair::HuntAdvice::Safe => (
+                        proto::CaptainRiskBand::Favorable,
+                        "The Captain expects a safe clear.",
+                    ),
+                    crate::hunting_lair::HuntAdvice::Favored => (
+                        proto::CaptainRiskBand::Even,
+                        "The Captain favors this party.",
+                    ),
+                    crate::hunting_lair::HuntAdvice::Risky => (
+                        proto::CaptainRiskBand::Risky,
+                        "The Captain warns that losses are plausible.",
+                    ),
+                    crate::hunting_lair::HuntAdvice::Reckless => (
+                        proto::CaptainRiskBand::Dire,
+                        "The Captain advises against this attempt.",
+                    ),
+                };
+                Some(proto::CaptainHuntingAdviceSnapshot {
+                    site_id: site.id.clone(),
+                    risk_band,
+                    summary: summary.to_owned(),
+                    recommended_party_size: recommendation.party_size.try_into().unwrap_or(u8::MAX),
+                })
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    let recent_outcomes = world
+        .shared_spatial
+        .recent_hunt_outcomes
+        .iter()
+        .filter(|outcome| outcome.colony_id == colony.id)
+        .map(hunting_outcome_snapshot)
+        .collect();
+    let active_parties = world
+        .shared_spatial
+        .active_hunting_parties
+        .values()
+        .filter(|party| party.colony_id == colony.id)
+        .filter_map(|party| {
+            let leader_cat_id = party.member_cat_ids.first()?.clone();
+            Some(proto::HuntingPartySnapshot {
+                id: party.id.clone(),
+                site_id: hunting_site_id(party.site),
+                leader_cat_id,
+                member_cat_ids: party.member_cat_ids.clone(),
+                status: proto::HuntingPartyStatus::Traveling,
+                departed_at_ms: party.departed_at_ms,
+                expected_phase_end_at_ms: Some(party.resolves_at_ms),
+            })
+        })
+        .collect();
+    Some(proto::HuntingLairSnapshot {
+        building_id: format!("{}:hunting-network", colony.id),
+        revealed_sites,
+        captain_advice,
+        active_parties,
+        recent_outcomes,
+        nudged_site_id: world
+            .shared_spatial
+            .hunting_nudges
+            .get(&colony.id)
+            .map(|site| hunting_site_id(*site)),
+    })
+}
+
+fn hunting_site_id(site: TilePos) -> String {
+    format!("enemy-lair:{}:{}", site.x, site.y)
+}
+
+fn hunting_site_name(lair: &crate::hunting_lair::HuntingLair) -> String {
+    lair.strongest_living_species()
+        .or_else(|| {
+            lair.monsters
+                .iter()
+                .map(|monster| monster.species)
+                .max_by_key(|species| species.threat())
+        })
+        .map_or_else(
+            || "Quiet Hunting Lair".to_owned(),
+            |species| format!("{} Hunting Lair", hunting_species_name(species)),
+        )
+}
+
+fn hunting_species_name(species: crate::hunting_lair::MonsterSpecies) -> &'static str {
+    match species {
+        crate::hunting_lair::MonsterSpecies::Fox => "Fox",
+        crate::hunting_lair::MonsterSpecies::Badger => "Badger",
+        crate::hunting_lair::MonsterSpecies::Bear => "Bear",
+        crate::hunting_lair::MonsterSpecies::RivalBeast => "Rival Beast",
+    }
+}
+
+fn hunting_species_id(species: crate::hunting_lair::MonsterSpecies) -> &'static str {
+    match species {
+        crate::hunting_lair::MonsterSpecies::Fox => "fox",
+        crate::hunting_lair::MonsterSpecies::Badger => "badger",
+        crate::hunting_lair::MonsterSpecies::Bear => "bear",
+        crate::hunting_lair::MonsterSpecies::RivalBeast => "rival_beast",
+    }
+}
+
+fn hunting_danger(danger: u8) -> proto::HuntingDanger {
+    match danger {
+        0..=20 => proto::HuntingDanger::Low,
+        21..=40 => proto::HuntingDanger::Moderate,
+        41..=70 => proto::HuntingDanger::High,
+        71..=99 => proto::HuntingDanger::Deadly,
+        _ => proto::HuntingDanger::Mythic,
+    }
+}
+
+fn hunting_monster_snapshots(
+    site: TilePos,
+    lair: &crate::hunting_lair::HuntingLair,
+) -> Vec<proto::HuntingMonsterSnapshot> {
+    let respawn = lair
+        .respawn_ready_at_ms
+        .map(|hour| proto::HuntingRespawnSnapshot {
+            respawns_at_ms: hour,
+        });
+    lair.monsters
+        .iter()
+        .map(|monster| proto::HuntingMonsterSnapshot {
+            id: format!(
+                "monster:{}:{}:{}:{}",
+                site.x, site.y, lair.generation, monster.id
+            ),
+            species_id: hunting_species_id(monster.species).to_owned(),
+            display_name: hunting_species_name(monster.species).to_owned(),
+            status: if monster.is_alive() {
+                proto::HuntingMonsterStatus::Available
+            } else if respawn.is_some() {
+                proto::HuntingMonsterStatus::Respawning
+            } else {
+                proto::HuntingMonsterStatus::Defeated
+            },
+            respawn,
+        })
+        .collect()
+}
+
+fn hunting_loot_preview(lair: &crate::hunting_lair::HuntingLair) -> Vec<proto::HuntingLootPreview> {
+    let totals = lair
+        .monsters
+        .iter()
+        .fold((0_u32, 0_u32, 0_u32), |totals, monster| {
+            let loot = monster.species.base_loot();
+            (
+                totals.0.saturating_add(loot.food),
+                totals.1.saturating_add(loot.hide),
+                totals.2.saturating_add(loot.bone),
+            )
+        });
+    [
+        (proto::ResourceKind::Food, totals.0),
+        (proto::ResourceKind::Hide, totals.1),
+        (proto::ResourceKind::Bone, totals.2),
+    ]
+    .into_iter()
+    .map(|(resource, quantity)| proto::HuntingLootPreview {
+        loot: proto::HuntingLootDescriptor::Resource { resource },
+        minimum_quantity: quantity,
+        maximum_quantity: quantity,
+        likelihood: proto::HuntingLootLikelihood::Guaranteed,
+    })
+    .collect()
+}
+
+fn hunting_outcome_snapshot(
+    outcome: &crate::hunting_runtime::HuntingOutcomeRecord,
+) -> proto::HuntingCombatOutcomeSnapshot {
+    let site_id = hunting_site_id(outcome.site);
+    let party_id = format!("hunt:{site_id}:{}", outcome.resolved_at_ms);
+    let mut rewards = Vec::new();
+    for (resource, quantity) in [
+        (proto::ResourceKind::Food, outcome.resolution.loot.food),
+        (proto::ResourceKind::Hide, outcome.resolution.loot.hide),
+        (proto::ResourceKind::Bone, outcome.resolution.loot.bone),
+    ] {
+        if quantity > 0 {
+            rewards.push(proto::HuntingRewardSnapshot::Resource { resource, quantity });
+        }
+    }
+    for material in &outcome.resolution.loot.species_materials {
+        let material = match material {
+            crate::hunting_lair::SpeciesMaterial::FoxPelt => "fox_pelt",
+            crate::hunting_lair::SpeciesMaterial::BadgerPelt => "badger_pelt",
+            crate::hunting_lair::SpeciesMaterial::BearPelt => "bear_pelt",
+            crate::hunting_lair::SpeciesMaterial::BeastCore => "beast_core",
+        };
+        rewards.push(proto::HuntingRewardSnapshot::SpeciesMaterial {
+            material: material.to_owned(),
+            count: 1,
+        });
+    }
+    proto::HuntingCombatOutcomeSnapshot {
+        id: format!("{party_id}:outcome"),
+        party_id,
+        site_id: site_id.clone(),
+        resolved_at_ms: outcome.resolved_at_ms,
+        result: if outcome.resolution.cleared {
+            proto::HuntingCombatResult::Victory
+        } else {
+            proto::HuntingCombatResult::Defeat
+        },
+        members: outcome
+            .resolution
+            .participants
+            .iter()
+            .map(|participant| proto::HuntingMemberOutcomeSnapshot {
+                cat_id: participant.cat_id.clone(),
+                condition: if participant.died {
+                    proto::HuntingMemberCondition::Killed
+                } else if participant.damage > 0 {
+                    proto::HuntingMemberCondition::Injured
+                } else {
+                    proto::HuntingMemberCondition::Safe
+                },
+            })
+            .collect(),
+        monster_statuses: hunting_monster_snapshots(outcome.site, &outcome.resolution.lair),
+        rewards,
+        first_clear_trophy_id: outcome
+            .resolution
+            .first_clear_trophy
+            .map(|_| format!("{site_id}:first-clear")),
+    }
+}
+
+fn colony_snapshot(
+    world: &WorldState,
+    colony: &ColonyRuntime,
+    now_ms: i64,
+) -> proto::ColonySnapshot {
     let alive_cats = alive_cats_sorted(colony);
     let effects = upgrade_tree::resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
     let storage_buildings = storage_buildings(colony);
@@ -4542,6 +5048,55 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
         },
         raiders: raiders_snapshot(colony),
         buildings: buildings_snapshot(colony),
+        black_hole: black_hole_snapshot(world, colony, now_ms),
+        hunting_lair: hunting_lair_snapshot(world, colony, now_ms),
+        revealed_quarry_sites: colony
+            .world_tiles
+            .iter()
+            .filter(|(site, tile)| {
+                colony.revealed_tiles.contains(site) && tile.tile_type == TileType::CaveEntrance
+            })
+            .map(|(site, _)| tile_point(site))
+            .collect(),
+        forage_trees: colony
+            .world_tiles
+            .iter()
+            .filter(|(site, tile)| {
+                colony.revealed_tiles.contains(site)
+                    && crate::terrain_gen::tile_has_tree(world.world_seed, site.x, site.y)
+                    && !matches!(
+                        tile.overlay_feature.as_deref(),
+                        Some("stump" | "sapling" | "road_built")
+                    )
+                    && !matches!(
+                        crate::terrain_gen::tile_climate_biome(world.world_seed, site.x, site.y),
+                        crate::climate::Biome::SnowyTaiga
+                            | crate::climate::Biome::SnowyPlains
+                            | crate::climate::Biome::Tundra
+                            | crate::climate::Biome::PineForest
+                            | crate::climate::Biome::Taiga
+                            | crate::climate::Biome::Mountains
+                            | crate::climate::Biome::Desert
+                            | crate::climate::Biome::Savanna
+                            | crate::climate::Biome::Badlands
+                            | crate::climate::Biome::Swamp
+                            | crate::climate::Biome::Marsh
+                    )
+            })
+            .map(|(site, tile)| {
+                let maximum = tile.max_resources.food.max(1);
+                let food = match tile.resources.food.saturating_mul(3) / maximum {
+                    0 if tile.resources.food == 0 => proto::ForageFoodBand::Empty,
+                    0 => proto::ForageFoodBand::Low,
+                    1 => proto::ForageFoodBand::Medium,
+                    _ => proto::ForageFoodBand::Full,
+                };
+                proto::ForageTreeSnapshot {
+                    position: tile_point(site),
+                    food,
+                }
+            })
+            .collect(),
         claimed_tiles: colony.claimed_tiles.iter().map(tile_point).collect(),
         agricultural_tiles: colony.agricultural_tiles.iter().map(tile_point).collect(),
         revealed_tiles: colony.revealed_tiles.iter().map(tile_point).collect(),
@@ -7207,6 +7762,35 @@ mod tests {
     }
 
     #[test]
+    fn signed_hole_research_spends_void_insight_without_spending_research_notes() {
+        let mut world = world_with_one_colony();
+        let colony = &mut world.colonies[0];
+        colony.upgrade_tree.owned_node_ids = vec!["masonry".to_owned(), "school".to_owned()];
+        colony.upgrade_tree.research_points = 123.0;
+        colony.global_upgrade_points = 20.0;
+        let action = proto::ClientAction::ResearchNode {
+            session_id: "sess_1".to_owned(),
+            nickname: "Void Scholar".to_owned(),
+            sig: "server-verified".to_owned(),
+            node_id: "shrine_foundations".to_owned(),
+        };
+
+        let result = apply_action(&mut world, &action, &ctx());
+
+        assert!(result.ok, "Width I purchase failed: {result:?}");
+        let colony = &world.colonies[0];
+        assert_eq!(colony.global_upgrade_points, 0.0);
+        assert_eq!(colony.upgrade_tree.research_points, 123.0);
+        assert!(
+            colony
+                .upgrade_tree
+                .owned_node_ids
+                .iter()
+                .any(|id| id == "shrine_foundations")
+        );
+    }
+
+    #[test]
     fn guided_player_can_bootstrap_research_then_purchase_and_place_a_mill() {
         let mut guided = world_with_one_colony();
         guided.colonies[0].upgrade_tree.research_points = 100.0;
@@ -8194,8 +8778,8 @@ mod tests {
         personal.kind = VillageKind::Personal;
         personal.owner_player_id = Some("player_2".to_owned());
         let personal_shrine = TilePos {
-            x: personal.anchor.x + 1,
-            y: personal.anchor.y + 1,
+            x: personal.anchor.x + 2,
+            y: personal.anchor.y + 2,
         };
         world.colonies[0]
             .provisional_tiles
@@ -9094,43 +9678,24 @@ mod tests {
     }
 
     #[test]
-    fn signed_tithe_uses_shrine_service_only_with_the_completed_shrine() {
-        let mut boosted = world_with_one_colony();
-        boosted.colonies[0]
-            .upgrade_tree
-            .owned_node_ids
-            .push("shrine_crews".to_owned());
-        boosted.colonies[0].resources.food = 1_000.0;
-        boosted.colonies[0].resources.refined = 100.0;
-        let mut baseline = boosted.clone();
-        baseline.colonies[0]
-            .upgrade_tree
-            .owned_node_ids
-            .retain(|id| id != "shrine_crews");
+    fn signed_legacy_tithe_is_stably_rejected_without_mutation() {
+        let mut world = world_with_one_colony();
+        world.colonies[0].resources.food = 1_000.0;
+        world.colonies[0].resources.refined = 100.0;
         let action = proto::ClientAction::OfferTithe {
             session_id: "s1".to_owned(),
             nickname: "Cat".to_owned(),
             sig: "signed".to_owned(),
         };
         let context = ctx();
-        let mut twin = boosted.clone();
-        assert!(apply_action(&mut baseline, &action, &context).ok);
-        assert!(apply_action(&mut boosted, &action, &context).ok);
-        assert!(apply_action(&mut twin, &action, &context).ok);
-        assert_eq!(boosted, twin, "signed service tithe diverged");
-        assert!(
-            boosted.colonies[0].global_upgrade_points > baseline.colonies[0].global_upgrade_points
+        let before = world.clone();
+        let result = apply_action(&mut world, &action, &context);
+        assert!(!result.ok);
+        assert_eq!(
+            result.message.as_deref(),
+            Some("Tithes were retired. The Leader now decides what may safely feed the Hole.")
         );
-
-        let mut no_shrine = twin;
-        no_shrine.colonies[0]
-            .buildings
-            .retain(|building| building.building_type != BuildingType::Shrine);
-        no_shrine.colonies[0].resources.food = 1_000.0;
-        no_shrine.colonies[0].resources.refined = 100.0;
-        let before = no_shrine.clone();
-        assert!(!apply_action(&mut no_shrine, &action, &context).ok);
-        assert_eq!(no_shrine, before);
+        assert_eq!(world, before);
     }
 
     #[test]
@@ -13684,5 +14249,36 @@ mod tests {
             world.colonies[0].jobs[job_index].status,
             JobStatus::Cancelled
         );
+    }
+
+    #[test]
+    fn signed_nudge_marks_the_hole_and_projects_its_exact_state() {
+        let mut world = world_with_one_colony();
+        world.colonies[0]
+            .buildings
+            .retain(|building| building.building_type != BuildingType::Shrine);
+        world.colonies[0]
+            .buildings
+            .push(completed_building("the-hole", BuildingType::Shrine));
+        let action = proto::ClientAction::NudgeBlackHole {
+            session_id: "sess_1".to_owned(),
+            nickname: "Cat".to_owned(),
+            sig: "signed".to_owned(),
+        };
+        let context = ctx();
+
+        assert!(apply_action(&mut world, &action, &context).ok);
+        let runtime = &world.colonies[0].black_holes["the-hole"];
+        assert_eq!(runtime.urged_at, Some(context.now_ms));
+
+        let snapshot = build_snapshot(&world, context.now_ms, 1);
+        let hole = snapshot.colonies[0]
+            .black_hole
+            .as_ref()
+            .expect("Hole projection");
+        assert_eq!(hole.building_id, "the-hole");
+        assert!(hole.urged);
+        assert_eq!(hole.axes.len(), 3);
+        assert_eq!(hole.lifetime_totals.credited_units, 0);
     }
 }

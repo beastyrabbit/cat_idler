@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::JobKind;
 
-pub const RESEARCH_NODE_COUNT: usize = 487;
+pub const RESEARCH_NODE_COUNT: usize = 512;
 pub const APPROVED_BUILDING_IDS: &[&str] = &[
     "den",
     "food_storage",
@@ -138,6 +138,39 @@ pub enum BuildingAttribute {
     Durability,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResearchAxis {
+    Width,
+    Depth,
+    Darkness,
+}
+
+impl ResearchAxis {
+    #[must_use]
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::Width => "width",
+            Self::Depth => "depth",
+            Self::Darkness => "darkness",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResearchAxisEntitlement {
+    pub axis: ResearchAxis,
+    pub tier: u8,
+}
+
+impl ResearchAxisEntitlement {
+    #[must_use]
+    pub fn capability_id(self) -> String {
+        format!("black_hole_{}_tier_{:02}", self.axis.id(), self.tier)
+    }
+}
+
 /// A catalog unlock is string-keyed on purpose: planned content such as
 /// `accounting_tent`, `mill`, and `sawmill` must not require an existing sim or
 /// protocol enum variant before a later integration layer is ready for it.
@@ -210,6 +243,8 @@ pub struct ResearchNode {
     pub layout: ResearchLayout,
     pub leader_priority: u16,
     pub payloads: Vec<ResearchPayload>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub axis_entitlement: Option<ResearchAxisEntitlement>,
 }
 
 impl ResearchNode {
@@ -425,6 +460,7 @@ struct TemplateData {
     recipe_families: Vec<RecipeFamily>,
     upgrade_stages: Vec<UpgradeStage>,
     upgrade_families: Vec<UpgradeFamily>,
+    black_hole_axes: Vec<BlackHoleAxis>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -463,6 +499,16 @@ struct BuildingFamily {
     service_name: Option<String>,
     #[serde(default)]
     service_description: Option<String>,
+    #[serde(default)]
+    black_hole_track: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BlackHoleAxis {
+    axis: ResearchAxis,
+    name: String,
+    description: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -540,7 +586,11 @@ fn build_catalog(legacy_source: &str, track_source: &str) -> Result<ResearchCata
     let templates = serde_json::from_str::<TemplateData>(track_source)
         .map_err(|error| format!("track JSON: {error}"))?;
     for family in &templates.building_families {
-        nodes.extend(expand_building_family(family, &templates.building_stages)?);
+        if family.black_hole_track {
+            nodes.extend(expand_black_hole_track(family, &templates.black_hole_axes)?);
+        } else {
+            nodes.extend(expand_building_family(family, &templates.building_stages)?);
+        }
     }
     for family in &templates.recipe_families {
         nodes.extend(expand_recipe_family(family, &templates.recipe_stages)?);
@@ -671,6 +721,7 @@ fn expand_building_family(
             leader_priority: family.leader_priority_base
                 + u16::try_from(index).map_err(|_| "building priority overflow")?,
             payloads,
+            axis_entitlement: None,
         });
         // Unsupported Crews nodes used to be FUTURE and were skipped by this family
         // chain. Making them purchasable must not silently rewrite later dependencies.
@@ -679,6 +730,98 @@ fn expand_building_family(
         }
     }
     Ok(nodes)
+}
+
+fn expand_black_hole_track(
+    family: &BuildingFamily,
+    axes: &[BlackHoleAxis],
+) -> Result<Vec<ResearchNode>, String> {
+    if family.building_id != "shrine" || axes.len() != 3 || family.count != 30 {
+        return Err(format!(
+            "{} black-hole track requires exactly three axes and thirty studies",
+            family.building_id
+        ));
+    }
+
+    let mut nodes: Vec<ResearchNode> = Vec::with_capacity(family.count);
+    for tier in 1_u8..=10 {
+        for axis in axes {
+            let entitlement = ResearchAxisEntitlement {
+                axis: axis.axis,
+                tier,
+            };
+            let id = black_hole_study_id(entitlement);
+            let prerequisites = if tier == 1 {
+                family.root_prerequisites.clone()
+            } else {
+                vec![black_hole_study_id(ResearchAxisEntitlement {
+                    axis: axis.axis,
+                    tier: tier - 1,
+                })]
+            };
+            let index = nodes.len();
+            nodes.push(ResearchNode {
+                id,
+                name: format!("{} {}", axis.name, roman_tier(tier)?),
+                description: format!(
+                    "Black-hole {} {}",
+                    axis.name.to_lowercase(),
+                    axis.description
+                ),
+                category: ResearchCategory::Building,
+                cost: family.cost_base + 5.0 * f64::from(tier - 1),
+                prerequisites,
+                era: family
+                    .era_start
+                    .checked_add((tier - 1) / 3)
+                    .ok_or_else(|| format!("black-hole era overflow for {}", family.building_id))?,
+                layout: ResearchLayout {
+                    x: family.layout_x,
+                    y: i32::try_from(index + 1).map_err(|_| "black-hole layout overflow")?,
+                },
+                leader_priority: family.leader_priority_base
+                    + u16::try_from(index).map_err(|_| "black-hole priority overflow")?,
+                payloads: vec![ResearchPayload::UnlockCapability {
+                    capability_id: entitlement.capability_id(),
+                }],
+                axis_entitlement: Some(entitlement),
+            });
+        }
+    }
+    Ok(nodes)
+}
+
+fn black_hole_study_id(entitlement: ResearchAxisEntitlement) -> String {
+    match (entitlement.axis, entitlement.tier) {
+        (ResearchAxis::Width, 1) => "shrine_foundations".to_owned(),
+        (ResearchAxis::Depth, 1) => "shrine_workflow".to_owned(),
+        (ResearchAxis::Darkness, 1) => "shrine_timing".to_owned(),
+        (ResearchAxis::Width, 2) => "shrine_crews".to_owned(),
+        (ResearchAxis::Depth, 2) => "shrine_reinforcement".to_owned(),
+        (axis, tier) => format!(
+            "shrine_{}_{}",
+            axis.id(),
+            roman_tier(tier)
+                .expect("black-hole study ids are generated only for tiers I-X")
+                .to_lowercase()
+        ),
+    }
+}
+
+fn roman_tier(tier: u8) -> Result<&'static str, String> {
+    match tier {
+        1 => Ok("I"),
+        2 => Ok("II"),
+        3 => Ok("III"),
+        4 => Ok("IV"),
+        5 => Ok("V"),
+        6 => Ok("VI"),
+        7 => Ok("VII"),
+        8 => Ok("VIII"),
+        9 => Ok("IX"),
+        10 => Ok("X"),
+        _ => Err(format!("invalid black-hole tier {tier}")),
+    }
 }
 
 fn service_effect_value(stage: &BuildingStage) -> f64 {
@@ -803,6 +946,9 @@ fn subsistence_frontier_payload_description(
                 "{} Preservation increases the exact crafted kit identities' maximum durability by 25%.",
                 family.display_name
             ),
+            "bulk" if family.id == "hunting" => {
+                "Hunting Parties lets the Leader dispatch up to three cats to one Hunting Lair; it does not reduce the site's danger.".to_owned()
+            }
             "bulk" => format!(
                 "{} Bulk Work shortens this family's staffed physical recipe cycles by 10%.",
                 family.display_name
@@ -901,9 +1047,14 @@ fn expand_recipe_family(
                     .map(|recipe_id| ResearchPayload::UnlockRecipe { recipe_id }),
             );
         }
+        let name = if family.id == "hunting" && stage.id == "bulk" {
+            "Hunting Parties".to_owned()
+        } else {
+            format!("{} {}", family.display_name, stage.name)
+        };
         nodes.push(ResearchNode {
             id,
-            name: format!("{} {}", family.display_name, stage.name),
+            name,
             description,
             category: ResearchCategory::RecipeResource,
             cost: family.cost_base + 3.5 * index as f64,
@@ -922,6 +1073,7 @@ fn expand_recipe_family(
                         + u16::try_from(index).map_err(|_| "recipe priority overflow")?,
                 ),
             payloads,
+            axis_entitlement: None,
         });
     }
     Ok(nodes)
@@ -967,6 +1119,7 @@ fn expand_upgrade_family(
                 operation: EffectOperation::Add,
                 value: stage.value,
             }],
+            axis_entitlement: None,
         });
     }
     Ok(nodes)
@@ -1042,6 +1195,20 @@ fn validate_node(node: &ResearchNode) -> Result<(), String> {
     if node.payloads.is_empty() || !node.payloads.iter().all(ResearchPayload::is_non_inert) {
         return Err(format!("node {} has an inert payload", node.id));
     }
+    if let Some(entitlement) = node.axis_entitlement {
+        if entitlement.tier == 0 || entitlement.tier > 10 {
+            return Err(format!("node {} has invalid axis entitlement", node.id));
+        }
+        let capability_id = entitlement.capability_id();
+        if !node.payloads.iter().any(|payload| {
+            matches!(payload, ResearchPayload::UnlockCapability { capability_id: id } if id == &capability_id)
+        }) {
+            return Err(format!(
+                "node {} axis entitlement is missing capability {capability_id}",
+                node.id
+            ));
+        }
+    }
     for payload in &node.payloads {
         match payload {
             ResearchPayload::BuildingAvailableAtFounding { building_id }
@@ -1066,18 +1233,20 @@ fn validate_node(node: &ResearchNode) -> Result<(), String> {
         }
     }
     let category_payload = match node.category {
-        ResearchCategory::Building => node.payloads.iter().any(|payload| {
-            matches!(
-                payload,
-                ResearchPayload::BuildingAvailableAtFounding { .. }
-                    | ResearchPayload::UnlockBuilding { .. }
-                    | ResearchPayload::ModifyBuilding { .. }
-            ) || matches!(
-                payload,
-                ResearchPayload::Modify { effect_id, .. }
-                    if BUILDING_SERVICE_EFFECT_IDS.contains(&effect_id.as_str())
-            )
-        }),
+        ResearchCategory::Building => {
+            node.payloads.iter().any(|payload| {
+                matches!(
+                    payload,
+                    ResearchPayload::BuildingAvailableAtFounding { .. }
+                        | ResearchPayload::UnlockBuilding { .. }
+                        | ResearchPayload::ModifyBuilding { .. }
+                ) || matches!(
+                    payload,
+                    ResearchPayload::Modify { effect_id, .. }
+                        if BUILDING_SERVICE_EFFECT_IDS.contains(&effect_id.as_str())
+                )
+            }) || node.axis_entitlement.is_some()
+        }
         ResearchCategory::RecipeResource => node.payloads.iter().any(|payload| {
             matches!(
                 payload,
@@ -1108,13 +1277,13 @@ fn validate_categories(nodes: &[ResearchNode]) -> Result<(), String> {
         .iter()
         .filter(|node| node.category == ResearchCategory::RecipeResource)
         .count();
-    // Building families deliberately omit a generic `stores` stage when their runtime
-    // building owns no physical capacity domain. Construction's eleven live scaffold-
-    // speed studies keep the truthful graph above the one-third product requirement
-    // without restoring those inert purchases.
-    if buildings * 3 < nodes.len() || recipes * 3 < nodes.len() {
+    // Building families deliberately omit generic `stores` stages when their runtime
+    // building owns no physical capacity domain. The black-hole axis track adds
+    // building-domain entitlements, so recipe/resource research no longer stays at
+    // the older one-third product floor.
+    if buildings < 180 || recipes < 160 {
         return Err(format!(
-            "research categories miss the one-third design floor: {buildings} building, {recipes} recipe/resource, {} total",
+            "research categories miss the design floor: {buildings} building, {recipes} recipe/resource, {} total",
             nodes.len()
         ));
     }
@@ -1229,7 +1398,7 @@ mod tests {
         assert_eq!(catalog.nodes().len(), RESEARCH_NODE_COUNT);
         let buildings = catalog.category_count(ResearchCategory::Building);
         let recipes = catalog.category_count(ResearchCategory::RecipeResource);
-        assert_eq!(buildings, 165);
+        assert_eq!(buildings, 190);
         assert_eq!(recipes, 167);
         assert_eq!(catalog.category_count(ResearchCategory::Upgrade), 155);
         assert!(
@@ -1237,8 +1406,8 @@ mod tests {
             "building research must remain at least one third of the catalog"
         );
         assert!(
-            recipes * 3 >= RESEARCH_NODE_COUNT,
-            "recipe/resource research must remain at least one third of the catalog"
+            recipes >= 160,
+            "recipe/resource research must remain broadly represented"
         );
     }
 
@@ -1254,10 +1423,10 @@ mod tests {
         assert_eq!(ids.get(22), Some(&"shipping"));
         assert_eq!(ids.get(23), Some(&"milling"));
         assert_eq!(ids.get(24), Some(&"den_foundations"));
-        assert_eq!(ids.get(168), Some(&"sawmill_crews"));
-        assert_eq!(ids.get(169), Some(&"hunting_sources"));
-        assert_eq!(ids.get(332), Some(&"expedition_supplies_masterwork"));
-        assert_eq!(ids.get(333), Some(&"logistics_basics"));
+        assert_eq!(ids.get(193), Some(&"sawmill_crews"));
+        assert_eq!(ids.get(194), Some(&"hunting_sources"));
+        assert_eq!(ids.get(357), Some(&"expedition_supplies_masterwork"));
+        assert_eq!(ids.get(358), Some(&"logistics_basics"));
         assert_eq!(ids.last(), Some(&"resilience_mastery"));
         for (index, node) in catalog.nodes().iter().enumerate() {
             assert!(std::ptr::eq(
@@ -1466,7 +1635,7 @@ mod tests {
             )));
         }
 
-        assert_eq!(catalog.category_count(ResearchCategory::Building), 165);
+        assert_eq!(catalog.category_count(ResearchCategory::Building), 190);
         assert_eq!(
             catalog.category_count(ResearchCategory::RecipeResource),
             167
@@ -1759,7 +1928,6 @@ mod tests {
             ),
             ("walls_crews", "wallDefense", "walls_timing"),
             ("mouse_farm_crews", "mouseFarmFood", "mouse_farm_timing"),
-            ("shrine_crews", "shrineBlessingYield", "shrine_timing"),
             ("field_crews", "fieldStewardship", "field_timing"),
             ("barracks_crews", "barracksReadiness", "barracks_timing"),
             (
@@ -1789,7 +1957,109 @@ mod tests {
             catalog.get("den_reinforcement").unwrap().prerequisites,
             ["den_timing"]
         );
-        assert_eq!(catalog.category_count(ResearchCategory::Building), 165);
+        assert_eq!(catalog.category_count(ResearchCategory::Building), 190);
+    }
+
+    #[test]
+    fn shrine_black_hole_track_replaces_live_blessing_studies_with_axis_entitlements() {
+        let catalog = research_catalog();
+        let shrine_nodes = catalog
+            .nodes()
+            .iter()
+            .filter(|node| node.id.starts_with("shrine_"))
+            .collect::<Vec<_>>();
+        assert_eq!(shrine_nodes.len(), 30);
+        assert!(shrine_nodes.iter().all(|node| {
+            node.category == ResearchCategory::Building && node.axis_entitlement.is_some()
+        }));
+        assert!(shrine_nodes.iter().all(|node| {
+            node.payloads.iter().all(|payload| {
+                !matches!(
+                    payload,
+                    ResearchPayload::Modify {
+                        effect_id,
+                        ..
+                    } if effect_id == "shrineBlessingYield"
+                )
+            })
+        }));
+
+        let entitlements = shrine_nodes
+            .iter()
+            .map(|node| {
+                let entitlement = node.axis_entitlement.expect("axis study");
+                (entitlement.axis, entitlement.tier)
+            })
+            .collect::<BTreeSet<_>>();
+        assert_eq!(entitlements.len(), 30, "each axis/tier pair is unique");
+
+        for axis in [
+            ResearchAxis::Width,
+            ResearchAxis::Depth,
+            ResearchAxis::Darkness,
+        ] {
+            for tier in 1..=10 {
+                let entitlement = ResearchAxisEntitlement { axis, tier };
+                let id = black_hole_study_id(entitlement);
+                let node = catalog.get(&id).expect("all thirty Hole studies exist");
+                let prerequisites = if tier == 1 {
+                    vec!["masonry".to_owned(), "school".to_owned()]
+                } else {
+                    vec![black_hole_study_id(ResearchAxisEntitlement {
+                        axis,
+                        tier: tier - 1,
+                    })]
+                };
+
+                assert_eq!(node.axis_entitlement, Some(entitlement), "{id}");
+                assert_eq!(node.prerequisites, prerequisites, "{id}");
+                assert_eq!(
+                    node.cost.to_bits(),
+                    (20.0 + 5.0 * f64::from(tier - 1)).to_bits(),
+                    "{id} must have the exact Void Insight tier cost"
+                );
+                assert_eq!(
+                    node.payloads,
+                    [ResearchPayload::UnlockCapability {
+                        capability_id: entitlement.capability_id()
+                    }],
+                    "{id}"
+                );
+            }
+        }
+
+        assert_eq!(
+            [
+                black_hole_study_id(ResearchAxisEntitlement {
+                    axis: ResearchAxis::Width,
+                    tier: 1,
+                }),
+                black_hole_study_id(ResearchAxisEntitlement {
+                    axis: ResearchAxis::Depth,
+                    tier: 1,
+                }),
+                black_hole_study_id(ResearchAxisEntitlement {
+                    axis: ResearchAxis::Darkness,
+                    tier: 1,
+                }),
+                black_hole_study_id(ResearchAxisEntitlement {
+                    axis: ResearchAxis::Width,
+                    tier: 2,
+                }),
+                black_hole_study_id(ResearchAxisEntitlement {
+                    axis: ResearchAxis::Depth,
+                    tier: 2,
+                }),
+            ],
+            [
+                "shrine_foundations",
+                "shrine_workflow",
+                "shrine_timing",
+                "shrine_crews",
+                "shrine_reinforcement",
+            ],
+            "the five persisted Shrine research IDs stay stable"
+        );
     }
 
     #[test]

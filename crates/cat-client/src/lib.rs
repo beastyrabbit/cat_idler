@@ -38,11 +38,11 @@ use cat_protocol::{
     ActionResult, BridgeAxis, BuildingSnapshot, BuildingType, CarryingKind, CatActivity,
     CatHousingStatus, CatNeeds, CatSnapshot, ClientAction, ColonySnapshot, CropKind, EventSnapshot,
     FarmSnapshot, FarmStage, FootprintSize, GateSide, GatherSpotPurpose, ItemInstanceSnapshot,
-    ItemLocation, ItemStackSnapshot, JobKind, Labor, OfferingResource, OfficerRole,
-    PROTOCOL_VERSION, ProductionQueueEdit, QueueMoveDirection, RaiderStatus, ResourceAmounts,
-    ResourceCapacities, ResourceKind, ResourceStackSnapshot, RoleXp, ScoutMission, ScoutResource,
-    Specialization, StationCompartment, StockpileSnapshot, TilePoint, TraderBuyOffer,
-    TraderSellOffer, TraderSnapshot, TraderVisitState, TransportMode, VillageKind, VillageScale,
+    ItemLocation, ItemStackSnapshot, JobKind, Labor, OfficerRole, PROTOCOL_VERSION,
+    ProductionQueueEdit, QueueMoveDirection, RaiderStatus, ResourceAmounts, ResourceCapacities,
+    ResourceKind, ResourceStackSnapshot, RoleXp, ScoutMission, ScoutResource, Specialization,
+    StationCompartment, StockpileSnapshot, TilePoint, TraderBuyOffer, TraderSellOffer,
+    TraderSnapshot, TraderVisitState, TransportMode, VillageKind, VillageScale,
     VillageTradeCaravanPhase, WorldSnapshot, ZoneKind,
 };
 use cat_sim::climate::{Biome, ResourceHint};
@@ -63,8 +63,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub mod layered_sprite;
 mod research_ui;
 mod station_layout;
+use layered_sprite::{
+    CanvasSpec, LayerSlot, SpritePart, VariantSpec, VariantState, VisibilityPredicate, VisualOwner,
+};
 use research_ui::UpgradeTreeUi;
 use station_layout::{
     BuildingVisual, PropPlacement, ResidentialFacade, StationFloor, StationLayout, StationProp,
@@ -1114,6 +1118,9 @@ struct TerrainArt {
     tree_pine: Handle<Image>,
     tree_snow_pine: Handle<Image>,
     tree_dead: Handle<Image>,
+    tree_oak_apples_low: Handle<Image>,
+    tree_oak_apples_mid: Handle<Image>,
+    tree_oak_apples_full: Handle<Image>,
     stump: Handle<Image>,
     sapling: Handle<Image>,
     rock: Handle<Image>,
@@ -1139,6 +1146,9 @@ impl TerrainArt {
             tree_pine: assets.load("public/images/game/nature/tree_pine.png"),
             tree_snow_pine: assets.load("public/images/game/nature/tree_snow_pine.png"),
             tree_dead: assets.load("public/images/game/nature/tree_dead.png"),
+            tree_oak_apples_low: assets.load("public/images/game/nature/tree_oak_apples_low.png"),
+            tree_oak_apples_mid: assets.load("public/images/game/nature/tree_oak_apples_mid.png"),
+            tree_oak_apples_full: assets.load("public/images/game/nature/tree_oak_apples_full.png"),
             stump: assets.load("public/images/game/nature/stump.png"),
             sapling: assets.load("public/images/game/farm/crop_sprout.png"),
             rock: assets.load("public/images/game/props/stone_pile.png"),
@@ -1154,6 +1164,15 @@ impl TerrainArt {
             TreeSprite::Pine => (self.tree_pine.clone(), 1.5),
             TreeSprite::SnowPine => (self.tree_snow_pine.clone(), 1.5),
             TreeSprite::DeadTree => (self.tree_dead.clone(), 1.3),
+        }
+    }
+
+    fn oak_fruit(&self, band: cat_protocol::ForageFoodBand) -> Option<Handle<Image>> {
+        match band {
+            cat_protocol::ForageFoodBand::Empty => None,
+            cat_protocol::ForageFoodBand::Low => Some(self.tree_oak_apples_low.clone()),
+            cat_protocol::ForageFoodBand::Medium => Some(self.tree_oak_apples_mid.clone()),
+            cat_protocol::ForageFoodBand::Full => Some(self.tree_oak_apples_full.clone()),
         }
     }
 
@@ -1192,18 +1211,26 @@ enum GroundTexture {
 #[derive(Resource, Clone, Default)]
 struct BuildingArt {
     den: Handle<Image>,
+    black_hole_base: Handle<Image>,
+    black_hole_width: [Handle<Image>; 10],
+    black_hole_depth: [Handle<Image>; 10],
+    black_hole_darkness: [Handle<Image>; 10],
+    quarry_site: Handle<Image>,
+    hunting_lair_site: Handle<Image>,
+    enemy_fox: Handle<Image>,
+    enemy_badger: Handle<Image>,
+    enemy_bear: Handle<Image>,
+    enemy_rival_beast: Handle<Image>,
+    farm_crops: [[Handle<Image>; 4]; 3],
     well: Handle<Image>,
     floor_wood: Handle<Image>,
     floor_stone: Handle<Image>,
     floor_soil: Handle<Image>,
-    altar: Handle<Image>,
     barrel: Handle<Image>,
     bed: Handle<Image>,
     bed_green: Handle<Image>,
     bed_orange: Handle<Image>,
     bookcase: Handle<Image>,
-    brazier: Handle<Image>,
-    candelabra: Handle<Image>,
     crate_box: Handle<Image>,
     crop_flowering: Handle<Image>,
     crop_growing: Handle<Image>,
@@ -1216,7 +1243,6 @@ struct BuildingArt {
     map_table: Handle<Image>,
     metal_basin: Handle<Image>,
     ore_pile: Handle<Image>,
-    reliquary_gold: Handle<Image>,
     sack: Handle<Image>,
     scarecrow: Handle<Image>,
     stone_pile: Handle<Image>,
@@ -1232,18 +1258,49 @@ impl BuildingArt {
     fn load(assets: &AssetServer) -> Self {
         Self {
             den: assets.load("public/images/game/buildings/den.png"),
+            black_hole_base: assets.load("public/images/game/buildings/black-hole/base.png"),
+            black_hole_width: std::array::from_fn(|index| {
+                assets.load(format!(
+                    "public/images/game/buildings/black-hole/width-{:02}.png",
+                    index + 1
+                ))
+            }),
+            black_hole_depth: std::array::from_fn(|index| {
+                assets.load(format!(
+                    "public/images/game/buildings/black-hole/depth-{:02}.png",
+                    index + 1
+                ))
+            }),
+            black_hole_darkness: std::array::from_fn(|index| {
+                assets.load(format!(
+                    "public/images/game/buildings/black-hole/darkness-{:02}.png",
+                    index + 1
+                ))
+            }),
+            quarry_site: assets.load("public/images/game/sites/quarry.png"),
+            hunting_lair_site: assets.load("public/images/game/sites/lair.png"),
+            enemy_fox: assets.load("public/images/game/enemies/fox.png"),
+            enemy_badger: assets.load("public/images/game/enemies/badger.png"),
+            enemy_bear: assets.load("public/images/game/enemies/bear.png"),
+            enemy_rival_beast: assets.load("public/images/game/enemies/rival_beast.png"),
+            farm_crops: std::array::from_fn(|crop| {
+                let crop = ["catnip", "grain", "herb"][crop];
+                std::array::from_fn(|stage| {
+                    let stage = ["sprout", "growing", "mature", "flowering"][stage];
+                    assets.load(format!(
+                        "public/images/game/farm/dynamic/{crop}-{stage}.png"
+                    ))
+                })
+            }),
             well: assets.load("public/images/game/props/well.png"),
             floor_wood: assets.load("public/images/game/interior/floor_wood.png"),
             floor_stone: assets.load("public/images/game/interior/floor_stone.png"),
             floor_soil: assets.load("public/images/game/farm/soil.png"),
-            altar: assets.load("public/images/game/interior/altar.png"),
             barrel: assets.load("public/images/game/props/barrel.png"),
             bed: assets.load("public/images/game/interior/bed.png"),
             bed_green: assets.load("public/images/game/interior/bed-green.png"),
             bed_orange: assets.load("public/images/game/interior/bed-orange.png"),
             bookcase: assets.load("public/images/game/interior/bookcase.png"),
-            brazier: assets.load("public/images/game/interior/brazier.png"),
-            candelabra: assets.load("public/images/game/interior/candelabra.png"),
             crate_box: assets.load("public/images/game/props/crate.png"),
             crop_flowering: assets.load("public/images/game/farm/crop_flowering.png"),
             crop_growing: assets.load("public/images/game/farm/crop_growing.png"),
@@ -1256,7 +1313,6 @@ impl BuildingArt {
             map_table: assets.load("public/images/game/interior/map-table.png"),
             metal_basin: assets.load("public/images/game/interior/metal-basin.png"),
             ore_pile: assets.load("public/images/game/props/ore_pile.png"),
-            reliquary_gold: assets.load("public/images/game/interior/reliquary-gold.png"),
             sack: assets.load("public/images/game/props/sack.png"),
             scarecrow: assets.load("public/images/game/farm/scarecrow.png"),
             stone_pile: assets.load("public/images/game/props/stone_pile.png"),
@@ -1267,6 +1323,45 @@ impl BuildingArt {
             weapon_stand: assets.load("public/images/game/interior/weapon-stand.png"),
             workbench: assets.load("public/images/game/interior/workbench.png"),
         }
+    }
+
+    fn black_hole_layer(&self, asset_path: &str) -> Handle<Image> {
+        if asset_path.ends_with("/base.png") {
+            return self.black_hole_base.clone();
+        }
+        for (axis, handles) in [
+            ("width", &self.black_hole_width),
+            ("depth", &self.black_hole_depth),
+            ("darkness", &self.black_hole_darkness),
+        ] {
+            if let Some(raw_level) = asset_path
+                .strip_suffix(".png")
+                .and_then(|path| path.rsplit_once('/'))
+                .and_then(|(_, file)| file.strip_prefix(axis))
+                .and_then(|suffix| suffix.strip_prefix('-'))
+                && let Ok(level) = raw_level.parse::<usize>()
+                && (1..=10).contains(&level)
+            {
+                return handles[level - 1].clone();
+            }
+        }
+        debug_assert!(false, "unknown Black Hole layer path: {asset_path}");
+        self.black_hole_base.clone()
+    }
+
+    fn enemy(&self, species_id: &str) -> Handle<Image> {
+        match species_id {
+            "fox" => self.enemy_fox.clone(),
+            "badger" => self.enemy_badger.clone(),
+            "bear" => self.enemy_bear.clone(),
+            "rival_beast" => self.enemy_rival_beast.clone(),
+            _ => self.enemy_fox.clone(),
+        }
+    }
+
+    fn farm_crop(&self, crop: CropKind, stage: FarmStage) -> Option<Handle<Image>> {
+        let (crop, stage) = farm_variant_indices(crop, stage)?;
+        Some(self.farm_crops[crop][stage].clone())
     }
 
     fn floor(&self, kind: StationFloor) -> Handle<Image> {
@@ -1285,14 +1380,11 @@ impl BuildingArt {
 
     fn prop(&self, prop: StationProp) -> Handle<Image> {
         match prop {
-            StationProp::Altar => self.altar.clone(),
             StationProp::Barrel => self.barrel.clone(),
             StationProp::Bed => self.bed.clone(),
             StationProp::BedGreen => self.bed_green.clone(),
             StationProp::BedOrange => self.bed_orange.clone(),
             StationProp::Bookcase => self.bookcase.clone(),
-            StationProp::Brazier => self.brazier.clone(),
-            StationProp::Candelabra => self.candelabra.clone(),
             StationProp::Crate => self.crate_box.clone(),
             StationProp::CropFlowering => self.crop_flowering.clone(),
             StationProp::CropGrowing => self.crop_growing.clone(),
@@ -1305,7 +1397,6 @@ impl BuildingArt {
             StationProp::MapTable => self.map_table.clone(),
             StationProp::MetalBasin => self.metal_basin.clone(),
             StationProp::OrePile => self.ore_pile.clone(),
-            StationProp::ReliquaryGold => self.reliquary_gold.clone(),
             StationProp::Sack => self.sack.clone(),
             StationProp::Scarecrow => self.scarecrow.clone(),
             StationProp::StonePile => self.stone_pile.clone(),
@@ -1369,6 +1460,10 @@ struct InfraArt {
     road_h: Handle<Image>,
     road_v: Handle<Image>,
     bridge: Handle<Image>,
+    rail_cart: Handle<Image>,
+    boat: Handle<Image>,
+    dock_land: Handle<Image>,
+    dock_water: Handle<Image>,
 }
 
 impl InfraArt {
@@ -1386,6 +1481,10 @@ impl InfraArt {
             road_h: assets.load("public/images/game/infra/road_straight_h.png"),
             road_v: assets.load("public/images/game/infra/road_straight_v.png"),
             bridge: assets.load("public/images/game/infra/bridge.png"),
+            rail_cart: assets.load("public/images/game/transport/rail_cart.png"),
+            boat: assets.load("public/images/game/transport/boat.png"),
+            dock_land: assets.load("public/images/game/transport/dock_land.png"),
+            dock_water: assets.load("public/images/game/transport/dock_water.png"),
         }
     }
 
@@ -1398,6 +1497,27 @@ impl InfraArt {
             RoadSprite::StraightH => self.road_h.clone(),
             RoadSprite::StraightV => self.road_v.clone(),
         }
+    }
+
+    fn vehicle(&self, mode: TransportMode) -> Handle<Image> {
+        match mode {
+            TransportMode::Rail => self.rail_cart.clone(),
+            TransportMode::Shipping => self.boat.clone(),
+        }
+    }
+}
+
+fn transport_dock_sizes(tile_size: f32) -> (Vec2, Vec2) {
+    (
+        Vec2::splat(tile_size * 0.82),
+        Vec2::new(tile_size * 0.48, tile_size * 0.86),
+    )
+}
+
+fn transport_vehicle_size(mode: TransportMode, tile_size: f32) -> Vec2 {
+    match mode {
+        TransportMode::Rail => Vec2::new(tile_size * 0.72, tile_size * 0.44),
+        TransportMode::Shipping => Vec2::new(tile_size * 0.56, tile_size * 0.84),
     }
 }
 
@@ -2395,6 +2515,21 @@ impl Default for VillageTradeDraft {
 /// Marker for a building marker sprite.
 #[derive(Component)]
 struct BuildingSprite;
+/// Owner root for the independently reconciled Black Hole layer stack.
+#[derive(Component)]
+struct BlackHoleVisual;
+/// Snapshot-derived state used to avoid rebuilding the Black Hole when an
+/// unrelated colony field changes.
+#[derive(Component, Debug, Clone, PartialEq, Eq)]
+struct BlackHoleRenderState {
+    building_id: String,
+    world_position: TilePoint,
+    footprint: FootprintSize,
+    complete: bool,
+    width: u8,
+    depth: u8,
+    darkness: u8,
+}
 /// A soil or crop sprite belonging to a player-designated farm plot. These also
 /// carry [`BuildingSprite`] so the snapshot redraw stays atomic with buildings.
 #[derive(Component)]
@@ -2530,6 +2665,8 @@ struct HudFooterText;
 /// Marker for one deterministic terrain/decor visual, used to unload a chunk.
 #[derive(Component, Clone, Copy)]
 struct TerrainVisual(ChunkKey);
+#[derive(Component)]
+struct TreeFruitSprite;
 /// Natural ground identity retained so same-seed village selection and claim
 /// expansion can restyle an already-streamed tile without chunk eviction.
 #[derive(Component, Clone)]
@@ -2971,7 +3108,7 @@ fn census_report_lines(c: &Census, scale: VillageScale) -> Vec<String> {
         "- Specializations -".to_string(),
         format!("Hunter        {:>3}", c.hunters),
         format!("Architect     {:>3}", c.architects),
-        format!("Ritualist     {:>3}", c.ritualists),
+        format!("Voidkeeper   {:>3}", c.ritualists),
         format!("Warrior       {:>3}", c.warriors),
         format!("Unspecialized {:>3}", c.unspecialized),
         "- Recent -".to_string(),
@@ -3538,7 +3675,7 @@ fn trader_status_line(trader: &TraderSnapshot, colony_coin: f64, now_ms: i64) ->
     );
     let phase = match trader.state {
         TraderVisitState::Arriving => {
-            format!("ARRIVING · {exterior} → {destination} · trade locked until shrine contact")
+            format!("ARRIVING · {exterior} → {destination} · trade locked until Hole contact")
         }
         TraderVisitState::Trading => {
             let remaining = trader.visit_ends_at.map_or_else(
@@ -3550,7 +3687,7 @@ fn trader_status_line(trader: &TraderSnapshot, colony_coin: f64, now_ms: i64) ->
                     )
                 },
             );
-            format!("AT SHRINE · {remaining} · {destination}")
+            format!("AT THE HOLE · {remaining} · {destination}")
         }
         TraderVisitState::Departing => format!(
             "DEPARTING · current {},{} → {exterior}",
@@ -3642,7 +3779,7 @@ fn storable_kinds() -> Vec<ResourceKind> {
 }
 
 /// Query filter for the per-tick redraw of building sprite entities.
-type BuildingEntities = With<BuildingSprite>;
+type BuildingEntities = (With<BuildingSprite>, Without<BlackHoleVisual>);
 /// Query filter for the per-tick redraw of stockpile visuals + highlight.
 type StockpileEntities = Or<(With<StockpileVis>, With<StockpileHighlight>)>;
 /// Query for the HUD resource value texts, disjoint from the header/footer texts.
@@ -3738,11 +3875,7 @@ enum OrderAction {
     ReplantTree,
     ForageFibre,
     ExpandVillage,
-    Ritual,
-    OfferTithe,
-    OfferFood,
-    OfferHerbs,
-    OfferMaterials,
+    UrgeBlackHole,
     HaulSelected,
     PlanBuilding,
     StaffSelected,
@@ -3753,7 +3886,7 @@ enum OrderAction {
 
 impl OrderAction {
     #[cfg(test)]
-    const ALL: [Self; 19] = [
+    const ALL: [Self; 15] = [
         Self::Hunt,
         Self::Fish,
         Self::FetchWater,
@@ -3762,11 +3895,7 @@ impl OrderAction {
         Self::ReplantTree,
         Self::ForageFibre,
         Self::ExpandVillage,
-        Self::Ritual,
-        Self::OfferTithe,
-        Self::OfferFood,
-        Self::OfferHerbs,
-        Self::OfferMaterials,
+        Self::UrgeBlackHole,
         Self::HaulSelected,
         Self::PlanBuilding,
         Self::StaffSelected,
@@ -3774,7 +3903,7 @@ impl OrderAction {
         Self::TrainSelected,
         Self::DefendRaid,
     ];
-    const JOBS: [Self; 9] = [
+    const JOBS: [Self; 8] = [
         Self::Hunt,
         Self::Fish,
         Self::FetchWater,
@@ -3783,13 +3912,9 @@ impl OrderAction {
         Self::ReplantTree,
         Self::ForageFibre,
         Self::ExpandVillage,
-        Self::Ritual,
     ];
-    const TARGETS: [Self; 9] = [
-        Self::OfferTithe,
-        Self::OfferFood,
-        Self::OfferHerbs,
-        Self::OfferMaterials,
+    const TARGETS: [Self; 6] = [
+        Self::UrgeBlackHole,
         Self::HaulSelected,
         Self::StaffSelected,
         Self::UnstaffSelected,
@@ -3807,11 +3932,7 @@ impl OrderAction {
             Self::ReplantTree => "Replant tree",
             Self::ForageFibre => "Forage fibre",
             Self::ExpandVillage => "Expand village",
-            Self::Ritual => "Request ritual",
-            Self::OfferTithe => "Offer tithe",
-            Self::OfferFood => "Offer food",
-            Self::OfferHerbs => "Offer herbs",
-            Self::OfferMaterials => "Offer materials",
+            Self::UrgeBlackHole => "Urge another feeding",
             Self::HaulSelected => "Haul selected pile",
             Self::PlanBuilding => "Plan building",
             Self::StaffSelected => "Staff selected",
@@ -3981,11 +4102,15 @@ pub fn run() {
                         sync_terrain_ground_surface,
                         sync_terrain_decoration_visibility,
                         render_tree_lifecycle,
+                        render_tree_fruit,
                     )
                         .after(spawn_terrain),
                     render_roads,
                     render_fog.after(spawn_terrain),
-                    render_buildings,
+                    (
+                        render_buildings,
+                        sync_black_hole_visual.after(render_buildings),
+                    ),
                     render_walls,
                     render_zones,
                     render_stockpiles,
@@ -4393,7 +4518,7 @@ fn hud_resource_label(kind: HudRes) -> &'static str {
         HudRes::Metal => "Metal",
         HudRes::Weapons => "Weapons",
         HudRes::Armor => "Armor",
-        HudRes::Blessings => "Blessings",
+        HudRes::Blessings => "Void Insight",
     }
 }
 
@@ -5790,7 +5915,7 @@ fn spawn_orders_panel(commands: &mut Commands) {
                         ));
                     }
                 });
-                body.spawn(ui_text("Shrine, stores & cats", FS_SMALL, UI_MUTED));
+                body.spawn(ui_text("The Hole, stores & cats", FS_SMALL, UI_MUTED));
                 body.spawn(bottom_bar_row_node()).with_children(|row| {
                     for action in OrderAction::TARGETS {
                         row.spawn((
@@ -7332,6 +7457,55 @@ fn render_tree_lifecycle(
     }
 }
 
+fn render_tree_fruit(
+    mut commands: Commands,
+    latest: Res<LatestSnapshot>,
+    render: Res<WorldRender>,
+    art: Option<Res<TerrainArt>>,
+    existing: Query<Entity, With<TreeFruitSprite>>,
+) {
+    if !latest.is_changed() && !render.is_changed() {
+        return;
+    }
+    for entity in &existing {
+        commands.entity(entity).despawn();
+    }
+    let (Some(colony), Some(art)) = (latest.0.as_ref().and_then(|w| w.colonies.first()), art)
+    else {
+        return;
+    };
+    let depth_origin = ysort_origin(colony.anchor);
+    for tree in &colony.forage_trees {
+        if !matches!(
+            render.decorations.get(&(tree.position.x, tree.position.y)),
+            Some(DecorationRole::Tree { .. })
+        ) {
+            continue;
+        }
+        let Some(image) = art.oak_fruit(tree.food) else {
+            continue;
+        };
+        let anchor = grid_to_world(tree.position.x, tree.position.y);
+        let center = Vec2::new(
+            anchor.x + TILE * (TREE_FOOTPRINT_WIDTH as f32 - 1.0) * 0.5,
+            anchor.y - TILE * (TREE_FOOTPRINT_HEIGHT as f32 - 1.0) * 0.5,
+        );
+        commands.spawn((
+            Sprite {
+                image,
+                custom_size: Some(Vec2::new(
+                    TILE * TREE_FOOTPRINT_WIDTH as f32,
+                    TILE * TREE_FOOTPRINT_HEIGHT as f32,
+                )),
+                ..default()
+            },
+            Transform::from_xyz(center.x, center.y, ysort_z(center.y, depth_origin) + 0.08),
+            TerrainVisual(chunk_for_tile(tree.position.x, tree.position.y)),
+            TreeFruitSprite,
+        ));
+    }
+}
+
 /// Active settlement claims render as authoritatively cleared meadow and hide
 /// procedural props. Agricultural claims are excluded deliberately: farms and
 /// future rural work remain exterior territory rather than moving the wall.
@@ -7770,34 +7944,34 @@ fn render_roads(
     for dock in &colony.transport.docks {
         let land = grid_to_world(dock.land_tile.x, dock.land_tile.y);
         let water = grid_to_world(dock.water_tile.x, dock.water_tile.y);
+        let (land_size, water_size) = transport_dock_sizes(TILE);
         commands.spawn((
-            Sprite::from_color(Color::srgb(0.48, 0.29, 0.13), Vec2::splat(TILE * 0.82)),
+            Sprite {
+                image: art.dock_land.clone(),
+                custom_size: Some(land_size),
+                ..default()
+            },
             Transform::from_xyz(land.x, land.y, Z_ROAD + 0.12),
             RoadTile,
         ));
         commands.spawn((
-            Sprite::from_color(
-                Color::srgb(0.64, 0.42, 0.20),
-                Vec2::new(TILE * 0.48, TILE * 0.86),
-            ),
+            Sprite {
+                image: art.dock_water.clone(),
+                custom_size: Some(water_size),
+                ..default()
+            },
             Transform::from_xyz(water.x, water.y, Z_ROAD + 0.12),
             RoadTile,
         ));
     }
     for vehicle in &colony.transport.vehicles {
         let position = grid_to_world(vehicle.position.x, vehicle.position.y);
-        let (color, size) = match vehicle.mode {
-            TransportMode::Rail => (
-                Color::srgb(0.53, 0.18, 0.11),
-                Vec2::new(TILE * 0.72, TILE * 0.44),
-            ),
-            TransportMode::Shipping => (
-                Color::srgb(0.72, 0.48, 0.16),
-                Vec2::new(TILE * 0.56, TILE * 0.84),
-            ),
-        };
         commands.spawn((
-            Sprite::from_color(color, size),
+            Sprite {
+                image: art.vehicle(vehicle.mode),
+                custom_size: Some(transport_vehicle_size(vehicle.mode, TILE)),
+                ..default()
+            },
             Transform::from_xyz(position.x, position.y, Z_ROAD + 0.20),
             RoadTile,
         ));
@@ -7830,6 +8004,9 @@ fn render_buildings(
         let complete = building.construction_progress >= 100.0;
         match building_visual(building.building_type) {
             BuildingVisual::Infrastructure => {}
+            // The layered landmark is reconciled by `sync_black_hole_visual`
+            // so unrelated snapshot updates do not rebuild it.
+            BuildingVisual::BlackHole => {}
             BuildingVisual::Roofed(facade) => {
                 spawn_station_floor(
                     &mut commands,
@@ -7860,8 +8037,7 @@ fn render_buildings(
             BuildingVisual::Open(station) => spawn_open_station(
                 &mut commands,
                 &art,
-                building.world_position,
-                building.footprint,
+                building,
                 station,
                 complete,
                 depth_origin,
@@ -7871,11 +8047,257 @@ fn render_buildings(
     for farm in &colony.farms {
         spawn_farm_plot(&mut commands, &art, farm, depth_origin);
     }
+    spawn_world_sites(&mut commands, &art, colony, depth_origin);
 }
 
-/// Render every designated farm as an exposed soil rectangle with one crop per
-/// tile at its live growth stage. Crop-specific tint distinguishes catnip,
-/// grain, and herbs without adding persistent map labels.
+fn sync_black_hole_visual(
+    mut commands: Commands,
+    latest: Res<LatestSnapshot>,
+    art: Option<Res<BuildingArt>>,
+    visuals: Query<(Entity, &BlackHoleRenderState), With<BlackHoleVisual>>,
+) {
+    if !latest.is_changed() {
+        return;
+    }
+    let (Some(colony), Some(art)) = (latest.0.as_ref().and_then(|w| w.colonies.first()), art)
+    else {
+        for (entity, _) in &visuals {
+            commands.entity(entity).despawn();
+        }
+        return;
+    };
+    let desired = colony.buildings.iter().find_map(|building| {
+        (building_visual(building.building_type) == BuildingVisual::BlackHole).then(|| {
+            let (width, depth, darkness) =
+                black_hole_axis_levels(colony.black_hole.as_ref(), &building.id);
+            BlackHoleRenderState {
+                building_id: building.id.clone(),
+                world_position: building.world_position,
+                footprint: building.footprint,
+                complete: building.construction_progress >= 100.0,
+                width,
+                depth,
+                darkness,
+            }
+        })
+    });
+    let mut current = None;
+    for (entity, state) in &visuals {
+        if current.is_none() {
+            current = Some((entity, state.clone()));
+        } else {
+            commands.entity(entity).despawn();
+        }
+    }
+    match (current, desired) {
+        (Some((_entity, current)), Some(desired)) if current == desired => {}
+        (Some((entity, _)), Some(desired)) => {
+            commands.entity(entity).despawn();
+            spawn_black_hole(&mut commands, &art, desired, ysort_origin(colony.anchor));
+        }
+        (None, Some(desired)) => {
+            spawn_black_hole(&mut commands, &art, desired, ysort_origin(colony.anchor));
+        }
+        (Some((entity, _)), None) => {
+            commands.entity(entity).despawn();
+        }
+        (None, None) => {}
+    }
+}
+
+fn spawn_black_hole(
+    commands: &mut Commands,
+    art: &BuildingArt,
+    render_state: BlackHoleRenderState,
+    depth_origin: f32,
+) {
+    debug_assert_eq!(
+        (render_state.footprint.width, render_state.footprint.height),
+        (5, 5)
+    );
+    let center = Vec2::new(
+        (render_state.world_position.x as f32 + 2.0) * TILE,
+        -(render_state.world_position.y as f32 + 2.0) * TILE,
+    );
+    let owner = VisualOwner::new("black-hole", &render_state.building_id);
+    let variant_state = VariantState::new()
+        .with_level("width", render_state.width)
+        .with_level("depth", render_state.depth)
+        .with_level("darkness", render_state.darkness);
+    let spec = black_hole_variant_spec();
+    let resolved = spec.resolve(&variant_state);
+    let Some((base, overlays)) = resolved.parts().split_first() else {
+        return;
+    };
+    let base_sprite = Sprite {
+        image: art.black_hole_layer(&base.asset_path),
+        color: construction_tint(render_state.complete),
+        custom_size: Some(spec.canvas().world_size(Vec2::splat(TILE))),
+        ..default()
+    };
+    let root = commands
+        .spawn((
+            base_sprite,
+            Transform::from_xyz(center.x, center.y, ysort_z(center.y, depth_origin) + 0.22),
+            BuildingSprite,
+            BlackHoleVisual,
+            StationPropSprite,
+            render_state.clone(),
+            owner.clone(),
+            base.slot.clone(),
+            base.clone(),
+            resolved.signature().clone(),
+        ))
+        .id();
+    commands.entity(root).with_children(|parent| {
+        for part in overlays {
+            let sprite = Sprite {
+                image: art.black_hole_layer(&part.asset_path),
+                color: construction_tint(render_state.complete),
+                custom_size: Some(spec.canvas().world_size(Vec2::splat(TILE))),
+                ..default()
+            };
+            parent.spawn((
+                sprite,
+                part.local_transform(Vec2::splat(TILE), 0.01),
+                StationPropSprite,
+                owner.clone(),
+                part.slot.clone(),
+                part.clone(),
+            ));
+        }
+    });
+}
+
+fn black_hole_axis_levels(
+    snapshot: Option<&cat_protocol::BlackHoleSnapshot>,
+    building_id: &str,
+) -> (u8, u8, u8) {
+    let Some(snapshot) = snapshot.filter(|snapshot| snapshot.building_id == building_id) else {
+        return (0, 0, 0);
+    };
+    let mut levels = (0, 0, 0);
+    for state in &snapshot.axes {
+        match state.axis {
+            cat_protocol::BlackHoleAxis::Width => levels.0 = state.physical_level.get(),
+            cat_protocol::BlackHoleAxis::Depth => levels.1 = state.physical_level.get(),
+            cat_protocol::BlackHoleAxis::Darkness => levels.2 = state.physical_level.get(),
+        }
+    }
+    levels
+}
+
+fn black_hole_variant_spec() -> VariantSpec {
+    let canvas =
+        CanvasSpec::new(UVec2::splat(16), UVec2::splat(80)).expect("valid Black Hole canvas");
+    let mut parts = vec![SpritePart::new(
+        LayerSlot::new(0, "base"),
+        "public/images/game/buildings/black-hole/base.png",
+    )];
+    for (axis, order) in [("width", 10), ("depth", 20), ("darkness", 30)] {
+        for level in 1..=10 {
+            parts.push(
+                SpritePart::new(
+                    LayerSlot::new(order + level, format!("{axis}-{level:02}")),
+                    format!("public/images/game/buildings/black-hole/{axis}-{level:02}.png"),
+                )
+                .visible_when(VisibilityPredicate::level_range(
+                    axis,
+                    level as u8,
+                    level as u8,
+                )),
+            );
+        }
+    }
+    VariantSpec::new(canvas, parts).expect("valid Black Hole variant specification")
+}
+
+fn spawn_world_sites(
+    commands: &mut Commands,
+    art: &BuildingArt,
+    colony: &ColonySnapshot,
+    depth_origin: f32,
+) {
+    for site in &colony.revealed_quarry_sites {
+        let center = grid_to_world(site.x, site.y);
+        commands.spawn((
+            Sprite {
+                image: art.quarry_site.clone(),
+                custom_size: Some(Vec2::splat(2.0 * TILE)),
+                ..default()
+            },
+            Transform::from_xyz(center.x, center.y, ysort_z(center.y, depth_origin) + 0.12),
+            BuildingSprite,
+        ));
+    }
+    let Some(network) = &colony.hunting_lair else {
+        return;
+    };
+    for site in &network.revealed_sites {
+        let center = grid_to_world(site.position.x, site.position.y);
+        commands.spawn((
+            Sprite {
+                image: art.hunting_lair_site.clone(),
+                color: hunting_site_tint(site.danger),
+                custom_size: Some(Vec2::splat(2.0 * TILE)),
+                ..default()
+            },
+            Transform::from_xyz(center.x, center.y, ysort_z(center.y, depth_origin) + 0.13),
+            BuildingSprite,
+        ));
+        let living = site
+            .monsters
+            .iter()
+            .filter(|monster| {
+                matches!(
+                    monster.status,
+                    cat_protocol::HuntingMonsterStatus::Available
+                        | cat_protocol::HuntingMonsterStatus::Engaged
+                )
+            })
+            .take(3)
+            .collect::<Vec<_>>();
+        let offsets: &[Vec2] = match living.len() {
+            0 => &[],
+            1 => &[Vec2::new(0.0, -0.10)],
+            2 => &[Vec2::new(-0.38, -0.08), Vec2::new(0.38, -0.08)],
+            _ => &[
+                Vec2::new(-0.42, -0.13),
+                Vec2::new(0.0, 0.10),
+                Vec2::new(0.42, -0.13),
+            ],
+        };
+        for (monster, offset) in living.into_iter().zip(offsets) {
+            let position = center + *offset * TILE;
+            commands.spawn((
+                Sprite {
+                    image: art.enemy(&monster.species_id),
+                    custom_size: Some(Vec2::splat(TILE * 0.82)),
+                    ..default()
+                },
+                Transform::from_xyz(
+                    position.x,
+                    position.y,
+                    ysort_z(position.y, depth_origin) + 0.32,
+                ),
+                BuildingSprite,
+            ));
+        }
+    }
+}
+
+fn hunting_site_tint(danger: cat_protocol::HuntingDanger) -> Color {
+    match danger {
+        cat_protocol::HuntingDanger::Low => Color::srgb(0.88, 0.92, 0.86),
+        cat_protocol::HuntingDanger::Moderate => Color::WHITE,
+        cat_protocol::HuntingDanger::High => Color::srgb(1.0, 0.90, 0.82),
+        cat_protocol::HuntingDanger::Deadly => Color::srgb(1.0, 0.76, 0.70),
+        cat_protocol::HuntingDanger::Mythic => Color::srgb(0.92, 0.62, 0.82),
+    }
+}
+
+/// Render every designated farm as an exposed soil rectangle with one authored,
+/// crop-specific plant per tile at its live growth stage.
 fn spawn_farm_plot(
     commands: &mut Commands,
     art: &BuildingArt,
@@ -7884,7 +8306,7 @@ fn spawn_farm_plot(
 ) {
     let (x0, x1) = (farm.x1.min(farm.x2), farm.x1.max(farm.x2));
     let (y0, y1) = (farm.y1.min(farm.y2), farm.y1.max(farm.y2));
-    let crop_prop = farm_stage_prop(farm.stage);
+    let crop_image = art.farm_crop(farm.crop, farm.stage);
     for y in y0..=y1 {
         for x in x0..=x1 {
             let tile = TilePoint { x, y };
@@ -7899,7 +8321,7 @@ fn spawn_farm_plot(
                 StationFloor::Soil,
                 true,
             );
-            let Some(prop) = crop_prop else {
+            let Some(image) = crop_image.clone() else {
                 continue;
             };
             let geometry = station_prop_geometry(
@@ -7909,15 +8331,15 @@ fn spawn_farm_plot(
                     height: 1,
                 },
                 PropPlacement {
-                    prop,
+                    prop: StationProp::CropSprout,
                     x: 500,
                     y: 500,
                 },
             );
             commands.spawn((
                 Sprite {
-                    image: art.prop(prop),
-                    color: farm_crop_tint(farm.crop),
+                    image,
+                    color: Color::WHITE,
                     custom_size: Some(geometry.size * 0.82),
                     ..default()
                 },
@@ -7933,22 +8355,20 @@ fn spawn_farm_plot(
     }
 }
 
-fn farm_stage_prop(stage: FarmStage) -> Option<StationProp> {
-    match stage {
-        FarmStage::Soil => None,
-        FarmStage::Sprout => Some(StationProp::CropSprout),
-        FarmStage::Growing => Some(StationProp::CropGrowing),
-        FarmStage::Mature => Some(StationProp::CropMature),
-        FarmStage::Flowering => Some(StationProp::CropFlowering),
-    }
-}
-
-fn farm_crop_tint(crop: CropKind) -> Color {
-    match crop {
-        CropKind::Catnip => Color::srgb(0.78, 0.60, 0.92),
-        CropKind::Grain => Color::srgb(0.96, 0.78, 0.34),
-        CropKind::Herb => Color::srgb(0.55, 0.88, 0.48),
-    }
+fn farm_variant_indices(crop: CropKind, stage: FarmStage) -> Option<(usize, usize)> {
+    let crop = match crop {
+        CropKind::Catnip => 0,
+        CropKind::Grain => 1,
+        CropKind::Herb => 2,
+    };
+    let stage = match stage {
+        FarmStage::Soil => return None,
+        FarmStage::Sprout => 0,
+        FarmStage::Growing => 1,
+        FarmStage::Mature => 2,
+        FarmStage::Flowering => 3,
+    };
+    Some((crop, stage))
 }
 
 fn spawn_station_floor(
@@ -7981,31 +8401,133 @@ fn spawn_station_floor(
 fn spawn_open_station(
     commands: &mut Commands,
     art: &BuildingArt,
-    nw: TilePoint,
-    footprint: FootprintSize,
+    building: &BuildingSnapshot,
     station: &StationLayout,
     complete: bool,
     depth_origin: f32,
 ) {
+    let nw = building.world_position;
+    let footprint = building.footprint;
     spawn_station_floor(commands, art, nw, footprint, station.floor, complete);
     let tint = construction_tint(complete);
-    for placement in station.props {
-        let geometry = station_prop_geometry(nw, footprint, *placement);
-        commands.spawn((
-            Sprite {
-                image: art.prop(placement.prop),
-                color: tint,
-                custom_size: Some(geometry.size),
-                ..default()
-            },
-            Transform::from_xyz(
-                geometry.center.x,
-                geometry.center.y,
-                ysort_z(geometry.base_y, depth_origin) + 0.2,
-            ),
-            BuildingSprite,
-            StationPropSprite,
-        ));
+    let visible_static_props = if complete {
+        station.props.len()
+    } else {
+        let quarter = (building.construction_progress.clamp(0.0, 99.0) / 25.0).ceil() as usize;
+        station.props.len().min(quarter)
+    };
+    for placement in station.props.iter().take(visible_static_props) {
+        spawn_station_prop(commands, art, nw, footprint, *placement, tint, depth_origin);
+    }
+    if !complete {
+        return;
+    }
+    for placement in dynamic_station_props(building) {
+        spawn_station_prop(
+            commands,
+            art,
+            nw,
+            footprint,
+            placement,
+            Color::WHITE,
+            depth_origin,
+        );
+    }
+}
+
+fn spawn_station_prop(
+    commands: &mut Commands,
+    art: &BuildingArt,
+    nw: TilePoint,
+    footprint: FootprintSize,
+    placement: PropPlacement,
+    tint: Color,
+    depth_origin: f32,
+) {
+    let geometry = station_prop_geometry(nw, footprint, placement);
+    commands.spawn((
+        Sprite {
+            image: art.prop(placement.prop),
+            color: tint,
+            custom_size: Some(geometry.size),
+            ..default()
+        },
+        Transform::from_xyz(
+            geometry.center.x,
+            geometry.center.y,
+            ysort_z(geometry.base_y, depth_origin) + 0.2,
+        ),
+        BuildingSprite,
+        StationPropSprite,
+    ));
+}
+
+fn dynamic_station_props(building: &BuildingSnapshot) -> Vec<PropPlacement> {
+    let mut props = Vec::new();
+    if let Some(input) = building
+        .input_inventory
+        .iter()
+        .chain(&building.inbound_cargo)
+        .find(|stack| stack.amount > 0.0)
+    {
+        props.push(PropPlacement {
+            prop: resource_station_prop(input.kind, false),
+            x: 150,
+            y: 520,
+        });
+    }
+    if let Some(output) = building
+        .output_inventory
+        .iter()
+        .chain(&building.outbound_cargo)
+        .find(|stack| stack.amount > 0.0)
+    {
+        props.push(PropPlacement {
+            prop: resource_station_prop(output.kind, true),
+            x: 850,
+            y: 520,
+        });
+    }
+    if building.production_progress > 0.0
+        && matches!(
+            building.building_type,
+            BuildingType::Smithy | BuildingType::Smelter
+        )
+    {
+        props.push(PropPlacement {
+            prop: StationProp::ForgeFire,
+            x: 500,
+            y: 520,
+        });
+    }
+    if building.production_paused {
+        props.push(PropPlacement {
+            prop: StationProp::Scroll,
+            x: 500,
+            y: 860,
+        });
+    } else if building.production_block_reason.is_some() {
+        props.push(PropPlacement {
+            prop: StationProp::SwordBlock,
+            x: 500,
+            y: 860,
+        });
+    }
+    props
+}
+
+fn resource_station_prop(kind: ResourceKind, output: bool) -> StationProp {
+    match kind {
+        ResourceKind::Logs | ResourceKind::Lumber | ResourceKind::Planks => StationProp::LogPile,
+        ResourceKind::Stone | ResourceKind::Blocks => StationProp::StonePile,
+        ResourceKind::Ore => StationProp::OrePile,
+        ResourceKind::Metal | ResourceKind::Refined => StationProp::MetalBasin,
+        ResourceKind::Weapons => StationProp::WeaponStand,
+        ResourceKind::Armor => StationProp::SwordBlock,
+        ResourceKind::Food | ResourceKind::Grain | ResourceKind::Flour => StationProp::Sack,
+        ResourceKind::Hide | ResourceKind::Leather => StationProp::Barrel,
+        _ if output => StationProp::Crate,
+        _ => StationProp::Sack,
     }
 }
 
@@ -8831,25 +9353,7 @@ fn build_order_action(
         OrderAction::ReplantTree => request(JobKind::ReplantTree),
         OrderAction::ForageFibre => request(JobKind::ForageFibre),
         OrderAction::ExpandVillage => request(JobKind::ExpandVillage),
-        OrderAction::Ritual => request(JobKind::Ritual),
-        OrderAction::OfferTithe => ClientAction::OfferTithe {
-            session_id,
-            nickname,
-            sig,
-        },
-        OrderAction::OfferFood => ClientAction::OfferResource {
-            session_id,
-            nickname,
-            sig,
-            resource: OfferingResource::Food,
-        },
-        OrderAction::OfferHerbs => ClientAction::OfferResource {
-            session_id,
-            nickname,
-            sig,
-            resource: OfferingResource::Herbs,
-        },
-        OrderAction::OfferMaterials => ClientAction::OfferMaterials {
+        OrderAction::UrgeBlackHole => ClientAction::NudgeBlackHole {
             session_id,
             nickname,
             sig,
@@ -9017,7 +9521,7 @@ fn labor_name(labor: Labor) -> &'static str {
         Labor::Hunt => "hunt",
         Labor::Fishing => "fishing",
         Labor::Build => "build",
-        Labor::Ritual => "ritual",
+        Labor::Ritual => "void tending",
         Labor::Fight => "fight",
         Labor::Train => "train",
         Labor::Quarry => "quarry",
@@ -10557,11 +11061,88 @@ fn hover_text(
     {
         return Some(stockpile_tooltip(pile));
     }
+    if let Some(hunting) = colony.hunting_lair.as_ref()
+        && let Some(site) = hunting
+            .revealed_sites
+            .iter()
+            .find(|site| (site.position.x, site.position.y) == tile)
+    {
+        return Some(hunting_site_tooltip(hunting, site));
+    }
+    if colony
+        .revealed_quarry_sites
+        .iter()
+        .any(|site| (site.x, site.y) == tile)
+    {
+        return Some("Quarry\nstone and ore extraction site".to_owned());
+    }
 
     Some(terrain.climate_biomes.get(&tile).copied().map_or_else(
         || tile_tooltip(world_seed, tile.0, tile.1),
         |biome| tile_tooltip_for(biome, terrain.decorations.get(&tile).copied()),
     ))
+}
+
+fn hunting_site_tooltip(
+    hunting: &cat_protocol::HuntingLairSnapshot,
+    site: &cat_protocol::RevealedHuntingSiteSnapshot,
+) -> String {
+    let danger = match site.danger {
+        cat_protocol::HuntingDanger::Low => "low",
+        cat_protocol::HuntingDanger::Moderate => "moderate",
+        cat_protocol::HuntingDanger::High => "high",
+        cat_protocol::HuntingDanger::Deadly => "deadly",
+        cat_protocol::HuntingDanger::Mythic => "mythic",
+    };
+    let monsters = site
+        .monsters
+        .iter()
+        .filter(|monster| {
+            matches!(
+                monster.status,
+                cat_protocol::HuntingMonsterStatus::Available
+                    | cat_protocol::HuntingMonsterStatus::Engaged
+            )
+        })
+        .map(|monster| monster.display_name.as_str())
+        .collect::<Vec<_>>();
+    let mut lines = vec![
+        site.display_name.clone(),
+        format!("danger: {danger}"),
+        if monsters.is_empty() {
+            "cleared; monsters are respawning".to_owned()
+        } else {
+            format!("monsters: {}", monsters.join(", "))
+        },
+    ];
+    let loot = site
+        .loot_preview
+        .iter()
+        .map(|preview| match &preview.loot {
+            cat_protocol::HuntingLootDescriptor::Resource { resource } => {
+                format!(
+                    "{}-{} {}",
+                    preview.minimum_quantity,
+                    preview.maximum_quantity,
+                    resource_kind_name(*resource)
+                )
+            }
+            cat_protocol::HuntingLootDescriptor::Item { material, .. } => {
+                material.replace('_', " ")
+            }
+        })
+        .collect::<Vec<_>>();
+    if !loot.is_empty() {
+        lines.push(format!("rewards: {}", loot.join(", ")));
+    }
+    if let Some(advice) = hunting
+        .captain_advice
+        .iter()
+        .find(|advice| advice.site_id == site.id)
+    {
+        lines.push(format!("Captain: {}", advice.summary));
+    }
+    lines.join("\n")
 }
 
 /// Hover text for a bare terrain tile: its climate biome and what it offers.
@@ -10700,7 +11281,7 @@ fn stockpile_title(pile: &StockpileSnapshot) -> String {
     } else if pile.id == GENERAL_STOREHOUSE_ID {
         "Village storehouse".to_owned()
     } else if pile.id == SHRINE_STOCKPILE_ID {
-        "Legacy shrine store".to_owned()
+        "Legacy Hole store".to_owned()
     } else {
         "Stockpile".to_owned()
     }
@@ -11489,9 +12070,9 @@ fn village_trade_target_label(name: &str, draft: &VillageTradeDraft) -> String {
 fn village_trade_caravan_phase_label(phase: VillageTradeCaravanPhase) -> &'static str {
     match phase {
         VillageTradeCaravanPhase::Outbound => "outbound",
-        VillageTradeCaravanPhase::WaitingAtTarget => "unloading at target shrine",
+        VillageTradeCaravanPhase::WaitingAtTarget => "unloading at target Hole",
         VillageTradeCaravanPhase::Returning => "returning",
-        VillageTradeCaravanPhase::WaitingAtSource => "unloading at home shrine",
+        VillageTradeCaravanPhase::WaitingAtSource => "unloading at home Hole",
     }
 }
 
@@ -13126,6 +13707,50 @@ fn building_inspector_text(building: &BuildingSnapshot, colony: &ColonySnapshot)
         building.footprint.width.max(1),
         building.footprint.height.max(1),
     ));
+    if building.building_type == BuildingType::Shrine
+        && let Some(hole) = colony
+            .black_hole
+            .as_ref()
+            .filter(|hole| hole.building_id == building.id)
+    {
+        out.push_str("\n\nBlack Hole — it can never be filled");
+        for axis in &hole.axes {
+            out.push_str(&format!(
+                "\n{:?}: physical {} / researched {}",
+                axis.axis,
+                axis.physical_level.get(),
+                axis.researched_level.get()
+            ));
+        }
+        out.push_str(&format!(
+            "\nopenings: {}  credited: {} units ({:.1} Void Insight)",
+            hole.lifetime_totals.opening_count,
+            hole.lifetime_totals.credited_units,
+            hole.lifetime_totals.credited_value_micros as f64 / 1_000_000.0
+        ));
+        if let Some(order) = &hole.active_feed_order {
+            out.push_str(&format!(
+                "\nfeeding: {:?} {}/{}{}",
+                order.line.resource,
+                order.line.credited_units,
+                order.line.planned_units,
+                if order.waiting_for_opening {
+                    " — waiting at the rim"
+                } else {
+                    ""
+                }
+            ));
+        } else if let Some(project) = &hole.active_project {
+            out.push_str(&format!(
+                "\nupgrade: {:?} {} → {}",
+                project.axis,
+                project.current_level.get(),
+                project.target_level.get()
+            ));
+        } else {
+            out.push_str("\nLeader review: awaiting a safe order");
+        }
+    }
 
     let workers: Vec<&str> = colony
         .cats
@@ -13613,7 +14238,7 @@ fn specialization_name(spec: Option<Specialization>) -> &'static str {
     match spec {
         Some(Specialization::Hunter) => "hunter",
         Some(Specialization::Architect) => "architect",
-        Some(Specialization::Ritualist) => "ritualist",
+        Some(Specialization::Ritualist) => "voidkeeper",
         Some(Specialization::Warrior) => "warrior",
         None => "none",
     }
@@ -13757,7 +14382,7 @@ fn inspector_text_for_width(cat: &CatSnapshot, window_width: f32) -> String {
 fn cat_skills_line(skills: &BTreeMap<Labor, f64>, legacy: &RoleXp) -> String {
     if skills.is_empty() {
         return format!(
-            "hunt {h:.0} build {b:.0} ritual {r:.0} war {w:.0}",
+            "hunt {h:.0} build {b:.0} void {r:.0} war {w:.0}",
             h = legacy.hunter,
             b = legacy.architect,
             r = legacy.ritualist,
@@ -13777,7 +14402,7 @@ fn labor_label(labor: Labor) -> &'static str {
         Labor::Hunt => "hunt",
         Labor::Fishing => "fish",
         Labor::Build => "build",
-        Labor::Ritual => "ritual",
+        Labor::Ritual => "void tending",
         Labor::Fight => "fight",
         Labor::Train => "train",
         Labor::Quarry => "quarry",
@@ -13899,7 +14524,7 @@ fn building_sprite_color(building: BuildingType, complete: bool) -> Color {
 
 fn building_label(building: BuildingType) -> &'static str {
     match building {
-        BuildingType::Shrine => "shrine",
+        BuildingType::Shrine => "the hole",
         BuildingType::Den => "den",
         BuildingType::FoodStorage => "food",
         BuildingType::WaterBowl => "water",
@@ -14209,30 +14834,7 @@ mod tests {
                 sig: "signed".to_owned(),
                 kind: JobKind::ExpandVillage,
             },
-            ClientAction::RequestJob {
-                session_id: "session-1".to_owned(),
-                nickname: session.nickname().to_owned(),
-                sig: "signed".to_owned(),
-                kind: JobKind::Ritual,
-            },
-            ClientAction::OfferTithe {
-                session_id: "session-1".to_owned(),
-                nickname: session.nickname().to_owned(),
-                sig: "signed".to_owned(),
-            },
-            ClientAction::OfferResource {
-                session_id: "session-1".to_owned(),
-                nickname: session.nickname().to_owned(),
-                sig: "signed".to_owned(),
-                resource: OfferingResource::Food,
-            },
-            ClientAction::OfferResource {
-                session_id: "session-1".to_owned(),
-                nickname: session.nickname().to_owned(),
-                sig: "signed".to_owned(),
-                resource: OfferingResource::Herbs,
-            },
-            ClientAction::OfferMaterials {
+            ClientAction::NudgeBlackHole {
                 session_id: "session-1".to_owned(),
                 nickname: session.nickname().to_owned(),
                 sig: "signed".to_owned(),
@@ -15314,7 +15916,7 @@ mod tests {
         );
         assert_eq!(
             village_trade_caravan_phase_label(VillageTradeCaravanPhase::WaitingAtTarget),
-            "unloading at target shrine"
+            "unloading at target Hole"
         );
         assert_eq!(
             village_trade_caravan_phase_label(VillageTradeCaravanPhase::Returning),
@@ -15322,7 +15924,7 @@ mod tests {
         );
         assert_eq!(
             village_trade_caravan_phase_label(VillageTradeCaravanPhase::WaitingAtSource),
-            "unloading at home shrine"
+            "unloading at home Hole"
         );
     }
 
@@ -15968,6 +16570,21 @@ mod tests {
     }
 
     #[test]
+    fn authored_transport_sprites_keep_placeholder_footprints() {
+        let (land_dock, water_dock) = transport_dock_sizes(TILE);
+        assert_eq!(land_dock, Vec2::splat(TILE * 0.82));
+        assert_eq!(water_dock, Vec2::new(TILE * 0.48, TILE * 0.86));
+        assert_eq!(
+            transport_vehicle_size(TransportMode::Rail, TILE),
+            Vec2::new(TILE * 0.72, TILE * 0.44)
+        );
+        assert_eq!(
+            transport_vehicle_size(TransportMode::Shipping, TILE),
+            Vec2::new(TILE * 0.56, TILE * 0.84)
+        );
+    }
+
+    #[test]
     fn mixed_stone_and_dirt_tiles_connect_as_one_road_network() {
         let stone = HashSet::from([(0, 0), (-1, 0), (0, -1)]);
         let dirt = HashSet::from([(1, 0), (0, 1)]);
@@ -16447,31 +17064,26 @@ mod tests {
     }
 
     #[test]
-    fn farm_stages_have_explicit_crop_art_and_crop_tints_are_distinct() {
-        assert_eq!(farm_stage_prop(FarmStage::Soil), None);
+    fn farm_stages_and_species_select_twelve_distinct_authored_variants() {
         assert_eq!(
-            farm_stage_prop(FarmStage::Sprout),
-            Some(StationProp::CropSprout)
-        );
-        assert_eq!(
-            farm_stage_prop(FarmStage::Growing),
-            Some(StationProp::CropGrowing)
+            farm_variant_indices(CropKind::Catnip, FarmStage::Soil),
+            None
         );
         assert_eq!(
-            farm_stage_prop(FarmStage::Mature),
-            Some(StationProp::CropMature)
+            farm_variant_indices(CropKind::Catnip, FarmStage::Sprout),
+            Some((0, 0))
         );
         assert_eq!(
-            farm_stage_prop(FarmStage::Flowering),
-            Some(StationProp::CropFlowering)
+            farm_variant_indices(CropKind::Grain, FarmStage::Growing),
+            Some((1, 1))
         );
-        assert_ne!(
-            farm_crop_tint(CropKind::Catnip),
-            farm_crop_tint(CropKind::Grain)
+        assert_eq!(
+            farm_variant_indices(CropKind::Herb, FarmStage::Mature),
+            Some((2, 2))
         );
-        assert_ne!(
-            farm_crop_tint(CropKind::Grain),
-            farm_crop_tint(CropKind::Herb)
+        assert_eq!(
+            farm_variant_indices(CropKind::Herb, FarmStage::Flowering),
+            Some((2, 3))
         );
     }
 
@@ -16724,7 +17336,7 @@ mod tests {
     }
 
     #[test]
-    fn building_renderer_composes_open_shrine_without_persistent_name_text() {
+    fn building_renderer_fits_fixed_three_by_three_hole_inside_five_by_five_landmark() {
         let mut snapshot = village_world(&["alpha"]);
         snapshot.colonies[0].buildings.push(BuildingSnapshot {
             id: "shrine".to_owned(),
@@ -16734,8 +17346,8 @@ mod tests {
             world_position: TilePoint { x: 6, y: 6 },
             position: TilePoint { x: 6, y: 6 },
             footprint: FootprintSize {
-                width: 3,
-                height: 3,
+                width: 5,
+                height: 5,
             },
             ..default()
         });
@@ -16743,6 +17355,7 @@ mod tests {
         let mut app = App::new();
         app.insert_resource(LatestSnapshot(Some(snapshot)))
             .insert_resource(BuildingArt::default())
+            .add_systems(Update, sync_black_hole_visual.after(render_buildings))
             .add_systems(Update, render_buildings);
         app.update();
 
@@ -16750,20 +17363,25 @@ mod tests {
         let mut floors = world.query_filtered::<Entity, With<StationFloorSprite>>();
         assert_eq!(
             floors.iter(world).count(),
-            9,
-            "one repeated tile per footprint cell"
+            0,
+            "the Hole has no shrine floor"
         );
         let mut props = world.query_filtered::<Entity, With<StationPropSprite>>();
         assert_eq!(
             props.iter(world).count(),
-            4,
-            "altar, relic, candles, and brazier"
+            1,
+            "one fixed five-by-five Black Hole canvas"
         );
+        let mut hole = world.query_filtered::<(&Sprite, &Transform), With<StationPropSprite>>();
+        let (sprite, transform) = hole.single(world).expect("one Hole sprite");
+        assert_eq!(sprite.custom_size, Some(Vec2::splat(5.0 * TILE)));
+        assert_eq!(transform.translation.x, 8.0 * TILE);
+        assert_eq!(transform.translation.y, -8.0 * TILE);
         let mut roofs = world.query_filtered::<Entity, With<RoofedBuildingSprite>>();
         assert_eq!(
             roofs.iter(world).count(),
             0,
-            "shrines are open return destinations"
+            "the Hole is not a roofed station"
         );
         let mut labels = world.query_filtered::<Entity, (With<BuildingSprite>, With<Text2d>)>();
         assert_eq!(labels.iter(world).count(), 0);
@@ -17894,7 +18512,7 @@ mod tests {
         trader.arrived_at = Some(1_000);
         trader.visit_ends_at = Some(3_601_000);
         let trading = trader_status_line(&trader, 12.0, 1_000);
-        assert!(trading.contains("AT SHRINE · leaves in 1h"));
+        assert!(trading.contains("AT THE HOLE · leaves in 1h"));
 
         trader.state = TraderVisitState::Departing;
         trader.destination = trader.route_exterior;
@@ -18238,7 +18856,7 @@ mod tests {
             id: SHRINE_STOCKPILE_ID.to_string(),
             ..storehouse
         };
-        assert!(stockpile_tooltip(&legacy).contains("Legacy shrine store"));
+        assert!(stockpile_tooltip(&legacy).contains("Legacy Hole store"));
     }
 
     #[test]

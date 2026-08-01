@@ -1,6 +1,8 @@
 //! SQLite persistence for `cat-server`, mirroring the relevant tables from
 //! `db/schema.ts`.
 
+mod black_hole;
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::Path,
@@ -29,8 +31,190 @@ use cat_sim::{
     zones::{ZoneKind, ZoneRect},
 };
 use rusqlite::{Connection, OptionalExtension, Row, params, types::Type};
-use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HuntingSpatialSave {
+    #[serde(default = "current_hunting_save_version")]
+    schema_version: u32,
+    lairs: Vec<(i32, i32, cat_sim::hunting_lair::HuntingLair)>,
+    trophies: Vec<(i32, i32, cat_sim::hunting_runtime::HuntingTrophyClaim)>,
+    materials: Vec<(String, Vec<(cat_sim::hunting_lair::SpeciesMaterial, u32)>)>,
+    nudges: Vec<(String, i32, i32)>,
+    #[serde(default)]
+    general_nudges: Vec<String>,
+    #[serde(default)]
+    active_parties: Vec<cat_sim::hunting_runtime::ActiveHuntingParty>,
+    #[serde(default)]
+    next_reviews: Vec<(String, i64)>,
+    #[serde(default)]
+    attempt_nonces: Vec<(i32, i32, u64)>,
+    outcomes: Vec<cat_sim::hunting_runtime::HuntingOutcomeRecord>,
+}
+
+const fn current_hunting_save_version() -> u32 {
+    1
+}
+
+impl HuntingSpatialSave {
+    fn from_shared(shared: &SharedSpatialState) -> Self {
+        Self {
+            schema_version: current_hunting_save_version(),
+            lairs: shared
+                .hunting_lairs
+                .iter()
+                .map(|(site, lair)| (site.x, site.y, lair.clone()))
+                .collect(),
+            trophies: shared
+                .hunting_trophies
+                .iter()
+                .map(|(site, claim)| (site.x, site.y, claim.clone()))
+                .collect(),
+            materials: shared
+                .hunting_materials
+                .iter()
+                .map(|(colony_id, materials)| {
+                    (
+                        colony_id.clone(),
+                        materials
+                            .iter()
+                            .map(|(material, count)| (*material, *count))
+                            .collect(),
+                    )
+                })
+                .collect(),
+            nudges: shared
+                .hunting_nudges
+                .iter()
+                .map(|(colony_id, site)| (colony_id.clone(), site.x, site.y))
+                .collect(),
+            general_nudges: shared.hunting_general_nudges.iter().cloned().collect(),
+            active_parties: shared.active_hunting_parties.values().cloned().collect(),
+            next_reviews: shared
+                .hunting_next_review_at
+                .iter()
+                .map(|(colony_id, at)| (colony_id.clone(), *at))
+                .collect(),
+            attempt_nonces: shared
+                .hunting_attempt_nonces
+                .iter()
+                .map(|(site, nonce)| (site.x, site.y, *nonce))
+                .collect(),
+            outcomes: shared.recent_hunt_outcomes.clone(),
+        }
+    }
+
+    fn apply_to(self, shared: &mut SharedSpatialState) {
+        if self.schema_version != current_hunting_save_version() {
+            return;
+        }
+        shared.hunting_lairs = self
+            .lairs
+            .into_iter()
+            .map(|(x, y, lair)| (TilePos { x, y }, lair))
+            .collect();
+        shared.hunting_trophies = self
+            .trophies
+            .into_iter()
+            .map(|(x, y, claim)| (TilePos { x, y }, claim))
+            .collect();
+        shared.hunting_materials = self
+            .materials
+            .into_iter()
+            .map(|(colony_id, materials)| (colony_id, materials.into_iter().collect()))
+            .collect();
+        shared.hunting_nudges = self
+            .nudges
+            .into_iter()
+            .map(|(colony_id, x, y)| (colony_id, TilePos { x, y }))
+            .collect();
+        shared.hunting_general_nudges = self.general_nudges.into_iter().collect();
+        shared.active_hunting_parties = self
+            .active_parties
+            .into_iter()
+            .map(|party| (party.id.clone(), party))
+            .collect();
+        shared.hunting_next_review_at = self.next_reviews.into_iter().collect();
+        shared.hunting_attempt_nonces = self
+            .attempt_nonces
+            .into_iter()
+            .map(|(x, y, nonce)| (TilePos { x, y }, nonce))
+            .collect();
+        shared.recent_hunt_outcomes = self.outcomes;
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        if self.schema_version != current_hunting_save_version() {
+            return Err(format!(
+                "unsupported hunting state schema {}",
+                self.schema_version
+            ));
+        }
+        let mut sites = BTreeSet::new();
+        for (x, y, lair) in &self.lairs {
+            if !sites.insert((*x, *y)) {
+                return Err(format!("duplicate Hunting Lair at ({x}, {y})"));
+            }
+            if !(1..=3).contains(&lair.monsters.len()) {
+                return Err(format!("invalid roster size at ({x}, {y})"));
+            }
+            let mut monster_ids = BTreeSet::new();
+            for monster in &lair.monsters {
+                if !monster_ids.insert(monster.id)
+                    || monster.health > u16::from(monster.species.threat())
+                {
+                    return Err(format!("invalid monster state at ({x}, {y})"));
+                }
+            }
+            let any_alive = lair.monsters.iter().any(|monster| monster.is_alive());
+            if any_alive && lair.respawn_ready_at_ms.is_some() {
+                return Err(format!("living roster has a respawn timer at ({x}, {y})"));
+            }
+            if !any_alive && lair.respawn_ready_at_ms.is_none() {
+                return Err(format!(
+                    "cleared roster lacks a respawn timer at ({x}, {y})"
+                ));
+            }
+        }
+        for (x, y, _) in &self.trophies {
+            let Some((_, _, lair)) = self
+                .lairs
+                .iter()
+                .find(|(site_x, site_y, _)| site_x == x && site_y == y)
+            else {
+                return Err(format!("trophy references unknown lair at ({x}, {y})"));
+            };
+            if !lair.first_clear_claimed {
+                return Err(format!("trophy references an uncleared lair at ({x}, {y})"));
+            }
+        }
+        let mut party_ids = BTreeSet::new();
+        for party in &self.active_parties {
+            let unique_members = party.member_cat_ids.iter().collect::<BTreeSet<_>>();
+            if party.id.is_empty()
+                || !party_ids.insert(party.id.as_str())
+                || party.member_cat_ids.is_empty()
+                || party.member_cat_ids.len() > 3
+                || unique_members.len() != party.member_cat_ids.len()
+                || party.resolves_at_ms <= party.departed_at_ms
+                || !sites.contains(&(party.site.x, party.site.y))
+            {
+                return Err(format!("invalid active hunting party {:?}", party.id));
+            }
+        }
+        let nonce_sites = self
+            .attempt_nonces
+            .iter()
+            .map(|(x, y, _)| (*x, *y))
+            .collect::<BTreeSet<_>>();
+        if nonce_sites.len() != self.attempt_nonces.len() {
+            return Err("duplicate Hunting Lair attempt nonce".to_owned());
+        }
+        Ok(())
+    }
+}
 
 pub fn open_database_from_env() -> rusqlite::Result<Connection> {
     let path = std::env::var("GAME_DB_PATH").unwrap_or_else(|_| "data/cat.db".to_owned());
@@ -57,7 +241,8 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             id INTEGER PRIMARY KEY CHECK (id = 1),
             worldSeed INTEGER NOT NULL,
             sharedSpatialRulesVersion INTEGER NOT NULL DEFAULT 0,
-            sharedFishHabitats TEXT
+            sharedFishHabitats TEXT,
+            sharedHuntingState TEXT
         );
 
         CREATE TABLE IF NOT EXISTS shared_world_tiles (
@@ -301,6 +486,7 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
         );
         "#,
     )?;
+    black_hole::init_schema(conn)?;
     migrate_add_missing_columns(conn)?;
     conn.execute_batch(
         "CREATE UNIQUE INDEX IF NOT EXISTS colonies_one_global
@@ -331,6 +517,7 @@ fn migrate_add_missing_columns(conn: &Connection) -> rusqlite::Result<()> {
             "INTEGER NOT NULL DEFAULT 0",
         ),
         ("world", "sharedFishHabitats", "TEXT"),
+        ("world", "sharedHuntingState", "TEXT"),
         ("colonies", "isGlobal", "INTEGER"),
         ("colonies", "foundingScale", "TEXT"),
         ("colonies", "upgradeLevels", "TEXT"),
@@ -653,7 +840,8 @@ pub fn save_world(conn: &Connection, world: &WorldState) -> rusqlite::Result<()>
     }
     ensure_shared_spatial_authority(&mut canonical);
     transaction.execute_batch(
-        "DELETE FROM raiders;
+        "DELETE FROM black_hole_runtime;
+         DELETE FROM raiders;
          DELETE FROM votes;
          DELETE FROM elections;
          DELETE FROM zones;
@@ -668,8 +856,8 @@ pub fn save_world(conn: &Connection, world: &WorldState) -> rusqlite::Result<()>
     )?;
     transaction.execute(
         "INSERT INTO world (
-            id, worldSeed, sharedSpatialRulesVersion, sharedFishHabitats
-         ) VALUES (1, ?1, ?2, ?3)",
+            id, worldSeed, sharedSpatialRulesVersion, sharedFishHabitats, sharedHuntingState
+         ) VALUES (1, ?1, ?2, ?3, ?4)",
         params![
             i64::from(canonical.world_seed),
             i64::from(canonical.shared_spatial.rules_version),
@@ -682,6 +870,8 @@ pub fn save_world(conn: &Connection, world: &WorldState) -> rusqlite::Result<()>
                     .collect::<Vec<_>>(),
             )
             .map_err(to_sql_json)?,
+            serde_json::to_string(&HuntingSpatialSave::from_shared(&canonical.shared_spatial))
+                .map_err(to_sql_json)?,
         ],
     )?;
 
@@ -698,7 +888,7 @@ pub fn save_world(conn: &Connection, world: &WorldState) -> rusqlite::Result<()>
 pub fn load_world(conn: &Connection) -> rusqlite::Result<Option<WorldState>> {
     let world_row = conn
         .query_row(
-            "SELECT worldSeed, sharedSpatialRulesVersion, sharedFishHabitats
+            "SELECT worldSeed, sharedSpatialRulesVersion, sharedFishHabitats, sharedHuntingState
              FROM world WHERE id = 1",
             [],
             |row| {
@@ -706,12 +896,14 @@ pub fn load_world(conn: &Connection) -> rusqlite::Result<Option<WorldState>> {
                     row.get::<_, i64>(0)?,
                     row.get::<_, Option<i64>>(1)?.unwrap_or(0),
                     row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
                 ))
             },
         )
         .optional()?;
 
-    let Some((world_seed, shared_rules_version, shared_fish_json)) = world_row else {
+    let Some((world_seed, shared_rules_version, shared_fish_json, shared_hunting_json)) = world_row
+    else {
         return Ok(None);
     };
 
@@ -768,14 +960,22 @@ pub fn load_world(conn: &Connection) -> rusqlite::Result<Option<WorldState>> {
         })
         .transpose()?
         .unwrap_or_default();
+    let mut shared_spatial = SharedSpatialState {
+        rules_version: u32::try_from(shared_rules_version).unwrap_or(0),
+        tiles: load_shared_world_tiles(conn)?,
+        fish_habitats: shared_fish_habitats,
+        ..SharedSpatialState::default()
+    };
+    if let Some(raw) = shared_hunting_json {
+        let hunting =
+            parse_json_at::<HuntingSpatialSave>(&raw, "world", "1", "sharedHuntingState")?;
+        hunting.validate().map_err(invalid_json)?;
+        hunting.apply_to(&mut shared_spatial);
+    }
     let mut world = WorldState {
         world_seed: world_seed as u32,
         colonies,
-        shared_spatial: SharedSpatialState {
-            rules_version: u32::try_from(shared_rules_version).unwrap_or(0),
-            tiles: load_shared_world_tiles(conn)?,
-            fish_habitats: shared_fish_habitats,
-        },
+        shared_spatial,
     };
     ensure_shared_spatial_authority(&mut world);
     sync_all_colonies_from_shared(&mut world);
@@ -891,6 +1091,7 @@ fn save_colony(conn: &Connection, world_seed: u32, colony: &ColonyRuntime) -> ru
     for building in &colony.buildings {
         save_building(conn, &colony.id, building)?;
     }
+    black_hole::save_colony(conn, colony)?;
     for tile in colony.world_tiles.values() {
         save_world_tile(conn, &colony.id, tile)?;
     }
@@ -949,6 +1150,8 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
     } else {
         founding_revealed_tiles(anchor, &claimed_tiles)
     };
+    let buildings = load_buildings(conn, &id)?;
+    let black_holes = black_hole::load_colony(conn, &id, &buildings)?;
 
     let mut colony = ColonyRuntime {
         id: id.clone(),
@@ -981,7 +1184,8 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
         resources: parse_json_at::<Resources>(&resources_json, "colonies", &id, "resources")?,
         cats: load_cats(conn, &id)?,
         jobs: load_jobs(conn, &id)?,
-        buildings: load_buildings(conn, &id)?,
+        buildings,
+        black_holes,
         events: load_events(conn, &id)?,
         world_tiles: load_world_tiles(conn, &id)?,
         zones: load_zones(conn, &id)?,
@@ -2639,7 +2843,7 @@ mod tests {
     #[test]
     fn every_loaded_json_column_reports_table_row_and_column_context() {
         const JSON_COLUMNS: &[(&str, &[&str])] = &[
-            ("world", &["sharedFishHabitats"]),
+            ("world", &["sharedFishHabitats", "sharedHuntingState"]),
             (
                 "colonies",
                 &[
@@ -7178,6 +7382,7 @@ mod tests {
             ledger::StockLedger,
             officers::OfficerRole,
             stockpiles::{GatherSpot, ResourceKind, Stockpile},
+            types::BuildingType,
             world_tick::{
                 ElectionKind, ElectionRuntime, RaiderRuntime, TraderRuntime, UpgradeLevels,
                 VoteRuntime,
@@ -7572,6 +7777,18 @@ mod tests {
             },
         );
 
+        let black_hole_building_id = colony
+            .buildings
+            .iter()
+            .find(|building| building.building_type == BuildingType::Shrine)
+            .expect("audit colony should contain the seeded Black Hole")
+            .id
+            .clone();
+        colony.black_holes.insert(
+            black_hole_building_id.clone(),
+            cat_sim::black_hole::BlackHoleRuntime::for_building(black_hole_building_id),
+        );
+
         let expected = world.clone();
         save_world(&conn, &world).expect("save world");
         let loaded = load_world(&conn)
@@ -7769,6 +7986,111 @@ mod tests {
         assert_eq!(
             rows,
             vec![("Mara".to_owned(), 100, 300), ("Moos".to_owned(), 400, 400)]
+        );
+    }
+
+    #[test]
+    fn hunting_lair_rosters_trophies_materials_and_outcomes_survive_restart() {
+        let conn = open_database(":memory:").expect("database");
+        let mut world = new_world(7_777);
+        world
+            .colonies
+            .push(found_colony(world.world_seed, "colony-1", 0, 11));
+        let site = TilePos { x: 40, y: 12 };
+        let tile = WorldTileRuntime {
+            pos: site,
+            tile_type: TileType::EnemyLair,
+            resources: TileResources {
+                food: 0,
+                herbs: 0,
+                water: 0,
+                gem: 0,
+                clay: 0,
+                sand: 0,
+            },
+            max_resources: MaxResources { food: 0, herbs: 0 },
+            danger_level: 80.0,
+            path_wear: 0,
+            last_depleted: 0,
+            overlay_feature: None,
+        };
+        world.shared_spatial.tiles.insert(site, tile.clone());
+        world.colonies[0].world_tiles.insert(site, tile);
+        world.colonies[0].revealed_tiles.insert(site);
+        cat_sim::hunting_runtime::reconcile_hunting_lairs(
+            &mut world.shared_spatial,
+            world.world_seed,
+            0,
+        );
+        let cat_id = world.colonies[0].cats[0].id.clone();
+        let cat = &mut world.colonies[0].cats[0];
+        cat.stats.attack = 100.0;
+        cat.stats.defense = 100.0;
+        cat.stats.hunting = 100.0;
+        cat.needs.health = 100.0;
+        cat_sim::hunting_runtime::attempt_hunting_lair(
+            &mut world,
+            "colony-1",
+            site,
+            &[cat_id],
+            cat_sim::hunting_lair::AttemptAuthority::AutonomousLeader,
+            0,
+        )
+        .expect("safe deterministic clear");
+        world
+            .shared_spatial
+            .hunting_general_nudges
+            .insert("colony-1".to_owned());
+        world
+            .shared_spatial
+            .hunting_next_review_at
+            .insert("colony-1".to_owned(), 9_000);
+        world.shared_spatial.active_hunting_parties.insert(
+            "party-1".to_owned(),
+            cat_sim::hunting_runtime::ActiveHuntingParty {
+                id: "party-1".to_owned(),
+                colony_id: "colony-1".to_owned(),
+                site,
+                member_cat_ids: vec![world.colonies[0].cats[0].id.clone()],
+                authority: cat_sim::hunting_lair::AttemptAuthority::PlayerNudge,
+                departed_at_ms: 1_000,
+                resolves_at_ms: 8_000,
+            },
+        );
+
+        save_world(&conn, &world).expect("save hunting state");
+        let loaded = load_world(&conn).expect("load").expect("world");
+        assert_eq!(
+            loaded.shared_spatial.hunting_lairs,
+            world.shared_spatial.hunting_lairs
+        );
+        assert_eq!(
+            loaded.shared_spatial.hunting_trophies,
+            world.shared_spatial.hunting_trophies
+        );
+        assert_eq!(
+            loaded.shared_spatial.hunting_materials,
+            world.shared_spatial.hunting_materials
+        );
+        assert_eq!(
+            loaded.shared_spatial.recent_hunt_outcomes,
+            world.shared_spatial.recent_hunt_outcomes
+        );
+        assert_eq!(
+            loaded.shared_spatial.hunting_general_nudges,
+            world.shared_spatial.hunting_general_nudges
+        );
+        assert_eq!(
+            loaded.shared_spatial.active_hunting_parties,
+            world.shared_spatial.active_hunting_parties
+        );
+        assert_eq!(
+            loaded.shared_spatial.hunting_next_review_at,
+            world.shared_spatial.hunting_next_review_at
+        );
+        assert_eq!(
+            loaded.shared_spatial.hunting_attempt_nonces,
+            world.shared_spatial.hunting_attempt_nonces
         );
     }
 }

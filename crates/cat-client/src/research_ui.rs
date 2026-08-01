@@ -7,9 +7,8 @@ use bevy::{
     ui::Val2,
 };
 use cat_protocol::ResearchSnapshot;
-use cat_sim::{
-    research_catalog::{RESEARCH_NODE_COUNT, ResearchCategory, ResearchPayload, research_catalog},
-    upgrade_tree::UPGRADE_NODES,
+use cat_sim::research_catalog::{
+    RESEARCH_NODE_COUNT, ResearchCategory, ResearchNode, ResearchPayload, research_catalog,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -52,7 +51,38 @@ enum PurchaseState {
     Locked,
     ResearchReady,
     ResearchUnaffordable,
-    LegacyReady,
+    VoidInsightReady,
+    VoidInsightUnaffordable,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum StudyCurrency {
+    ResearchNotes,
+    VoidInsight,
+}
+
+impl StudyCurrency {
+    fn for_node(node: &ResearchNode) -> Self {
+        if node.axis_entitlement.is_some() {
+            Self::VoidInsight
+        } else {
+            Self::ResearchNotes
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::ResearchNotes => "Research Notes",
+            Self::VoidInsight => "Void Insight",
+        }
+    }
+
+    fn compact_label(self) -> &'static str {
+        match self {
+            Self::ResearchNotes => "RN",
+            Self::VoidInsight => "VI",
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -214,7 +244,6 @@ impl ResearchUiModel {
             return PurchaseState::Locked;
         };
         let node = &research_catalog().nodes()[index];
-        let has_legacy_blessing_purchase = UPGRADE_NODES.iter().any(|legacy| legacy.id == node.id);
         if snapshot.owned_node_ids.iter().any(|owned| owned == id) {
             return PurchaseState::Owned;
         }
@@ -222,11 +251,14 @@ impl ResearchUiModel {
             CatalogNodeState::Owned => PurchaseState::Owned,
             CatalogNodeState::Locked => PurchaseState::Locked,
             CatalogNodeState::Available => {
-                if can_afford(snapshot.research_points, node.cost) {
+                if StudyCurrency::for_node(node) == StudyCurrency::VoidInsight {
+                    if can_afford(snapshot.blessings, node.cost) {
+                        PurchaseState::VoidInsightReady
+                    } else {
+                        PurchaseState::VoidInsightUnaffordable
+                    }
+                } else if can_afford(snapshot.research_points, node.cost) {
                     PurchaseState::ResearchReady
-                } else if has_legacy_blessing_purchase && can_afford(snapshot.blessings, node.cost)
-                {
-                    PurchaseState::LegacyReady
                 } else {
                     PurchaseState::ResearchUnaffordable
                 }
@@ -234,12 +266,11 @@ impl ResearchUiModel {
         }
     }
 
-    fn dispatchable_legacy_node(&self, id: &str, snapshot: &ResearchSnapshot) -> bool {
-        self.purchase_state(id, snapshot) == PurchaseState::LegacyReady
-    }
-
     fn dispatchable_research_node(&self, id: &str, snapshot: &ResearchSnapshot) -> bool {
-        self.purchase_state(id, snapshot) == PurchaseState::ResearchReady
+        matches!(
+            self.purchase_state(id, snapshot),
+            PurchaseState::ResearchReady | PurchaseState::VoidInsightReady
+        )
     }
 }
 
@@ -724,7 +755,7 @@ pub(super) fn spawn_research_ui(commands: &mut Commands) {
                             button.spawn((ui_text("", FS_SMALL, UI_INK), PurchaseButtonText));
                     });
                     inspector.spawn(ui_text(
-                        "Research labor is manual while the Loremaster office is vacant. The Leader may choose one affordable study per rolling real day; players may buy any affordable studies. Original studies may also be commissioned with shrine blessings.",
+                        "Research labor is manual while the Loremaster office is vacant. Ordinary studies spend Research Notes, while Width, Depth, and Darkness studies for The Hole spend Void Insight.",
                         FS_SMALL,
                         LEDGER_MUTED,
                     ));
@@ -746,7 +777,19 @@ fn current_research(latest: &LatestSnapshot) -> Option<&ResearchSnapshot> {
 fn leader_priority_copy(research: &ResearchSnapshot) -> String {
     research.next_target.as_ref().map_or_else(
         || "No leader-priority study available".to_owned(),
-        |target| format!("Leader priority: {} · {:.0} pts", target.name, target.cost),
+        |target| {
+            format!(
+                "Leader priority: {} · {:.0} Research Notes",
+                target.name, target.cost
+            )
+        },
+    )
+}
+
+fn research_balance_copy(research: &ResearchSnapshot) -> String {
+    format!(
+        "{:.0} Void Insight  ·  {:.0} Research Notes  ·  {} scholars",
+        research.blessings, research.research_points, research.researcher_count
     )
 }
 
@@ -1136,14 +1179,16 @@ pub(super) fn update_research_snapshot(
                 CatalogNodeState::Available => ("AVAILABLE", READY_INK),
                 CatalogNodeState::Locked => ("LOCKED", LOCKED_INK),
             };
-            text.0 = format!("{label} · E{} · {:.0}b", node.era, node.cost);
+            text.0 = format!(
+                "{label} · E{} · {:.0}{}",
+                node.era,
+                node.cost,
+                StudyCurrency::for_node(node).compact_label()
+            );
             color.0 = ink;
         }
         if let Ok(mut text) = currency.single_mut() {
-            text.0 = format!(
-                "{:.0} blessings  ·  {:.0} research  ·  {} scholars",
-                research.blessings, research.research_points, research.researcher_count
-            );
+            text.0 = research_balance_copy(research);
         }
         if let Ok(mut text) = next.single_mut() {
             text.0 = leader_priority_copy(research);
@@ -1193,8 +1238,49 @@ fn payload_line(payload: &ResearchPayload) -> String {
         ResearchPayload::UnlockCapability { capability_id } => match capability_id.as_str() {
             "rail_logistics" => "Blueprints: Rail transport".to_owned(),
             "water_travel" => "Blueprints: Shipping".to_owned(),
-            _ => format!("Capability: {}", title_case_identifier(capability_id)),
+            _ => black_hole_capability_line(capability_id)
+                .unwrap_or_else(|| format!("Capability: {}", title_case_identifier(capability_id))),
         },
+    }
+}
+
+fn black_hole_capability_line(capability_id: &str) -> Option<String> {
+    let remainder = capability_id.strip_prefix("black_hole_")?;
+    let (axis, tier) = remainder.rsplit_once("_tier_")?;
+    let tier = tier.parse::<u8>().ok()?;
+    Some(format!(
+        "The Hole: {} tier {tier}",
+        title_case_identifier(axis)
+    ))
+}
+
+fn displayed_node_description(node: &ResearchNode) -> String {
+    if node.axis_entitlement.is_some() {
+        node.description.strip_prefix("Black-hole ").map_or_else(
+            || node.description.clone(),
+            |rest| format!("The Hole's {rest}"),
+        )
+    } else {
+        node.description.clone()
+    }
+}
+
+fn purchase_state_copy(node: &ResearchNode, state: PurchaseState) -> String {
+    match state {
+        PurchaseState::Owned => "Study owned".to_owned(),
+        PurchaseState::Locked => "Prerequisites required".to_owned(),
+        PurchaseState::ResearchReady => {
+            format!("Research for {:.0} Research Notes", node.cost)
+        }
+        PurchaseState::ResearchUnaffordable => {
+            format!("Need {:.0} Research Notes", node.cost)
+        }
+        PurchaseState::VoidInsightReady => {
+            format!("Research for {:.0} Void Insight", node.cost)
+        }
+        PurchaseState::VoidInsightUnaffordable => {
+            format!("Need {:.0} Void Insight", node.cost)
+        }
     }
 }
 
@@ -1275,10 +1361,11 @@ pub(super) fn update_research_inspector(
     }
     let node = &research_catalog().nodes()[ui.selected];
     let meta = format!(
-        "{}  ·  ERA {}  ·  {:.0} RESEARCH",
+        "{}  ·  ERA {}  ·  {:.0} {}",
         category_label(node.category),
         node.era,
-        node.cost
+        node.cost,
+        StudyCurrency::for_node(node).label().to_uppercase()
     );
     let prerequisites = if node.prerequisites.is_empty() {
         "No prior study".to_owned()
@@ -1303,15 +1390,7 @@ pub(super) fn update_research_inspector(
         current_research(&latest).map(|research| model.purchase_state(&node.id, research));
     let purchase = purchase_state.map_or_else(
         || "Awaiting colony".to_owned(),
-        |state| match state {
-            PurchaseState::Owned => "Study owned".to_owned(),
-            PurchaseState::Locked => "Prerequisites required".to_owned(),
-            PurchaseState::ResearchReady => format!("Research for {:.0} points", node.cost),
-            PurchaseState::ResearchUnaffordable => {
-                format!("Need {:.0} research points", node.cost)
-            }
-            PurchaseState::LegacyReady => format!("Commission for {:.0} blessings", node.cost),
-        },
+        |state| purchase_state_copy(node, state),
     );
     if let Ok(mut disabled) = purchase_button.single_mut() {
         disabled.disabled = research_purchase_disabled(session.ready, purchase_state);
@@ -1324,7 +1403,7 @@ pub(super) fn update_research_inspector(
         } else if meta_marker.is_some() {
             text.0 = meta.clone();
         } else if description.is_some() {
-            text.0 = node.description.clone();
+            text.0 = displayed_node_description(node);
         } else if prereq_marker.is_some() {
             text.0 = prerequisites.clone();
         } else if payload_marker.is_some() {
@@ -1340,7 +1419,7 @@ fn research_purchase_disabled(session_ready: bool, purchase_state: Option<Purcha
     !session_ready
         || !matches!(
             purchase_state,
-            Some(PurchaseState::ResearchReady | PurchaseState::LegacyReady)
+            Some(PurchaseState::ResearchReady | PurchaseState::VoidInsightReady)
         )
 }
 
@@ -1352,13 +1431,6 @@ fn research_purchase_action(
 ) -> Option<ClientAction> {
     if model.dispatchable_research_node(node_id, research) {
         Some(ClientAction::ResearchNode {
-            session_id: session.session_id.clone(),
-            nickname: CLIENT_ACTOR_LABEL.to_owned(),
-            sig: session.sig.clone(),
-            node_id: node_id.to_owned(),
-        })
-    } else if model.dispatchable_legacy_node(node_id, research) {
-        Some(ClientAction::UnlockNode {
             session_id: session.session_id.clone(),
             nickname: CLIENT_ACTOR_LABEL.to_owned(),
             sig: session.sig.clone(),
@@ -1469,11 +1541,15 @@ mod tests {
             model.category_count(ResearchCategory::Building),
             research_catalog().category_count(ResearchCategory::Building)
         );
-        assert_eq!(model.category_count(ResearchCategory::Building), 165);
+        assert_eq!(model.category_count(ResearchCategory::Building), 190);
         assert_eq!(model.category_count(ResearchCategory::RecipeResource), 167);
         assert_eq!(model.category_count(ResearchCategory::Upgrade), 155);
-        assert!(model.category_count(ResearchCategory::Building) * 3 >= RESEARCH_NODE_COUNT);
-        assert!(model.category_count(ResearchCategory::RecipeResource) * 3 >= RESEARCH_NODE_COUNT);
+        assert_eq!(
+            model.category_count(ResearchCategory::Building)
+                + model.category_count(ResearchCategory::RecipeResource)
+                + model.category_count(ResearchCategory::Upgrade),
+            RESEARCH_NODE_COUNT
+        );
     }
 
     #[test]
@@ -1512,7 +1588,11 @@ mod tests {
             cost: 5.0,
         });
         let copy = leader_priority_copy(&research);
-        assert_eq!(copy, "Leader priority: Research Hut · 5 pts");
+        assert_eq!(copy, "Leader priority: Research Hut · 5 Research Notes");
+        assert_eq!(
+            research_balance_copy(&research),
+            "0 Void Insight  ·  12 Research Notes  ·  2 scholars"
+        );
     }
 
     #[test]
@@ -1659,7 +1739,7 @@ mod tests {
     }
 
     #[test]
-    fn every_catalog_node_uses_research_while_legacy_nodes_retain_blessing_fallback() {
+    fn every_ordinary_study_uses_only_research_notes() {
         let model = ResearchUiModel::from_catalog();
         let mut research = snapshot(&["research_hut"], 99.0);
         assert_eq!(
@@ -1667,12 +1747,15 @@ mod tests {
             PurchaseState::ResearchReady
         );
         assert!(model.dispatchable_research_node("basic_tools", &research));
-        assert!(!model.dispatchable_legacy_node("basic_tools", &research));
 
         research.research_points = 0.0;
         assert_eq!(
             model.purchase_state("basic_tools", &research),
-            PurchaseState::LegacyReady
+            PurchaseState::ResearchUnaffordable
+        );
+        assert!(
+            research_purchase_action(&model, &research, "basic_tools", &session()).is_none(),
+            "Void Insight cannot purchase an ordinary study"
         );
         research.research_points = 99.0;
         let generated = research_catalog()
@@ -1684,9 +1767,7 @@ mod tests {
             model.purchase_state(&generated.id, &research),
             PurchaseState::ResearchReady
         );
-        assert!(!model.dispatchable_legacy_node("basic_tools", &research));
         assert!(model.dispatchable_research_node(&generated.id, &research));
-        assert!(!model.dispatchable_legacy_node(&generated.id, &research));
 
         let generated_action =
             research_purchase_action(&model, &research, &generated.id, &session());
@@ -1701,10 +1782,52 @@ mod tests {
             Some(ClientAction::ResearchNode { node_id, .. }) if node_id == "basic_tools"
         ));
         research.research_points = 0.0;
+        assert!(research_purchase_action(&model, &research, "basic_tools", &session()).is_none());
+    }
+
+    #[test]
+    fn hole_axis_studies_use_only_void_insight_even_when_research_notes_are_plentiful() {
+        let model = ResearchUiModel::from_catalog();
+        let mut research = snapshot(&["masonry", "school"], 0.0);
+        research.research_points = 999.0;
+
+        let node = research_catalog()
+            .get("shrine_foundations")
+            .expect("Width I keeps its stable compatibility id");
+        assert!(node.axis_entitlement.is_some());
+        assert_eq!(StudyCurrency::for_node(node), StudyCurrency::VoidInsight);
+        assert_eq!(
+            model.purchase_state(&node.id, &research),
+            PurchaseState::VoidInsightUnaffordable
+        );
+        assert_eq!(
+            purchase_state_copy(node, PurchaseState::VoidInsightUnaffordable),
+            "Need 20 Void Insight"
+        );
+        assert!(research_purchase_action(&model, &research, &node.id, &session()).is_none());
+
+        research.blessings = node.cost;
+        assert_eq!(
+            model.purchase_state(&node.id, &research),
+            PurchaseState::VoidInsightReady
+        );
+        assert_eq!(
+            purchase_state_copy(node, PurchaseState::VoidInsightReady),
+            "Research for 20 Void Insight"
+        );
+        assert!(model.dispatchable_research_node(&node.id, &research));
         assert!(matches!(
-            research_purchase_action(&model, &research, "basic_tools", &session()),
-            Some(ClientAction::UnlockNode { node_id, .. }) if node_id == "basic_tools"
+            research_purchase_action(&model, &research, &node.id, &session()),
+            Some(ClientAction::ResearchNode { node_id, .. }) if node_id == node.id
         ));
+        assert_eq!(
+            black_hole_capability_line("black_hole_width_tier_01"),
+            Some("The Hole: Width tier 1".to_owned())
+        );
+        assert_eq!(
+            displayed_node_description(node),
+            "The Hole's width lets the Hole swallow one more unit whenever its horizon opens."
+        );
     }
 
     #[test]
@@ -1731,15 +1854,19 @@ mod tests {
     fn purchase_button_stays_disabled_until_the_signed_session_is_ready() {
         assert!(research_purchase_disabled(
             false,
-            Some(PurchaseState::LegacyReady)
+            Some(PurchaseState::VoidInsightReady)
         ));
         assert!(!research_purchase_disabled(
             true,
-            Some(PurchaseState::LegacyReady)
+            Some(PurchaseState::VoidInsightReady)
         ));
         assert!(research_purchase_disabled(
             true,
             Some(PurchaseState::ResearchUnaffordable)
+        ));
+        assert!(research_purchase_disabled(
+            true,
+            Some(PurchaseState::VoidInsightUnaffordable)
         ));
         assert!(research_purchase_disabled(
             true,

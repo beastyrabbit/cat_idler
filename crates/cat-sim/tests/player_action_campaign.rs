@@ -191,6 +191,8 @@ fn action_name(action: &proto::ClientAction) -> &'static str {
         proto::ClientAction::PlanBuilding { .. } => "plan_building",
         proto::ClientAction::UnlockNode { .. } => "unlock_node",
         proto::ClientAction::ResearchNode { .. } => "research_node",
+        proto::ClientAction::NudgeBlackHole { .. } => "nudge_black_hole",
+        proto::ClientAction::NudgeHuntingSite { .. } => "nudge_hunting_site",
         proto::ClientAction::OfferTithe { .. } => "offer_tithe",
         proto::ClientAction::OfferMaterials { .. } => "offer_materials",
         proto::ClientAction::OfferResource { .. } => "offer_resource",

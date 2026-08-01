@@ -1414,6 +1414,12 @@ fn action_authentication(action: &ClientAction) -> ActionAuthentication<'_> {
         | ClientAction::ResearchNode {
             session_id, sig, ..
         }
+        | ClientAction::NudgeBlackHole {
+            session_id, sig, ..
+        }
+        | ClientAction::NudgeHuntingSite {
+            session_id, sig, ..
+        }
         | ClientAction::OfferTithe {
             session_id, sig, ..
         }

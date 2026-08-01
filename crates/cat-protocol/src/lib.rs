@@ -7,6 +7,11 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+pub mod black_hole;
+pub use black_hole::*;
+pub mod hunting_lair;
+pub use hunting_lair::*;
+
 /// Increment whenever a wire change can make an older client reject a snapshot.
 /// Clients inspect this first field before decoding the nested world, so a schema
 /// mismatch produces an explicit update-required state instead of a frozen scene.
@@ -197,6 +202,20 @@ pub struct ColonySnapshot {
     pub threat: ThreatSnapshot,
     pub raiders: Vec<RaiderSnapshot>,
     pub buildings: Vec<BuildingSnapshot>,
+    /// Additive v1 projection of the isolated physical Black Hole authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub black_hole: Option<BlackHoleSnapshot>,
+    /// Additive public projection of revealed Enemy Lair hunting sites.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hunting_lair: Option<HuntingLairSnapshot>,
+    /// Revealed Cave Entrance quarry sites. These remain distinct from Enemy
+    /// Lairs even when both happen to have high environmental danger.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub revealed_quarry_sites: Vec<TilePoint>,
+    /// Revealed broadleaf tree anchors with a coarse, truthful food-availability
+    /// band. Empty trees omit fruit; exact hidden food counts never cross the wire.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub forage_trees: Vec<ForageTreeSnapshot>,
     pub claimed_tiles: Vec<TilePoint>,
     /// Exterior territory owned for agriculture but intentionally excluded from the
     /// palisaded settlement. Always a subset of `claimed_tiles`.
@@ -1657,6 +1676,22 @@ pub struct TilePoint {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum ForageFoodBand {
+    Empty,
+    Low,
+    Medium,
+    Full,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForageTreeSnapshot {
+    pub position: TilePoint,
+    pub food: ForageFoodBand,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum BridgeAxis {
     Horizontal,
     Vertical,
@@ -1863,6 +1898,21 @@ pub enum ClientAction {
         nickname: String,
         sig: String,
         node_id: String,
+    },
+    /// Raise the safe priority of the next Leader-controlled feed review.
+    NudgeBlackHole {
+        session_id: String,
+        nickname: String,
+        sig: String,
+    },
+    /// Ask the Leader and Captain to prioritize one revealed Enemy Lair. This
+    /// remains a nudge: the authoritative risk gate may refuse dispatch.
+    NudgeHuntingSite {
+        session_id: String,
+        nickname: String,
+        sig: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        site_id: Option<String>,
     },
     /// Convert a safe food/refined surplus into shrine blessings immediately.
     OfferTithe {
@@ -3176,6 +3226,10 @@ mod tests {
                     outbound_haul: 0.0,
                     ..BuildingSnapshot::default()
                 }],
+                black_hole: None,
+                hunting_lair: None,
+                revealed_quarry_sites: Vec::new(),
+                forage_trees: Vec::new(),
                 claimed_tiles: vec![TilePoint { x: 6, y: 6 }],
                 agricultural_tiles: vec![],
                 revealed_tiles: vec![TilePoint { x: 6, y: 6 }],

@@ -898,6 +898,11 @@ pub fn cat_purchase(state: &UpgradeTreeState, id: &str) -> AutoUnlockResult {
 pub fn cat_auto_unlock(state: &UpgradeTreeState) -> AutoUnlockResult {
     let mut best = None;
     for node in unlockable_catalog_nodes(state) {
+        // Hole-axis studies spend Void Insight through their dedicated action.
+        // Scholar automation must not silently buy them with Research Notes.
+        if node.axis_entitlement.is_some() {
+            continue;
+        }
         if node.cost > state.research_points {
             continue;
         }
@@ -1602,6 +1607,27 @@ mod tests {
     }
 
     #[test]
+    fn cat_auto_research_skips_every_unlocked_black_hole_axis_entitlement() {
+        let owned_non_axis = crate::research_catalog::research_catalog()
+            .nodes()
+            .iter()
+            .filter(|node| node.axis_entitlement.is_none())
+            .map(|node| node.id.as_str())
+            .collect::<Vec<_>>();
+        let state = state_with(&owned_non_axis, 1_000_000.0);
+
+        assert!(
+            cat_purchase(&state, "shrine_foundations").ok,
+            "Width I is unlocked and affordable in this fixture"
+        );
+        let result = cat_auto_unlock(&state);
+
+        assert!(!result.ok);
+        assert_eq!(result.node_id, None);
+        assert_eq!(result.state, state);
+    }
+
+    #[test]
     fn manual_cat_purchase_spends_points_only_on_the_requested_node() {
         let state = state_with(&["research_hut"], 8.0);
         let bought = cat_purchase(&state, "water_carriers");
@@ -1730,7 +1756,7 @@ mod tests {
             .iter()
             .filter(|node| crate::research_catalog::research_node_is_implemented(node))
             .count();
-        assert_eq!(implemented_count, 487);
+        assert_eq!(implemented_count, 512);
         while state.owned_node_ids.len() < implemented_count {
             let next = crate::research_catalog::research_catalog()
                 .nodes()
@@ -1838,7 +1864,7 @@ mod tests {
     #[test]
     fn every_generated_recipe_resource_and_building_service_is_live() {
         let catalog = crate::research_catalog::research_catalog();
-        assert_eq!(catalog.nodes().len(), 487);
+        assert_eq!(catalog.nodes().len(), 512);
         assert!(catalog.nodes().iter().all(|node| !node.is_future_content()));
         let textile_sources = catalog.get("textile_work_sources").unwrap();
         let state = state_with(

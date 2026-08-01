@@ -12,6 +12,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     biomes::MaxResources,
+    black_hole::{
+        BlackHoleAxes, BlackHoleFeedOrder, BlackHoleRuntime, BlackHoleUpgradeProject,
+        FeedCandidate, INTAKE_COOLDOWN_GAME_MS, LEADER_REVIEW_INTERVAL_MS,
+        resource_darkness_requirement, upgrade_recipe,
+    },
     depletion::{CHOPPED_FOREST_FOOD_CAP, is_forest_type, regrowth_amount},
     elections::{
         BallotVote, ELECTION_WINDOW_MS, ElectionCandidate, KICK_WINDOW_MS, TERM_MS,
@@ -27,7 +32,7 @@ use crate::{
         traits_to_sprite_params,
     },
     idle_engine,
-    idle_rules::{self, consumption_for_tick},
+    idle_rules::consumption_for_tick,
     items::{
         self, Item, ItemInstance, ItemKind, ItemLocation, ItemStore, Material, StationCompartment,
     },
@@ -78,7 +83,7 @@ use crate::{
         WORKSHOP_MATERIALS_PER_CYCLE,
     },
     productivity::{productive_duration_ms, productive_elapsed},
-    research_catalog::research_catalog,
+    research_catalog::{ResearchAxis, research_catalog},
     rng::{life_seed, movement_seed, raid_seed, roll_seeded},
     roads::{self, RoadCorridorOptions, RoadTile, select_road_corridor},
     shrine::is_at_shrine,
@@ -175,6 +180,17 @@ pub struct SharedSpatialState {
     pub rules_version: u32,
     pub tiles: BTreeMap<TilePos, WorldTileRuntime>,
     pub fish_habitats: BTreeMap<TilePos, stockpiles::FishPopulation>,
+    /// World-global deterministic Enemy Lair rosters. Cave Entrances remain
+    /// quarry sites and never enter this ledger.
+    pub hunting_lairs: BTreeMap<TilePos, crate::hunting_lair::HuntingLair>,
+    pub hunting_trophies: BTreeMap<TilePos, crate::hunting_runtime::HuntingTrophyClaim>,
+    pub hunting_materials: BTreeMap<ColonyId, BTreeMap<crate::hunting_lair::SpeciesMaterial, u32>>,
+    pub hunting_nudges: BTreeMap<ColonyId, TilePos>,
+    pub hunting_general_nudges: BTreeSet<ColonyId>,
+    pub active_hunting_parties: BTreeMap<String, crate::hunting_runtime::ActiveHuntingParty>,
+    pub hunting_next_review_at: BTreeMap<ColonyId, i64>,
+    pub hunting_attempt_nonces: BTreeMap<TilePos, u64>,
+    pub recent_hunt_outcomes: Vec<crate::hunting_runtime::HuntingOutcomeRecord>,
 }
 
 impl Default for SharedSpatialState {
@@ -190,6 +206,15 @@ impl SharedSpatialState {
             rules_version: CURRENT_SHARED_SPATIAL_RULES_VERSION,
             tiles: BTreeMap::new(),
             fish_habitats: BTreeMap::new(),
+            hunting_lairs: BTreeMap::new(),
+            hunting_trophies: BTreeMap::new(),
+            hunting_materials: BTreeMap::new(),
+            hunting_nudges: BTreeMap::new(),
+            hunting_general_nudges: BTreeSet::new(),
+            active_hunting_parties: BTreeMap::new(),
+            hunting_next_review_at: BTreeMap::new(),
+            hunting_attempt_nonces: BTreeMap::new(),
+            recent_hunt_outcomes: Vec::new(),
         }
     }
 }
@@ -298,6 +323,9 @@ pub struct ColonyRuntime {
     pub cats: Vec<Cat>,
     pub jobs: Vec<JobRuntime>,
     pub buildings: Vec<BuildingRuntime>,
+    /// Versioned physical Black Hole state keyed by its stable building id.
+    /// Leader implementations may issue commands, but never own this authority.
+    pub black_holes: BTreeMap<String, crate::black_hole::BlackHoleRuntime>,
     pub events: Vec<EventLog>,
     pub world_tiles: BTreeMap<TilePos, WorldTileRuntime>,
     pub zones: Vec<ZoneRuntime>,
@@ -963,10 +991,11 @@ pub fn migrate_split_clothier_queues(colony: &mut ColonyRuntime) {
 #[must_use]
 pub const fn footprint_for(building_type: BuildingType) -> (i32, i32) {
     match building_type {
-        // The shrine is the village hub, and the workshops/storehouse are broad
-        // work-yards — all 3x3 (P16).
-        BuildingType::Shrine
-        | BuildingType::Workshop
+        // The Hole is permanently a 5x5 landmark: a 3x3 void with a one-tile
+        // paved ring around it.
+        BuildingType::Shrine => (5, 5),
+        // Workshops/storehouse are broad 3x3 work-yards (P16).
+        BuildingType::Workshop
         | BuildingType::Smithy
         | BuildingType::FoodStorage
         | BuildingType::WoodCutter
@@ -1014,6 +1043,33 @@ pub fn footprint_tiles(position: TilePos, w: i32, h: i32) -> Vec<TilePos> {
 fn building_footprint_tiles(building: &BuildingRuntime) -> Vec<TilePos> {
     let (w, h) = footprint_for(building.building_type);
     footprint_tiles(building.position, w, h)
+}
+
+/// The central 3x3 void inside The Hole's fixed 5x5 landmark.
+#[must_use]
+pub fn black_hole_void_tiles(position: TilePos) -> Vec<TilePos> {
+    footprint_tiles(
+        TilePos {
+            x: position.x + 1,
+            y: position.y + 1,
+        },
+        3,
+        3,
+    )
+}
+
+/// The one-tile road ring around The Hole's central 3x3 void.
+#[must_use]
+pub fn black_hole_road_ring_tiles(position: TilePos) -> Vec<TilePos> {
+    footprint_tiles(position, 5, 5)
+        .into_iter()
+        .filter(|tile| {
+            tile.x == position.x
+                || tile.x == position.x + 4
+                || tile.y == position.y
+                || tile.y == position.y + 4
+        })
+        .collect()
 }
 
 /// Every tile currently covered by any building's footprint.
@@ -1930,16 +1986,25 @@ pub fn stockpile_placement_error(
     placement_error_for_tiles(colony, &tiles, world_seed, require_claimed)
 }
 
-/// Building tiles that act as P14.2 soft obstacles. The shrine remains fully
-/// passable. Natural decoration anchors are checked per moving cat below rather
-/// than regenerating every mapped terrain chunk on every tick.
+/// Building tiles that act as P14.2 soft obstacles. The Hole's road ring remains
+/// fully passable while its central 3x3 void is strongly discouraged. Natural
+/// decoration anchors are checked per moving cat below rather than regenerating
+/// every mapped terrain chunk on every tick.
 fn soft_obstacle_tiles(colony: &ColonyRuntime) -> HashSet<TilePos> {
-    colony
+    let mut obstacles = colony
         .buildings
         .iter()
         .filter(|building| building.building_type != BuildingType::Shrine)
         .flat_map(building_footprint_tiles)
-        .collect()
+        .collect::<HashSet<_>>();
+    for shrine in colony
+        .buildings
+        .iter()
+        .filter(|building| building.building_type == BuildingType::Shrine)
+    {
+        obstacles.extend(black_hole_void_tiles(shrine.position));
+    }
+    obstacles
 }
 
 /// Whether `tile` sits on the fence perimeter (the palisade wall ring): a tile that
@@ -2040,6 +2105,7 @@ pub enum DeathCause {
     Dehydration,
     StarvationAndDehydration,
     Raid,
+    Hunt,
 }
 
 impl DeathCause {
@@ -2050,6 +2116,7 @@ impl DeathCause {
             DeathCause::Dehydration => "dehydration",
             DeathCause::StarvationAndDehydration => "starvation_and_dehydration",
             DeathCause::Raid => "raid",
+            DeathCause::Hunt => "hunt",
         }
     }
 }
@@ -2253,6 +2320,7 @@ impl EventKind {
                 EventKind::Death(DeathCause::StarvationAndDehydration)
             }
             "death_raid" => EventKind::Death(DeathCause::Raid),
+            "death_hunt" => EventKind::Death(DeathCause::Hunt),
             "raid_launched" => EventKind::Raid(RaidPhase::Launched),
             "raid_repelled" => EventKind::Raid(RaidPhase::Repelled),
             "raid_won" => EventKind::Raid(RaidPhase::Won),
@@ -2522,8 +2590,10 @@ const fn founding_radius(scale: VillageScale) -> i32 {
 /// among the shrine, dens, workshops, and streets.
 #[must_use]
 pub fn inside_village_interior(colony: &ColonyRuntime, tile: TilePos) -> bool {
-    let center = shrine_center_tile(colony.anchor);
-    (tile.x - center.x).abs().max((tile.y - center.y).abs()) <= founding_radius(colony.scale)
+    (tile.x - colony.anchor.x)
+        .abs()
+        .max((tile.y - colony.anchor.y).abs())
+        <= founding_radius(colony.scale)
 }
 /// Fog-of-war founding reveal: the whole claimed village starts revealed, plus a halo
 /// of this Chebyshev radius around the anchor (covers the adjacent water source).
@@ -2578,6 +2648,7 @@ impl Default for ColonyRuntime {
             cats: Vec::new(),
             jobs: Vec::new(),
             buildings: Vec::new(),
+            black_holes: BTreeMap::new(),
             events: Vec::new(),
             world_tiles: BTreeMap::new(),
             zones: Vec::new(),
@@ -2898,7 +2969,12 @@ pub(crate) fn cat_usable_tool_stock(colony: &ColonyRuntime, cat_id: &str) -> f64
     }
 }
 
-fn wear_equipped_item(colony: &mut ColonyRuntime, cat_id: &str, kind: ItemKind, now_ms: i64) {
+pub(crate) fn wear_equipped_item(
+    colony: &mut ColonyRuntime,
+    cat_id: &str,
+    kind: ItemKind,
+    now_ms: i64,
+) {
     let Some(id) = colony.items.equipped_id(cat_id, kind).map(str::to_owned) else {
         return;
     };
@@ -3557,6 +3633,15 @@ pub const fn new_world(world_seed: u32) -> WorldState {
             rules_version: CURRENT_SHARED_SPATIAL_RULES_VERSION,
             tiles: BTreeMap::new(),
             fish_habitats: BTreeMap::new(),
+            hunting_lairs: BTreeMap::new(),
+            hunting_trophies: BTreeMap::new(),
+            hunting_materials: BTreeMap::new(),
+            hunting_nudges: BTreeMap::new(),
+            hunting_general_nudges: BTreeSet::new(),
+            active_hunting_parties: BTreeMap::new(),
+            hunting_next_review_at: BTreeMap::new(),
+            hunting_attempt_nonces: BTreeMap::new(),
+            recent_hunt_outcomes: Vec::new(),
         },
     }
 }
@@ -4003,35 +4088,34 @@ fn cat_sprite_params_from_cat(cat: &Cat) -> Option<CatSpriteParams> {
     serde_json::from_value(value).ok()
 }
 
-/// The shrine's centre tile. The shrine's footprint anchor (its NW corner) is the
-/// village anchor; a 3×3 footprint puts the centre one tile SE of it. Roads radiate
-/// from this tile and the claimed square is centred on it.
+/// The Hole's centre tile. Its 5x5 footprint anchor is the village anchor, so the
+/// central 3x3 void is inset by one tile and centred two tiles south-east.
 const fn shrine_center_tile(anchor: TilePos) -> TilePos {
     TilePos {
-        x: anchor.x + 1,
-        y: anchor.y + 1,
+        x: anchor.x + 2,
+        y: anchor.y + 2,
     }
 }
 
-/// The fixed founding blueprint (P16): the shrine dead-centre, three den houses and
-/// the three raw-material workshops arranged around it, leaving
-/// the shrine's centre row/column clear for the road cross. Anchors are absolute NW
-/// corners; every footprint stays inside `founding_claimed_tiles` and none overlap.
+/// The fixed personal founding blueprint: the 5x5 Hole, three dens, and the
+/// three raw-material workshops arranged clear of its 3x3 void, road ring, and
+/// four road arms. Anchors are absolute NW corners; every footprint stays inside
+/// `founding_claimed_tiles` and none overlap.
 ///
-/// Layout (shrine centre at 7,7; claimed square 1..=13):
+/// Layout (Hole footprint 6..=10; claimed square 0..=12):
 /// ```text
-///   Woodworking(2,2)  Den(5,2)   ·road·   WoodCutter(9,2)
-///                              [ Shrine 6..8 ]
-///   Den(2,9)          Den(5,9)   ·road·   StonePrep(9,9)
+///   Woodworking(2,2)  Den(5,2)      WoodCutter(9,2)
+///   Den(1,5)          [road / 3x3 Hole / road]
+///   StonePrep(1,9)    Den(4,9)
 /// ```
 const PERSONAL_STARTER_BLUEPRINT: [(BuildingType, i32, i32, u32); 7] = [
     (BuildingType::Shrine, 6, 6, 1),
     (BuildingType::Woodworking, 2, 2, 1),
     (BuildingType::Den, 5, 2, 1),
     (BuildingType::WoodCutter, 9, 2, 1),
-    (BuildingType::Den, 2, 9, 1),
-    (BuildingType::Den, 5, 9, 1),
-    (BuildingType::StonePrep, 9, 9, 1),
+    (BuildingType::Den, 1, 5, 1),
+    (BuildingType::Den, 4, 9, 1),
+    (BuildingType::StonePrep, 1, 9, 1),
 ];
 
 /// Larger ownerless hub: six homes, two copies of each founding production yard,
@@ -4048,12 +4132,12 @@ const GLOBAL_STARTER_BLUEPRINT: [(BuildingType, i32, i32, u32); 16] = [
     (BuildingType::Barracks, 14, 3, 1),
     (BuildingType::Woodworking, -1, 10, 1),
     (BuildingType::Den, 3, 10, 1),
-    (BuildingType::WoodCutter, 10, 10, 1),
+    (BuildingType::WoodCutter, 11, 10, 1),
     (BuildingType::Den, 14, 10, 1),
-    (BuildingType::FoodStorage, -1, 14, 1),
-    (BuildingType::Den, 3, 14, 1),
-    (BuildingType::StonePrep, 10, 14, 1),
-    (BuildingType::Den, 14, 14, 1),
+    (BuildingType::FoodStorage, -1, 13, 1),
+    (BuildingType::Den, 3, 13, 1),
+    (BuildingType::StonePrep, 10, 13, 1),
+    (BuildingType::Den, 14, 13, 1),
 ];
 
 fn starter_buildings(
@@ -4100,9 +4184,8 @@ fn starter_buildings(
         .collect()
 }
 
-/// The stone-road tiles of the founding cross: the shrine's centre row/column extended
-/// out to each wall (N/S/E/W), skipping the shrine's own footprint. New construction
-/// treats these authored roads as reserved infrastructure and never reclaims them.
+/// The Hole's permanent one-tile road ring plus four stone-road arms extending
+/// from the midpoint of each side to the founding walls.
 #[cfg(test)]
 fn founding_road_tiles(anchor: TilePos) -> Vec<TilePos> {
     founding_road_tiles_for_radius(anchor, PERSONAL_VILLAGE_START_RADIUS)
@@ -4115,23 +4198,27 @@ fn founding_road_tiles_for_radius(anchor: TilePos, radius: i32) -> Vec<TilePos> 
     let shrine_max_x = anchor.x + shrine_w - 1;
     let shrine_min_y = anchor.y;
     let shrine_max_y = anchor.y + shrine_h - 1;
-    let lo = -radius;
-    let hi = radius;
+    let min_x = anchor.x - radius;
+    let max_x = anchor.x + radius;
+    let min_y = anchor.y - radius;
+    let max_y = anchor.y + radius;
 
-    let mut tiles = Vec::new();
-    for d in lo..=hi {
+    let mut tiles = black_hole_road_ring_tiles(anchor)
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    for y in min_y..=max_y {
         // Vertical arm along the shrine's centre column, skipping the shrine rows.
-        let y = center.y + d;
         if y < shrine_min_y || y > shrine_max_y {
-            tiles.push(TilePos { x: center.x, y });
-        }
-        // Horizontal arm along the shrine's centre row, skipping the shrine columns.
-        let x = center.x + d;
-        if x < shrine_min_x || x > shrine_max_x {
-            tiles.push(TilePos { x, y: center.y });
+            tiles.insert(TilePos { x: center.x, y });
         }
     }
-    tiles
+    for x in min_x..=max_x {
+        // Horizontal arm along the shrine's centre row, skipping the shrine columns.
+        if x < shrine_min_x || x > shrine_max_x {
+            tiles.insert(TilePos { x, y: center.y });
+        }
+    }
+    tiles.into_iter().collect()
 }
 
 /// Pave the founding road cross and guarantee the village sits on solid, drinkable
@@ -4253,13 +4340,12 @@ fn founding_pond_site(colony: &ColonyRuntime, blocked: &HashSet<TilePos>) -> Opt
 }
 
 fn founding_claimed_tiles(anchor: TilePos, radius: i32) -> Vec<TilePos> {
-    let center = shrine_center_tile(anchor);
     let mut tiles = Vec::new();
     for dy in -radius..=radius {
         for dx in -radius..=radius {
             tiles.push(TilePos {
-                x: center.x + dx,
-                y: center.y + dy,
+                x: anchor.x + dx,
+                y: anchor.y + dy,
             });
         }
     }
@@ -4429,6 +4515,11 @@ pub fn sync_all_colonies_from_shared(state: &mut WorldState) {
 #[must_use]
 pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
     ensure_shared_spatial_authority(state);
+    crate::hunting_runtime::reconcile_hunting_lairs(
+        &mut state.shared_spatial,
+        state.world_seed,
+        now_ms,
+    );
     let world_seed = state.world_seed;
     let mut indices: Vec<usize> = (0..state.colonies.len()).collect();
     indices.sort_by(|left, right| state.colonies[*left].id.cmp(&state.colonies[*right].id));
@@ -4516,6 +4607,7 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
         phase_22_ritual_approval(colony, gate, policy);
         phase_23_production(colony, gate, world_seed);
         phase_24_research(colony, gate);
+        phase_24b_black_hole_leader_adapter(colony, gate);
         phase_25_survival_deaths_and_carried_yield_salvage(colony, gate, policy);
         prune_invalid_officers(colony, gate.processed_through);
         phase_25b_prune_dead_scout_provisional_tiles(colony, gate);
@@ -4588,6 +4680,7 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
         });
     }
 
+    crate::hunting_runtime::tick_hunting_lair_adapter(state, now_ms);
     sync_all_colonies_from_shared(state);
     reconcile_village_discoveries(state);
     crate::actions::advance_village_trade_caravans(state, now_ms);
@@ -8664,6 +8757,7 @@ const SHRINE_ESTABLISHMENT_MS: i64 = RESEARCH_ESTABLISHMENT_MS;
 /// A tithe is a meaningful colony-scale offering, not a per-minute tax. This
 /// cadence keeps the active faucet slow while preventing a replenishing larder
 /// from losing hundreds of food over a few days.
+#[cfg(test)]
 const TITHE_COOLDOWN_MS: i64 = 24 * 3_600_000;
 /// Automated material rituals are a deliberate half-day cadence, not a continuous
 /// quarry-to-blessing conveyor. Manual player offerings remain resource-gated only.
@@ -8732,7 +8826,6 @@ fn offering_source_stockpile(
     from: WorldPos,
     kind: ResourceKind,
 ) -> Option<(&Stockpile, TilePos)> {
-    offering_amount(kind)?;
     colony
         .stockpiles
         .iter()
@@ -8781,15 +8874,6 @@ pub(crate) fn offering_metadata(
     })
 }
 
-/// Legacy material helper retained for the Loremaster's established policy.
-pub(crate) fn material_offering_metadata(
-    colony: &ColonyRuntime,
-    from: WorldPos,
-    now_ms: i64,
-) -> Option<JobMetadata> {
-    offering_metadata(colony, from, now_ms, ResourceKind::Materials)
-}
-
 fn offering_cargo_marker(job_id: &str) -> String {
     format!("{OFFERING_CARGO_PREFIX}{job_id}")
 }
@@ -8804,6 +8888,7 @@ fn automated_offering_ready(colony: &ColonyRuntime, now_ms: i64) -> bool {
         .is_none_or(|last| now_ms.saturating_sub(last) >= OFFERING_COOLDOWN_MS)
 }
 
+#[cfg(test)]
 fn automated_tithe_ready(colony: &ColonyRuntime, now_ms: i64) -> bool {
     colony
         .last_tithe_at
@@ -9101,17 +9186,16 @@ fn ratio_or_zero(value: f64, capacity: f64) -> f64 {
     }
 }
 
-/// Phase 21: execute leader capital decisions and minute-cadence tithe deposits.
+/// Phase 21: execute ordinary leader capital decisions.
+///
+/// Legacy tithes and offerings are intentionally ignored. The versioned Black
+/// Hole adapter in phase 24b is the only authority allowed to spend feed goods.
 fn phase_21_leader_capital_decisions_and_tithe(
     colony: &mut ColonyRuntime,
     gate: TickGate,
     policy: TickPolicy,
     plan: &DirectorPlan,
 ) {
-    let shrine_established =
-        gate.processed_through - colony.run_started_at >= SHRINE_ESTABLISHMENT_MS;
-    let tithe_ready = automated_tithe_ready(colony, gate.processed_through);
-
     for decision in &plan.decisions {
         match *decision {
             LeaderDecision::BuildStorage => {
@@ -9145,118 +9229,16 @@ fn phase_21_leader_capital_decisions_and_tithe(
                     );
                 }
             }
-            LeaderDecision::Tithe {
-                food,
-                refined,
-                blessings,
-            } => {
-                if !shrine_established || !tithe_ready || !gate.minute_rolled {
-                    continue;
-                }
-                colony.resources.food -= f64::from(food);
-                colony.resources.refined -= f64::from(refined);
-                let shrine_yield = if has_complete_building(colony, BuildingType::Shrine) {
-                    resolve_effects(colony.upgrade_tree.owned_node_ids.iter())
-                        .shrine_blessing_yield_mult
-                } else {
-                    1.0
-                };
-                let credited = f64::from(blessings) * shrine_yield;
-                colony.global_upgrade_points += credited;
-                colony.last_tithe_at = Some(gate.processed_through);
-                append_event(
-                    colony,
-                    gate.processed_through,
-                    EventKind::Tithe,
-                    format!(
-                        "The leader offered surplus stores to the gods (+{credited} blessing{}).",
-                        if credited == 1.0 { "" } else { "s" }
-                    ),
-                );
-            }
-            LeaderDecision::Offering => {
-                if !shrine_established || !automated_offering_ready(colony, gate.processed_through)
-                {
-                    continue;
-                }
-                // Once a living Loremaster has identified a genuine surplus,
-                // dispatch is deterministic. A policy-reliability miss used to give
-                // a boundary-hitting colony exactly one chance before a raw bench
-                // spent below it, leaving the filled-role faucet dormant.
-                let ritualist = select_best_cat(colony, Some(CatSpecialization::Ritualist))
-                    .or_else(|| {
-                        select_best_raw_material_worker(colony, Some(CatSpecialization::Ritualist))
-                    });
-                if let Some(cat_id) = ritualist {
-                    let from = colony
-                        .cats
-                        .iter()
-                        .find(|cat| cat.id == cat_id)
-                        .map(|cat| position_to_world(colony.anchor, cat.position))
-                        .unwrap_or_else(|| village_anchor_world(colony.anchor));
-                    let Some(metadata) =
-                        material_offering_metadata(colony, from, gate.processed_through)
-                    else {
-                        continue;
-                    };
-                    queue_job(
-                        colony,
-                        gate.processed_through,
-                        JobKind::CarryOffering,
-                        Some(cat_id),
-                        metadata,
-                    );
-                }
-            }
+            LeaderDecision::Tithe { .. } | LeaderDecision::Offering => {}
             _ => {}
         }
     }
 }
 
-/// Phase 22: approve player-requested rituals, or let an appointed Loremaster
-/// initiate one without a request. The request path remains available while the
-/// office is vacant: the player has already made the missing decision, so this
-/// phase only performs the ordinary resource, conflict, worker, and policy checks.
-fn phase_22_ritual_approval(colony: &mut ColonyRuntime, gate: TickGate, policy: TickPolicy) {
-    let jobs = active_or_queued_jobs(colony)
-        .into_iter()
-        .map(|job| idle_rules::MinimalJob { kind: job.kind })
-        .collect::<Vec<_>>();
-    let player_requested =
-        idle_rules::should_start_ritual(colony.ritual_requested_at, &colony.resources, &jobs);
-    let loremaster_requested = has_officer(colony, OfficerRole::Loremaster)
-        && automated_ritual_ready(colony, gate.processed_through)
-        && idle_rules::should_start_ritual(Some(gate.processed_through), &colony.resources, &jobs);
-    if (!player_requested && !loremaster_requested) || !can_take_policy_action(colony, policy) {
-        return;
-    }
-    let Some(cat_id) = select_best_cat(colony, Some(CatSpecialization::Ritualist)) else {
-        return;
-    };
-
-    queue_job_requested_by(
-        colony,
-        gate.processed_through,
-        JobKind::Ritual,
-        if player_requested {
-            JobRequester::Player
-        } else {
-            JobRequester::Leader
-        },
-        Some(cat_id),
-        JobMetadata::None,
-    );
+/// Rituals were replaced by physical Black Hole feeding. Clear stale requests
+/// without spawning a free favor faucet.
+fn phase_22_ritual_approval(colony: &mut ColonyRuntime, _gate: TickGate, _policy: TickPolicy) {
     colony.ritual_requested_at = None;
-    append_event(
-        colony,
-        gate.processed_through,
-        EventKind::RitualReady,
-        if player_requested {
-            "The requested ritual was approved."
-        } else {
-            "The Loremaster called the village to ritual."
-        },
-    );
 }
 
 /// A ritual occupies one cat for six game-hours. Keep autonomous ceremonies out
@@ -11172,6 +11154,506 @@ fn phase_24_research(colony: &mut ColonyRuntime, gate: TickGate) {
             format!("The cats discovered {node_name}!"),
         );
     }
+}
+
+fn black_hole_interval_ms(colony: &ColonyRuntime, game_ms: i64) -> i64 {
+    ((game_ms as f64 / normalize_time_scale(colony))
+        .ceil()
+        .max(1.0)) as i64
+}
+
+fn researched_black_hole_axes(colony: &ColonyRuntime) -> BlackHoleAxes {
+    let mut axes = BlackHoleAxes::default();
+    let catalog = research_catalog();
+    for node_id in &colony.upgrade_tree.owned_node_ids {
+        let Some(entitlement) = catalog.get(node_id).and_then(|node| node.axis_entitlement) else {
+            continue;
+        };
+        match entitlement.axis {
+            ResearchAxis::Width => axes.width = axes.width.max(entitlement.tier),
+            ResearchAxis::Depth => axes.depth = axes.depth.max(entitlement.tier),
+            ResearchAxis::Darkness => axes.darkness = axes.darkness.max(entitlement.tier),
+        }
+    }
+    axes
+}
+
+fn ensure_black_hole_runtime(colony: &mut ColonyRuntime) -> Option<String> {
+    let building_id = colony
+        .buildings
+        .iter()
+        .filter(|building| building.building_type == BuildingType::Shrine && building.is_complete)
+        .map(|building| building.id.clone())
+        .min()?;
+    colony
+        .black_holes
+        .entry(building_id.clone())
+        .or_insert_with(|| BlackHoleRuntime::for_building(building_id.clone()));
+    Some(building_id)
+}
+
+fn black_hole_job_is_live(colony: &ColonyRuntime, job_id: &str) -> bool {
+    colony
+        .jobs
+        .iter()
+        .any(|job| job.id == job_id && matches!(job.status, JobStatus::Queued | JobStatus::Active))
+}
+
+fn black_hole_carrier(colony: &ColonyRuntime) -> Option<CatId> {
+    select_best_cat(colony, Some(CatSpecialization::Ritualist))
+        .or_else(|| select_best_cat(colony, None))
+}
+
+fn queue_black_hole_feed_job(
+    colony: &mut ColonyRuntime,
+    building_id: &str,
+    resource: ResourceKind,
+    now_ms: i64,
+) -> Option<String> {
+    let cat_id = black_hole_carrier(colony)?;
+    let from = colony
+        .cats
+        .iter()
+        .find(|cat| cat.id == cat_id)
+        .map(|cat| position_to_world(colony.anchor, cat.position))
+        .unwrap_or_else(|| village_anchor_world(colony.anchor));
+    let mut metadata = offering_metadata(colony, from, now_ms, resource)?;
+    if let JobMetadata::OfferingCarry { escrow_id, .. } = &mut metadata {
+        *escrow_id = format!("black-hole|{building_id}");
+    }
+    queue_job(
+        colony,
+        now_ms,
+        JobKind::CarryOffering,
+        Some(cat_id),
+        metadata,
+    );
+    colony.jobs.last().map(|job| job.id.clone())
+}
+
+fn resume_black_hole_feed(colony: &mut ColonyRuntime, building_id: &str, now_ms: i64) -> bool {
+    let Some(order) = colony
+        .black_holes
+        .get(building_id)
+        .and_then(|runtime| runtime.active_feed.clone())
+    else {
+        return false;
+    };
+    if order
+        .job_id
+        .as_deref()
+        .is_some_and(|job_id| black_hole_job_is_live(colony, job_id))
+    {
+        return true;
+    }
+    if order.remaining_units() == 0 {
+        colony
+            .black_holes
+            .get_mut(building_id)
+            .expect("runtime exists")
+            .active_feed = None;
+        return false;
+    }
+    let Some(job_id) = queue_black_hole_feed_job(colony, building_id, order.resource, now_ms)
+    else {
+        return true;
+    };
+    if let Some(active) = colony
+        .black_holes
+        .get_mut(building_id)
+        .and_then(|runtime| runtime.active_feed.as_mut())
+    {
+        active.job_id = Some(job_id);
+    }
+    true
+}
+
+fn queue_black_hole_upgrade_job(
+    colony: &mut ColonyRuntime,
+    building_id: &str,
+    now_ms: i64,
+) -> Option<String> {
+    let building = colony
+        .buildings
+        .iter()
+        .find(|building| building.id == building_id)?
+        .clone();
+    let architect = select_best_cat(colony, Some(CatSpecialization::Architect))
+        .or_else(|| select_best_cat(colony, None))?;
+    queue_job(
+        colony,
+        now_ms,
+        JobKind::BuildHouse,
+        Some(architect),
+        JobMetadata::Construction {
+            phase: ConstructionPhase::ConstructHouse,
+            building_type: BuildingType::Shrine,
+            building_id: Some(building.id),
+            site: Some(building.position),
+        },
+    );
+    colony.jobs.last().map(|job| job.id.clone())
+}
+
+fn resume_black_hole_upgrade(colony: &mut ColonyRuntime, building_id: &str, now_ms: i64) -> bool {
+    let Some(project) = colony
+        .black_holes
+        .get(building_id)
+        .and_then(|runtime| runtime.active_upgrade.clone())
+    else {
+        return false;
+    };
+    if colony
+        .black_holes
+        .get(building_id)
+        .is_some_and(|runtime| runtime.axes.level(project.axis) >= project.target_level)
+    {
+        colony
+            .black_holes
+            .get_mut(building_id)
+            .expect("runtime exists")
+            .active_upgrade = None;
+        return false;
+    }
+    if black_hole_job_is_live(colony, &project.job_id) {
+        return true;
+    }
+    let Some(job_id) = queue_black_hole_upgrade_job(colony, building_id, now_ms) else {
+        return true;
+    };
+    if let Some(active) = colony
+        .black_holes
+        .get_mut(building_id)
+        .and_then(|runtime| runtime.active_upgrade.as_mut())
+    {
+        active.job_id = job_id;
+    }
+    true
+}
+
+fn visible_unreserved_black_hole_resource(colony: &ColonyRuntime, kind: ResourceKind) -> f64 {
+    colony
+        .stockpiles
+        .iter()
+        .filter(|pile| !pile.is_station_local())
+        .map(|pile| {
+            (stockpiles::resource_amount(&pile.contents, kind)
+                - construction_reserved_from_pile(colony, &pile.id, kind))
+            .max(0.0)
+        })
+        .sum()
+}
+
+fn take_visible_unreserved_resource(
+    colony: &mut ColonyRuntime,
+    kind: ResourceKind,
+    quantity: u32,
+) -> bool {
+    let required = f64::from(quantity);
+    if visible_unreserved_black_hole_resource(colony, kind) + f64::EPSILON < required {
+        return false;
+    }
+    let reservations = colony
+        .stockpiles
+        .iter()
+        .map(|pile| {
+            (
+                pile.id.clone(),
+                construction_reserved_from_pile(colony, &pile.id, kind),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut remaining = required;
+    for pile in colony
+        .stockpiles
+        .iter_mut()
+        .filter(|pile| !pile.is_station_local())
+    {
+        let available = (stockpiles::resource_amount(&pile.contents, kind)
+            - reservations.get(&pile.id).copied().unwrap_or(0.0))
+        .max(0.0);
+        let taken = available.min(remaining);
+        if taken > f64::EPSILON {
+            stockpiles::add_resource(&mut pile.contents, kind, -taken);
+            remaining -= taken;
+        }
+        if remaining <= f64::EPSILON {
+            break;
+        }
+    }
+    stockpiles::add_resource(&mut colony.resources, kind, -required);
+    true
+}
+
+fn eligible_black_hole_tool_ids(
+    colony: &ColonyRuntime,
+    minimum_quality: u8,
+    quantity: u32,
+) -> Option<Vec<String>> {
+    let mut eligible = colony
+        .items
+        .instances()
+        .filter(|instance| {
+            instance.item.kind == ItemKind::Tool
+                && instance.item.quality >= minimum_quality
+                && instance.credited
+                && !instance.is_broken()
+                && instance.active_job_id.is_none()
+                && matches!(instance.location, ItemLocation::Stockpile { .. })
+        })
+        .map(|instance| {
+            (
+                instance.item.quality,
+                crate::items::item_value(
+                    instance.item.kind,
+                    instance.item.material,
+                    instance.item.quality,
+                ),
+                instance.id.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    eligible.sort();
+    let ids = eligible
+        .into_iter()
+        .take(quantity as usize)
+        .map(|(_, _, id)| id)
+        .collect::<Vec<_>>();
+    (ids.len() == quantity as usize).then_some(ids)
+}
+
+fn try_start_black_hole_upgrade(
+    colony: &mut ColonyRuntime,
+    building_id: &str,
+    researched: BlackHoleAxes,
+    now_ms: i64,
+) -> bool {
+    let Some(axis) = colony
+        .black_holes
+        .get(building_id)
+        .and_then(|runtime| runtime.next_upgrade_axis(researched))
+    else {
+        return false;
+    };
+    let axes = colony
+        .black_holes
+        .get(building_id)
+        .expect("runtime exists")
+        .axes;
+    let Ok(recipe) = upgrade_recipe(axes, axis) else {
+        return false;
+    };
+    if recipe.consumed_resources.iter().any(|requirement| {
+        visible_unreserved_black_hole_resource(colony, requirement.resource) + f64::EPSILON
+            < f64::from(requirement.quantity)
+    }) {
+        return false;
+    }
+    let mut tool_ids = Vec::new();
+    for requirement in &recipe.consumed_tools {
+        let Some(mut ids) =
+            eligible_black_hole_tool_ids(colony, requirement.minimum_quality, requirement.quantity)
+        else {
+            return false;
+        };
+        tool_ids.append(&mut ids);
+    }
+    if black_hole_carrier(colony).is_none() {
+        return false;
+    }
+    for requirement in &recipe.consumed_resources {
+        let consumed =
+            take_visible_unreserved_resource(colony, requirement.resource, requirement.quantity);
+        debug_assert!(consumed, "upgrade resources were preflighted");
+    }
+    if !tool_ids.is_empty() {
+        let consumed = colony.items.take_exact(&tool_ids);
+        debug_assert!(consumed.is_some(), "upgrade tools were preflighted");
+        reconcile_finite_equipment_projections(colony);
+    }
+    let Some(job_id) = queue_black_hole_upgrade_job(colony, building_id, now_ms) else {
+        return false;
+    };
+    let runtime = colony
+        .black_holes
+        .get_mut(building_id)
+        .expect("runtime exists");
+    runtime.active_upgrade = Some(BlackHoleUpgradeProject {
+        axis,
+        target_level: recipe.to_level,
+        job_id,
+        started_at: now_ms,
+    });
+    append_event(
+        colony,
+        now_ms,
+        EventKind::Other("black_hole_upgrade_started".to_owned()),
+        format!(
+            "The Leader began widening the Hole along its {axis:?} axis toward tier {}.",
+            recipe.to_level
+        ),
+    );
+    true
+}
+
+fn pending_black_hole_resource_reserve(
+    colony: &ColonyRuntime,
+    building_id: &str,
+    researched: BlackHoleAxes,
+    kind: ResourceKind,
+) -> f64 {
+    colony
+        .black_holes
+        .get(building_id)
+        .and_then(|runtime| {
+            runtime
+                .next_upgrade_axis(researched)
+                .map(|axis| (runtime.axes, axis))
+        })
+        .and_then(|(axes, axis)| upgrade_recipe(axes, axis).ok())
+        .and_then(|recipe| {
+            recipe
+                .consumed_resources
+                .into_iter()
+                .find(|requirement| requirement.resource == kind)
+        })
+        .map_or(0.0, |requirement| f64::from(requirement.quantity))
+}
+
+fn black_hole_feed_reserve(
+    colony: &ColonyRuntime,
+    building_id: &str,
+    researched: BlackHoleAxes,
+    kind: ResourceKind,
+) -> f64 {
+    let survival = match kind {
+        ResourceKind::Food | ResourceKind::Fish => {
+            (active_resident_cats(colony).count() as f64 * 5.0).max(20.0)
+        }
+        ResourceKind::Herbs => 5.0,
+        ResourceKind::Materials => 10.0,
+        _ => 1.0,
+    };
+    survival
+        + construction_committed_amount(colony, kind)
+        + pending_black_hole_resource_reserve(colony, building_id, researched, kind)
+}
+
+fn try_start_black_hole_feed(
+    colony: &mut ColonyRuntime,
+    building_id: &str,
+    researched: BlackHoleAxes,
+    now_ms: i64,
+) -> bool {
+    let axes = colony
+        .black_holes
+        .get(building_id)
+        .expect("runtime exists")
+        .axes;
+    let selected = ResourceKind::ALL
+        .iter()
+        .copied()
+        .filter(|kind| {
+            resource_darkness_requirement(*kind).is_some_and(|required| required <= axes.darkness)
+        })
+        .filter_map(|kind| {
+            let surplus = (visible_unreserved_black_hole_resource(colony, kind)
+                - black_hole_feed_reserve(colony, building_id, researched, kind))
+            .floor()
+            .max(0.0);
+            (surplus >= 1.0).then_some((kind, surplus as u32))
+        })
+        .max_by(|(left_kind, left), (right_kind, right)| {
+            left.cmp(right).then_with(|| right_kind.cmp(left_kind))
+        });
+    let Some((resource, surplus)) = selected else {
+        return false;
+    };
+    let target_units = surplus.min(axes.max_order()).max(1);
+    let Some(job_id) = queue_black_hole_feed_job(colony, building_id, resource, now_ms) else {
+        return false;
+    };
+    let order_id = format!(
+        "black-hole-feed-{now_ms}-{}",
+        colony
+            .black_holes
+            .get(building_id)
+            .expect("runtime exists")
+            .intake
+            .next_opening_index
+    );
+    let runtime = colony
+        .black_holes
+        .get_mut(building_id)
+        .expect("runtime exists");
+    runtime.active_feed = Some(BlackHoleFeedOrder {
+        id: order_id,
+        job_id: Some(job_id),
+        resource,
+        target_units,
+        delivered_units: 0,
+        credited_units: 0,
+        credited_value_micros: 0,
+        created_at: now_ms,
+    });
+    append_event(
+        colony,
+        now_ms,
+        EventKind::Other("black_hole_feed_started".to_owned()),
+        format!(
+            "The Leader ordered {target_units} unit{} of {resource:?} carried to the Hole.",
+            if target_units == 1 { "" } else { "s" }
+        ),
+    );
+    true
+}
+
+/// Temporary current-Leader adapter. It issues commands into the isolated
+/// Black Hole authority and can be replaced without moving physical state.
+fn phase_24b_black_hole_leader_adapter(colony: &mut ColonyRuntime, gate: TickGate) {
+    let Some(building_id) = ensure_black_hole_runtime(colony) else {
+        return;
+    };
+    let has_living_leader = colony.leader_id.as_ref().is_some_and(|leader_id| {
+        colony
+            .cats
+            .iter()
+            .any(|cat| cat.id == *leader_id && cat.death_time.is_none())
+    });
+    if !has_living_leader {
+        return;
+    }
+    if resume_black_hole_feed(colony, &building_id, gate.processed_through) {
+        return;
+    }
+    if resume_black_hole_upgrade(colony, &building_id, gate.processed_through) {
+        return;
+    }
+    let due = colony.black_holes.get(&building_id).is_some_and(|runtime| {
+        runtime
+            .next_review_at
+            .is_none_or(|next| gate.processed_through >= next)
+    });
+    let urged = colony
+        .black_holes
+        .get(&building_id)
+        .is_some_and(|runtime| runtime.urged_at.is_some());
+    if !due && !urged {
+        return;
+    }
+    let researched = researched_black_hole_axes(colony);
+    let started_upgrade = due
+        && try_start_black_hole_upgrade(colony, &building_id, researched, gate.processed_through);
+    if !started_upgrade {
+        let _ = try_start_black_hole_feed(colony, &building_id, researched, gate.processed_through);
+    }
+    let review_interval = black_hole_interval_ms(colony, LEADER_REVIEW_INTERVAL_MS);
+    let runtime = colony
+        .black_holes
+        .get_mut(&building_id)
+        .expect("runtime exists");
+    runtime.next_review_at = Some(gate.processed_through.saturating_add(review_interval));
+    runtime.urged_at = None;
 }
 
 const PERSONAL_NEED_CARGO_PREFIX: &str = "personal-need|";
@@ -13348,6 +13830,65 @@ fn retarget_offering_source(
     true
 }
 
+fn retarget_black_hole_source(
+    colony: &mut ColonyRuntime,
+    job_index: usize,
+    cat_index: usize,
+) -> bool {
+    let from = position_to_world(colony.anchor, colony.cats[cat_index].position);
+    let JobMetadata::OfferingCarry {
+        kind,
+        escrow_id,
+        delivered,
+        ..
+    } = colony.jobs[job_index].metadata.clone()
+    else {
+        return false;
+    };
+    let selected = colony
+        .stockpiles
+        .iter()
+        .filter(|pile| !pile.is_station_local())
+        .filter(|pile| {
+            stockpiles::resource_amount(&pile.contents, kind)
+                - construction_reserved_from_pile(colony, &pile.id, kind)
+                >= 1.0
+        })
+        .map(|pile| {
+            let (x, y) = pile.center();
+            (
+                pile.id.clone(),
+                (x - from.x).powi(2) + (y - from.y).powi(2),
+                TilePos {
+                    x: x.round() as i32,
+                    y: y.round() as i32,
+                },
+            )
+        })
+        .min_by(|left, right| {
+            left.1
+                .total_cmp(&right.1)
+                .then_with(|| left.0.cmp(&right.0))
+        });
+    let Some((source_stockpile_id, _, site)) = selected else {
+        colony.cats[cat_index].destination = None;
+        colony.cats[cat_index].activity = CatActivity::Idle;
+        return false;
+    };
+    colony.jobs[job_index].metadata = JobMetadata::OfferingCarry {
+        source_stockpile_id,
+        kind,
+        site: Some(site),
+        accepted: false,
+        escrow_id,
+        delivered,
+    };
+    colony.cats[cat_index].destination = Some(position_from_world(tile_pos_to_world(site)));
+    colony.cats[cat_index].activity = CatActivity::Traveling;
+    colony.cats[cat_index].current_task = task_for_job(JobKind::CarryOffering);
+    true
+}
+
 fn offering_job_is_active(colony: &ColonyRuntime, job_id: &str) -> bool {
     colony.jobs.iter().any(|job| {
         job.id == job_id
@@ -13360,6 +13901,298 @@ fn offering_job_is_active(colony: &ColonyRuntime, job_id: &str) -> bool {
                     .any(|cat| cat.id == cat_id && cat.death_time.is_none())
             })
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn advance_black_hole_feed_job(
+    colony: &mut ColonyRuntime,
+    job_index: usize,
+    cat_index: usize,
+    now_ms: i64,
+    building_id: &str,
+    source_stockpile_id: String,
+    kind: ResourceKind,
+    site: Option<TilePos>,
+    accepted: bool,
+    delivered_at_rim: f64,
+) {
+    const CAT_CARRY_CAPACITY: f64 = 4.0;
+
+    let job_id = colony.jobs[job_index].id.clone();
+    let carrying_this_feed = colony.cats[cat_index]
+        .carrying
+        .as_ref()
+        .is_some_and(|carrying| {
+            offering_cargo_job_id(carrying.source_gather_spot.as_deref()) == Some(job_id.as_str())
+        });
+    if carrying_this_feed {
+        let hole = colony
+            .buildings
+            .iter()
+            .find(|building| building.id == building_id)
+            .map_or_else(
+                || village_anchor_world(colony.anchor),
+                |building| tile_pos_to_world(building.position),
+            );
+        if !is_at_shrine(
+            position_to_world(colony.anchor, colony.cats[cat_index].position),
+            hole,
+        ) {
+            colony.cats[cat_index].destination = Some(position_from_world(hole));
+            colony.cats[cat_index].activity = CatActivity::Returning;
+            return;
+        }
+        let carried_at_rim = colony.cats[cat_index]
+            .carrying
+            .as_ref()
+            .map_or(0_u32, |carrying| carrying.amount.max(0.0).floor() as u32);
+        if delivered_at_rim <= f64::EPSILON && carried_at_rim > 0 {
+            if let Some(order) = colony
+                .black_holes
+                .get_mut(building_id)
+                .and_then(|runtime| runtime.active_feed.as_mut())
+            {
+                order.delivered_units = order.delivered_units.saturating_add(carried_at_rim);
+            }
+            colony.jobs[job_index].metadata = JobMetadata::OfferingCarry {
+                source_stockpile_id: source_stockpile_id.clone(),
+                kind,
+                site,
+                accepted: false,
+                escrow_id: format!("black-hole|{building_id}"),
+                delivered: f64::from(carried_at_rim),
+            };
+        }
+        let opening_ready = colony
+            .black_holes
+            .get(building_id)
+            .is_some_and(|runtime| runtime.next_opening_at.is_none_or(|next| now_ms >= next));
+        if !opening_ready {
+            colony.cats[cat_index].destination = None;
+            colony.cats[cat_index].activity = CatActivity::Working;
+            return;
+        }
+        let carried = colony.cats[cat_index]
+            .carrying
+            .take()
+            .map_or(0_u32, |carrying| carrying.amount.max(0.0).floor() as u32);
+        let axes = colony
+            .black_holes
+            .get(building_id)
+            .expect("feed runtime exists")
+            .axes;
+        let remaining = colony
+            .black_holes
+            .get(building_id)
+            .and_then(|runtime| runtime.active_feed.as_ref())
+            .map_or(0, BlackHoleFeedOrder::remaining_units);
+        let offered = carried.min(remaining);
+        let cooldown = black_hole_interval_ms(colony, INTAKE_COOLDOWN_GAME_MS);
+        let first_opening_at = colony
+            .black_holes
+            .get(building_id)
+            .and_then(|runtime| runtime.next_opening_at)
+            .unwrap_or(now_ms);
+        let due_openings = if now_ms >= first_opening_at {
+            1_u64.saturating_add(
+                u64::try_from(now_ms.saturating_sub(first_opening_at) / cooldown).unwrap_or(0),
+            )
+        } else {
+            0
+        };
+        let mut credited = 0_u32;
+        let mut credited_value_micros = 0_u64;
+        let mut processed_openings = 0_u64;
+        while processed_openings < due_openings && credited < offered {
+            let mut candidate = [FeedCandidate::resource(kind, 1, offered - credited)];
+            let report = colony
+                .black_holes
+                .get_mut(building_id)
+                .expect("feed runtime exists")
+                .intake
+                .intake(axes, &mut candidate);
+            if report.total_quantity == 0 {
+                break;
+            }
+            credited = credited.saturating_add(report.total_quantity).min(offered);
+            credited_value_micros = credited_value_micros.saturating_add(report.total_value_micros);
+            processed_openings = processed_openings.saturating_add(1);
+        }
+        let mut completed = false;
+        if let Some(runtime) = colony.black_holes.get_mut(building_id) {
+            runtime.next_opening_at = Some(
+                first_opening_at.saturating_add(
+                    i64::try_from(due_openings)
+                        .unwrap_or(i64::MAX)
+                        .saturating_mul(cooldown),
+                ),
+            );
+            if let Some(order) = runtime.active_feed.as_mut() {
+                order.credited_units = order.credited_units.saturating_add(credited);
+                order.credited_value_micros = order
+                    .credited_value_micros
+                    .saturating_add(credited_value_micros);
+                completed = order.remaining_units() == 0;
+            }
+        }
+        colony.global_upgrade_points += credited_value_micros as f64 / 1_000_000.0;
+        let still_carried = carried.saturating_sub(credited);
+        if still_carried > 0 {
+            colony.cats[cat_index].carrying = Some(Carrying {
+                kind: carrying_kind_for_resource(kind)
+                    .expect("accepted Hole resources have a carrying kind"),
+                amount: f64::from(still_carried),
+                job_ended_at: now_ms,
+                source_gather_spot: Some(offering_cargo_marker(&job_id)),
+            });
+            colony.cats[cat_index].destination = None;
+            colony.cats[cat_index].activity = CatActivity::Working;
+            colony.jobs[job_index].metadata = JobMetadata::OfferingCarry {
+                source_stockpile_id,
+                kind,
+                site,
+                accepted: false,
+                escrow_id: format!("black-hole|{building_id}"),
+                delivered: f64::from(still_carried),
+            };
+            return;
+        }
+        if completed {
+            colony.jobs[job_index].status = JobStatus::Completed;
+            colony.jobs[job_index].completed_at = Some(now_ms);
+            colony.jobs[job_index].ends_at = Some(now_ms);
+            if let Some(runtime) = colony.black_holes.get_mut(building_id) {
+                runtime.active_feed = None;
+            }
+            colony.cats[cat_index].destination = None;
+            colony.cats[cat_index].activity = CatActivity::Idle;
+            append_event(
+                colony,
+                now_ms,
+                EventKind::Other("black_hole_feed_completed".to_owned()),
+                format!(
+                    "The Hole swallowed the final {kind:?}; {:.1} Void Insight is now available.",
+                    credited_value_micros as f64 / 1_000_000.0
+                ),
+            );
+        } else {
+            colony.jobs[job_index].metadata = JobMetadata::OfferingCarry {
+                source_stockpile_id,
+                kind,
+                site,
+                accepted: false,
+                escrow_id: format!("black-hole|{building_id}"),
+                delivered: 0.0,
+            };
+            retarget_black_hole_source(colony, job_index, cat_index);
+        }
+        return;
+    }
+
+    if colony.cats[cat_index].carrying.is_some() {
+        return;
+    }
+    let at_source = site.is_some_and(|site| {
+        world_pos_to_tile(position_to_world(
+            colony.anchor,
+            colony.cats[cat_index].position,
+        )) == site
+    });
+    if accepted && at_source {
+        let remaining = colony
+            .black_holes
+            .get(building_id)
+            .and_then(|runtime| runtime.active_feed.as_ref())
+            .map_or(0, BlackHoleFeedOrder::remaining_units);
+        let available = colony
+            .stockpiles
+            .iter()
+            .find(|pile| pile.id == source_stockpile_id)
+            .map_or(0.0, |pile| {
+                (stockpiles::resource_amount(&pile.contents, kind)
+                    - construction_reserved_from_pile(colony, &pile.id, kind))
+                .max(0.0)
+            });
+        let pickup = available
+            .min(f64::from(remaining))
+            .min(CAT_CARRY_CAPACITY)
+            .floor();
+        let researched = researched_black_hole_axes(colony);
+        let reserve = black_hole_feed_reserve(colony, building_id, researched, kind);
+        if pickup >= 1.0
+            && visible_unreserved_black_hole_resource(colony, kind) + f64::EPSILON
+                >= reserve + pickup
+        {
+            if let Some(source) = colony
+                .stockpiles
+                .iter_mut()
+                .find(|pile| pile.id == source_stockpile_id)
+            {
+                stockpiles::add_resource(&mut source.contents, kind, -pickup);
+            }
+            stockpiles::add_resource(&mut colony.resources, kind, -pickup);
+            colony.cats[cat_index].carrying = Some(Carrying {
+                kind: carrying_kind_for_resource(kind)
+                    .expect("accepted Hole resources have a carrying kind"),
+                amount: pickup,
+                job_ended_at: now_ms,
+                source_gather_spot: Some(offering_cargo_marker(&job_id)),
+            });
+            let hole = colony
+                .buildings
+                .iter()
+                .find(|building| building.id == building_id)
+                .map_or_else(
+                    || village_anchor_world(colony.anchor),
+                    |building| tile_pos_to_world(building.position),
+                );
+            colony.cats[cat_index].destination = Some(position_from_world(hole));
+            colony.cats[cat_index].activity = CatActivity::Returning;
+            colony.jobs[job_index].metadata = JobMetadata::OfferingCarry {
+                source_stockpile_id,
+                kind,
+                site: Some(world_pos_to_tile(hole)),
+                accepted: false,
+                escrow_id: format!("black-hole|{building_id}"),
+                delivered: 0.0,
+            };
+            return;
+        }
+    }
+    if accepted && !at_source {
+        if let Some(site) = site {
+            colony.cats[cat_index].destination = Some(position_from_world(tile_pos_to_world(site)));
+            colony.cats[cat_index].activity = CatActivity::Traveling;
+        }
+        return;
+    }
+    let researched = researched_black_hole_axes(colony);
+    let reserve = black_hole_feed_reserve(colony, building_id, researched, kind);
+    let safe_surplus_available =
+        visible_unreserved_black_hole_resource(colony, kind) + f64::EPSILON >= reserve + 1.0;
+    let source_still_valid = colony.stockpiles.iter().any(|pile| {
+        pile.id == source_stockpile_id
+            && stockpiles::resource_amount(&pile.contents, kind)
+                - construction_reserved_from_pile(colony, &pile.id, kind)
+                >= 1.0
+    });
+    if !safe_surplus_available
+        || ((!source_still_valid || site.is_none())
+            && !retarget_black_hole_source(colony, job_index, cat_index))
+    {
+        colony.jobs[job_index].status = JobStatus::Cancelled;
+        colony.jobs[job_index].completed_at = Some(now_ms);
+        colony.cats[cat_index].current_task = None;
+        if let Some(runtime) = colony.black_holes.get_mut(building_id) {
+            runtime.active_feed = None;
+        }
+        append_event(
+            colony,
+            now_ms,
+            EventKind::Other("black_hole_feed_cancelled".to_owned()),
+            "The Leader cancelled a Hole feeding after its safe surplus disappeared.".to_owned(),
+        );
+    }
 }
 
 /// Advance the physical stockpile -> shrine -> ritual handoff. This owns no path query:
@@ -13446,6 +14279,21 @@ fn advance_material_offering_logistics(colony: &mut ColonyRuntime, now_ms: i64) 
             colony.jobs[job_index].completed_at = Some(now_ms);
             continue;
         };
+        if let Some(building_id) = escrow_id.strip_prefix("black-hole|") {
+            advance_black_hole_feed_job(
+                colony,
+                job_index,
+                cat_index,
+                now_ms,
+                building_id,
+                source_stockpile_id,
+                kind,
+                site,
+                accepted,
+                delivered,
+            );
+            continue;
+        }
         let Some(required_amount) = offering_amount(kind) else {
             colony.jobs[job_index].status = JobStatus::Cancelled;
             colony.jobs[job_index].completed_at = Some(now_ms);
@@ -15378,19 +16226,19 @@ fn building_entrance_candidates(building: &BuildingRuntime) -> Vec<TilePos> {
     entrances
 }
 
-/// The shrine's footprint tiles — the road network's anchor. Empty before the
-/// shrine exists (never happens for a founded colony, but keeps this total).
+/// The Hole's permanent road-ring tiles — the road network's anchor. Empty
+/// before the Hole exists (never happens for a founded colony, but keeps this total).
 fn shrine_footprint_tiles(colony: &ColonyRuntime) -> HashSet<TilePos> {
     colony
         .buildings
         .iter()
         .find(|building| building.building_type == BuildingType::Shrine)
-        .map(building_footprint_tiles)
+        .map(|building| black_hole_road_ring_tiles(building.position))
         .map(|tiles| tiles.into_iter().collect())
         .unwrap_or_default()
 }
 
-/// Whether `tile` belongs to the passable shrine footprint.
+/// Whether `tile` belongs to The Hole's passable road ring.
 #[must_use]
 pub fn tile_is_shrine_footprint(colony: &ColonyRuntime, tile: TilePos) -> bool {
     shrine_footprint_tiles(colony).contains(&tile)
@@ -18104,13 +18952,42 @@ fn recover_offering_cargo_from_cat(colony: &mut ColonyRuntime, cat_id: &str, now
     let Some(cat_index) = colony.cats.iter().position(|cat| cat.id == cat_id) else {
         return;
     };
-    let is_offering_cargo = colony.cats[cat_index]
-        .carrying
-        .as_ref()
-        .is_some_and(|carrying| {
-            offering_cargo_job_id(carrying.source_gather_spot.as_deref()).is_some()
-        });
-    if !is_offering_cargo {
+    let Some((job_id, kind, carried_units)) =
+        colony.cats[cat_index]
+            .carrying
+            .as_ref()
+            .and_then(|carrying| {
+                Some((
+                    offering_cargo_job_id(carrying.source_gather_spot.as_deref())?.to_owned(),
+                    carrying_resource_kind(carrying.kind)?,
+                    carrying.amount.max(0.0).floor() as u32,
+                ))
+            })
+    else {
+        return;
+    };
+    let black_hole_delivery = colony.jobs.iter().find_map(|job| {
+        if job.id != job_id {
+            return None;
+        }
+        let JobMetadata::OfferingCarry {
+            kind: metadata_kind,
+            escrow_id,
+            delivered,
+            ..
+        } = &job.metadata
+        else {
+            return None;
+        };
+        let building_id = escrow_id.strip_prefix("black-hole|")?;
+        (*metadata_kind == kind).then(|| {
+            (
+                building_id.to_owned(),
+                carried_units.min(delivered.max(0.0).floor() as u32),
+            )
+        })
+    });
+    if black_hole_delivery.is_none() && offering_amount(kind).is_none() {
         return;
     }
     let at = position_to_world(colony.anchor, colony.cats[cat_index].position);
@@ -18118,11 +18995,16 @@ fn recover_offering_cargo_from_cat(colony: &mut ColonyRuntime, cat_id: &str, now
         .carrying
         .take()
         .expect("offering cargo checked above");
-    let Some(kind) =
-        carrying_resource_kind(carrying.kind).filter(|kind| offering_amount(*kind).is_some())
-    else {
-        return;
-    };
+    if let Some((building_id, counted_units)) = black_hole_delivery
+        && counted_units > 0
+        && let Some(order) = colony
+            .black_holes
+            .get_mut(&building_id)
+            .and_then(|runtime| runtime.active_feed.as_mut())
+        && order.resource == kind
+    {
+        order.delivered_units = order.delivered_units.saturating_sub(counted_units);
+    }
     let remaining = credit_carrying(colony, &carrying, at);
     if remaining <= f64::EPSILON {
         return;
@@ -18142,7 +19024,7 @@ fn recover_offering_cargo_from_cat(colony: &mut ColonyRuntime, cat_id: &str, now
     stockpiles::add_resource(&mut colony.resources, kind, remaining);
 }
 
-fn mark_cat_dead(colony: &mut ColonyRuntime, cat_id: &str, now_ms: i64) {
+pub(crate) fn mark_cat_dead(colony: &mut ColonyRuntime, cat_id: &str, now_ms: i64) {
     recover_offering_cargo_from_cat(colony, cat_id, now_ms);
     let death_at = colony.cats.iter().find(|cat| cat.id == cat_id).map_or_else(
         || village_anchor_world(colony.anchor),
@@ -18751,7 +19633,7 @@ fn clamp_resource(value: f64, cap: f64) -> f64 {
     value.max(0.0).min(cap)
 }
 
-fn append_event(
+pub(crate) fn append_event(
     colony: &mut ColonyRuntime,
     at_ms: i64,
     kind: EventKind,
@@ -18912,52 +19794,6 @@ fn select_best_scout_cat(colony: &ColonyRuntime) -> Option<CatId> {
                 .then_with(|| b.id.cmp(&a.id))
         })
         .map(|cat| cat.id.clone())
-}
-
-/// Offerings outrank the non-sticky raw-material benches: if the director's
-/// employment fill used every idle cat, reclaim one luxury-bench worker rather
-/// than leaving an otherwise reachable shrine action permanently undispatched.
-/// `queue_job` releases the selected worker's bench assignment.
-fn select_best_raw_material_worker(
-    colony: &ColonyRuntime,
-    specialization: Option<CatSpecialization>,
-) -> Option<CatId> {
-    let busy_ids = active_or_queued_jobs(colony)
-        .iter()
-        .filter_map(|job| job.assigned_cat.as_deref())
-        .collect::<Vec<_>>();
-    let raw_worker_ids = colony
-        .buildings
-        .iter()
-        .filter(|building| RAW_MATERIAL_WORKSHOPS.contains(&building.building_type))
-        .filter_map(|building| building.assigned_cat.as_deref())
-        .collect::<Vec<_>>();
-    let available = colony
-        .cats
-        .iter()
-        .filter(|cat| {
-            raw_worker_ids.contains(&cat.id.as_str()) && can_take_new_job_with_busy(cat, &busy_ids)
-        })
-        .collect::<Vec<_>>();
-    let preferred = available
-        .iter()
-        .copied()
-        .filter(|cat| cat.specialization == specialization && specialization.is_some())
-        .collect::<Vec<_>>();
-    let pool = if preferred.is_empty() {
-        available
-    } else {
-        preferred
-    };
-    let mut best: Option<&Cat> = None;
-    for cat in pool {
-        if best.is_none_or(|current| {
-            specialization_stat(cat, specialization) > specialization_stat(current, specialization)
-        }) {
-            best = Some(cat);
-        }
-    }
-    best.map(|cat| cat.id.clone())
 }
 
 /// Which critical store is reclaiming production labour. Water deliberately preserves
@@ -23544,27 +24380,73 @@ fn complete_build(colony: &mut ColonyRuntime, job: &JobRuntime, gate: TickGate) 
         return;
     };
 
-    match job.metadata {
-        JobMetadata::Construction {
-            phase: ConstructionPhase::ConstructHouse,
-            ref building_id,
-            ..
-        } => {
-            if let Some(building_id) = building_id
-                && let Some(building) = colony
-                    .buildings
-                    .iter_mut()
-                    .find(|building| building.id == *building_id)
+    let black_hole_project = colony
+        .black_holes
+        .iter()
+        .find_map(|(building_id, runtime)| {
+            runtime
+                .active_upgrade
+                .as_ref()
+                .filter(|project| project.job_id == job.id)
+                .map(|project| (building_id.clone(), project.clone()))
+        });
+    if let Some((building_id, project)) = black_hole_project {
+        if let Some(runtime) = colony.black_holes.get_mut(&building_id) {
+            while runtime.axes.level(project.axis) < project.target_level {
+                if runtime.axes.raise(project.axis).is_err() {
+                    break;
+                }
+            }
+            runtime.active_upgrade = None;
+            if let Some(building) = colony
+                .buildings
+                .iter_mut()
+                .find(|building| building.id == building_id)
             {
+                building.level = u32::from(
+                    runtime
+                        .axes
+                        .width
+                        .max(runtime.axes.depth)
+                        .max(runtime.axes.darkness),
+                ) + 1;
                 building.construction_progress = 100;
                 building.is_complete = true;
             }
-            colony.automation_tier =
-                ((colony.automation_tier + 0.05).min(10.0) * 100.0).round() / 100.0;
         }
-        _ => {
-            colony.resources.materials += 12.0;
-            chop_nearest_explored_forest(colony, gate.processed_through);
+        append_event(
+            colony,
+            gate.processed_through,
+            EventKind::Other("black_hole_upgrade_completed".to_owned()),
+            format!(
+                "The Hole's {axis:?} reached tier {tier}. It still cannot be filled.",
+                axis = project.axis,
+                tier = project.target_level
+            ),
+        );
+    } else {
+        match job.metadata {
+            JobMetadata::Construction {
+                phase: ConstructionPhase::ConstructHouse,
+                ref building_id,
+                ..
+            } => {
+                if let Some(building_id) = building_id
+                    && let Some(building) = colony
+                        .buildings
+                        .iter_mut()
+                        .find(|building| building.id == *building_id)
+                {
+                    building.construction_progress = 100;
+                    building.is_complete = true;
+                }
+                colony.automation_tier =
+                    ((colony.automation_tier + 0.05).min(10.0) * 100.0).round() / 100.0;
+            }
+            _ => {
+                colony.resources.materials += 12.0;
+                chop_nearest_explored_forest(colony, gate.processed_through);
+            }
         }
     }
 
@@ -28257,6 +29139,60 @@ fn credit_carrying(colony: &mut ColonyRuntime, carrying: &Carrying, deposit_at: 
     carrying.amount
 }
 
+/// Deposit resolved Hunting Lair loot through ordinary finite storage. Any
+/// overflow becomes a visible one-tile cache at the village anchor instead of
+/// disappearing or existing only in the aggregate compatibility ledger.
+pub(crate) fn credit_hunting_loot(
+    colony: &mut ColonyRuntime,
+    food: u32,
+    hide: u32,
+    bone: u32,
+    now_ms: i64,
+) {
+    let at = village_anchor_world(colony.anchor);
+    for (kind, carrying_kind, quantity) in [
+        (ResourceKind::Food, CarryingKind::Food, food),
+        (ResourceKind::Hide, CarryingKind::Hide, hide),
+        (ResourceKind::Bone, CarryingKind::Bone, bone),
+    ] {
+        if quantity == 0 {
+            continue;
+        }
+        let carrying = Carrying {
+            kind: carrying_kind,
+            amount: f64::from(quantity),
+            job_ended_at: now_ms,
+            source_gather_spot: None,
+        };
+        let remaining = credit_carrying(colony, &carrying, at);
+        if remaining <= f64::EPSILON {
+            continue;
+        }
+        let tile = world_pos_to_tile(at);
+        let base_id = format!("hunting-loot:{now_ms}:{kind:?}");
+        let mut id = base_id.clone();
+        let mut ordinal = 0_u32;
+        while colony.stockpiles.iter().any(|pile| pile.id == id) {
+            ordinal = ordinal.saturating_add(1);
+            id = format!("{base_id}:{ordinal}");
+        }
+        let mut spill = Stockpile {
+            id,
+            rect: ZoneRect {
+                x1: tile.x,
+                y1: tile.y,
+                x2: tile.x,
+                y2: tile.y,
+            },
+            accepts: [kind].into_iter().collect(),
+            contents: Resources::default(),
+        };
+        stockpiles::add_resource(&mut spill.contents, kind, remaining);
+        stockpiles::add_resource(&mut colony.resources, kind, remaining);
+        colony.stockpiles.push(spill);
+    }
+}
+
 /// Move already-owned cargo from its hidden transit store into the fixed balancing
 /// destination. Neither pickup nor delivery changes `colony.resources`: this is only a
 /// physical rearrangement of stock the colony already owns.
@@ -28704,7 +29640,7 @@ mod tests {
     /// terrain while the authored founding pond and road cross stay untouched.
     fn provision_mature_claim(colony: &mut ColonyRuntime, radius: i32) {
         assert!(radius > VILLAGE_START_RADIUS);
-        let center = shrine_center_tile(colony.anchor);
+        let center = colony.anchor;
         let mut extension = Vec::new();
         for y in (center.y - radius)..=(center.y + radius) {
             for x in (center.x - radius)..=(center.x + radius) {
@@ -47123,7 +48059,7 @@ mod tests {
     }
 
     #[test]
-    fn ritual_request_is_manual_while_loremaster_automates_the_same_work() {
+    fn retired_ritual_requests_are_cleared_without_spawning_work() {
         fn ready_colony() -> ColonyRuntime {
             ColonyRuntime {
                 id: "colony-1".to_owned(),
@@ -47152,15 +48088,8 @@ mod tests {
         let mut manual = ready_colony();
         manual.ritual_requested_at = Some(1);
         phase_22_ritual_approval(&mut manual, gate, reliable_policy());
-        assert_eq!(manual.jobs.len(), 1);
-        assert_eq!(manual.jobs[0].kind, JobKind::Ritual);
-        assert_eq!(manual.jobs[0].requested_by, JobRequester::Player);
+        assert!(manual.jobs.is_empty());
         assert_eq!(manual.ritual_requested_at, None);
-        release_role_automation(&mut manual, OfficerRole::Loremaster, gate.processed_through);
-        assert!(matches!(
-            manual.jobs[0].status,
-            JobStatus::Active | JobStatus::Queued
-        ));
 
         let mut automated = ready_colony();
         automated
@@ -47169,13 +48098,8 @@ mod tests {
         let mut twin = automated.clone();
         phase_22_ritual_approval(&mut automated, gate, reliable_policy());
         phase_22_ritual_approval(&mut twin, gate, reliable_policy());
-        assert_eq!(
-            automated, twin,
-            "Loremaster ritual dispatch is deterministic"
-        );
-        assert_eq!(automated.jobs.len(), 1);
-        assert_eq!(automated.jobs[0].kind, JobKind::Ritual);
-        assert_eq!(automated.jobs[0].requested_by, JobRequester::Leader);
+        assert_eq!(automated, twin, "retired ritual cleanup is deterministic");
+        assert!(automated.jobs.is_empty());
     }
 
     #[test]
@@ -49464,7 +50388,7 @@ mod tests {
         // square. The first tile beyond that exact boundary remains fogged.
         assert_eq!(colony.claimed_tiles.len(), 13 * 13);
         assert_eq!(colony.revealed_tiles.len(), 17 * 17);
-        let center = shrine_center_tile(anchor);
+        let center = anchor;
         assert!(colony.revealed_tiles.contains(&TilePos {
             x: center.x - VILLAGE_START_RADIUS - FOUNDING_REVEAL_RADIUS,
             y: center.y,
@@ -54485,10 +55409,9 @@ mod tests {
     // --- P14.2: soft-obstacle pathfinding (buildings as slow-passable) --------
 
     #[test]
-    fn soft_obstacle_index_excludes_the_shrine_but_includes_other_buildings() {
-        // The shrine stays "fully passable (the hub)" per the P14.2 spec — every
-        // haul converges on it, so it must not get the building-footprint cost/
-        // speed tier. Every other founding building (dens/workshops) does.
+    fn soft_obstacle_index_keeps_the_hole_road_ring_fast_and_the_void_slow() {
+        // The Hole's outer ring is real road, while the central 3x3 void keeps
+        // the building-footprint cost so walkers naturally stay on the ring.
         let colony = found_colony(42, "colony-1", 1_000, 42);
         let shrine = colony
             .buildings
@@ -54502,10 +55425,16 @@ mod tests {
             .expect("founding blueprint has non-shrine buildings");
 
         let soft_obstacles = soft_obstacle_tiles(&colony);
-        for tile in building_footprint_tiles(shrine) {
+        for tile in black_hole_road_ring_tiles(shrine.position) {
             assert!(
                 !soft_obstacles.contains(&tile),
-                "shrine tile {tile:?} must stay off the soft-obstacle set"
+                "road-ring tile {tile:?} must stay off the soft-obstacle set"
+            );
+        }
+        for tile in black_hole_void_tiles(shrine.position) {
+            assert!(
+                soft_obstacles.contains(&tile),
+                "void tile {tile:?} must retain the soft-obstacle cost"
             );
         }
         let other_tiles = building_footprint_tiles(other);
@@ -57810,7 +58739,7 @@ mod tests {
     }
 
     #[test]
-    fn found_colony_places_the_shrine_with_a_three_by_three_footprint() {
+    fn found_colony_places_a_three_by_three_hole_inside_a_five_by_five_road_ring() {
         let colony = found_colony(4242, "colony-1", 1_000, 4242);
         let shrine = colony
             .buildings
@@ -57824,9 +58753,31 @@ mod tests {
                 y: VILLAGE_ANCHOR.y
             }
         );
-        assert_eq!(footprint_for(shrine.building_type), (3, 3));
+        assert_eq!(footprint_for(shrine.building_type), (5, 5));
 
-        // No starter building overlaps the shrine footprint.
+        let road_ring = black_hole_road_ring_tiles(shrine.position);
+        let void = black_hole_void_tiles(shrine.position);
+        assert_eq!(road_ring.len(), 16);
+        assert_eq!(void.len(), 9);
+        assert!(road_ring.iter().all(|tile| {
+            colony
+                .world_tiles
+                .get(tile)
+                .and_then(|world_tile| world_tile.overlay_feature.as_deref())
+                == Some("road_built")
+        }));
+        assert!(void.iter().all(|tile| {
+            colony
+                .world_tiles
+                .get(tile)
+                .is_some_and(|world_tile| world_tile.overlay_feature.is_none())
+        }));
+        assert!(
+            road_ring.iter().all(|tile| !void.contains(tile)),
+            "road and void tiles are disjoint"
+        );
+
+        // No starter building overlaps the full five-by-five landmark.
         let shrine_tiles: HashSet<TilePos> = building_footprint_tiles(shrine).into_iter().collect();
         for building in colony.buildings.iter().filter(|b| b.id != shrine.id) {
             for tile in building_footprint_tiles(building) {
@@ -59936,28 +60887,34 @@ mod tests {
                 == Some("road_built")
         };
         assert!(
-            is_road(center.x, center.y - r),
+            is_road(center.x, VILLAGE_ANCHOR_TILE.y - r),
             "north road reaches the wall"
         );
         assert!(
-            is_road(center.x, center.y + r),
+            is_road(center.x, VILLAGE_ANCHOR_TILE.y + r),
             "south road reaches the wall"
         );
         assert!(
-            is_road(center.x - r, center.y),
+            is_road(VILLAGE_ANCHOR_TILE.x - r, center.y),
             "west road reaches the wall"
         );
         assert!(
-            is_road(center.x + r, center.y),
+            is_road(VILLAGE_ANCHOR_TILE.x + r, center.y),
             "east road reaches the wall"
         );
 
         // The road cross is continuous from just outside the shrine to each wall.
-        for d in 2..=r {
-            assert!(is_road(center.x, center.y - d), "north road tile at -{d}");
-            assert!(is_road(center.x, center.y + d), "south road tile at +{d}");
-            assert!(is_road(center.x - d, center.y), "west road tile at -{d}");
-            assert!(is_road(center.x + d, center.y), "east road tile at +{d}");
+        for y in (VILLAGE_ANCHOR_TILE.y - r)..=VILLAGE_ANCHOR_TILE.y {
+            assert!(is_road(center.x, y), "north road tile at y={y}");
+        }
+        for y in (VILLAGE_ANCHOR_TILE.y + 4)..=(VILLAGE_ANCHOR_TILE.y + r) {
+            assert!(is_road(center.x, y), "south road tile at y={y}");
+        }
+        for x in (VILLAGE_ANCHOR_TILE.x - r)..=VILLAGE_ANCHOR_TILE.x {
+            assert!(is_road(x, center.y), "west road tile at x={x}");
+        }
+        for x in (VILLAGE_ANCHOR_TILE.x + 4)..=(VILLAGE_ANCHOR_TILE.x + r) {
+            assert!(is_road(x, center.y), "east road tile at x={x}");
         }
     }
 
@@ -62005,6 +62962,299 @@ mod tests {
         });
     }
 
+    #[test]
+    fn current_leader_adapter_creates_one_durable_feed_order_without_spending_at_dispatch() {
+        let mut colony = offering_colony(100.0);
+        add_complete_shrine(&mut colony);
+        colony.leader_id = Some("cat-1".to_owned());
+        let before = colony.resources.materials;
+
+        phase_24b_black_hole_leader_adapter(&mut colony, production_gate(1, 1_000));
+
+        let runtime = colony
+            .black_holes
+            .get("offering-shrine")
+            .expect("Hole runtime created");
+        let order = runtime.active_feed.as_ref().expect("feed order created");
+        assert_eq!(order.resource, ResourceKind::Materials);
+        assert_eq!(order.target_units, 10, "Depth 0 caps orders at ten");
+        assert!(order.job_id.is_some());
+        assert_eq!(colony.resources.materials, before);
+        assert_eq!(
+            colony
+                .jobs
+                .iter()
+                .filter(|job| job.kind == JobKind::CarryOffering)
+                .count(),
+            1,
+            "one parent feed pipeline owns all child trips"
+        );
+    }
+
+    #[test]
+    fn vanished_safe_surplus_cancels_the_feed_instead_of_deadlocking_the_hole() {
+        let mut colony = offering_colony(100.0);
+        add_complete_shrine(&mut colony);
+        colony.leader_id = Some("cat-1".to_owned());
+        phase_24b_black_hole_leader_adapter(&mut colony, production_gate(1, 1_000));
+        phase_14_promote_queued_jobs_and_break_ground(&mut colony, production_gate(1, 1_001), 7);
+        phase_15_assign_promoted_job_destinations(&mut colony, production_gate(1, 1_001), 7);
+
+        stockpiles::set_resource(&mut colony.resources, ResourceKind::Materials, 0.0);
+        for pile in &mut colony.stockpiles {
+            stockpiles::set_resource(&mut pile.contents, ResourceKind::Materials, 0.0);
+        }
+        advance_material_offering_logistics(&mut colony, 1_002);
+
+        assert!(colony.black_holes["offering-shrine"].active_feed.is_none());
+        assert!(colony.jobs.iter().any(|job| {
+            job.kind == JobKind::CarryOffering && job.status == JobStatus::Cancelled
+        }));
+    }
+
+    #[test]
+    fn protected_nonzero_stock_cancels_the_feed_instead_of_deadlocking_the_hole() {
+        let mut colony = offering_colony(100.0);
+        add_complete_shrine(&mut colony);
+        colony.leader_id = Some("cat-1".to_owned());
+        phase_24b_black_hole_leader_adapter(&mut colony, production_gate(1, 1_000));
+        phase_14_promote_queued_jobs_and_break_ground(&mut colony, production_gate(1, 1_001), 7);
+        phase_15_assign_promoted_job_destinations(&mut colony, production_gate(1, 1_001), 7);
+
+        let researched = researched_black_hole_axes(&colony);
+        let reserve = black_hole_feed_reserve(
+            &colony,
+            "offering-shrine",
+            researched,
+            ResourceKind::Materials,
+        );
+        stockpiles::set_resource(&mut colony.resources, ResourceKind::Materials, reserve);
+        for pile in &mut colony.stockpiles {
+            stockpiles::set_resource(&mut pile.contents, ResourceKind::Materials, 0.0);
+        }
+        let source = colony
+            .stockpiles
+            .iter_mut()
+            .find(|pile| !pile.is_station_local())
+            .expect("visible source");
+        stockpiles::set_resource(&mut source.contents, ResourceKind::Materials, reserve);
+        advance_material_offering_logistics(&mut colony, 1_002);
+
+        assert!(colony.black_holes["offering-shrine"].active_feed.is_none());
+        assert!(colony.jobs.iter().any(|job| {
+            job.kind == JobKind::CarryOffering && job.status == JobStatus::Cancelled
+        }));
+    }
+
+    #[test]
+    fn cat_carries_four_but_width_zero_credits_one_per_opening() {
+        let mut colony = offering_colony(100.0);
+        add_complete_shrine(&mut colony);
+        colony.leader_id = Some("cat-1".to_owned());
+        phase_24b_black_hole_leader_adapter(&mut colony, production_gate(1, 1_000));
+        phase_14_promote_queued_jobs_and_break_ground(&mut colony, production_gate(1, 1_001), 7);
+        phase_15_assign_promoted_job_destinations(&mut colony, production_gate(1, 1_001), 7);
+        let job_index = colony
+            .jobs
+            .iter()
+            .position(|job| job.kind == JobKind::CarryOffering)
+            .unwrap();
+        let source_site = match colony.jobs[job_index].metadata {
+            JobMetadata::OfferingCarry {
+                site: Some(site), ..
+            } => site,
+            ref metadata => panic!("expected feed source, got {metadata:?}"),
+        };
+        colony.cats[0].position = position_from_world(tile_pos_to_world(source_site));
+        accept_job(&mut colony, job_index, 1_002);
+        advance_material_offering_logistics(&mut colony, 1_002);
+        assert_eq!(colony.resources.materials, 96.0, "cat carry cap is four");
+
+        colony.cats[0].position = position_from_world(tile_pos_to_world(TilePos { x: 0, y: 0 }));
+        advance_material_offering_logistics(&mut colony, 1_003);
+
+        let runtime = colony.black_holes.get("offering-shrine").unwrap();
+        let order = runtime.active_feed.as_ref().unwrap();
+        assert_eq!(order.delivered_units, 4);
+        assert_eq!(order.credited_units, 1);
+        assert_eq!(order.credited_value_micros, 100_000);
+        assert_eq!(runtime.intake.lifetime.openings, 1);
+        assert_eq!(colony.global_upgrade_points, 0.1);
+        assert_eq!(
+            colony.cats[0].carrying.as_ref().map(|cargo| cargo.amount),
+            Some(3.0),
+            "the carrier waits with the remainder until the next opening"
+        );
+
+        let next_opening = runtime.next_opening_at.expect("next opening");
+        let cooldown = black_hole_interval_ms(&colony, INTAKE_COOLDOWN_GAME_MS);
+        advance_material_offering_logistics(
+            &mut colony,
+            next_opening.saturating_add(cooldown.saturating_mul(2)),
+        );
+        let caught_up = &colony.black_holes["offering-shrine"];
+        assert_eq!(caught_up.active_feed.as_ref().unwrap().credited_units, 4);
+        assert_eq!(caught_up.intake.lifetime.openings, 4);
+        assert!(
+            colony.cats[0].carrying.is_none(),
+            "three overdue boundaries consume the three waiting units"
+        );
+    }
+
+    #[test]
+    fn dead_hole_carrier_rolls_back_only_the_uncounted_rim_delivery() {
+        let mut colony = offering_colony(100.0);
+        add_complete_shrine(&mut colony);
+        colony.leader_id = Some("cat-1".to_owned());
+        phase_24b_black_hole_leader_adapter(&mut colony, production_gate(1, 1_000));
+        phase_14_promote_queued_jobs_and_break_ground(&mut colony, production_gate(1, 1_001), 7);
+        phase_15_assign_promoted_job_destinations(&mut colony, production_gate(1, 1_001), 7);
+        let job_index = colony
+            .jobs
+            .iter()
+            .position(|job| job.kind == JobKind::CarryOffering)
+            .unwrap();
+        let source_site = match colony.jobs[job_index].metadata {
+            JobMetadata::OfferingCarry {
+                site: Some(site), ..
+            } => site,
+            ref metadata => panic!("expected feed source, got {metadata:?}"),
+        };
+        colony.cats[0].position = position_from_world(tile_pos_to_world(source_site));
+        accept_job(&mut colony, job_index, 1_002);
+        advance_material_offering_logistics(&mut colony, 1_002);
+        colony.cats[0].position = position_from_world(tile_pos_to_world(TilePos { x: 0, y: 0 }));
+        advance_material_offering_logistics(&mut colony, 1_003);
+        let order = colony.black_holes["offering-shrine"]
+            .active_feed
+            .as_ref()
+            .unwrap();
+        assert_eq!((order.delivered_units, order.credited_units), (4, 1));
+        assert_eq!(colony.cats[0].carrying.as_ref().unwrap().amount, 3.0);
+
+        mark_cat_dead(&mut colony, "cat-1", 1_004);
+
+        let recovered = colony.black_holes["offering-shrine"]
+            .active_feed
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            (recovered.delivered_units, recovered.credited_units),
+            (1, 1),
+            "credited material stays delivered while recovered cargo may be carried again"
+        );
+        assert_eq!(
+            colony.resources.materials, 99.0,
+            "three uncredited units return physically; one credited unit remains consumed"
+        );
+    }
+
+    #[test]
+    fn dead_hole_carrier_recovers_nonlegacy_feed_resources_without_deletion() {
+        let mut colony = offering_colony(0.0);
+        add_complete_shrine(&mut colony);
+        let building_id = "offering-shrine";
+        let job_id = "black-hole-fish-job";
+        let mut runtime = BlackHoleRuntime::for_building(building_id);
+        runtime.active_feed = Some(BlackHoleFeedOrder {
+            id: "black-hole-fish-order".to_owned(),
+            job_id: Some(job_id.to_owned()),
+            resource: ResourceKind::Fish,
+            target_units: 10,
+            delivered_units: 3,
+            credited_units: 0,
+            credited_value_micros: 0,
+            created_at: 1_000,
+        });
+        colony.black_holes.insert(building_id.to_owned(), runtime);
+        colony.jobs.push(JobRuntime {
+            id: job_id.to_owned(),
+            kind: JobKind::CarryOffering,
+            status: JobStatus::Active,
+            assigned_cat: Some("cat-1".to_owned()),
+            metadata: JobMetadata::OfferingCarry {
+                source_stockpile_id: "general-storehouse".to_owned(),
+                kind: ResourceKind::Fish,
+                site: None,
+                accepted: false,
+                escrow_id: format!("black-hole|{building_id}"),
+                delivered: 3.0,
+            },
+            ..JobRuntime::default()
+        });
+        colony.cats[0].carrying = Some(Carrying {
+            kind: CarryingKind::Fish,
+            amount: 3.0,
+            job_ended_at: 1_000,
+            source_gather_spot: Some(offering_cargo_marker(job_id)),
+        });
+
+        mark_cat_dead(&mut colony, "cat-1", 1_001);
+
+        assert_eq!(colony.resources.fish, 3.0);
+        assert_eq!(
+            colony.black_holes[building_id]
+                .active_feed
+                .as_ref()
+                .unwrap()
+                .delivered_units,
+            0
+        );
+        let physical_fish = colony
+            .stockpiles
+            .iter()
+            .map(|pile| stockpiles::resource_amount(&pile.contents, ResourceKind::Fish))
+            .sum::<f64>();
+        assert_eq!(physical_fish, 3.0);
+    }
+
+    #[test]
+    fn researched_width_upgrade_consumes_exact_recipe_then_grows_the_hole() {
+        let mut colony = offering_colony(5.0);
+        colony.resources.logs = 2.0;
+        reconcile_colony_stockpiles(&mut colony);
+        add_complete_shrine(&mut colony);
+        colony.leader_id = Some("cat-1".to_owned());
+        colony
+            .upgrade_tree
+            .owned_node_ids
+            .push("shrine_foundations".to_owned());
+
+        phase_24b_black_hole_leader_adapter(&mut colony, production_gate(1, 1_000));
+
+        assert_eq!(colony.resources.materials, 0.0);
+        assert_eq!(colony.resources.logs, 0.0);
+        let project = colony.black_holes["offering-shrine"]
+            .active_upgrade
+            .clone()
+            .expect("physical upgrade starts before feeding");
+        assert_eq!(project.axis, crate::black_hole::BlackHoleAxis::Width);
+        assert_eq!(project.target_level, 1);
+        let job = colony
+            .jobs
+            .iter()
+            .find(|job| job.id == project.job_id)
+            .cloned()
+            .unwrap();
+        complete_build(&mut colony, &job, production_gate(1, 2_000));
+
+        assert_eq!(colony.black_holes["offering-shrine"].axes.width, 1);
+        assert!(
+            colony.black_holes["offering-shrine"]
+                .active_upgrade
+                .is_none()
+        );
+        assert_eq!(
+            colony
+                .buildings
+                .iter()
+                .find(|building| building.id == "offering-shrine")
+                .unwrap()
+                .level,
+            2
+        );
+    }
+
     fn active_offering_carry(colony: &ColonyRuntime, source_id: &str, site: TilePos) -> JobRuntime {
         JobRuntime {
             id: "job-physical-offering".to_owned(),
@@ -62062,8 +63312,18 @@ mod tests {
             },
             _ => unreachable!(),
         };
+        let before = world.colonies[0].clone();
         let result = apply_action(&mut world, &action, &shrine_action_ctx(1_000));
-        assert!(result.ok, "{kind:?} dispatch failed: {:?}", result.message);
+        if !result.ok {
+            assert_eq!(
+                result.message.as_deref(),
+                Some(
+                    "Direct offerings were retired. Use “Urge another feeding” to nudge the Leader."
+                )
+            );
+            assert_eq!(world.colonies[0], before);
+            return world.colonies.remove(0);
+        }
         assert_eq!(world.colonies[0].global_upgrade_points, 0.0);
         let carry_index = world.colonies[0]
             .jobs
@@ -62188,7 +63448,7 @@ mod tests {
     }
 
     #[test]
-    fn signed_player_guidance_physically_offers_food_herbs_and_materials_deterministically() {
+    fn legacy_direct_offerings_are_stably_rejected_without_mutation() {
         for kind in OFFERING_RESOURCE_KINDS {
             let first = run_selected_physical_offering(kind);
             let second = run_selected_physical_offering(kind);
@@ -62197,6 +63457,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "legacy direct-offering action coverage; stable rejection lives in actions tests"]
     fn each_selectable_offering_enforces_its_own_safe_reserve_and_amount() {
         for kind in OFFERING_RESOURCE_KINDS {
             let mut colony = offering_colony(0.0);
@@ -62239,6 +63500,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "legacy shrine faucet journey retained only as migration documentation"]
     fn action_shrine_faucets_feed_spendable_fertility_balance_once_and_reset_preserves_it() {
         let mut colony = offering_colony(30.0);
         colony.resources.food = 200.0;
@@ -63285,7 +64547,7 @@ mod tests {
     }
 
     #[test]
-    fn phase_21_dispatches_a_carry_offering_job_for_the_offering_decision() {
+    fn phase_21_ignores_retired_offering_decisions() {
         let mut colony = offering_colony(30.0);
         colony.run_started_at = 60_000 - SHRINE_ESTABLISHMENT_MS;
         let plan = DirectorPlan {
@@ -63300,16 +64562,11 @@ mod tests {
             &plan,
         );
 
-        let job = colony
-            .jobs
-            .iter()
-            .find(|job| job.kind == JobKind::CarryOffering)
-            .expect("expected a carry_offering job to be queued");
-        assert_eq!(job.assigned_cat.as_deref(), Some("cat-1"));
+        assert!(colony.jobs.is_empty());
     }
 
     #[test]
-    fn shrine_faucets_wait_for_the_thirty_hour_establishment_window() {
+    fn retired_shrine_faucets_remain_inert_after_the_establishment_window() {
         let plan = DirectorPlan {
             decisions: vec![
                 LeaderDecision::Tithe {
@@ -63347,14 +64604,9 @@ mod tests {
             reliable_policy(),
             &plan,
         );
-        assert_eq!(colony.resources.food, 80.0);
-        assert!(
-            colony
-                .jobs
-                .iter()
-                .any(|job| job.kind == JobKind::CarryOffering)
-        );
-        assert_eq!(colony.global_upgrade_points, 1.0);
+        assert_eq!(colony.resources.food, 100.0);
+        assert!(colony.jobs.is_empty());
+        assert_eq!(colony.global_upgrade_points, 0.0);
 
         phase_21_leader_capital_decisions_and_tithe(
             &mut colony,
@@ -63362,15 +64614,15 @@ mod tests {
             reliable_policy(),
             &plan,
         );
-        assert_eq!(colony.resources.food, 80.0, "daily tithe cooldown");
+        assert_eq!(colony.resources.food, 100.0);
         phase_21_leader_capital_decisions_and_tithe(
             &mut colony,
             gate_at(SHRINE_ESTABLISHMENT_MS + TITHE_COOLDOWN_MS),
             reliable_policy(),
             &plan,
         );
-        assert_eq!(colony.resources.food, 60.0, "cooldown is inclusive");
-        assert_eq!(colony.global_upgrade_points, 2.0);
+        assert_eq!(colony.resources.food, 100.0);
+        assert_eq!(colony.global_upgrade_points, 0.0);
     }
 
     #[test]
@@ -63431,11 +64683,10 @@ mod tests {
     }
 
     #[test]
-    fn offering_dispatch_and_completion_is_deterministic_across_identical_runs() {
+    fn black_hole_feed_dispatch_is_deterministic_across_identical_runs() {
         // Two independently-founded worlds on the same seed, forced identically into
         // a materials surplus every tick, must produce byte-identical reports and
-        // final colony state through the offering's full dispatch -> travel ->
-        // completion -> shrine-credit loop.
+        // final colony state through the Black Hole feed-dispatch loop.
         let mut left = new_world(9001);
         left.colonies
             .push(found_colony(left.world_seed, "colony-1", 10_000, 9001));
@@ -63445,6 +64696,8 @@ mod tests {
             .push(found_colony(right.world_seed, "colony-1", 10_000, 9001));
         establish_office(&mut left.colonies[0], OfficerRole::Loremaster);
         establish_office(&mut right.colonies[0], OfficerRole::Loremaster);
+        left.colonies[0].test_time_scale = 20.0;
+        right.colonies[0].test_time_scale = 20.0;
         left.colonies[0].run_started_at = 10_000 - SHRINE_ESTABLISHMENT_MS;
         right.colonies[0].run_started_at = 10_000 - SHRINE_ESTABLISHMENT_MS;
         left.colonies[0].resources.materials = 100.0;
@@ -63467,8 +64720,8 @@ mod tests {
             left.colonies[0]
                 .events
                 .iter()
-                .any(|event| event.kind == EventKind::Offering),
-            "determinism comparison must exercise a completed active offering"
+                .any(|event| event.kind == EventKind::Other("black_hole_feed_started".to_owned())),
+            "determinism comparison must exercise a Black Hole feeding"
         );
     }
 
@@ -63476,7 +64729,7 @@ mod tests {
     // `phase_35b_road_accessibility` + `building_is_road_connected_to_shrine`) ------
 
     /// A minimal synthetic colony for accessibility tests: a shrine and a den
-    /// sitting on a tree/water-free 9x7 meadow claim, three tiles apart with
+    /// sitting on a tree/water-free 11x8 meadow claim, three tiles apart with
     /// open ground between them and no road yet. The block's origin (48, 40)
     /// was picked well away from the real village anchor specifically because
     /// it is tree-free for `world_seed`/`seed` 42 across this whole footprint
@@ -63500,12 +64753,12 @@ mod tests {
         colony
             .officers
             .insert(OfficerRole::Steward, "steward".to_owned());
-        typed_block(&mut colony, pos(48, 40), 9, 7, TileType::Meadow);
+        typed_block(&mut colony, pos(48, 40), 11, 8, TileType::Meadow);
         colony.buildings.push(BuildingRuntime {
             id: "building-shrine".to_owned(),
             building_type: BuildingType::Shrine,
             level: 1,
-            position: pos(48, 40), // 3x3 footprint: (48,40)-(50,42)
+            position: pos(48, 40), // 5x5 footprint: (48,40)-(52,44)
             is_complete: true,
             construction_progress: 100,
             production_progress: 0.0,
@@ -63520,7 +64773,7 @@ mod tests {
             id: "building-test-den".to_owned(),
             building_type: BuildingType::Den,
             level: 1,
-            position: pos(54, 40), // 2x3 footprint: (54,40)-(55,42); 3 tiles from the shrine
+            position: pos(56, 40), // 2x3 footprint: (56,40)-(57,42); 3 tiles from the ring
             is_complete: false,
             construction_progress: 0,
             production_progress: 0.0,
@@ -63535,7 +64788,7 @@ mod tests {
             id: "steward-workshop".to_owned(),
             building_type: BuildingType::Workshop,
             level: 1,
-            position: pos(48, 43),
+            position: pos(48, 45),
             is_complete: true,
             construction_progress: 100,
             production_progress: 0.0,
@@ -63584,7 +64837,7 @@ mod tests {
         let mut colony = accessibility_test_colony(100.0);
         colony
             .world_tiles
-            .get_mut(&pos(53, 41))
+            .get_mut(&pos(55, 41))
             .expect("tile beside den exists")
             .overlay_feature = Some("road_built".to_owned());
 
@@ -63594,7 +64847,7 @@ mod tests {
             "a lone paved tile beside the den is not a shrine-connected road"
         );
         assert!(
-            !shrine_connected_road_tiles(&colony).contains(&pos(53, 41)),
+            !shrine_connected_road_tiles(&colony).contains(&pos(55, 41)),
             "the disconnected overlay is absent from the connected component"
         );
     }
@@ -63603,8 +64856,8 @@ mod tests {
     fn accessibility_router_never_paves_through_unmapped_terrain() {
         let seed = 42;
         let mut colony = accessibility_test_colony(100.0);
-        for y in 40..=46 {
-            colony.world_tiles.remove(&pos(52, y));
+        for y in 40..=47 {
+            colony.world_tiles.remove(&pos(53, y));
         }
         let mapped_before = colony.world_tiles.len();
         let den = test_den(&colony);
@@ -63700,7 +64953,7 @@ mod tests {
     fn accessibility_sweep_cannot_spend_materials_committed_to_a_physical_road() {
         let seed = 42;
         let mut colony = accessibility_test_colony(38.0);
-        let reserved_tiles = (0..6).map(|x| pos(48 + x, 46)).collect::<Vec<_>>();
+        let reserved_tiles = (0..6).map(|x| pos(53 + x, 47)).collect::<Vec<_>>();
         colony.jobs.push(JobRuntime {
             id: "committed-road".to_owned(),
             kind: JobKind::BuildRoad,
@@ -63789,7 +65042,7 @@ mod tests {
             id: "building-shrine".to_owned(),
             building_type: BuildingType::Shrine,
             level: 1,
-            position: pos(48, 40), // 3x3 footprint: (48,40)-(50,42)
+            position: pos(48, 40), // 5x5 footprint: (48,40)-(52,44)
             is_complete: true,
             construction_progress: 100,
             production_progress: 0.0,
@@ -63804,7 +65057,7 @@ mod tests {
             id: "building-adjacent-den".to_owned(),
             building_type: BuildingType::Den,
             level: 1,
-            position: pos(51, 40), // 2x3 footprint: (51,40)-(52,42); borders shrine at x=50
+            position: pos(53, 40), // 2x3 footprint: (53,40)-(54,42); borders road ring at x=52
             is_complete: false,
             construction_progress: 0,
             production_progress: 0.0,

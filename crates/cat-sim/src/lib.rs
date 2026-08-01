@@ -17,7 +17,10 @@ pub mod test_acceleration;
 
 // P2 world-generation modules (filled by P2.2–P2.14).
 pub mod biomes;
+pub mod black_hole;
 pub mod climate;
+pub mod hunting_lair;
+pub mod hunting_runtime;
 pub mod noise;
 pub mod terrain_gen;
 pub mod world_gen;

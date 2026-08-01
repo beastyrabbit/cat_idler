@@ -15,6 +15,8 @@ pub(crate) enum BuildingVisual {
     Roofed(ResidentialFacade),
     /// An exposed, walkable floor composed from individual prop sprites.
     Open(&'static StationLayout),
+    /// The Hole has dedicated level-scaled anomaly art rather than station props.
+    BlackHole,
     /// Infrastructure rendered by a dedicated system rather than as a point building.
     Infrastructure,
 }
@@ -42,14 +44,11 @@ pub(crate) enum StationFloor {
 /// One runtime sprite used as a readable piece of an open station.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum StationProp {
-    Altar,
     Barrel,
     Bed,
     BedGreen,
     BedOrange,
     Bookcase,
-    Brazier,
-    Candelabra,
     Crate,
     CropFlowering,
     CropGrowing,
@@ -62,7 +61,6 @@ pub(crate) enum StationProp {
     MapTable,
     MetalBasin,
     OrePile,
-    ReliquaryGold,
     Sack,
     Scarecrow,
     StonePile,
@@ -88,10 +86,7 @@ impl StationProp {
             | Self::Workbench => (34, 16),
             Self::DisplayTable => (51, 16),
             Self::Scarecrow | Self::Well => (16, 32),
-            Self::Altar
-            | Self::Barrel
-            | Self::Brazier
-            | Self::Candelabra
+            Self::Barrel
             | Self::Crate
             | Self::CropFlowering
             | Self::CropGrowing
@@ -102,7 +97,6 @@ impl StationProp {
             | Self::LogPile
             | Self::MetalBasin
             | Self::OrePile
-            | Self::ReliquaryGold
             | Self::Sack
             | Self::Scroll
             | Self::StonePile
@@ -136,15 +130,6 @@ pub(crate) struct StationLayout {
     pub(crate) props: &'static [PropPlacement],
 }
 
-const SHRINE: StationLayout = StationLayout {
-    floor: StationFloor::Stone,
-    props: &[
-        prop(StationProp::Altar, 500, 500),
-        prop(StationProp::ReliquaryGold, 500, 170),
-        prop(StationProp::Candelabra, 210, 760),
-        prop(StationProp::Brazier, 790, 760),
-    ],
-};
 const FOOD_STORAGE: StationLayout = StationLayout {
     floor: StationFloor::Wood,
     props: &[
@@ -325,7 +310,7 @@ pub(crate) const fn building_visual(building: BuildingType) -> BuildingVisual {
         BuildingType::ElderCorner => BuildingVisual::Roofed(ResidentialFacade::Cottage),
         BuildingType::Walls => BuildingVisual::Infrastructure,
         BuildingType::MouseFarm => BuildingVisual::Open(&MOUSE_FARM),
-        BuildingType::Shrine => BuildingVisual::Open(&SHRINE),
+        BuildingType::Shrine => BuildingVisual::BlackHole,
         BuildingType::Workshop => BuildingVisual::Open(&WORKSHOP),
         BuildingType::AccountingTent => BuildingVisual::Open(&ACCOUNTING_TENT),
         BuildingType::Field => BuildingVisual::Open(&FIELD),
@@ -388,7 +373,9 @@ mod tests {
                     );
                     assert!(layout.props.iter().all(|p| p.x <= 1000 && p.y <= 1000));
                 }
-                BuildingVisual::Roofed(_) | BuildingVisual::Infrastructure => {}
+                BuildingVisual::Roofed(_)
+                | BuildingVisual::BlackHole
+                | BuildingVisual::Infrastructure => {}
             }
         }
     }
@@ -471,7 +458,7 @@ mod tests {
     }
 
     #[test]
-    fn field_and_shrine_cannot_regress_to_facades() {
+    fn field_and_black_hole_cannot_regress_to_facades() {
         let BuildingVisual::Open(field) = building_visual(BuildingType::Field) else {
             panic!("field must be an open crop plot");
         };
@@ -483,18 +470,10 @@ mod tests {
                 .any(|p| p.prop == StationProp::CropMature)
         );
 
-        let BuildingVisual::Open(shrine) = building_visual(BuildingType::Shrine) else {
-            panic!("shrine must be an open return destination");
-        };
-        assert_eq!(shrine.floor, StationFloor::Stone);
-        assert!(shrine.props.iter().any(|p| p.prop == StationProp::Altar));
-        assert!(
-            shrine
-                .props
-                .iter()
-                .any(|p| p.prop == StationProp::ReliquaryGold)
+        assert_eq!(
+            building_visual(BuildingType::Shrine),
+            BuildingVisual::BlackHole
         );
-        assert!(shrine.props.iter().any(|p| p.prop == StationProp::Brazier));
     }
 
     #[test]
