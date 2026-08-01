@@ -3,6 +3,40 @@
 This document defines the maintained Rust/Bevy test workflow. The former TypeScript/Vitest game
 is frozen on `archive/web-game`; do not use its test commands on `main`.
 
+## Leader-intelligence release gates
+
+The detailed LAI test and cutover contract lives in
+[`leader-ai-overhaul/testing-cutover.md`](leader-ai-overhaul/testing-cutover.md). Its additive
+delivery status is recorded in [`leader-ai-overhaul/BOARD.md`](leader-ai-overhaul/BOARD.md);
+focused or individual browser passes do not override open board gates.
+
+Keep resource-heavy work serialized on the shared workstation. Use `CARGO_BUILD_JOBS=1`, a bounded
+CPU set such as `taskset -c 0-3`, and one test thread for heavy focused/campaign work. Do not run
+multiple Cargo builds, long campaigns, or browsers in parallel. The opt-in phase/action traces and
+bounded probe workflow are documented in
+[`leader-ai-overhaul/diagnostics-and-debugging.md`](leader-ai-overhaul/diagnostics-and-debugging.md).
+
+Browser acceptance uses the committed signed SQLite fixture and real production controls:
+
+1. validate it with `scripts/leader-ai-browser-fixture.sh --check`;
+2. start the named Portless routes with `scripts/leader-ai-browser-fixture.sh --run`;
+3. execute `NODE_PATH=/usr/lib/node_modules playwright test --config=playwright.config.cjs` with
+   one worker; and
+4. perform the independently operated visible-browser accessibility, screenshot, and console
+   checkpoints required by
+   [`browser-playtests/README.md`](leader-ai-overhaul/browser-playtests/README.md).
+
+Playwright is necessary but cannot replace the independent visible-browser layer. A mutated
+runtime copy, synthetic snapshot, DOM/state injection, private endpoint, or hidden test hook is
+not acceptance evidence. New workshops, tasks, resources, actions, persisted fields, and UI
+surfaces must also update
+[`extending-the-system.md`](leader-ai-overhaul/extending-the-system.md) and the browser manifest.
+For the 2026-07-23 cutover the Orca native desktop runtime reported `runtime_unavailable`, so the
+documented fixed-1280×720 production-canvas fallback was used in a separate browser context. It
+entered through the shipped start screen, exercised a real signed Move action, observed its
+authoritative acknowledgement, and found zero console errors; this is the allowed fallback for
+the current wasm AccessKit null adapter.
+
 ## Test tiers
 
 Testing is deliberately split so development stays responsive while every pushed revision still

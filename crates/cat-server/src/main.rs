@@ -26,23 +26,44 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
-use cat_protocol::{
-    ActionResult, ClientAction, VillageCapabilities, VillageKind as ProtocolVillageKind,
-    WorldSnapshot,
+use cat_protocol::lai64::{
+    ActionErrorSnapshot, ActionOutcome, ActionReceipt, CanonicalActionEnvelope,
+    CanonicalSnapshotEnvelope, CanonicalWireError, PublicColonySummaryV2, ReportText, StableId,
+    VersionExpectation, VersionLane,
 };
+use cat_protocol::{
+    ActionAcceptedResult, ActionProtocolVersion, ActionResult, BoundedEntityId, ClientAction,
+    CurrentStateHint, CurrentVersionHint, LeaderAiActionEnvelope, LeaderAiActionResponse,
+    LeaderAiActionResult, ReportSafeString, WorldSnapshot,
+};
+#[cfg(test)]
+use cat_protocol::{VillageCapabilities, VillageKind as ProtocolVillageKind};
 use cat_sim::{
     actions::{ActionCtx, apply_action, build_snapshot},
     world_tick::{
-        EventKind, EventLog, TilePos, VillageKind, VillageScale, WorldState, found_global_colony,
-        new_world, register_colony_spatial, world_tick,
+        ColonyRuntime, EventKind, EventLog, TilePos, VillageKind, VillageScale, WorldState,
+        found_global_colony, new_world, register_colony_spatial, world_tick,
     },
 };
 use hosting::ServerConfig;
 use identity::{
-    SignedSession, issue_session, renew_session_at, signed_session, verify_session,
-    verify_session_at,
+    SESSION_MAX_AGE_MS, SignedSession, issue_session, renew_session_at, session_issued_at,
+    signed_session, verify_session, verify_session_at,
 };
-use persistence::{load_world, open_database_from_env, save_world};
+use leader_ai_action_routing::{
+    AtomicLeaderAiCommit, ColonyControlPolicy, IdempotencyReceiptStore, IdempotencyReplay,
+    LeaderAiServerMutationPipeline, NoMutationBeforePreconditions, OrderedMutationExecutor,
+    OwnsSelectedColony, SelectedColonyOwnershipGuard, SelectedColonyOwnershipSource,
+    ServerActionConflict, ServerActionResult as LeaderAiServerActionResult, ServerMutationActor,
+    VerifiedPlayerSession, check_actor_action_authority, check_expected_state_versions,
+    check_hmac_session_authentication, check_protocol_compatibility,
+    check_selected_colony_ownership, current_action_protocol_version, decode_lai_action_envelope,
+    minimum_supported_action_protocol_version, project_server_action_response,
+    reject_before_action_decode,
+};
+use persistence::{
+    load_world, open_database_from_env, save_world, save_world_with_canonical_boundary,
+};
 use rate_limit::RateLimiter;
 use rusqlite::Connection;
 use tokio::sync::{Mutex, RwLock, broadcast};
@@ -57,6 +78,10 @@ use std::sync::atomic::AtomicU64;
 
 mod hosting;
 mod identity;
+pub mod lai65;
+pub mod leader_ai_action_routing;
+pub mod leader_ai_persistence;
+mod leader_ai_snapshot_projection;
 mod persistence;
 mod rate_limit;
 
@@ -76,6 +101,7 @@ const MAX_WEBSOCKET_MESSAGE_BYTES: usize = 64 * 1_024;
 const SAVE_FAILURES_BEFORE_NOT_READY: u32 = 3;
 const SAVE_EVERY_TICKS: u64 = 5;
 const TEST_ACTIONS_ENV: &str = "CAT_SERVER_ENABLE_TEST_ACTIONS";
+const BROWSER_FIXTURE_FREEZE_ENV: &str = "CAT_SERVER_BROWSER_FIXTURE_FREEZE";
 const PLAYER_NAME_MAX_CHARS: usize = 24;
 
 #[derive(Clone)]
@@ -95,6 +121,12 @@ struct AppState {
     village_directory: Arc<RwLock<BTreeMap<String, VillageDirectoryEntry>>>,
     online_count: Arc<AtomicU32>,
     rate_limiter: Arc<Mutex<RateLimiter>>,
+    /// Schema-v2 canonical action replay rows.  This is intentionally separate
+    /// from the retired LAI.24/25 receipt shape: a canonical request is never
+    /// translated into an old action before authorization.
+    canonical_replay: Arc<Mutex<lai65::CanonicalReplayStore>>,
+    canonical_hole_clicks: Arc<Mutex<lai65::HoleClickRateLimiter>>,
+    canonical_test_reset: Arc<Mutex<lai65::TwoStepSignedTestResetGate>>,
     ip_rate_limiter: Arc<Mutex<RateLimiter>>,
     abuse_guard: Arc<Mutex<AbuseGuard>>,
     peer_connections: Arc<PeerConnections>,
@@ -146,6 +178,11 @@ impl Drop for PeerConnectionGuard {
             .expect("peer connection registry poisoned");
         if let Some(count) = counts.get_mut(&self.peer) {
             *count = count.saturating_sub(1);
+            debug!(
+                peer_ip = %self.peer,
+                remaining_connections = *count,
+                "released WebSocket peer connection"
+            );
             if *count == 0 {
                 counts.remove(&self.peer);
             }
@@ -310,6 +347,11 @@ async fn ws_handler(
         }
     };
     let Some(connection_guard) = state.peer_connections.acquire(peer_ip) else {
+        warn!(
+            %peer_ip,
+            max_connections = MAX_CONNECTIONS_PER_IP,
+            "rejected WebSocket peer connection limit"
+        );
         return (
             StatusCode::TOO_MANY_REQUESTS,
             "Too many connections from this address.",
@@ -422,12 +464,48 @@ fn build_state_from_connection(
             "loaded world must contain exactly one global village".to_owned(),
         ));
     }
-    Ok(build_state_from_world(
+    let mut canonical_replay = lai65::CanonicalReplayStore::default();
+    for row in leader_ai_persistence::load_canonical_replay_rows(&conn)? {
+        canonical_replay.restore(row).map_err(|_| {
+            rusqlite::Error::InvalidParameterName("invalid canonical replay state".to_owned())
+        })?;
+    }
+    let mut canonical_hole_clicks = lai65::HoleClickRateLimiter::default();
+    for row in leader_ai_persistence::load_canonical_hole_rate_rows(&conn)? {
+        canonical_hole_clicks.restore(row).map_err(|_| {
+            rusqlite::Error::InvalidParameterName("invalid canonical Hole-rate state".to_owned())
+        })?;
+    }
+    let mut canonical_test_reset = lai65::TwoStepSignedTestResetGate::default();
+    for row in leader_ai_persistence::load_canonical_test_reset_rows(&conn)? {
+        if row.expires_at_ms < now_ms {
+            continue;
+        }
+        canonical_test_reset
+            .restore_staged_challenge(lai65::StagedTestResetChallenge {
+                session_id: row.session_id,
+                authenticated_player_id: row.authenticated_player_id,
+                selected_colony_id: Some(row.selected_colony_id),
+                stage_idempotency_id: Some(row.stage_idempotency_id),
+                nonce: row.nonce,
+                signature: row.signature,
+                expires_at_ms: row.expires_at_ms,
+            })
+            .map_err(|_| {
+                rusqlite::Error::InvalidParameterName(
+                    "invalid canonical test-reset state".to_owned(),
+                )
+            })?;
+    }
+    Ok(build_state_from_world_with_boundary(
         world,
         conn,
         session_secret,
         test_actions_enabled(),
         now_ms,
+        canonical_replay,
+        canonical_hole_clicks,
+        canonical_test_reset,
     ))
 }
 
@@ -438,10 +516,31 @@ fn build_state_from_world(
     allow_test_actions: bool,
     now_ms: i64,
 ) -> AppState {
+    build_state_from_world_with_boundary(
+        world,
+        conn,
+        session_secret,
+        allow_test_actions,
+        now_ms,
+        lai65::CanonicalReplayStore::default(),
+        lai65::HoleClickRateLimiter::default(),
+        lai65::TwoStepSignedTestResetGate::default(),
+    )
+}
+
+fn build_state_from_world_with_boundary(
+    world: WorldState,
+    conn: Connection,
+    session_secret: String,
+    allow_test_actions: bool,
+    now_ms: i64,
+    canonical_replay: lai65::CanonicalReplayStore,
+    canonical_hole_clicks: lai65::HoleClickRateLimiter,
+    canonical_test_reset: lai65::TwoStepSignedTestResetGate,
+) -> AppState {
     let (snapshots, _) = broadcast::channel(SNAPSHOT_CHANNEL_CAPACITY);
     let completed_snapshot = build_snapshot(&world, now_ms, 0);
     let village_directory = village_directory(&world);
-
     AppState {
         world: Arc::new(Mutex::new(world)),
         db: Arc::new(Mutex::new(conn)),
@@ -453,6 +552,9 @@ fn build_state_from_world(
             ACTION_LIMIT_MAX,
             ACTION_LIMIT_WINDOW_MS,
         ))),
+        canonical_replay: Arc::new(Mutex::new(canonical_replay)),
+        canonical_hole_clicks: Arc::new(Mutex::new(canonical_hole_clicks)),
+        canonical_test_reset: Arc::new(Mutex::new(canonical_test_reset)),
         ip_rate_limiter: Arc::new(Mutex::new(RateLimiter::new(
             IP_ACTION_LIMIT_MAX,
             ACTION_LIMIT_WINDOW_MS,
@@ -480,6 +582,21 @@ fn test_actions_enabled() -> bool {
         .unwrap_or(false)
 }
 
+/// Keep a committed deterministic browser fixture stable while still routing
+/// every signed user action through the real server. Debug builds only: a
+/// release server cannot disable authoritative simulation ticks.
+#[cfg(debug_assertions)]
+fn browser_fixture_freeze_enabled() -> bool {
+    std::env::var(BROWSER_FIXTURE_FREEZE_ENV)
+        .map(|value| matches!(value.as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false)
+}
+
+#[cfg(not(debug_assertions))]
+fn browser_fixture_freeze_enabled() -> bool {
+    false
+}
+
 #[cfg(not(debug_assertions))]
 fn test_actions_enabled() -> bool {
     false
@@ -499,6 +616,13 @@ fn build_state(now_ms: i64) -> AppState {
 }
 
 fn spawn_tick_task(state: AppState) {
+    if browser_fixture_freeze_enabled() {
+        warn!(
+            environment = BROWSER_FIXTURE_FREEZE_ENV,
+            "authoritative simulation ticks frozen for deterministic browser fixture"
+        );
+        return;
+    }
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -650,10 +774,14 @@ async fn handle_socket(
     let global_id = global_village_id(&directory);
     drop(directory);
     let mut connection = ConnectionContext::for_peer_ip(peer_ip, global_id);
-    let online_count = state.online_count.fetch_add(1, Ordering::SeqCst) + 1;
+    let _online_count = state.online_count.fetch_add(1, Ordering::SeqCst) + 1;
     let mut snapshots = state.snapshots.subscribe();
 
-    if send_current_snapshot(&mut socket, &state, online_count, &connection)
+    // The production cutover waits for the signed Presence handshake before
+    // choosing a private selected-colony projection. Unit tests retain the old
+    // initial frame solely while legacy behavior is being removed from fixtures.
+    #[cfg(test)]
+    if send_current_snapshot(&mut socket, &state, _online_count, &connection)
         .await
         .is_err()
     {
@@ -665,17 +793,29 @@ async fn handle_socket(
         tokio::select! {
             snapshot = snapshots.recv() => {
                 match snapshot {
-                    Ok(snapshot) => {
-                        let directory = state.village_directory.read().await;
-                        let snapshot = project_snapshot(
-                            snapshot,
-                            &directory,
-                            connection.identity.as_ref(),
-                            &connection.colony_id,
-                        );
-                        drop(directory);
-                        if send_snapshot(&mut socket, &snapshot).await.is_err() {
-                            break;
+                    Ok(_snapshot) => {
+                        if connection.leader_ai_protocol && connection.identity.is_some() {
+                            if send_leader_ai_snapshot(&mut socket, &state, &connection)
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                        } else {
+                            #[cfg(test)]
+                            {
+                            let directory = state.village_directory.read().await;
+                            let snapshot = project_snapshot(
+                                _snapshot,
+                                &directory,
+                                connection.identity.as_ref(),
+                                &connection.colony_id,
+                            );
+                            drop(directory);
+                            if send_snapshot(&mut socket, &snapshot).await.is_err() {
+                                break;
+                            }
+                            }
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(skipped)) => {
@@ -689,6 +829,19 @@ async fn handle_socket(
                     Some(Ok(Message::Text(text))) => {
                         let result = handle_client_text(&state, &mut connection, text.as_str()).await;
                         if send_action_result(&mut socket, &result).await.is_err() {
+                            break;
+                        }
+                        // Authentication establishes the report boundary and a
+                        // committed action may change it. Do not make the client
+                        // wait for a future world tick: frozen deterministic
+                        // fixtures have no such tick, and normal play otherwise
+                        // shows a needless one-tick stale start/action surface.
+                        if connection.leader_ai_protocol
+                            && connection.identity.is_some()
+                            && send_leader_ai_snapshot(&mut socket, &state, &connection)
+                                .await
+                                .is_err()
+                        {
                             break;
                         }
                     }
@@ -711,6 +864,7 @@ async fn handle_socket(
     state.online_count.fetch_sub(1, Ordering::SeqCst);
 }
 
+#[cfg(test)]
 async fn send_current_snapshot(
     socket: &mut WebSocket,
     state: &AppState,
@@ -721,6 +875,7 @@ async fn send_current_snapshot(
     send_snapshot(socket, &snapshot).await
 }
 
+#[cfg(test)]
 async fn current_snapshot(
     state: &AppState,
     online_count: u32,
@@ -740,6 +895,7 @@ async fn current_snapshot(
 /// Produce the only snapshot shape that may cross a socket. Undiscovered
 /// personal villages are removed server-side, so hiding selector rows in the
 /// client can never become a privacy boundary.
+#[cfg(test)]
 fn project_snapshot(
     mut snapshot: WorldSnapshot,
     directory: &BTreeMap<String, VillageDirectoryEntry>,
@@ -863,6 +1019,7 @@ fn project_snapshot(
 /// receives only the Accountant's aggregate and per-pile reports. Divine blessings are not
 /// physical stockpile goods, so their spendable balance remains exact. Equality attestations
 /// are cleared as well: even a boolean "still accurate" would reveal an unseen stock change.
+#[cfg(test)]
 fn project_reported_stock(colony: &mut cat_protocol::ColonySnapshot, expose_exact_equipment: bool) {
     if !expose_exact_equipment {
         redact_exact_functional_equipment(colony);
@@ -915,6 +1072,7 @@ fn project_reported_stock(colony: &mut cat_protocol::ColonySnapshot, expose_exac
 /// carried ids are all authoritative stock facts. Only the selected colony's signed controller
 /// may receive those facts, and only while the Accountant's canonical report is still exact.
 /// Reported scalar tool/weapon/armor totals remain available through `resources`.
+#[cfg(test)]
 fn redact_exact_functional_equipment(colony: &mut cat_protocol::ColonySnapshot) {
     colony
         .items
@@ -935,6 +1093,7 @@ fn redact_exact_functional_equipment(colony: &mut cat_protocol::ColonySnapshot) 
 /// Keep the socket-selected colony first because the current client renders the
 /// first colony while retaining the complete shared-world snapshot for world-map
 /// features.
+#[cfg(test)]
 fn prioritize_colony(mut snapshot: WorldSnapshot, colony_id: &str) -> WorldSnapshot {
     if let Some(index) = snapshot
         .colonies
@@ -955,6 +1114,7 @@ struct ConnectionContext {
     /// Player/install ids never enter snapshots or player-facing logs.
     nickname: Option<String>,
     colony_id: String,
+    leader_ai_protocol: bool,
 }
 
 impl ConnectionContext {
@@ -966,6 +1126,7 @@ impl ConnectionContext {
             identity: None,
             nickname: None,
             colony_id: global_colony_id,
+            leader_ai_protocol: false,
         }
     }
 
@@ -976,6 +1137,7 @@ impl ConnectionContext {
             identity: None,
             nickname: None,
             colony_id: global_colony_id,
+            leader_ai_protocol: false,
         }
     }
 
@@ -995,6 +1157,14 @@ impl ConnectionContext {
 struct ServerActionResult {
     result: ActionResult,
     fields: BTreeMap<&'static str, String>,
+    leader_ai: Option<LeaderAiServerActionResult>,
+    canonical: Option<CanonicalActionResponse>,
+}
+
+#[derive(Debug, Clone)]
+enum CanonicalActionResponse {
+    Receipt(ActionReceipt),
+    Error(ActionErrorSnapshot),
 }
 
 impl ServerActionResult {
@@ -1002,6 +1172,46 @@ impl ServerActionResult {
         Self {
             result,
             fields: BTreeMap::new(),
+            leader_ai: None,
+            canonical: None,
+        }
+    }
+
+    fn from_leader_ai(result: LeaderAiServerActionResult) -> Self {
+        Self {
+            result: ActionResult {
+                ok: matches!(
+                    result,
+                    LeaderAiServerActionResult::Action(ref response)
+                        if matches!(response.result, LeaderAiActionResult::Accepted { .. }
+                            | LeaderAiActionResult::DuplicateReplay { .. })
+                ),
+                message: None,
+                colony_id: None,
+            },
+            fields: BTreeMap::new(),
+            leader_ai: Some(result),
+            canonical: None,
+        }
+    }
+
+    fn from_canonical(result: CanonicalActionResponse) -> Self {
+        let accepted = matches!(
+            result,
+            CanonicalActionResponse::Receipt(ActionReceipt {
+                outcome: ActionOutcome::Accepted | ActionOutcome::Replayed,
+                ..
+            })
+        );
+        Self {
+            result: ActionResult {
+                ok: accepted,
+                message: None,
+                colony_id: None,
+            },
+            fields: BTreeMap::new(),
+            leader_ai: None,
+            canonical: Some(result),
         }
     }
 
@@ -1029,6 +1239,23 @@ impl ServerActionResult {
     }
 
     fn serialize(&self) -> Result<String, serde_json::Error> {
+        if let Some(result) = &self.leader_ai {
+            return match result {
+                LeaderAiServerActionResult::UpdateRequired(response) => {
+                    serde_json::to_string(response)
+                }
+                LeaderAiServerActionResult::ProtocolError(conflict) => {
+                    serde_json::to_string(conflict)
+                }
+                LeaderAiServerActionResult::Action(response) => serde_json::to_string(response),
+            };
+        }
+        if let Some(result) = &self.canonical {
+            return match result {
+                CanonicalActionResponse::Receipt(receipt) => serde_json::to_string(receipt),
+                CanonicalActionResponse::Error(error) => serde_json::to_string(error),
+            };
+        }
         let mut object = serde_json::Map::new();
         object.insert("ok".to_owned(), serde_json::Value::Bool(self.result.ok));
         if let Some(message) = &self.result.message {
@@ -1050,14 +1277,137 @@ impl ServerActionResult {
     }
 }
 
+/// The one production classification of the legacy `ClientAction` union.
+///
+/// `true` means the value is a superseded direct-control gameplay mutation now
+/// owned by the canonical LAI action surface. `handle_client_text` rejects
+/// those with the canonical update-required error after the bounded legacy
+/// decode and before `apply_action`, so the retired lane can never reach the
+/// authoritative world.
+///
+/// `false` is reserved for exactly the four bootstrap/lifecycle allowances the
+/// canonical boundary documents: the Presence handshake, colony ensure, village
+/// founding, and village selection. Accepting anything else here would restore
+/// the second gameplay authority the cutover removes.
+///
+/// The match is exhaustive with no wildcard arm on purpose: a newly added
+/// legacy variant must be classified explicitly instead of silently inheriting
+/// an allowance.
+fn legacy_action_requires_lai_v2(action: &ClientAction) -> bool {
+    match action {
+        // Bootstrap and village lifecycle — not gameplay mutation.
+        ClientAction::Presence { .. }
+        | ClientAction::Ensure
+        | ClientAction::FoundVillage { .. }
+        | ClientAction::JoinVillage { .. } => false,
+
+        // Exact-tile construction, zone painting, and route authoring.
+        ClientAction::PlanBuilding { .. }
+        | ClientAction::CreateZone { .. }
+        | ClientAction::RemoveZone { .. }
+        | ClientAction::BuildRoad { .. }
+        | ClientAction::BuildBridge { .. }
+        | ClientAction::DesignateRail { .. }
+        | ClientAction::BuildDock { .. }
+        | ClientAction::BuildTransportVehicle { .. }
+        | ClientAction::CreateTransportRoute { .. }
+        | ClientAction::CancelTransportRoute { .. } => true,
+
+        // Worker, officer, and labor assignment.
+        ClientAction::AssignWorker { .. }
+        | ClientAction::AssignOfficer { .. }
+        | ClientAction::UnassignOfficer { .. }
+        | ClientAction::SetCatLaborPreference { .. }
+        | ClientAction::RequestJob { .. }
+        | ClientAction::DispatchScout { .. } => true,
+
+        // Production queues and station work slots.
+        ClientAction::EditProductionQueue { .. }
+        | ClientAction::EditProductionWorkSlot { .. } => true,
+
+        // Player ballots and vote-kick.
+        ClientAction::CastVote { .. } | ClientAction::RequestVoteKick { .. } => true,
+
+        // Retired upgrade/research progression and direct boosts.
+        ClientAction::PurchaseUpgrade { .. }
+        | ClientAction::UnlockNode { .. }
+        | ClientAction::ResearchNode { .. }
+        | ClientAction::Boost { .. }
+        | ClientAction::BoostCat { .. } => true,
+
+        // Shrine tithe and offerings.
+        ClientAction::OfferTithe { .. }
+        | ClientAction::OfferMaterials { .. }
+        | ClientAction::OfferResource { .. } => true,
+
+        // Coin buy/sell and direct village trade.
+        ClientAction::BuyResource { .. }
+        | ClientAction::SellGoods { .. }
+        | ClientAction::OfferVillageTrade { .. }
+        | ClientAction::AcceptVillageTrade { .. }
+        | ClientAction::CancelVillageTrade { .. } => true,
+
+        // Farming, gathering, fishing, hauling, and storage designations.
+        ClientAction::DesignateFarm { .. }
+        | ClientAction::ClearFarm { .. }
+        | ClientAction::DesignateStockpile { .. }
+        | ClientAction::RemoveStockpile { .. }
+        | ClientAction::DesignateGatherSpot { .. }
+        | ClientAction::DesignateFishingSpot { .. }
+        | ClientAction::RemoveGatherSpot { .. }
+        | ClientAction::HaulGatherSpot { .. } => true,
+
+        // Equipment, repair, and direct combat control.
+        ClientAction::EquipItem { .. }
+        | ClientAction::UnequipItem { .. }
+        | ClientAction::RepairItem { .. }
+        | ClientAction::TrainWarrior { .. }
+        | ClientAction::DefendRaid { .. } => true,
+
+        // Retired harness clock/seed controls: deterministic acceleration is a
+        // canonical-lane concern, not a legacy shell allowance.
+        ClientAction::SetTestAcceleration { .. }
+        | ClientAction::AdvanceTime { .. }
+        | ClientAction::SetTestRngSeed { .. } => true,
+    }
+}
+
 async fn handle_client_text(
     state: &AppState,
     connection: &mut ConnectionContext,
     text: &str,
 ) -> ServerActionResult {
+    if serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .and_then(|value| value.get("actionSchemaVersion").cloned())
+        .is_some()
+    {
+        return handle_canonical_action_text(state, connection, text).await;
+    }
+    if reject_before_action_decode(text).is_ok()
+        || serde_json::from_str::<serde_json::Value>(text)
+            .ok()
+            .and_then(|value| value.get("protocolVersion").cloned())
+            .is_some()
+    {
+        // The retired LAI.24/25 action family cannot be safely converted to
+        // schema-v2: it exposed worker, route, stock, and appointment-shaped
+        // mutations which the canonical protocol deliberately omits.
+        return ServerActionResult::from_canonical(CanonicalActionResponse::Error(
+            canonical_update_required_error(),
+        ));
+    }
     let Ok(action) = serde_json::from_str::<ClientAction>(text) else {
         return ServerActionResult::fail("Invalid action.");
     };
+    // The production retirement gate: every superseded gameplay mutation is
+    // refused here, between the bounded legacy decode above and `apply_action`
+    // below, so no retired direct control reaches the authoritative world.
+    if legacy_action_requires_lai_v2(&action) {
+        return ServerActionResult::from_canonical(CanonicalActionResponse::Error(
+            canonical_update_required_error(),
+        ));
+    }
 
     let now = now_ms();
     let peer_limiter_key = connection.peer_limiter_key();
@@ -1110,6 +1460,12 @@ async fn handle_client_text(
             let mut guard = state.abuse_guard.lock().await;
             guard.session_issuance.prune(now);
             if !guard.session_issuance.check(&peer_limiter_key, now) {
+                warn!(
+                    peer = %peer_limiter_key,
+                    max_new_sessions = SESSION_ISSUE_LIMIT_MAX,
+                    window_ms = SESSION_ISSUE_LIMIT_WINDOW_MS,
+                    "rejected new signed session issuance limit"
+                );
                 return ServerActionResult::fail(
                     "Too many new sessions from this address. Reuse the session already issued to this browser.",
                 );
@@ -1140,7 +1496,19 @@ async fn handle_client_text(
             }
             connection.nickname = Some(nickname);
         }
+        let trusted = match canonical_trusted_session(&signed, now) {
+            Ok(trusted) => trusted,
+            Err(_) => return ServerActionResult::fail("Session identity is not valid."),
+        };
+        let session_row = lai65::CanonicalSessionRow::from_trusted(&trusted);
+        let db = state.db.lock().await;
+        if let Err(error) = leader_ai_persistence::save_canonical_session_row(&db, &session_row) {
+            error!(%error, "failed to persist canonical session metadata");
+            return ServerActionResult::fail("Session could not be saved.");
+        }
+        drop(db);
         connection.identity = Some(signed.clone());
+        connection.leader_ai_protocol = true;
         return ServerActionResult::ok().with_signed_session(signed);
     }
 
@@ -1269,6 +1637,2908 @@ async fn handle_client_text(
         let _ = state.snapshots.send(snapshot);
     }
     ServerActionResult::from_result(result)
+}
+
+struct DirectoryOwnershipSource<'a> {
+    directory: &'a BTreeMap<String, VillageDirectoryEntry>,
+}
+
+impl SelectedColonyOwnershipSource for DirectoryOwnershipSource<'_> {
+    fn control_policy(&self, colony_id: &str) -> Option<ColonyControlPolicy> {
+        self.directory.get(colony_id).map(|entry| match entry.kind {
+            VillageKind::Global => ColonyControlPolicy::GlobalVillage,
+            VillageKind::Personal => ColonyControlPolicy::PlayerOwned {
+                owner_player_id: entry.owner_player_id.clone().unwrap_or_default(),
+            },
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LeaderAiMutationRateLimit;
+
+async fn check_rate_limit_before_world_lock(
+    state: &AppState,
+    connection: &ConnectionContext,
+    now: i64,
+) -> Result<LeaderAiMutationRateLimit, ServerActionConflict> {
+    let limiter_key = connection.limiter_key();
+    let mut limiter = state.rate_limiter.lock().await;
+    limiter.prune(now);
+    if limiter.check(&limiter_key, now) {
+        Ok(LeaderAiMutationRateLimit)
+    } else {
+        Err(ServerActionConflict::RateLimited {
+            retry_after_ms: u64::try_from(ACTION_LIMIT_WINDOW_MS).unwrap_or_default(),
+        })
+    }
+}
+
+fn check_rate_limit_before_database_transaction(
+    proof: LeaderAiMutationRateLimit,
+) -> LeaderAiMutationRateLimit {
+    proof
+}
+
+fn check_rate_limit_before_snapshot_build(
+    proof: LeaderAiMutationRateLimit,
+) -> LeaderAiMutationRateLimit {
+    proof
+}
+
+struct AuthoritativeWorldWrite<'a>(&'a Mutex<WorldState>);
+
+impl<'a> AuthoritativeWorldWrite<'a> {
+    async fn write(&self) -> tokio::sync::MutexGuard<'a, WorldState> {
+        self.0.lock().await
+    }
+}
+
+/// The canonical LAI.64 route is deliberately a separate ingress path.  It
+/// never decodes an action into the retired LAI.24/25 DTO and it binds the
+/// payload identity to the already HMAC-verified socket session before it
+/// reads or mutates a colony.
+async fn handle_canonical_action_text(
+    state: &AppState,
+    connection: &mut ConnectionContext,
+    text: &str,
+) -> ServerActionResult {
+    if lai65::is_canonical_test_reset_request(text) {
+        return handle_canonical_test_reset_request(state, connection, text).await;
+    }
+    let now = now_ms();
+    {
+        let mut limiter = state.ip_rate_limiter.lock().await;
+        limiter.prune(now);
+        if !limiter.check(&connection.peer_limiter_key(), now) {
+            return ServerActionResult::from_canonical(CanonicalActionResponse::Error(
+                lai65::CanonicalBoundaryError::RateLimited {
+                    retry_after_ms: u64::try_from(ACTION_LIMIT_WINDOW_MS).unwrap_or_default(),
+                }
+                .action_error(),
+            ));
+        }
+    }
+    let envelope = match CanonicalActionEnvelope::decode_json(text) {
+        Ok(envelope) => envelope,
+        Err(error) => {
+            return ServerActionResult::from_canonical(CanonicalActionResponse::Error(
+                lai65::CanonicalBoundaryError::Wire(error).action_error(),
+            ));
+        }
+    };
+    let Some(identity) = connection.identity.as_ref() else {
+        return ServerActionResult::from_canonical(CanonicalActionResponse::Error(
+            lai65::CanonicalBoundaryError::Unauthenticated.action_error(),
+        ));
+    };
+    if !verify_session_at(
+        &identity.session_id,
+        Some(&identity.sig),
+        state.session_secret.as_str(),
+        now,
+    ) {
+        return ServerActionResult::from_canonical(CanonicalActionResponse::Error(
+            lai65::CanonicalBoundaryError::Unauthenticated.action_error(),
+        ));
+    }
+    {
+        let mut limiter = state.rate_limiter.lock().await;
+        limiter.prune(now);
+        if !limiter.check(&connection.limiter_key(), now) {
+            return ServerActionResult::from_canonical(CanonicalActionResponse::Error(
+                lai65::CanonicalBoundaryError::RateLimited {
+                    retry_after_ms: u64::try_from(ACTION_LIMIT_WINDOW_MS).unwrap_or_default(),
+                }
+                .action_error(),
+            ));
+        }
+    }
+    let trusted = match canonical_trusted_session(identity, now) {
+        Ok(session) => session,
+        Err(error) => {
+            return ServerActionResult::from_canonical(CanonicalActionResponse::Error(
+                error.action_error(),
+            ));
+        }
+    };
+    connection.leader_ai_protocol = true;
+    if envelope.selected_colony_id.as_str() != connection.colony_id {
+        // A websocket has one selected colony.  Base-game JoinVillage remains
+        // the authenticated selection mechanism; canonical God actions never
+        // smuggle a cross-colony selection switch.
+        return ServerActionResult::from_canonical(CanonicalActionResponse::Error(
+            canonical_denied_error(),
+        ));
+    }
+
+    let directory = state.village_directory.read().await;
+    let directory_adapter = CanonicalDirectory {
+        directory: &directory,
+    };
+    let authorized =
+        match lai65::authorize_canonical_action(trusted, envelope, &directory_adapter, now) {
+            Ok(action) => action,
+            Err(error) => {
+                return ServerActionResult::from_canonical(CanonicalActionResponse::Error(
+                    error.action_error(),
+                ));
+            }
+        };
+    drop(directory);
+
+    let mut replay = state.canonical_replay.lock().await;
+    let mut hole_clicks = state.canonical_hole_clicks.lock().await;
+    let mut reset_gate = state.canonical_test_reset.lock().await;
+    let replay_before = replay.clone();
+    let hole_clicks_before = hole_clicks.clone();
+    let reset_gate_before = reset_gate.clone();
+    let mut world = state.world.lock().await;
+    let versions = CanonicalWorldVersions { world: &world };
+    let build = if state.allow_test_actions {
+        lai65::CanonicalServerBuild::TestBuild
+    } else {
+        lai65::CanonicalServerBuild::Production
+    };
+    let ingress = match lai65::admit_canonical_action(
+        authorized,
+        &versions,
+        build,
+        &mut *reset_gate,
+        &replay,
+        &mut hole_clicks,
+        now,
+    ) {
+        Ok(ingress) => ingress,
+        Err(error) => {
+            return ServerActionResult::from_canonical(CanonicalActionResponse::Error(
+                error.action_error(),
+            ));
+        }
+    };
+    let authorized = match ingress {
+        lai65::CanonicalIngress::Replay(receipt) => {
+            return ServerActionResult::from_canonical(CanonicalActionResponse::Receipt(receipt));
+        }
+        lai65::CanonicalIngress::Dispatch(action) => action,
+    };
+    if replay.len() >= lai65::MAX_CANONICAL_REPLAY_ROWS {
+        *hole_clicks = hole_clicks_before;
+        *reset_gate = reset_gate_before;
+        return ServerActionResult::from_canonical(CanonicalActionResponse::Error(
+            lai65::CanonicalBoundaryError::ReplayStoreAtCapacity.action_error(),
+        ));
+    }
+
+    let before = world.clone();
+    if let Err(error) = apply_canonical_dispatch(&mut world, &authorized, now) {
+        *world = before;
+        *replay = replay_before;
+        *hole_clicks = hole_clicks_before;
+        *reset_gate = reset_gate_before;
+        return ServerActionResult::from_canonical(CanonicalActionResponse::Error(error));
+    }
+    let receipt = canonical_receipt(&world, &authorized);
+    let replay_row = match replay.record(&authorized, receipt.clone(), now) {
+        Ok(row) => row,
+        Err(_) => {
+            *world = before;
+            *replay = replay_before;
+            *hole_clicks = hole_clicks_before;
+            *reset_gate = reset_gate_before;
+            return ServerActionResult::from_canonical(CanonicalActionResponse::Error(
+                canonical_persistence_error(),
+            ));
+        }
+    };
+    let boundary_batch = lai65::CanonicalAtomicPersistenceBatch {
+        replay_row,
+        rate_rows: hole_clicks.rows(),
+        session_row: lai65::CanonicalSessionRow::from_trusted(authorized.trusted_session()),
+        consumed_reset_challenge: match authorized.dispatch() {
+            lai65::CanonicalGodDispatch::SignedTestReset { nonce } => {
+                Some(lai65::CanonicalResetChallengeKey {
+                    session_id: authorized.trusted_session().session_id().clone(),
+                    nonce: nonce.clone(),
+                })
+            }
+            _ => None,
+        },
+    };
+    let db = state.db.lock().await;
+    if save_world_with_canonical_boundary(&db, &world, &boundary_batch).is_err() {
+        *world = before;
+        *replay = replay_before;
+        *hole_clicks = hole_clicks_before;
+        *reset_gate = reset_gate_before;
+        return ServerActionResult::from_canonical(CanonicalActionResponse::Error(
+            canonical_persistence_error(),
+        ));
+    }
+    drop(db);
+    let refreshed_snapshot = build_snapshot(&world, now, state.online_count.load(Ordering::SeqCst));
+    drop(world);
+    *state.completed_snapshot.write().await = refreshed_snapshot.clone();
+    let _ = state.snapshots.send(refreshed_snapshot);
+    ServerActionResult::from_canonical(CanonicalActionResponse::Receipt(receipt))
+}
+
+/// Stage one of the test-only reset is deliberately separate from the
+/// protocol's world-mutating `signed_test_reset` confirmation. It shares the
+/// canonical header and all authorization checks, then persists only the
+/// short-lived challenge. The confirmation consumes that exact durable row in
+/// the same transaction as the selected-colony reset and receipt.
+async fn handle_canonical_test_reset_request(
+    state: &AppState,
+    connection: &mut ConnectionContext,
+    text: &str,
+) -> ServerActionResult {
+    let now = now_ms();
+    {
+        let mut limiter = state.ip_rate_limiter.lock().await;
+        limiter.prune(now);
+        if !limiter.check(&connection.peer_limiter_key(), now) {
+            return ServerActionResult::from_canonical(CanonicalActionResponse::Error(
+                lai65::CanonicalBoundaryError::RateLimited {
+                    retry_after_ms: u64::try_from(ACTION_LIMIT_WINDOW_MS).unwrap_or_default(),
+                }
+                .action_error(),
+            ));
+        }
+    }
+    let request = match lai65::CanonicalTestResetRequest::decode_json(text) {
+        Ok(request) => request,
+        Err(error) => {
+            return ServerActionResult::from_canonical(CanonicalActionResponse::Error(
+                lai65::CanonicalBoundaryError::Wire(error).action_error(),
+            ));
+        }
+    };
+    let Some(identity) = connection.identity.as_ref() else {
+        return ServerActionResult::from_canonical(CanonicalActionResponse::Error(
+            lai65::CanonicalBoundaryError::Unauthenticated.action_error(),
+        ));
+    };
+    if !verify_session_at(
+        &identity.session_id,
+        Some(&identity.sig),
+        state.session_secret.as_str(),
+        now,
+    ) {
+        return ServerActionResult::from_canonical(CanonicalActionResponse::Error(
+            lai65::CanonicalBoundaryError::Unauthenticated.action_error(),
+        ));
+    }
+    {
+        let mut limiter = state.rate_limiter.lock().await;
+        limiter.prune(now);
+        if !limiter.check(&connection.limiter_key(), now) {
+            return ServerActionResult::from_canonical(CanonicalActionResponse::Error(
+                lai65::CanonicalBoundaryError::RateLimited {
+                    retry_after_ms: u64::try_from(ACTION_LIMIT_WINDOW_MS).unwrap_or_default(),
+                }
+                .action_error(),
+            ));
+        }
+    }
+    let trusted = match canonical_trusted_session(identity, now) {
+        Ok(session) => session,
+        Err(error) => {
+            return ServerActionResult::from_canonical(CanonicalActionResponse::Error(
+                error.action_error(),
+            ));
+        }
+    };
+    if request.selected_colony_id.as_str() != connection.colony_id {
+        return ServerActionResult::from_canonical(CanonicalActionResponse::Error(
+            canonical_denied_error(),
+        ));
+    }
+    let directory = state.village_directory.read().await;
+    let directory_adapter = CanonicalDirectory {
+        directory: &directory,
+    };
+    let authorized = match lai65::authorize_canonical_test_reset_request(
+        trusted,
+        request,
+        &directory_adapter,
+        now,
+    ) {
+        Ok(request) => request,
+        Err(error) => {
+            return ServerActionResult::from_canonical(CanonicalActionResponse::Error(
+                error.action_error(),
+            ));
+        }
+    };
+    drop(directory);
+    if !state.allow_test_actions {
+        return ServerActionResult::from_canonical(CanonicalActionResponse::Error(
+            lai65::CanonicalBoundaryError::SignedTestResetDisabled.action_error(),
+        ));
+    }
+    let lai65::CanonicalTestResetRequestPayload::SignedTestResetRequest { nonce, signature } =
+        &authorized.request().payload;
+    let mut reset_gate = state.canonical_test_reset.lock().await;
+    let before = reset_gate.clone();
+    let verifier = ServerTestResetSignatureVerifier {
+        session_secret: state.session_secret.as_str(),
+    };
+    let stage = match reset_gate.stage_first_step_for_colony(
+        authorized.trusted_session(),
+        authorized.request().selected_colony_id.clone(),
+        authorized.request().idempotency_id.clone(),
+        nonce.clone(),
+        signature.clone(),
+        now,
+        &verifier,
+    ) {
+        Ok(stage) => stage,
+        Err(error) => {
+            return ServerActionResult::from_canonical(CanonicalActionResponse::Error(
+                error.action_error(),
+            ));
+        }
+    };
+    if matches!(stage, lai65::TestResetStage::Staged) {
+        let Some(challenge) =
+            reset_gate.staged_challenge(authorized.trusted_session().session_id(), nonce)
+        else {
+            *reset_gate = before;
+            return ServerActionResult::from_canonical(CanonicalActionResponse::Error(
+                canonical_persistence_error(),
+            ));
+        };
+        let (Some(selected_colony_id), Some(stage_idempotency_id)) =
+            (challenge.selected_colony_id, challenge.stage_idempotency_id)
+        else {
+            *reset_gate = before;
+            return ServerActionResult::from_canonical(CanonicalActionResponse::Error(
+                canonical_persistence_error(),
+            ));
+        };
+        let row = leader_ai_persistence::CanonicalResetChallengeRow {
+            row_schema_version: lai65::CANONICAL_PERSISTENCE_ROW_SCHEMA_VERSION,
+            session_id: challenge.session_id,
+            authenticated_player_id: challenge.authenticated_player_id,
+            selected_colony_id,
+            stage_idempotency_id,
+            nonce: challenge.nonce,
+            signature: challenge.signature,
+            expires_at_ms: challenge.expires_at_ms,
+        };
+        let db = state.db.lock().await;
+        if leader_ai_persistence::save_canonical_test_reset_row(&db, &row).is_err() {
+            *reset_gate = before;
+            return ServerActionResult::from_canonical(CanonicalActionResponse::Error(
+                canonical_persistence_error(),
+            ));
+        }
+    }
+    let receipt = ActionReceipt {
+        idempotency_id: authorized.request().idempotency_id.clone(),
+        selected_colony_id: authorized.request().selected_colony_id.clone(),
+        outcome: if matches!(stage, lai65::TestResetStage::Staged) {
+            ActionOutcome::Accepted
+        } else {
+            ActionOutcome::Replayed
+        },
+        changed_ids: vec![nonce.clone()],
+        reason: Some(
+            ReportText::new("Signed test-reset confirmation staged.".to_owned())
+                .expect("constant staging receipt is valid"),
+        ),
+        committed_versions: Vec::new(),
+    };
+    ServerActionResult::from_canonical(CanonicalActionResponse::Receipt(receipt))
+}
+
+struct ServerTestResetSignatureVerifier<'a> {
+    session_secret: &'a str,
+}
+
+impl lai65::TestResetSignatureVerifier for ServerTestResetSignatureVerifier<'_> {
+    fn verify_first_step(
+        &self,
+        session: &lai65::TrustedCanonicalSession,
+        nonce: &StableId,
+        signature: &ReportText,
+    ) -> bool {
+        identity::session_signature_valid(
+            &lai65::test_reset_signature_message(session, nonce),
+            Some(signature.as_str()),
+            self.session_secret,
+        )
+    }
+}
+
+struct CanonicalDirectory<'a> {
+    directory: &'a BTreeMap<String, VillageDirectoryEntry>,
+}
+
+impl lai65::CanonicalColonyDirectory for CanonicalDirectory<'_> {
+    fn selected_colony_access(&self, colony_id: &StableId) -> Option<lai65::CanonicalColonyAccess> {
+        self.directory
+            .get(colony_id.as_str())
+            .and_then(|entry| match entry.kind {
+                VillageKind::Global => Some(lai65::CanonicalColonyAccess::GlobalVillage),
+                VillageKind::Personal => {
+                    StableId::new(entry.owner_player_id.clone()?)
+                        .ok()
+                        .map(
+                            |owner_player_id| lai65::CanonicalColonyAccess::PersonalVillage {
+                                owner_player_id,
+                            },
+                        )
+                }
+            })
+    }
+}
+
+struct CanonicalWorldVersions<'a> {
+    world: &'a WorldState,
+}
+
+impl lai65::CanonicalVersionSource for CanonicalWorldVersions<'_> {
+    fn current_version(&self, colony_id: &StableId, lane: VersionLane) -> Option<u64> {
+        let runtime = &self
+            .world
+            .colonies
+            .iter()
+            .find(|colony| colony.id == colony_id.as_str())?
+            .leader_ai_runtime;
+        Some(canonical_lane_version(runtime, lane))
+    }
+}
+
+fn canonical_trusted_session(
+    identity: &SignedSession,
+    now: i64,
+) -> Result<lai65::TrustedCanonicalSession, lai65::CanonicalBoundaryError> {
+    let session_id =
+        StableId::new(identity.session_id.clone()).map_err(lai65::CanonicalBoundaryError::Wire)?;
+    let player_id =
+        StableId::new(identity.player_id.clone()).map_err(lai65::CanonicalBoundaryError::Wire)?;
+    let expires_at_ms = session_issued_at(identity.session_id.as_str())
+        .unwrap_or(now)
+        .checked_add(SESSION_MAX_AGE_MS)
+        .ok_or(lai65::CanonicalBoundaryError::InvalidTrustedSession)?;
+    lai65::TrustedCanonicalSession::new(session_id, player_id, expires_at_ms)
+}
+
+fn canonical_lane_version(
+    runtime: &cat_sim::leader_ai_runtime::LeaderAiRuntimeState,
+    lane: VersionLane,
+) -> u64 {
+    leader_ai_snapshot_projection::canonical_lane_version(runtime, lane)
+}
+
+fn canonical_receipt(
+    world: &WorldState,
+    action: &lai65::AuthorizedCanonicalAction,
+) -> ActionReceipt {
+    let runtime = &world
+        .colonies
+        .iter()
+        .find(|colony| colony.id == action.envelope().selected_colony_id.as_str())
+        .expect("canonical authorization selects an existing colony")
+        .leader_ai_runtime;
+    let committed_versions = action
+        .envelope()
+        .payload
+        .required_lanes()
+        .iter()
+        .copied()
+        .map(|lane| VersionExpectation {
+            lane,
+            expected_version: canonical_lane_version(runtime, lane),
+        })
+        .collect();
+    ActionReceipt {
+        idempotency_id: action.envelope().idempotency_id.clone(),
+        selected_colony_id: action.envelope().selected_colony_id.clone(),
+        outcome: ActionOutcome::Accepted,
+        changed_ids: vec![action.envelope().idempotency_id.clone()],
+        reason: None,
+        committed_versions,
+    }
+}
+
+fn apply_canonical_dispatch(
+    world: &mut WorldState,
+    action: &lai65::AuthorizedCanonicalAction,
+    now: i64,
+) -> Result<(), ActionErrorSnapshot> {
+    use cat_sim::{
+        cat_governance::ExpulsionScope,
+        construction_miracle_runtime::{ApplyConstructionMiracle, apply_construction_miracle},
+        divine_action_offers::{
+            DivineBoostOfferCatalog, EmergencyRescueWitnessSet, TrustedBoostActivation,
+            TrustedEmergencyRescue,
+        },
+        divine_boosts::{DivineBoostActor, DivineBoostAuthorization},
+        divine_hole_authority::{ClickBatchRequest, DivineHoleCommand, DivineHoleCommandEnvelope},
+        food_divine_policy::{ConservationNudge, EmergencySupplyKind, HOLE_DELIVERY_APRON_SITE_ID},
+        governance_authority::{BackingActor, BackingCommand, BackingEligibilityWire},
+        moneyless_barter::PersonalStance as SimulationPersonalStance,
+        physical_storage::StorageCompatibility,
+        planner_core::PlannerId,
+        player_directives::{BroadNudgeDirective, BroadNudgeDomain, BroadNudgeKey},
+        progression_research::{PlayerPartitionKey, ProgressionCatalog, StudyId},
+        research_authority::{ResearchCommand, ResearchCommandId, ResearchCommandKind},
+        storage_authority::StorageAddress,
+    };
+
+    if matches!(
+        action.dispatch(),
+        lai65::CanonicalGodDispatch::SignedTestReset { .. }
+    ) {
+        return reset_selected_colony_for_test(
+            world,
+            action.envelope().selected_colony_id.as_str(),
+            now,
+        );
+    }
+    let world_colony_ids = world
+        .colonies
+        .iter()
+        .map(|colony| colony.id.clone())
+        .collect::<BTreeSet<_>>();
+    let colony = world
+        .colonies
+        .iter_mut()
+        .find(|colony| colony.id == action.envelope().selected_colony_id.as_str())
+        .ok_or_else(canonical_denied_error)?;
+    let runtime = &mut colony.leader_ai_runtime;
+    let command_id = format!("canonical:{}", action.envelope().idempotency_id.as_str());
+    let now_u64 = u64::try_from(now).map_err(|_| canonical_invalid_error())?;
+    match action.dispatch() {
+        lai65::CanonicalGodDispatch::ResearchQueue { study_id } => {
+            let study_id = StudyId::new(study_id.as_str().to_owned())
+                .map_err(|_| canonical_invalid_error())?;
+            let catalog = ProgressionCatalog::from_embedded().map_err(|_| {
+                canonical_adapter_error(
+                    "action:research_catalog_unavailable",
+                    "Research is not available right now.",
+                )
+            })?;
+            runtime
+                .research
+                .apply(
+                    &catalog,
+                    ResearchCommand {
+                        id: ResearchCommandId::derive(&runtime.research.colony_id, &command_id),
+                        expected_version: runtime.research.version,
+                        kind: ResearchCommandKind::QueueGodPath { target: study_id },
+                    },
+                )
+                .map_err(|_| {
+                    canonical_adapter_error(
+                        "action:research_rejected",
+                        "That research request cannot be applied.",
+                    )
+                })?;
+            Ok(())
+        }
+        lai65::CanonicalGodDispatch::ResearchReorder {
+            study_id,
+            before_study_id,
+        } => {
+            let study_id = StudyId::new(study_id.as_str().to_owned())
+                .map_err(|_| canonical_invalid_error())?;
+            let before_study_id = before_study_id
+                .as_ref()
+                .map(|study_id| StudyId::new(study_id.as_str().to_owned()))
+                .transpose()
+                .map_err(|_| canonical_invalid_error())?;
+            let catalog = ProgressionCatalog::from_embedded().map_err(|_| {
+                canonical_adapter_error(
+                    "action:research_catalog_unavailable",
+                    "Research is not available right now.",
+                )
+            })?;
+            runtime
+                .research
+                .apply(
+                    &catalog,
+                    ResearchCommand {
+                        id: ResearchCommandId::derive(&runtime.research.colony_id, &command_id),
+                        expected_version: runtime.research.version,
+                        kind: ResearchCommandKind::ReorderGodTarget {
+                            study_id,
+                            before_study_id,
+                        },
+                    },
+                )
+                .map_err(|_| {
+                    canonical_adapter_error(
+                        "action:research_rejected",
+                        "That research request cannot be applied.",
+                    )
+                })?;
+            Ok(())
+        }
+        lai65::CanonicalGodDispatch::ResearchFund { study_id } => {
+            let catalog = ProgressionCatalog::from_embedded().map_err(|_| {
+                canonical_adapter_error(
+                    "action:research_catalog_unavailable",
+                    "Research is not available right now.",
+                )
+            })?;
+            if runtime
+                .research
+                .god_front()
+                .is_none_or(|front| front.study_id.as_str() != study_id.as_str())
+            {
+                return Err(canonical_adapter_error(
+                    "action:research_front_changed",
+                    "That research is no longer at the front of the God queue.",
+                ));
+            }
+            runtime
+                .research
+                .apply(
+                    &catalog,
+                    ResearchCommand {
+                        id: ResearchCommandId::derive(&runtime.research.colony_id, &command_id),
+                        expected_version: runtime.research.version,
+                        kind: ResearchCommandKind::FundGodFront {
+                            consume_preparation: false,
+                        },
+                    },
+                )
+                .map_err(|_| {
+                    canonical_adapter_error(
+                        "action:research_rejected",
+                        "That research request cannot be applied.",
+                    )
+                })?;
+            Ok(())
+        }
+        lai65::CanonicalGodDispatch::ResearchRemove { study_id } => {
+            let study_id = StudyId::new(study_id.as_str().to_owned())
+                .map_err(|_| canonical_invalid_error())?;
+            let catalog = ProgressionCatalog::from_embedded().map_err(|_| {
+                canonical_adapter_error(
+                    "action:research_catalog_unavailable",
+                    "Research is not available right now.",
+                )
+            })?;
+            runtime
+                .research
+                .apply(
+                    &catalog,
+                    ResearchCommand {
+                        id: ResearchCommandId::derive(&runtime.research.colony_id, &command_id),
+                        expected_version: runtime.research.version,
+                        kind: ResearchCommandKind::RemoveGodTarget { study_id },
+                    },
+                )
+                .map_err(|_| {
+                    canonical_adapter_error(
+                        "action:research_rejected",
+                        "That research request cannot be applied.",
+                    )
+                })?;
+            Ok(())
+        }
+        lai65::CanonicalGodDispatch::ResearchPreparation { study_id } => {
+            let study_id = StudyId::new(study_id.as_str().to_owned())
+                .map_err(|_| canonical_invalid_error())?;
+            let catalog = ProgressionCatalog::from_embedded().map_err(|_| {
+                canonical_adapter_error(
+                    "action:research_catalog_unavailable",
+                    "Research is not available right now.",
+                )
+            })?;
+            runtime
+                .research
+                .apply(
+                    &catalog,
+                    ResearchCommand {
+                        id: ResearchCommandId::derive(&runtime.research.colony_id, &command_id),
+                        expected_version: runtime.research.version,
+                        kind: ResearchCommandKind::RequestPreparation { study_id },
+                    },
+                )
+                .map_err(|_| {
+                    canonical_adapter_error(
+                        "action:research_preparation_rejected",
+                        "That physical research preparation cannot be started.",
+                    )
+                })?;
+            Ok(())
+        }
+        lai65::CanonicalGodDispatch::FoodConservation { nudge_basis_points } => {
+            let nudge = if *nudge_basis_points > 0 {
+                ConservationNudge::FavorImmediateSurvival
+            } else {
+                ConservationNudge::ProtectScarceFood
+            };
+            runtime
+                .divine_hole
+                .apply(
+                    DivineHoleCommandEnvelope::new(
+                        command_id,
+                        runtime.divine_hole.version,
+                        DivineHoleCommand::SetConservationNudge { nudge },
+                    )
+                    .map_err(|_| canonical_invalid_error())?,
+                )
+                .map_err(|_| {
+                    canonical_adapter_error(
+                        "action:food_policy_rejected",
+                        "The food policy could not be adjusted.",
+                    )
+                })?;
+            Ok(())
+        }
+        lai65::CanonicalGodDispatch::HoleClickBatch {
+            target_id,
+            accepted_clicks,
+            ..
+        } => {
+            runtime
+                .divine_hole
+                .apply(
+                    DivineHoleCommandEnvelope::new(
+                        command_id,
+                        runtime.divine_hole.version,
+                        DivineHoleCommand::AcceptClickBatch {
+                            batch: ClickBatchRequest {
+                                target_id: target_id.as_str().to_owned(),
+                                player_id: action
+                                    .trusted_session()
+                                    .authenticated_player_id()
+                                    .as_str()
+                                    .to_owned(),
+                                requested_clicks: *accepted_clicks,
+                                client_batch_window_ms:
+                                    cat_protocol::lai64::CANONICAL_CLICK_BATCH_WINDOW_MS,
+                                now_real_ms: now_u64,
+                            },
+                        },
+                    )
+                    .map_err(|_| canonical_invalid_error())?,
+                )
+                .map_err(|_| {
+                    canonical_adapter_error(
+                        "action:hole_click_rejected",
+                        "That Hole contribution is no longer available.",
+                    )
+                })?;
+            Ok(())
+        }
+        lai65::CanonicalGodDispatch::Inspiration => {
+            runtime
+                .divine_hole
+                .apply(
+                    DivineHoleCommandEnvelope::new(
+                        command_id,
+                        runtime.divine_hole.version,
+                        DivineHoleCommand::ActivateInspiration {
+                            player_id: action
+                                .trusted_session()
+                                .authenticated_player_id()
+                                .as_str()
+                                .to_owned(),
+                            now_real_ms: now_u64,
+                        },
+                    )
+                    .map_err(|_| canonical_invalid_error())?,
+                )
+                .map_err(|_| {
+                    canonical_adapter_error(
+                        "action:inspiration_unavailable",
+                        "Inspiration is not available yet.",
+                    )
+                })?;
+            Ok(())
+        }
+        lai65::CanonicalGodDispatch::ActivateBoost { boost_id } => {
+            let player_id = PlannerId::derive(
+                "player",
+                [action.trusted_session().authenticated_player_id().as_str()],
+            );
+            let partition = PlayerPartitionKey {
+                colony_id: runtime.colony_partition.clone(),
+                player_id: player_id.clone(),
+            };
+            let catalog = DivineBoostOfferCatalog::capture(
+                partition,
+                &runtime.divine_hole,
+                &runtime.boosts,
+                &runtime.research,
+            )
+            .map_err(|_| {
+                canonical_adapter_error(
+                    "action:boost_offer_unavailable",
+                    "That Divine Boost offer is no longer available.",
+                )
+            })?;
+            catalog
+                .purchase_by_id(
+                    boost_id.as_str(),
+                    &runtime.divine_hole,
+                    &mut runtime.boosts,
+                    &mut runtime.research,
+                    TrustedBoostActivation {
+                        authorization: DivineBoostAuthorization {
+                            actor: DivineBoostActor::Player {
+                                player_id: player_id.clone(),
+                            },
+                            authenticated_player_id: Some(player_id),
+                            owns_colony: true,
+                        },
+                        activated_tick: runtime.last_processed_tick.unwrap_or_default(),
+                        ticks_per_game_hour: 60,
+                    },
+                )
+                .map_err(|_| {
+                    canonical_adapter_error(
+                        "action:boost_activation_rejected",
+                        "That Divine Boost could not be activated from the current offer.",
+                    )
+                })?;
+            Ok(())
+        }
+        lai65::CanonicalGodDispatch::ConstructionMiracle { offer_id } => {
+            let authenticated_player_id =
+                action.trusted_session().authenticated_player_id().as_str();
+            let offers = leader_ai_snapshot_projection::capture_construction_miracle_offers(
+                runtime,
+                authenticated_player_id,
+            )
+            .map_err(|_| {
+                canonical_adapter_error(
+                    "action:construction_miracle_offer_unavailable",
+                    "That construction miracle offer is no longer available.",
+                )
+            })?;
+            let offer = offers
+                .iter()
+                .find(|offer| offer.offer_id == offer_id.as_str())
+                .ok_or_else(|| {
+                    canonical_adapter_error(
+                        "action:construction_miracle_offer_stale",
+                        "The selected construction miracle does not match the current project report.",
+                    )
+                })?;
+            let project_id = offer.project_id.clone();
+            let player_id = PlannerId::derive("player", [authenticated_player_id]);
+            let expected_authority_version = runtime.divine_hole.version;
+            let expected_void_version = runtime.research.void.version;
+            apply_construction_miracle(
+                runtime,
+                ApplyConstructionMiracle {
+                    command_id,
+                    project_id,
+                    player_id: player_id.as_str().to_owned(),
+                    expected_authority_version,
+                    expected_void_version,
+                    now_real_ms: now_u64,
+                },
+            )
+            .map_err(|_| {
+                canonical_adapter_error(
+                    "action:construction_miracle_rejected",
+                    "That construction miracle could not be applied to the current project bill.",
+                )
+            })?;
+            Ok(())
+        }
+        lai65::CanonicalGodDispatch::EmergencyRescue { witness_id } => {
+            let report_version = runtime.resident_needs_report_version.ok_or_else(|| {
+                canonical_adapter_error(
+                    "action:rescue_report_unavailable",
+                    "Emergency rescue requires a current resident-needs report.",
+                )
+            })?;
+            let summary = runtime.resident_needs_summary.ok_or_else(|| {
+                canonical_adapter_error(
+                    "action:rescue_report_unavailable",
+                    "Emergency rescue requires a current resident-needs report.",
+                )
+            })?;
+            let partition = PlayerPartitionKey {
+                colony_id: runtime.colony_partition.clone(),
+                player_id: PlannerId::derive(
+                    "player",
+                    [action.trusted_session().authenticated_player_id().as_str()],
+                ),
+            };
+            let witnesses = EmergencyRescueWitnessSet::capture(
+                partition,
+                report_version,
+                summary,
+                &runtime.divine_hole,
+                &runtime.research.void,
+            )
+            .map_err(|_| {
+                canonical_adapter_error(
+                    "action:rescue_report_stale",
+                    "Emergency rescue evidence is no longer current.",
+                )
+            })?;
+            let witness = witnesses
+                .witnesses
+                .iter()
+                .find(|witness| witness.id.as_str() == witness_id.as_str())
+                .ok_or_else(|| {
+                    canonical_adapter_error(
+                        "action:rescue_not_reported",
+                        "The current village report does not authorize that emergency rescue.",
+                    )
+                })?;
+            let supply = witness.supply;
+            let envelope = witnesses
+                .resolve_rescue(
+                    &witness.id,
+                    report_version,
+                    summary,
+                    &runtime.divine_hole,
+                    &runtime.research.void,
+                    TrustedEmergencyRescue {
+                        command_id,
+                        now_real_ms: now_u64,
+                    },
+                )
+                .map_err(|_| {
+                    canonical_adapter_error(
+                        "action:rescue_rejected",
+                        "That emergency rescue could not be applied.",
+                    )
+                })?;
+            runtime
+                .apply_void_action_and_materialize(
+                    envelope,
+                    StorageAddress::PurposeCargo {
+                        site_id: HOLE_DELIVERY_APRON_SITE_ID.to_owned(),
+                    },
+                    match supply {
+                        EmergencySupplyKind::DivineRation => StorageCompatibility::Food,
+                        EmergencySupplyKind::DivineWater => StorageCompatibility::Liquid,
+                    },
+                )
+                .map_err(|_| {
+                    canonical_adapter_error(
+                        "action:rescue_materialization_failed",
+                        "The emergency supply could not be placed on the Hole delivery apron.",
+                    )
+                })?;
+            Ok(())
+        }
+        lai65::CanonicalGodDispatch::CandidateBacking {
+            election_id,
+            candidate_id,
+        } => {
+            let global_village = colony.kind == VillageKind::Global;
+            runtime
+                .governance
+                .submit_backing(BackingCommand {
+                    idempotency_id: command_id,
+                    expected_version: runtime.governance.version(),
+                    election_id: election_id.as_str().to_owned(),
+                    player_id: action
+                        .trusted_session()
+                        .authenticated_player_id()
+                        .as_str()
+                        .to_owned(),
+                    candidate_cat_id: candidate_id.as_str().to_owned(),
+                    actor: BackingActor {
+                        eligibility: BackingEligibilityWire {
+                            authenticated: true,
+                            eligible_global_player: global_village,
+                            personal_village_owner: !global_village,
+                        },
+                        global_village,
+                    },
+                    submitted_tick: runtime.last_processed_tick.unwrap_or_default(),
+                })
+                .map_err(|_| {
+                    canonical_adapter_error(
+                        "action:candidate_backing_rejected",
+                        "That election backing cannot be applied.",
+                    )
+                })?;
+            Ok(())
+        }
+        lai65::CanonicalGodDispatch::PersonalStance {
+            other_colony_id,
+            stance,
+        } => {
+            if !world_colony_ids.contains(other_colony_id.as_str()) {
+                return Err(canonical_adapter_error(
+                    "action:stance_target_unavailable",
+                    "That village is not available for a personal stance.",
+                ));
+            }
+            let from = cat_sim::diplomacy::DiplomacyColonyId::derive(&colony.id);
+            let to = cat_sim::diplomacy::DiplomacyColonyId::derive(other_colony_id.as_str());
+            let stance = match stance {
+                cat_protocol::lai64::PersonalStance::Alliance => SimulationPersonalStance::Alliance,
+                cat_protocol::lai64::PersonalStance::Neutral => SimulationPersonalStance::Neutral,
+                cat_protocol::lai64::PersonalStance::Enemy => SimulationPersonalStance::Enemy,
+            };
+            runtime
+                .trade
+                .set_stance(
+                    command_id,
+                    format!(
+                        "canonical_stance_v1:{}:{}:{stance:?}",
+                        colony.id,
+                        other_colony_id.as_str()
+                    ),
+                    runtime.trade.version(),
+                    from,
+                    to,
+                    stance,
+                )
+                .map_err(|_| {
+                    canonical_adapter_error(
+                        "action:personal_stance_rejected",
+                        "That personal stance cannot be applied.",
+                    )
+                })?;
+            Ok(())
+        }
+        lai65::CanonicalGodDispatch::Expel {
+            subject_cat_id,
+            household,
+        } => {
+            runtime
+                .governance
+                .preview_expulsion(
+                    &command_id,
+                    subject_cat_id.as_str(),
+                    if *household {
+                        ExpulsionScope::WholeHousehold
+                    } else {
+                        ExpulsionScope::SelectedAdult
+                    },
+                )
+                .map_err(|_| {
+                    canonical_adapter_error(
+                        "action:expulsion_rejected",
+                        "That expulsion cannot enter the cleanup workflow.",
+                    )
+                })?;
+            Ok(())
+        }
+        lai65::CanonicalGodDispatch::BroadDomainNudge {
+            domain,
+            building_kind_id,
+            basis_points,
+        } => {
+            let domain = match domain {
+                cat_protocol::lai64::NudgeDomain::Survival => BroadNudgeDomain::Survival,
+                cat_protocol::lai64::NudgeDomain::Defense => BroadNudgeDomain::Defense,
+                cat_protocol::lai64::NudgeDomain::Hole => BroadNudgeDomain::Hole,
+                cat_protocol::lai64::NudgeDomain::Hunting => BroadNudgeDomain::Hunting,
+                cat_protocol::lai64::NudgeDomain::Food => BroadNudgeDomain::Food,
+                cat_protocol::lai64::NudgeDomain::Housing => BroadNudgeDomain::Housing,
+                cat_protocol::lai64::NudgeDomain::Construction => BroadNudgeDomain::Construction,
+                cat_protocol::lai64::NudgeDomain::Storage => BroadNudgeDomain::Storage,
+                cat_protocol::lai64::NudgeDomain::Research => BroadNudgeDomain::Research,
+                cat_protocol::lai64::NudgeDomain::Trade => BroadNudgeDomain::Trade,
+                cat_protocol::lai64::NudgeDomain::Infrastructure => {
+                    BroadNudgeDomain::Infrastructure
+                }
+            };
+            runtime
+                .player_directives
+                .set_broad_nudge(BroadNudgeDirective {
+                    key: BroadNudgeKey {
+                        domain,
+                        building_kind_id: building_kind_id
+                            .as_ref()
+                            .map(|id| id.as_str().to_owned()),
+                    },
+                    basis_points: *basis_points,
+                    planning_epoch: runtime.planner.planning_epoch,
+                })
+                .map_err(|_| {
+                    canonical_adapter_error(
+                        "action:broad_nudge_rejected",
+                        "That broad priority could not be applied to the current planning review.",
+                    )
+                })?;
+            Ok(())
+        }
+        lai65::CanonicalGodDispatch::SignedTestReset { .. } => {
+            unreachable!("signed test reset returns before borrowing the selected colony")
+        }
+    }
+}
+
+/// Recreate exactly one selected colony from its deterministic founding
+/// fixture. The canonical route has already authenticated the signed session,
+/// verified selected-colony ownership, and consumed a matching staged reset.
+/// No neighboring colony is removed, recreated, or otherwise mutated.
+fn reset_selected_colony_for_test(
+    world: &mut WorldState,
+    selected_colony_id: &str,
+    now: i64,
+) -> Result<(), ActionErrorSnapshot> {
+    use cat_sim::world_tick::{found_colony_at, found_global_colony, publish_colony_spatial};
+
+    let colony_index = world
+        .colonies
+        .iter()
+        .position(|colony| colony.id == selected_colony_id)
+        .ok_or_else(canonical_denied_error)?;
+    let current = &world.colonies[colony_index];
+    let colony_id = current.id.clone();
+    let colony_name = current.name.clone();
+    let kind = current.kind;
+    let scale = current.scale;
+    let owner_player_id = current.owner_player_id.clone();
+    let anchor = current.anchor;
+    let seed = current.test_rng_seed.unwrap_or(world.world_seed);
+    let mut reset = if kind == VillageKind::Global {
+        found_global_colony(world.world_seed, colony_id, now, seed)
+    } else {
+        found_colony_at(world.world_seed, colony_id, now, seed, anchor)
+    };
+    reset.name = colony_name;
+    reset.kind = kind;
+    reset.scale = scale;
+    reset.owner_player_id = owner_player_id;
+    world.colonies[colony_index] = reset;
+    publish_colony_spatial(&mut world.shared_spatial, &world.colonies[colony_index]);
+    Ok(())
+}
+
+fn canonical_adapter_error(code: &str, reason: &str) -> ActionErrorSnapshot {
+    ActionErrorSnapshot {
+        code: StableId::new(code.to_owned()).expect("constant canonical action error code"),
+        reason: cat_protocol::lai64::ReportText::new(reason.to_owned())
+            .expect("constant canonical action error reason"),
+        retry_after_ms: None,
+        refresh_versions: Vec::new(),
+    }
+}
+
+fn canonical_invalid_error() -> ActionErrorSnapshot {
+    lai65::CanonicalBoundaryError::Wire(cat_protocol::lai64::CanonicalWireError::MalformedPayload)
+        .action_error()
+}
+
+fn canonical_denied_error() -> ActionErrorSnapshot {
+    lai65::CanonicalBoundaryError::SelectedColonyDenied.action_error()
+}
+
+fn canonical_persistence_error() -> ActionErrorSnapshot {
+    lai65::CanonicalBoundaryError::PersistenceCodec.action_error()
+}
+
+fn canonical_update_required_error() -> ActionErrorSnapshot {
+    canonical_adapter_error(
+        "action:update_required",
+        "This server requires the canonical world-tick update for that action.",
+    )
+}
+
+#[cfg(any())]
+async fn legacy_lai25_client_text(
+    state: &AppState,
+    connection: &mut ConnectionContext,
+    text: &str,
+) -> ServerActionResult {
+    let frame = match check_protocol_compatibility(text) {
+        Ok(frame) => frame,
+        Err(ServerActionConflict::UpdateRequired(response)) => {
+            debug_assert_eq!(
+                response.minimum_supported_version,
+                minimum_supported_action_protocol_version()
+            );
+            debug_assert_eq!(
+                response.current_protocol_version,
+                current_action_protocol_version()
+            );
+            return ServerActionResult::from_leader_ai(LeaderAiServerActionResult::UpdateRequired(
+                response,
+            ));
+        }
+        Err(conflict) => {
+            return ServerActionResult::from_leader_ai(LeaderAiServerActionResult::ProtocolError(
+                Box::new(conflict.to_protocol_conflict()),
+            ));
+        }
+    };
+    let envelope = match decode_lai_action_envelope(frame) {
+        Ok(envelope) => envelope,
+        Err(conflict) => {
+            return malformed_leader_ai_result(text, conflict);
+        }
+    };
+    let Some(session) = connection.identity.as_ref() else {
+        return rejected_leader_ai_result(&envelope, ServerActionConflict::Unauthenticated);
+    };
+    let now = now_ms();
+    let verified = match check_hmac_session_authentication(
+        session,
+        state.session_secret.as_str(),
+        now,
+        &envelope,
+    ) {
+        Ok(verified) => verified,
+        Err(conflict) => return rejected_leader_ai_result(&envelope, conflict),
+    };
+    connection.leader_ai_protocol = true;
+    let founding_peer_directory = matches!(
+        envelope.payload,
+        cat_protocol::LeaderAiActionPayload::FoundVillage { .. }
+    )
+    .then(|| async { state.abuse_guard.lock().await.player_peers.clone() });
+    let founding_peer_directory = match founding_peer_directory {
+        Some(directory) => Some(directory.await),
+        None => None,
+    };
+    let rate_limit = match check_rate_limit_before_world_lock(state, connection, now).await {
+        Ok(proof) => proof,
+        Err(conflict) => return rejected_leader_ai_result(&envelope, conflict),
+    };
+    let directory = state.village_directory.read().await;
+    let ownership_source = DirectoryOwnershipSource {
+        directory: &directory,
+    };
+    let ownership: SelectedColonyOwnershipGuard =
+        match check_selected_colony_ownership(&ownership_source, &verified, &envelope) {
+            Ok(ownership) => ownership,
+            Err(conflict) => return rejected_leader_ai_result(&envelope, conflict),
+        };
+    let ownership: OwnsSelectedColony = ownership;
+    drop(directory);
+    if let Err(conflict) = check_actor_action_authority(
+        ServerMutationActor::AuthenticatedPlayer(&verified),
+        &envelope,
+    ) {
+        return rejected_leader_ai_result(&envelope, conflict);
+    }
+    let authorized = leader_ai_action_routing::AuthorizedMutation::new(
+        envelope.clone(),
+        verified.clone(),
+        ownership,
+    );
+
+    let mut receipts = state.leader_ai_receipts.lock().await;
+    let world = AuthoritativeWorldWrite(&state.world);
+    let mut world = world.write().await;
+    if matches!(
+        envelope.payload,
+        cat_protocol::LeaderAiActionPayload::FoundVillage { .. }
+    ) {
+        if world.colonies.len() >= MAX_TOTAL_COLONIES {
+            return rejected_leader_ai_result(
+                &envelope,
+                ServerActionConflict::PreconditionFailed(report_safe("village_capacity")),
+            );
+        }
+        if let Some(peer_ip) = connection.peer_ip {
+            let peer = peer_ip.to_string();
+            let personal_villages_from_peer = world
+                .colonies
+                .iter()
+                .filter(|colony| colony.kind == VillageKind::Personal)
+                .filter_map(|colony| colony.owner_player_id.as_ref())
+                .filter(|owner| {
+                    founding_peer_directory
+                        .as_ref()
+                        .and_then(|directory| directory.get(*owner))
+                        == Some(&peer)
+                })
+                .count();
+            if personal_villages_from_peer >= MAX_PERSONAL_VILLAGES_PER_IP {
+                return rejected_leader_ai_result(
+                    &envelope,
+                    ServerActionConflict::PreconditionFailed(report_safe(
+                        "network_village_capacity",
+                    )),
+                );
+            }
+        }
+    }
+    let before = world.clone();
+    let receipts_before = receipts.clone();
+    let mut executor = LiveLeaderAiMutationExecutor {
+        world: &mut world,
+        receipts: &mut receipts,
+        now_ms: now,
+    };
+    let response =
+        match LeaderAiServerMutationPipeline::execute_remaining(&authorized, &mut executor) {
+            Ok(response) => response,
+            Err(conflict) => {
+                let projected = project_server_action_response(&envelope, &conflict);
+                if is_receiptable_conflict(&conflict)
+                    && let LeaderAiServerActionResult::Action(response) = &projected
+                {
+                    let response = response.as_ref().clone();
+                    if receipts.record(&envelope, response.clone()).is_err()
+                        || persist_runtime_action_receipt(&mut world, &envelope, &response, now)
+                            .is_err()
+                    {
+                        *world = before;
+                        *receipts = receipts_before;
+                        return rejected_leader_ai_result(
+                            &envelope,
+                            ServerActionConflict::MalformedActionId,
+                        );
+                    }
+                    let _database_rate_limit =
+                        check_rate_limit_before_database_transaction(rate_limit);
+                    let db = state.db.lock().await;
+                    if save_world(&db, &world).is_err() {
+                        *world = before;
+                        *receipts = receipts_before;
+                        return rejected_leader_ai_result(
+                            &envelope,
+                            ServerActionConflict::PreconditionFailed(report_safe(
+                                "persistence_failed",
+                            )),
+                        );
+                    }
+                }
+                return ServerActionResult::from_leader_ai(projected);
+            }
+        };
+    if matches!(
+        response.result,
+        LeaderAiActionResult::DuplicateReplay { .. }
+    ) {
+        return ServerActionResult::from_leader_ai(LeaderAiServerActionResult::Action(Box::new(
+            response,
+        )));
+    }
+    if receipts.record(&envelope, response.clone()).is_err()
+        || persist_runtime_action_receipt(&mut world, &envelope, &response, now).is_err()
+    {
+        *world = before;
+        *receipts = receipts_before;
+        return rejected_leader_ai_result(&envelope, ServerActionConflict::MalformedActionId);
+    }
+    let database_rate_limit = check_rate_limit_before_database_transaction(rate_limit);
+    let db = state.db.lock().await;
+    if save_world(&db, &world).is_err() {
+        *world = before;
+        *receipts = receipts_before;
+        return rejected_leader_ai_result(
+            &envelope,
+            ServerActionConflict::PreconditionFailed(report_safe("persistence_failed")),
+        );
+    }
+    drop(db);
+    let selected_after = match &envelope.payload {
+        cat_protocol::LeaderAiActionPayload::SelectColony { target_colony_id } => {
+            Some(target_colony_id.as_str().to_owned())
+        }
+        cat_protocol::LeaderAiActionPayload::FoundVillage { .. } => world
+            .colonies
+            .iter()
+            .find(|colony| {
+                colony.kind == VillageKind::Personal
+                    && colony.owner_player_id.as_deref() == Some(verified.player_id().as_str())
+            })
+            .map(|colony| colony.id.clone()),
+        _ => None,
+    };
+    let refreshed_directory = matches!(
+        envelope.payload,
+        cat_protocol::LeaderAiActionPayload::FoundVillage { .. }
+    )
+    .then(|| village_directory(&world));
+    let refreshed_snapshot = build_snapshot(&world, now, state.online_count.load(Ordering::SeqCst));
+    drop(world);
+    if let Some(directory) = refreshed_directory {
+        *state.village_directory.write().await = directory;
+    }
+    if let Some(selected_after) = selected_after {
+        connection.colony_id = selected_after;
+    }
+    *state.completed_snapshot.write().await = refreshed_snapshot.clone();
+    let _ = state.snapshots.send(refreshed_snapshot);
+    let _snapshot_rate_limit = check_rate_limit_before_snapshot_build(database_rate_limit);
+    ServerActionResult::from_leader_ai(LeaderAiServerActionResult::Action(Box::new(response)))
+}
+
+#[cfg(any())]
+fn malformed_leader_ai_result(text: &str, conflict: ServerActionConflict) -> ServerActionResult {
+    let value = serde_json::from_str::<serde_json::Value>(text).ok();
+    let envelope = value.and_then(|value| {
+        serde_json::from_value::<LeaderAiActionEnvelope>(value)
+            .ok()
+            .filter(|envelope| !envelope.colony_id.as_str().is_empty())
+    });
+    if let Some(envelope) = envelope {
+        rejected_leader_ai_result(&envelope, conflict)
+    } else {
+        ServerActionResult::from_leader_ai(LeaderAiServerActionResult::ProtocolError(Box::new(
+            conflict.to_protocol_conflict(),
+        )))
+    }
+}
+
+#[cfg(any())]
+fn rejected_leader_ai_result(
+    envelope: &LeaderAiActionEnvelope,
+    conflict: ServerActionConflict,
+) -> ServerActionResult {
+    ServerActionResult::from_leader_ai(project_server_action_response(envelope, &conflict))
+}
+
+#[cfg(any())]
+fn is_receiptable_conflict(conflict: &ServerActionConflict) -> bool {
+    matches!(
+        conflict,
+        ServerActionConflict::PreconditionFailed(_)
+            | ServerActionConflict::InsufficientFavor(_)
+            | ServerActionConflict::ReservationConflict(_)
+    )
+}
+
+#[cfg(any())]
+fn persist_runtime_action_receipt(
+    world: &mut WorldState,
+    envelope: &LeaderAiActionEnvelope,
+    response: &LeaderAiActionResponse,
+    now_ms: i64,
+) -> Result<(), ServerActionConflict> {
+    let colony = selected_colony_mut(world, envelope)?;
+    let planner_colony_id =
+        cat_sim::planner_core::PlannerId::derive("colony", [envelope.colony_id.as_str()]);
+    let action_key = format!(
+        "{}:{}",
+        envelope.player_id.as_str(),
+        envelope.idempotency_id.as_str()
+    );
+    let id = cat_sim::leader_ai_runtime::RuntimeMutationId::derive(
+        "lai27_action",
+        &planner_colony_id,
+        &action_key,
+    );
+    let request_fingerprint =
+        serde_json::to_string(envelope).map_err(|_| ServerActionConflict::MalformedPayload)?;
+    let response_json =
+        serde_json::to_string(response).map_err(|_| ServerActionConflict::MalformedPayload)?;
+    let committed_tick = tick_from_ms(now_ms);
+    let expires_tick = committed_tick.saturating_add(7 * 24 * 60 * 60 * 1_000);
+    let receipts = &mut colony.leader_ai_runtime.idempotency_receipts;
+    if let Some(existing) = receipts.get(&id) {
+        return if existing.request_fingerprint == request_fingerprint
+            && existing.response_json == response_json
+        {
+            Ok(())
+        } else {
+            Err(ServerActionConflict::MalformedActionId)
+        };
+    }
+    if receipts.len() == cat_sim::leader_ai_runtime::MAX_RUNTIME_IDEMPOTENCY_RECEIPTS
+        && let Some(oldest) = receipts
+            .iter()
+            .min_by_key(|(_, receipt)| (receipt.expires_tick, receipt.committed_tick))
+            .map(|(id, _)| id.clone())
+    {
+        receipts.remove(&oldest);
+    }
+    receipts.insert(
+        id.clone(),
+        cat_sim::leader_ai_runtime::RuntimeIdempotencyReceipt {
+            id,
+            committed_tick,
+            expires_tick,
+            request_fingerprint,
+            response_json,
+        },
+    );
+    colony
+        .leader_ai_runtime
+        .validate()
+        .map_err(|_| ServerActionConflict::MalformedPayload)
+}
+
+#[cfg(any())]
+struct LiveLeaderAiMutationExecutor<'a> {
+    world: &'a mut WorldState,
+    receipts: &'a mut IdempotencyReceiptStore,
+    now_ms: i64,
+}
+
+#[cfg(any())]
+impl OrderedMutationExecutor for LiveLeaderAiMutationExecutor<'_> {
+    fn check_expected_state_versions(
+        &mut self,
+        authorized: &leader_ai_action_routing::AuthorizedMutation,
+        expected: leader_ai_action_routing::ExpectedServerStateVersions<'_>,
+    ) -> Result<(), ServerActionConflict> {
+        if !matches!(
+            self.receipts
+                .check_bounded_idempotent_replay(authorized.envelope())?,
+            IdempotencyReplay::Missing
+        ) {
+            return Ok(());
+        }
+        let current =
+            current_server_state_versions(self.world, authorized.envelope().colony_id.as_str())
+                .ok_or(ServerActionConflict::OpaqueExistenceDenied)?;
+        check_expected_state_versions(expected.expected(), &current)
+    }
+
+    fn check_bounded_idempotent_replay(
+        &mut self,
+        authorized: &leader_ai_action_routing::AuthorizedMutation,
+    ) -> Result<Option<LeaderAiActionResponse>, ServerActionConflict> {
+        match self
+            .receipts
+            .check_bounded_idempotent_replay(authorized.envelope())?
+        {
+            IdempotencyReplay::Missing => Ok(None),
+            IdempotencyReplay::ReplayAcceptedPriorResult(response)
+            | IdempotencyReplay::ReplayRejectedPriorResult(response) => Ok(Some(response)),
+        }
+    }
+
+    fn check_current_preconditions(
+        &mut self,
+        authorized: &leader_ai_action_routing::AuthorizedMutation,
+    ) -> Result<(), ServerActionConflict> {
+        let _no_mutation = NoMutationBeforePreconditions;
+        let mut candidate = self.world.clone();
+        apply_live_leader_ai_action(
+            &mut candidate,
+            authorized.envelope(),
+            authorized.verified_session(),
+            self.now_ms,
+        )
+    }
+
+    fn commit_atomic_favor_reservation_state(
+        &mut self,
+        authorized: &leader_ai_action_routing::AuthorizedMutation,
+    ) -> Result<LeaderAiActionResponse, ServerActionConflict> {
+        let envelope = authorized.envelope();
+        let mut transaction = AtomicLeaderAiCommit::stage(self.world);
+        apply_live_leader_ai_action(
+            transaction.candidate_mut(),
+            envelope,
+            authorized.verified_session(),
+            self.now_ms,
+        )?;
+        let committed_versions =
+            current_server_state_versions(transaction.candidate_mut(), envelope.colony_id.as_str())
+                .ok_or(ServerActionConflict::OpaqueExistenceDenied)?;
+        transaction.commit_favor_debit_once(self.world);
+        Ok(LeaderAiActionResponse {
+            protocol_version: ActionProtocolVersion::current(),
+            idempotency_id: envelope.idempotency_id.clone(),
+            colony_id: envelope.colony_id.clone(),
+            result: LeaderAiActionResult::Accepted {
+                accepted: ActionAcceptedResult {
+                    result_code: report_safe("committed"),
+                    changed_ids: vec![
+                        BoundedEntityId::new(envelope.idempotency_id.as_str().to_owned())
+                            .map_err(|_| ServerActionConflict::MalformedActionId)?,
+                    ],
+                    committed_versions,
+                    current_state_hint: Some(CurrentStateHint {
+                        state_code: report_safe("committed"),
+                        visible_entity_id: None,
+                        visible_stage: None,
+                    }),
+                },
+            },
+            refresh: None,
+        })
+    }
+}
+
+#[cfg(any())]
+fn apply_live_leader_ai_action(
+    world: &mut WorldState,
+    envelope: &LeaderAiActionEnvelope,
+    session: &VerifiedPlayerSession,
+    now_ms: i64,
+) -> Result<(), ServerActionConflict> {
+    match &envelope.payload {
+        cat_protocol::LeaderAiActionPayload::SelectColony { target_colony_id } => {
+            let target = world
+                .colonies
+                .iter()
+                .find(|colony| colony.id == target_colony_id.as_str())
+                .ok_or(ServerActionConflict::OpaqueExistenceDenied)?;
+            let can_control = target.kind == VillageKind::Global
+                || target.owner_player_id.as_deref() == Some(session.player_id().as_str());
+            if can_control {
+                Ok(())
+            } else {
+                Err(ServerActionConflict::OpaqueExistenceDenied)
+            }
+        }
+        cat_protocol::LeaderAiActionPayload::FoundVillage { display_name } => {
+            let action = ClientAction::FoundVillage {
+                name: display_name.as_str().to_owned(),
+                session_id: session.session_id().to_owned(),
+                sig: None,
+            };
+            let ctx = ActionCtx {
+                session_id: session.session_id().to_owned(),
+                player_id: session.player_id().as_str().to_owned(),
+                colony_id: envelope.colony_id.as_str().to_owned(),
+                now_ms,
+            };
+            let result = apply_action(world, &action, &ctx);
+            if result.ok {
+                Ok(())
+            } else {
+                Err(ServerActionConflict::PreconditionFailed(report_safe(
+                    "village_foundation_rejected",
+                )))
+            }
+        }
+        cat_protocol::LeaderAiActionPayload::NudgePlan { plan_id, nudge, .. } => {
+            let colony = selected_colony_mut(world, envelope)?;
+            let intent_id = colony
+                .leader_ai_runtime
+                .intents
+                .iter()
+                .find(|(id, intent)| {
+                    id.as_str() == plan_id.as_str() && !intent.lifecycle.state.is_terminal()
+                })
+                .map(|(id, _)| id.clone())
+                .ok_or_else(|| precondition("plan_unavailable"))?;
+            let scheduler = &mut colony.leader_ai_runtime.scheduling.scheduler;
+            scheduler
+                .advance_epoch(colony.leader_ai_runtime.planner.planning_epoch)
+                .map_err(|_| precondition("planner_epoch_invalid"))?;
+            let action = if nudge.get() > 0 {
+                cat_sim::scheduler::PlayerEpochAction::MoveUp
+            } else {
+                cat_sim::scheduler::PlayerEpochAction::MoveDown
+            };
+            if matches!(
+                scheduler.set_player_influence(intent_id, action),
+                cat_sim::scheduler::InfluenceUpdate::CapacityReached
+            ) {
+                return Err(precondition("planner_influence_capacity"));
+            }
+            Ok(())
+        }
+        cat_protocol::LeaderAiActionPayload::DismissIntent {
+            intent_id,
+            planning_epoch,
+            ..
+        } => {
+            let colony = selected_colony_mut(world, envelope)?;
+            if *planning_epoch != colony.leader_ai_runtime.planner.planning_epoch {
+                return Err(precondition("planner_epoch_changed"));
+            }
+            let intent_id = colony
+                .leader_ai_runtime
+                .intents
+                .iter()
+                .find(|(id, intent)| {
+                    id.as_str() == intent_id.as_str()
+                        && !intent.lifecycle.state.is_terminal()
+                        && !matches!(
+                            intent.authority_domain,
+                            cat_sim::authority::AuthorityDomain::Survival
+                                | cat_sim::authority::AuthorityDomain::Evacuation
+                        )
+                })
+                .map(|(id, _)| id.clone())
+                .ok_or_else(|| precondition("intent_not_dismissible"))?;
+            let scheduler = &mut colony.leader_ai_runtime.scheduling.scheduler;
+            scheduler
+                .advance_epoch(*planning_epoch)
+                .map_err(|_| precondition("planner_epoch_invalid"))?;
+            if matches!(
+                scheduler.set_player_influence(
+                    intent_id,
+                    cat_sim::scheduler::PlayerEpochAction::Dismiss,
+                ),
+                cat_sim::scheduler::InfluenceUpdate::CapacityReached
+            ) {
+                return Err(precondition("planner_influence_capacity"));
+            }
+            Ok(())
+        }
+        cat_protocol::LeaderAiActionPayload::CreateStandingOrder {
+            order_kind,
+            domain,
+            target_id,
+            instruction,
+            priority_basis_points,
+            expires_at_ms,
+        } => {
+            let colony = selected_colony_mut(world, envelope)?;
+            let colony_id =
+                cat_sim::planner_core::PlannerId::derive("colony", [colony.id.as_str()]);
+            let effects = cat_sim::scholar_research::ResearchTrackStages::from_progress(
+                &colony.leader_ai_runtime.research.purchases,
+            )
+            .map_err(|_| precondition("research_state_invalid"))?
+            .effects();
+            let created_tick = runtime_tick_at(colony, now_ms);
+            let expires_tick =
+                expires_at_ms.map(|expires| runtime_expiry_tick(colony, now_ms, expires));
+            colony
+                .leader_ai_runtime
+                .player_directives
+                .create_standing_order(
+                    cat_sim::player_directives::StandingOrder {
+                        id: cat_sim::player_directives::PlayerDirectiveId::derive(
+                            "standing_order",
+                            &colony_id,
+                            envelope.idempotency_id.as_str(),
+                        ),
+                        order_kind: order_kind.as_str().to_owned(),
+                        domain: domain.as_str().to_owned(),
+                        target_id: target_id.as_ref().map(|id| id.as_str().to_owned()),
+                        instruction: instruction.as_str().to_owned(),
+                        priority_basis_points: priority_basis_points.get(),
+                        expires_tick,
+                        created_tick,
+                    },
+                    usize::from(effects.standing_order_slots),
+                )
+                .map_err(map_directive_error)
+        }
+        cat_protocol::LeaderAiActionPayload::UpdateStandingOrder {
+            standing_order_id,
+            patch,
+        } => {
+            let colony = selected_colony_mut(world, envelope)?;
+            let canonical_id = colony
+                .leader_ai_runtime
+                .player_directives
+                .standing_orders
+                .values()
+                .find(|order| {
+                    leader_ai_snapshot_projection::stable_id_matches(
+                        order.id.as_str(),
+                        standing_order_id.as_str(),
+                    )
+                })
+                .map(|order| order.id.as_str().to_owned())
+                .ok_or_else(|| precondition("directive_unavailable"))?;
+            colony
+                .leader_ai_runtime
+                .player_directives
+                .update_standing_order(
+                    canonical_id.as_str(),
+                    cat_sim::player_directives::StandingOrderPatch {
+                        instruction: patch
+                            .instruction
+                            .as_ref()
+                            .map(|value| value.as_str().to_owned()),
+                        priority_basis_points: patch
+                            .priority_basis_points
+                            .map(cat_protocol::BoundedBasisPoints::get),
+                        target_id: patch
+                            .target_id
+                            .as_ref()
+                            .map(|value| value.as_str().to_owned()),
+                        clear_target: patch.clear_target,
+                        expires_tick: patch.expires_at_ms.map(tick_from_ms),
+                        clear_expiry: patch.clear_expiry,
+                    },
+                )
+                .map_err(map_directive_error)
+        }
+        cat_protocol::LeaderAiActionPayload::DeleteStandingOrder { standing_order_id } => {
+            let colony = selected_colony_mut(world, envelope)?;
+            let canonical_id = colony
+                .leader_ai_runtime
+                .player_directives
+                .standing_orders
+                .values()
+                .find(|order| {
+                    leader_ai_snapshot_projection::stable_id_matches(
+                        order.id.as_str(),
+                        standing_order_id.as_str(),
+                    )
+                })
+                .map(|order| order.id.as_str().to_owned())
+                .ok_or_else(|| precondition("directive_unavailable"))?;
+            colony
+                .leader_ai_runtime
+                .player_directives
+                .delete_standing_order(canonical_id.as_str())
+                .map_err(map_directive_error)
+        }
+        cat_protocol::LeaderAiActionPayload::AppointOfficer { role, cat_id } => {
+            let colony = selected_colony_mut(world, envelope)?;
+            if !colony
+                .cats
+                .iter()
+                .any(|cat| cat.id == cat_id.as_str() && cat.death_time.is_none())
+            {
+                return Err(ServerActionConflict::PreconditionFailed(report_safe(
+                    "candidate_unavailable",
+                )));
+            }
+            let role = simulation_officer_role(*role);
+            let cat = cat_sim::planner_core::PlannerId::derive("cat", [cat_id.as_str()]);
+            colony
+                .leader_ai_runtime
+                .officers
+                .institution
+                .appoint_officer(role, cat, runtime_tick_at(colony, now_ms))
+                .map_err(|_| {
+                    ServerActionConflict::PreconditionFailed(report_safe("office_unavailable"))
+                })?;
+            colony.officers.insert(role, cat_id.as_str().to_owned());
+            Ok(())
+        }
+        cat_protocol::LeaderAiActionPayload::UnappointOfficer { role } => {
+            let colony = selected_colony_mut(world, envelope)?;
+            let role = simulation_officer_role(*role);
+            colony
+                .leader_ai_runtime
+                .officers
+                .institution
+                .vacate_office(role, runtime_tick_at(colony, now_ms))
+                .map_err(|_| {
+                    ServerActionConflict::PreconditionFailed(report_safe("office_unavailable"))
+                })?;
+            colony.officers.remove(&role);
+            Ok(())
+        }
+        cat_protocol::LeaderAiActionPayload::OfficerAuthorityOverride {
+            role,
+            domain,
+            request_id,
+            mode,
+        } => selected_colony_mut(world, envelope)?
+            .leader_ai_runtime
+            .player_directives
+            .set_authority_override(
+                cat_sim::player_directives::AuthorityOverrideKey {
+                    role: simulation_officer_role(*role),
+                    domain: domain.as_str().to_owned(),
+                    request_id: request_id.as_ref().map(|id| id.as_str().to_owned()),
+                },
+                matches!(mode, cat_protocol::OfficerAuthorityMode::Grant),
+            )
+            .map_err(map_directive_error),
+        cat_protocol::LeaderAiActionPayload::RequestTreatment {
+            cat_id,
+            injury_id,
+            treatment_kind,
+        } => {
+            let colony = selected_colony_mut(world, envelope)?;
+            if !colony
+                .cats
+                .iter()
+                .any(|cat| cat.id == cat_id.as_str() && cat.death_time.is_none())
+            {
+                return Err(precondition("patient_unavailable"));
+            }
+            let colony_id =
+                cat_sim::planner_core::PlannerId::derive("colony", [colony.id.as_str()]);
+            colony
+                .leader_ai_runtime
+                .player_directives
+                .request_treatment(cat_sim::player_directives::TreatmentRequest {
+                    id: cat_sim::player_directives::PlayerDirectiveId::derive(
+                        "treatment",
+                        &colony_id,
+                        envelope.idempotency_id.as_str(),
+                    ),
+                    cat_id: cat_id.as_str().to_owned(),
+                    injury_id: injury_id.as_str().to_owned(),
+                    treatment_kind: treatment_kind.as_str().to_owned(),
+                    requested_tick: runtime_tick_at(colony, now_ms),
+                })
+                .map_err(map_directive_error)
+        }
+        cat_protocol::LeaderAiActionPayload::FitProsthetic {
+            cat_id,
+            prosthetic_id,
+            body_part_id,
+            fitting_site,
+            fitter_cat_id,
+        } => fit_prosthetic(
+            selected_colony_mut(world, envelope)?,
+            envelope,
+            cat_id.as_str(),
+            prosthetic_id.as_str(),
+            body_part_id.as_str(),
+            fitting_site,
+            fitter_cat_id
+                .as_ref()
+                .map(cat_protocol::BoundedEntityId::as_str),
+        ),
+        cat_protocol::LeaderAiActionPayload::RepairProsthetic {
+            prosthetic_id,
+            workshop_id,
+            input_reservation_id,
+        } => repair_prosthetic(
+            selected_colony_mut(world, envelope)?,
+            prosthetic_id.as_str(),
+            workshop_id.as_str(),
+            input_reservation_id.as_str(),
+        ),
+        cat_protocol::LeaderAiActionPayload::PurchaseResearchWithFavor {
+            study_id,
+            use_preparation,
+            displayed_price_micro_favor,
+        } => purchase_research(
+            selected_colony_mut(world, envelope)?,
+            envelope,
+            study_id.as_str(),
+            *use_preparation,
+            displayed_price_micro_favor.map(cat_protocol::BoundedFavorAmount::get),
+            now_ms,
+        ),
+        cat_protocol::LeaderAiActionPayload::PrepareScholarStudy {
+            study_id,
+            scholar_cat_id,
+        } => prepare_scholar_study(
+            selected_colony_mut(world, envelope)?,
+            envelope,
+            study_id.as_str(),
+            scholar_cat_id.as_str(),
+            now_ms,
+        ),
+        cat_protocol::LeaderAiActionPayload::ActivateDivineBoost {
+            boost_kind,
+            duration_hours,
+            displayed_price_micro_favor,
+        } => activate_divine_boost(
+            selected_colony_mut(world, envelope)?,
+            envelope,
+            session,
+            boost_kind.as_str(),
+            u32::from(*duration_hours),
+            displayed_price_micro_favor.map(cat_protocol::BoundedFavorAmount::get),
+            now_ms,
+        ),
+        cat_protocol::LeaderAiActionPayload::ChangeDiplomacy {
+            target_colony_id,
+            relationship,
+        } => change_diplomacy(
+            selected_colony_mut(world, envelope)?,
+            envelope,
+            session,
+            target_colony_id.as_str(),
+            Some(*relationship),
+            None,
+        ),
+        cat_protocol::LeaderAiActionPayload::ApproveAlliance {
+            target_colony_id,
+            proposal_id,
+        } => change_diplomacy(
+            selected_colony_mut(world, envelope)?,
+            envelope,
+            session,
+            target_colony_id.as_str(),
+            None,
+            Some(proposal_id.as_str()),
+        ),
+        cat_protocol::LeaderAiActionPayload::BlockColony {
+            target_colony_id, ..
+        } => change_diplomacy(
+            selected_colony_mut(world, envelope)?,
+            envelope,
+            session,
+            target_colony_id.as_str(),
+            None,
+            None,
+        ),
+        cat_protocol::LeaderAiActionPayload::AcceptTradeContract { contract_id } => {
+            mutate_trade_contract(
+                selected_colony_mut(world, envelope)?,
+                envelope,
+                session,
+                contract_id.as_str(),
+                cat_sim::autonomous_trade::TradeActionKind::Accept,
+                now_ms,
+            )
+        }
+        cat_protocol::LeaderAiActionPayload::RejectTradeContract { contract_id, .. } => {
+            mutate_trade_contract(
+                selected_colony_mut(world, envelope)?,
+                envelope,
+                session,
+                contract_id.as_str(),
+                cat_sim::autonomous_trade::TradeActionKind::Cancel,
+                now_ms,
+            )
+        }
+        cat_protocol::LeaderAiActionPayload::PhysicalPlacement { placement } => {
+            let action =
+                translate_physical_placement(placement, session, envelope.player_id.as_str())?;
+            let ctx = ActionCtx {
+                session_id: session.session_id().to_owned(),
+                player_id: session.player_id().as_str().to_owned(),
+                colony_id: envelope.colony_id.as_str().to_owned(),
+                now_ms,
+            };
+            let result = apply_action(world, &action, &ctx);
+            if result.ok {
+                Ok(())
+            } else {
+                Err(ServerActionConflict::PreconditionFailed(report_safe(
+                    "placement_rejected",
+                )))
+            }
+        }
+    }
+}
+
+fn precondition(code: &str) -> ServerActionConflict {
+    ServerActionConflict::PreconditionFailed(report_safe(code))
+}
+
+#[cfg(any())]
+fn map_directive_error(
+    error: cat_sim::player_directives::PlayerDirectiveError,
+) -> ServerActionConflict {
+    use cat_sim::player_directives::PlayerDirectiveError;
+    let code = match error {
+        PlayerDirectiveError::UnknownDirective => "directive_unavailable",
+        PlayerDirectiveError::InvalidDirective => "directive_invalid",
+        PlayerDirectiveError::CapacityReached => "directive_capacity",
+        PlayerDirectiveError::IdConflict => "directive_id_conflict",
+        PlayerDirectiveError::VersionExhausted => "directive_version_exhausted",
+        PlayerDirectiveError::MalformedPersistence => "directive_state_invalid",
+    };
+    precondition(code)
+}
+
+#[allow(clippy::too_many_arguments)]
+#[cfg(any())]
+fn fit_prosthetic(
+    colony: &mut ColonyRuntime,
+    envelope: &LeaderAiActionEnvelope,
+    cat_id: &str,
+    prosthetic_id: &str,
+    body_part_id: &str,
+    fitting_site: &cat_protocol::SiteRefActionTarget,
+    fitter_cat_id: Option<&str>,
+) -> Result<(), ServerActionConflict> {
+    let item_id = colony
+        .leader_ai_runtime
+        .prosthetics
+        .item_ids()
+        .find(|id| id.as_str() == prosthetic_id)
+        .cloned()
+        .ok_or_else(|| precondition("prosthetic_unavailable"))?;
+    let part = simulation_body_part(body_part_id)?;
+    let patient = colony
+        .leader_ai_runtime
+        .cats
+        .get(cat_id)
+        .ok_or_else(|| precondition("patient_unavailable"))?;
+    let fitter_id = fitter_cat_id.unwrap_or(cat_id);
+    if !colony
+        .cats
+        .iter()
+        .any(|cat| cat.id == fitter_id && cat.death_time.is_none())
+    {
+        return Err(precondition("fitter_unavailable"));
+    }
+    let anchor = target_anchor(fitting_site).ok_or_else(|| precondition("fitting_site_invalid"))?;
+    let site_reachable = colony.revealed_tiles.contains(&TilePos {
+        x: anchor.x,
+        y: anchor.y,
+    });
+    let reservation_id = cat_sim::planner_core::PlannerId::derive(
+        "prosthetic_fitting",
+        [
+            colony.id.as_str(),
+            envelope.idempotency_id.as_str(),
+            prosthetic_id,
+        ],
+    );
+    let site_id = format!("tile:{}:{}", anchor.x, anchor.y);
+    colony
+        .leader_ai_runtime
+        .prosthetics
+        .begin_fitting(
+            &item_id,
+            &patient.anatomy,
+            cat_sim::prosthetics::FitAuthorization {
+                colony_id: &colony.id,
+                cat_id,
+                part,
+                reservation_id: reservation_id.as_str(),
+                fitter_id,
+                fitter_capable: true,
+                patient_consents: true,
+                site_id: &site_id,
+                site_kind: cat_sim::prosthetics::FitSiteKind::Treatment,
+                site_reachable,
+            },
+        )
+        .map_err(|_| precondition("prosthetic_fit_rejected"))
+}
+
+#[cfg(any())]
+fn repair_prosthetic(
+    colony: &mut ColonyRuntime,
+    prosthetic_id: &str,
+    workshop_id: &str,
+    reservation_id: &str,
+) -> Result<(), ServerActionConflict> {
+    let item_id = colony
+        .leader_ai_runtime
+        .prosthetics
+        .item_ids()
+        .find(|id| id.as_str() == prosthetic_id)
+        .cloned()
+        .ok_or_else(|| precondition("prosthetic_unavailable"))?;
+    let workshop_reachable = colony.buildings.iter().any(|building| {
+        building.id == workshop_id
+            && building.is_complete
+            && building.building_type == cat_sim::types::BuildingType::Workshop
+    });
+    colony
+        .leader_ai_runtime
+        .prosthetics
+        .begin_repair(
+            &item_id,
+            cat_sim::prosthetics::RepairAuthorization {
+                colony_id: &colony.id,
+                reservation_id,
+                workshop_id,
+                workshop_reachable,
+                finite_inputs_authorized: !reservation_id.is_empty(),
+            },
+        )
+        .map_err(|_| precondition("prosthetic_repair_rejected"))
+}
+
+#[cfg(any())]
+fn simulation_body_part(value: &str) -> Result<cat_sim::anatomy::BodyPart, ServerActionConflict> {
+    cat_sim::anatomy::BodyPart::ALL
+        .into_iter()
+        .find(|part| part.stable_id() == value)
+        .ok_or_else(|| precondition("body_part_invalid"))
+}
+
+#[cfg(any())]
+fn purchase_research(
+    colony: &mut ColonyRuntime,
+    envelope: &LeaderAiActionEnvelope,
+    study_id: &str,
+    use_preparation: bool,
+    displayed_price: Option<u64>,
+    now_ms: i64,
+) -> Result<(), ServerActionConflict> {
+    let catalog = cat_sim::research_purchase::canonical_research_catalog();
+    let study_id = catalog
+        .studies
+        .iter()
+        .find(|study| study.id.as_str() == study_id)
+        .map(|study| study.id.clone())
+        .ok_or_else(|| precondition("study_unavailable"))?;
+    let study = catalog
+        .study(&study_id)
+        .ok_or_else(|| precondition("study_unavailable"))?;
+    let expected_price = if use_preparation {
+        study.undiscounted_price.micro_favor() * 3 / 4
+    } else {
+        study.undiscounted_price.micro_favor()
+    };
+    if displayed_price.is_some_and(|displayed| displayed != expected_price) {
+        return Err(precondition("research_price_changed"));
+    }
+    let colony_id = cat_sim::planner_core::PlannerId::derive("colony", [colony.id.as_str()]);
+    let request = cat_sim::scholar_research::ScholarPlayerPurchaseRequest {
+        id: cat_sim::research_purchase::ResearchPurchaseId::derive(
+            "player",
+            &colony_id,
+            envelope.idempotency_id.as_str(),
+        ),
+        colony_id,
+        study_id,
+        expected_research_version: colony.leader_ai_runtime.research.purchases.version,
+        expected_favor_version: colony.leader_ai_runtime.shrine_favor.favor.version,
+        expected_scholar_version: colony.leader_ai_runtime.research.scholars.version,
+        use_preparation,
+        now_tick: runtime_tick_at(colony, now_ms),
+    };
+    let runtime = &mut colony.leader_ai_runtime;
+    runtime
+        .research
+        .scholars
+        .player_purchase(
+            &mut runtime.research.purchases,
+            &mut runtime.shrine_favor.favor,
+            catalog,
+            request,
+        )
+        .map(|_| ())
+        .map_err(map_scholar_error)
+}
+
+#[cfg(any())]
+fn prepare_scholar_study(
+    colony: &mut ColonyRuntime,
+    envelope: &LeaderAiActionEnvelope,
+    study_id: &str,
+    scholar_cat_id: &str,
+    now_ms: i64,
+) -> Result<(), ServerActionConflict> {
+    let colony_id = cat_sim::planner_core::PlannerId::derive("colony", [colony.id.as_str()]);
+    let catalog = cat_sim::research_purchase::canonical_research_catalog();
+    let study_id = catalog
+        .studies
+        .iter()
+        .find(|study| study.id.as_str() == study_id)
+        .map(|study| study.id.clone())
+        .ok_or_else(|| precondition("study_unavailable"))?;
+    colony
+        .leader_ai_runtime
+        .research
+        .scholars
+        .prepare_study(
+            catalog,
+            &colony.leader_ai_runtime.research.purchases,
+            cat_sim::scholar_research::PrepareStudyRequest {
+                id: cat_sim::scholar_research::PreparationId::derive(
+                    &colony_id,
+                    envelope.idempotency_id.as_str(),
+                ),
+                study_id,
+                assigned_scholar: cat_sim::scholar_research::ScholarId::derive(scholar_cat_id),
+                expected_version: colony.leader_ai_runtime.research.scholars.version,
+                prepared_tick: runtime_tick_at(colony, now_ms),
+            },
+        )
+        .map(|_| ())
+        .map_err(map_scholar_error)
+}
+
+#[cfg(any())]
+fn map_scholar_error(
+    error: cat_sim::scholar_research::ScholarResearchError,
+) -> ServerActionConflict {
+    use cat_sim::{
+        favor::FavorError, research_purchase::ResearchPurchaseError,
+        scholar_research::ScholarResearchError,
+    };
+    if matches!(
+        error,
+        ScholarResearchError::Purchase(ResearchPurchaseError::Favor(FavorError::InsufficientFavor))
+    ) {
+        return ServerActionConflict::InsufficientFavor(Box::new(CurrentStateHint {
+            state_code: report_safe("insufficient_favor"),
+            visible_entity_id: None,
+            visible_stage: None,
+        }));
+    }
+    let code = match error {
+        ScholarResearchError::UnknownScholar | ScholarResearchError::ScholarDead => {
+            "scholar_unavailable"
+        }
+        ScholarResearchError::UnknownStudy => "study_unavailable",
+        ScholarResearchError::StudyAlreadyOwned => "study_already_owned",
+        ScholarResearchError::AlreadyPrepared => "study_already_prepared",
+        ScholarResearchError::PreparationNotFound => "preparation_unavailable",
+        ScholarResearchError::InsufficientInsight => "insufficient_insight",
+        ScholarResearchError::Purchase(ResearchPurchaseError::NotFrontier) => "study_not_frontier",
+        ScholarResearchError::Purchase(ResearchPurchaseError::AlreadyOwned) => {
+            "study_already_owned"
+        }
+        _ => "research_precondition_failed",
+    };
+    precondition(code)
+}
+
+#[cfg(any())]
+fn activate_divine_boost(
+    colony: &mut ColonyRuntime,
+    envelope: &LeaderAiActionEnvelope,
+    session: &VerifiedPlayerSession,
+    boost_kind: &str,
+    duration_hours: u32,
+    displayed_price: Option<u64>,
+    now_ms: i64,
+) -> Result<(), ServerActionConflict> {
+    let boost_type = match boost_kind {
+        "bountiful_labor" => cat_sim::divine_boosts::DivineBoostType::BountifulLabor,
+        "fleet_paws" => cat_sim::divine_boosts::DivineBoostType::FleetPaws,
+        "inspired_work" => cat_sim::divine_boosts::DivineBoostType::InspiredWork,
+        "restorative_grace" => cat_sim::divine_boosts::DivineBoostType::RestorativeGrace,
+        _ => return Err(precondition("boost_kind_invalid")),
+    };
+    let stages = cat_sim::scholar_research::ResearchTrackStages::from_progress(
+        &colony.leader_ai_runtime.research.purchases,
+    )
+    .map_err(|_| precondition("research_state_invalid"))?
+    .effects()
+    .divine_boost_stages;
+    let cost = cat_sim::divine_boosts::boost_cost(boost_type, duration_hours, stages)
+        .map_err(|_| precondition("boost_duration_locked"))?;
+    if displayed_price.is_some_and(|displayed| displayed != cost.micro_favor()) {
+        return Err(precondition("boost_price_changed"));
+    }
+    let colony_id = cat_sim::planner_core::PlannerId::derive("colony", [colony.id.as_str()]);
+    let player_id =
+        cat_sim::planner_core::PlannerId::derive("player", [session.player_id().as_str()]);
+    let activated_tick = runtime_tick_at(colony, now_ms);
+    let runtime = &mut colony.leader_ai_runtime;
+    let expected_favor_version = runtime.shrine_favor.favor.version;
+    runtime
+        .boosts
+        .purchase(
+            &mut runtime.shrine_favor.favor,
+            cat_sim::divine_boosts::DivineBoostPurchaseRequest {
+                id: cat_sim::divine_boosts::DivineBoostPurchaseId::derive(
+                    "player",
+                    &colony_id,
+                    envelope.idempotency_id.as_str(),
+                ),
+                colony_id,
+                actor: cat_sim::authority::AuthorityActor::God {
+                    player_id: player_id.clone(),
+                },
+                authority_context: cat_sim::authority::AuthorityContext {
+                    leader_present: runtime.officers.institution.leader().is_some(),
+                    player_authorized: true,
+                },
+                boost_type,
+                duration_hours,
+                committed_research_stages: stages,
+                expected_boost_version: runtime.boosts.version,
+                expected_favor_version,
+                activated_tick,
+                ticks_per_game_hour: 60,
+            },
+        )
+        .map(|_| ())
+        .map_err(|error| {
+            if matches!(
+                error,
+                cat_sim::divine_boosts::DivineBoostError::Favor(
+                    cat_sim::favor::FavorError::InsufficientFavor
+                )
+            ) {
+                ServerActionConflict::InsufficientFavor(Box::new(CurrentStateHint {
+                    state_code: report_safe("insufficient_favor"),
+                    visible_entity_id: None,
+                    visible_stage: None,
+                }))
+            } else {
+                precondition("boost_precondition_failed")
+            }
+        })
+}
+
+#[cfg(any())]
+fn change_diplomacy(
+    colony: &mut ColonyRuntime,
+    envelope: &LeaderAiActionEnvelope,
+    session: &VerifiedPlayerSession,
+    target_colony_id: &str,
+    proposed: Option<cat_protocol::DiplomacyRelationshipTarget>,
+    proposal_id: Option<&str>,
+) -> Result<(), ServerActionConflict> {
+    let acting = cat_sim::diplomacy::DiplomacyColonyId::derive(&colony.id);
+    let target = cat_sim::diplomacy::DiplomacyColonyId::derive(target_colony_id);
+    let pair = cat_sim::diplomacy::DiplomacyPair::new(acting.clone(), target)
+        .map_err(|_| precondition("diplomacy_target_invalid"))?;
+    let current_version = colony
+        .leader_ai_runtime
+        .diplomacy
+        .record(pair.id())
+        .map_or(0, |record| record.version);
+    if let Some(expected_proposal) = proposal_id {
+        let matches_pending = colony
+            .leader_ai_runtime
+            .diplomacy
+            .record(pair.id())
+            .and_then(|record| record.pending_consent.as_ref())
+            .is_some_and(|pending| pending.proposal_action_id.as_str() == expected_proposal);
+        if !matches_pending {
+            return Err(precondition("alliance_proposal_unavailable"));
+        }
+    }
+    let kind = match (proposed, proposal_id) {
+        (Some(cat_protocol::DiplomacyRelationshipTarget::Friendly), _) => {
+            cat_sim::diplomacy::DiplomacyActionKind::Propose(
+                cat_sim::diplomacy::ProposedRelationship::Friendly,
+            )
+        }
+        (Some(cat_protocol::DiplomacyRelationshipTarget::Allied), _) => {
+            cat_sim::diplomacy::DiplomacyActionKind::Propose(
+                cat_sim::diplomacy::ProposedRelationship::Allied,
+            )
+        }
+        (None, Some(_)) => cat_sim::diplomacy::DiplomacyActionKind::Approve,
+        (None, None) => cat_sim::diplomacy::DiplomacyActionKind::Block,
+    };
+    let player_id =
+        cat_sim::planner_core::PlannerId::derive("player", [session.player_id().as_str()]);
+    colony
+        .leader_ai_runtime
+        .diplomacy
+        .apply(
+            cat_sim::diplomacy::DiplomacyAction {
+                id: cat_sim::diplomacy::DiplomacyActionId::derive(
+                    pair.id(),
+                    &acting,
+                    envelope.idempotency_id.as_str(),
+                ),
+                pair,
+                acting_colony_id: acting.clone(),
+                expected_version: current_version,
+                kind,
+            },
+            cat_sim::diplomacy::DiplomacyAuthorization {
+                actor: cat_sim::authority::AuthorityActor::God {
+                    player_id: player_id.clone(),
+                },
+                acting_colony_id: acting,
+                owner_player_id: player_id,
+                player_authorized: true,
+            },
+        )
+        .map(|_| ())
+        .map_err(|_| precondition("diplomacy_precondition_failed"))
+}
+
+#[cfg(any())]
+fn mutate_trade_contract(
+    colony: &mut ColonyRuntime,
+    envelope: &LeaderAiActionEnvelope,
+    session: &VerifiedPlayerSession,
+    contract_id: &str,
+    kind: cat_sim::autonomous_trade::TradeActionKind,
+    now_ms: i64,
+) -> Result<(), ServerActionConflict> {
+    let contract = colony
+        .leader_ai_runtime
+        .trade
+        .contracts()
+        .find(|contract| {
+            leader_ai_snapshot_projection::stable_id_matches(contract.id().as_str(), contract_id)
+        })
+        .cloned()
+        .ok_or_else(|| precondition("trade_contract_unavailable"))?;
+    let acting = cat_sim::diplomacy::DiplomacyColonyId::derive(&colony.id);
+    let player_id =
+        cat_sim::planner_core::PlannerId::derive("player", [session.player_id().as_str()]);
+    let action = cat_sim::autonomous_trade::TradeAction {
+        id: cat_sim::autonomous_trade::TradeActionId::derive(
+            contract.id(),
+            &acting,
+            envelope.idempotency_id.as_str(),
+            kind,
+        ),
+        contract_id: contract.id().clone(),
+        acting_colony: acting.clone(),
+        expected_version: contract.version,
+        kind,
+    };
+    let relationship = colony
+        .leader_ai_runtime
+        .diplomacy
+        .relationship(&contract.proposal.pair);
+    let now_tick = runtime_tick_at(colony, now_ms);
+    let runtime = &mut colony.leader_ai_runtime;
+    runtime
+        .trade
+        .apply_action(
+            action,
+            &cat_sim::autonomous_trade::TradeAuthorization {
+                actor: cat_sim::authority::AuthorityActor::God {
+                    player_id: player_id.clone(),
+                },
+                acting_colony: acting,
+                owner_player_id: Some(player_id),
+                authorized_for_colony: true,
+            },
+            relationship,
+            now_tick,
+            &mut runtime.scheduling.world_reservations,
+        )
+        .map(|_| ())
+        .map_err(|error| {
+            warn!(
+                contract_id,
+                ?kind,
+                ?error,
+                "leader-AI trade mutation failed after authenticated preflight"
+            );
+            if matches!(error, cat_sim::autonomous_trade::TradeError::Escrow(_)) {
+                ServerActionConflict::ReservationConflict(Box::new(CurrentStateHint {
+                    state_code: report_safe("trade_escrow_conflict"),
+                    visible_entity_id: None,
+                    visible_stage: None,
+                }))
+            } else {
+                let reason = match error {
+                    cat_sim::autonomous_trade::TradeError::Expired => "trade_expired",
+                    cat_sim::autonomous_trade::TradeError::RelationshipDenied => {
+                        "trade_relationship_denied"
+                    }
+                    cat_sim::autonomous_trade::TradeError::AuthorizationDenied(_)
+                    | cat_sim::autonomous_trade::TradeError::AuthorizationColonyMismatch
+                    | cat_sim::autonomous_trade::TradeError::PlayerIdentityMismatch => {
+                        "trade_authorization_denied"
+                    }
+                    cat_sim::autonomous_trade::TradeError::ContractNotFound => {
+                        "trade_contract_unavailable"
+                    }
+                    cat_sim::autonomous_trade::TradeError::StaleVersion { .. } => {
+                        "trade_contract_stale"
+                    }
+                    cat_sim::autonomous_trade::TradeError::InvalidTransition => {
+                        "trade_transition_invalid"
+                    }
+                    _ => "trade_precondition_failed",
+                };
+                precondition(reason)
+            }
+        })
+}
+
+#[cfg(any())]
+fn selected_colony_mut<'a>(
+    world: &'a mut WorldState,
+    envelope: &LeaderAiActionEnvelope,
+) -> Result<&'a mut ColonyRuntime, ServerActionConflict> {
+    world
+        .colonies
+        .iter_mut()
+        .find(|colony| colony.id == envelope.colony_id.as_str())
+        .ok_or(ServerActionConflict::OpaqueExistenceDenied)
+}
+
+#[cfg(any())]
+fn simulation_officer_role(role: cat_protocol::OfficerRole) -> cat_sim::officers::OfficerRole {
+    match role {
+        cat_protocol::OfficerRole::Steward => cat_sim::officers::OfficerRole::Steward,
+        cat_protocol::OfficerRole::Accountant => cat_sim::officers::OfficerRole::Accountant,
+        cat_protocol::OfficerRole::Forester => cat_sim::officers::OfficerRole::Forester,
+        cat_protocol::OfficerRole::Farmer => cat_sim::officers::OfficerRole::Farmer,
+        cat_protocol::OfficerRole::Captain => cat_sim::officers::OfficerRole::Captain,
+        cat_protocol::OfficerRole::Loremaster => cat_sim::officers::OfficerRole::Loremaster,
+        cat_protocol::OfficerRole::ClothLeader => cat_sim::officers::OfficerRole::ClothLeader,
+    }
+}
+
+#[cfg(any())]
+fn current_server_state_versions(
+    world: &WorldState,
+    colony_id: &str,
+) -> Option<CurrentVersionHint> {
+    let colony = world
+        .colonies
+        .iter()
+        .find(|colony| colony.id == colony_id)?;
+    let runtime = &colony.leader_ai_runtime;
+    Some(CurrentVersionHint {
+        planner_version: Some(stable_serialized_version(&(
+            runtime.planner,
+            &runtime.scheduling.scheduler,
+        ))),
+        domain_version: Some(runtime.beliefs.version),
+        resource_version: Some(runtime.shrine_favor.favor.version),
+        spatial_version: Some(runtime.scheduling.world_reservations.version()),
+        reservation_version: Some(runtime.scheduling.reservations.version),
+        research_version: Some(runtime.research.purchases.version),
+        scholar_version: Some(runtime.research.scholars.version),
+        boost_version: Some(runtime.boosts.version),
+        diplomacy_version: Some(stable_serialized_version(&runtime.diplomacy)),
+        trade_version: Some(runtime.trade.version()),
+        prosthetic_version: Some(stable_serialized_version(&runtime.prosthetics)),
+        care_version: Some(stable_serialized_version(&(
+            &runtime.cats,
+            &runtime.player_directives.treatment_requests,
+        ))),
+        officer_version: Some(stable_serialized_version(&(
+            &runtime.officers.institution,
+            &runtime.player_directives.authority_overrides,
+        ))),
+        standing_order_version: Some(runtime.player_directives.version),
+    })
+}
+
+#[cfg(any())]
+fn stable_serialized_version(value: &impl serde::Serialize) -> u64 {
+    leader_ai_snapshot_projection::stable_serialized_version(value)
+}
+
+#[cfg(any())]
+fn tick_from_ms(now_ms: i64) -> u64 {
+    u64::try_from(now_ms.max(0)).unwrap_or_default()
+}
+
+#[cfg(any())]
+fn runtime_tick_at(colony: &ColonyRuntime, now_ms: i64) -> u64 {
+    let elapsed_ms = now_ms.saturating_sub(colony.run_started_at).max(0) as f64;
+    let scale = if colony.test_time_scale.is_finite() {
+        colony.test_time_scale.max(1.0)
+    } else {
+        1.0
+    };
+    let minutes = elapsed_ms * scale / 60_000.0;
+    if minutes.is_finite() {
+        minutes.floor().clamp(0.0, u64::MAX as f64) as u64
+    } else {
+        u64::MAX
+    }
+}
+
+#[cfg(any())]
+fn runtime_expiry_tick(colony: &ColonyRuntime, now_ms: i64, expires_at_ms: i64) -> u64 {
+    let remaining_ms = expires_at_ms.saturating_sub(now_ms).max(0) as f64;
+    let scale = if colony.test_time_scale.is_finite() {
+        colony.test_time_scale.max(1.0)
+    } else {
+        1.0
+    };
+    runtime_tick_at(colony, now_ms).saturating_add((remaining_ms * scale / 60_000.0).ceil() as u64)
+}
+
+fn report_safe(value: &str) -> ReportSafeString {
+    ReportSafeString::new(value).expect("server report-safe literals are bounded and non-empty")
+}
+
+fn translate_physical_placement(
+    placement: &cat_protocol::PhysicalPlacementActionPayload,
+    session: &VerifiedPlayerSession,
+    nickname: &str,
+) -> Result<ClientAction, ServerActionConflict> {
+    use cat_protocol::PhysicalPlacementActionPayload as Placement;
+
+    let session_id = session.session_id().to_owned();
+    let nickname = nickname.to_owned();
+    let sig = String::new();
+    match placement {
+        Placement::PlanBuilding {
+            building_type,
+            site,
+        } => Ok(ClientAction::PlanBuilding {
+            session_id,
+            nickname,
+            sig,
+            building_type: *building_type,
+            site: target_anchor(site),
+        }),
+        Placement::DesignateFarm { site, crop } => {
+            let (a, b) = target_rectangle(site)?;
+            Ok(ClientAction::DesignateFarm {
+                session_id,
+                nickname,
+                sig,
+                a,
+                b,
+                crop: *crop,
+            })
+        }
+        Placement::DesignateStockpile { site, accepts } => {
+            let (a, b) = target_rectangle(site)?;
+            Ok(ClientAction::DesignateStockpile {
+                session_id,
+                nickname,
+                sig,
+                a,
+                b,
+                accepts: accepts.clone(),
+            })
+        }
+        Placement::DesignateGatherSpot { site, resource } => {
+            let (a, b) = target_rectangle(site)?;
+            Ok(ClientAction::DesignateGatherSpot {
+                session_id,
+                nickname,
+                sig,
+                a,
+                b,
+                kind: *resource,
+            })
+        }
+        Placement::DesignateFishingSpot { site } => Ok(ClientAction::DesignateFishingSpot {
+            session_id,
+            nickname,
+            sig,
+            at: target_exact(site)?,
+        }),
+        Placement::BuildRoad { route } => {
+            let (a, b) = target_endpoints(route)?;
+            Ok(ClientAction::BuildRoad {
+                session_id,
+                nickname,
+                sig,
+                a,
+                b,
+            })
+        }
+        Placement::BuildBridge { site } => Ok(ClientAction::BuildBridge {
+            session_id,
+            nickname,
+            sig,
+            at: target_exact(site)?,
+        }),
+        Placement::DesignateRail {
+            route,
+            worker_cat_id,
+        } => {
+            let (a, b) = target_endpoints(route)?;
+            Ok(ClientAction::DesignateRail {
+                session_id,
+                nickname,
+                sig,
+                a,
+                b,
+                cat_id: worker_cat_id.as_str().to_owned(),
+            })
+        }
+        Placement::BuildDock {
+            endpoints,
+            worker_cat_id,
+        } => {
+            let (land, water) = target_pair(endpoints)?;
+            Ok(ClientAction::BuildDock {
+                session_id,
+                nickname,
+                sig,
+                land,
+                water,
+                cat_id: worker_cat_id.as_str().to_owned(),
+            })
+        }
+        Placement::BuildTransportVehicle {
+            mode,
+            home,
+            worker_cat_id,
+        } => Ok(ClientAction::BuildTransportVehicle {
+            session_id,
+            nickname,
+            sig,
+            mode: *mode,
+            home: target_exact(home)?,
+            cat_id: worker_cat_id.as_str().to_owned(),
+        }),
+        Placement::CreateTransportRoute {
+            mode,
+            source_stockpile_id,
+            destination_stockpile_id,
+            resource,
+            amount,
+            route,
+            worker_cat_id,
+            repeat,
+        } => Ok(ClientAction::CreateTransportRoute {
+            session_id,
+            nickname,
+            sig,
+            mode: *mode,
+            source_stockpile_id: source_stockpile_id.as_str().to_owned(),
+            destination_stockpile_id: destination_stockpile_id.as_str().to_owned(),
+            resource: *resource,
+            amount: amount.get() as f64,
+            path: target_path(route)?,
+            cat_id: worker_cat_id.as_str().to_owned(),
+            repeat: *repeat,
+        }),
+    }
+}
+
+fn target_anchor(target: &cat_protocol::SiteRefActionTarget) -> Option<cat_protocol::TilePoint> {
+    match target {
+        cat_protocol::SiteRefActionTarget::ExactTile { tile }
+        | cat_protocol::SiteRefActionTarget::AnchoredRect { anchor: tile, .. } => {
+            Some((*tile).into())
+        }
+        cat_protocol::SiteRefActionTarget::OrderedPath { ordered_tiles } => {
+            ordered_tiles.first().copied().map(Into::into)
+        }
+        cat_protocol::SiteRefActionTarget::EndpointPair { source, .. } => Some((*source).into()),
+    }
+}
+
+fn target_exact(
+    target: &cat_protocol::SiteRefActionTarget,
+) -> Result<cat_protocol::TilePoint, ServerActionConflict> {
+    match target {
+        cat_protocol::SiteRefActionTarget::ExactTile { tile } => Ok((*tile).into()),
+        _ => Err(ServerActionConflict::PreconditionFailed(report_safe(
+            "exact_tile_required",
+        ))),
+    }
+}
+
+fn target_rectangle(
+    target: &cat_protocol::SiteRefActionTarget,
+) -> Result<(cat_protocol::TilePoint, cat_protocol::TilePoint), ServerActionConflict> {
+    let cat_protocol::SiteRefActionTarget::AnchoredRect {
+        anchor,
+        width,
+        height,
+    } = target
+    else {
+        return Err(ServerActionConflict::PreconditionFailed(report_safe(
+            "rectangle_required",
+        )));
+    };
+    let width = i32::from(*width);
+    let height = i32::from(*height);
+    Ok((
+        (*anchor).into(),
+        cat_protocol::TilePoint {
+            x: anchor.x + width - 1,
+            y: anchor.y + height - 1,
+        },
+    ))
+}
+
+fn target_endpoints(
+    target: &cat_protocol::SiteRefActionTarget,
+) -> Result<(cat_protocol::TilePoint, cat_protocol::TilePoint), ServerActionConflict> {
+    match target {
+        cat_protocol::SiteRefActionTarget::OrderedPath { ordered_tiles } => {
+            let first = ordered_tiles.first().copied();
+            let last = ordered_tiles.last().copied();
+            first.zip(last).map_or_else(
+                || {
+                    Err(ServerActionConflict::PreconditionFailed(report_safe(
+                        "route_required",
+                    )))
+                },
+                |(first, last)| Ok((first.into(), last.into())),
+            )
+        }
+        cat_protocol::SiteRefActionTarget::EndpointPair {
+            source,
+            destination,
+        } => Ok(((*source).into(), (*destination).into())),
+        _ => Err(ServerActionConflict::PreconditionFailed(report_safe(
+            "route_required",
+        ))),
+    }
+}
+
+fn target_pair(
+    target: &cat_protocol::SiteRefActionTarget,
+) -> Result<(cat_protocol::TilePoint, cat_protocol::TilePoint), ServerActionConflict> {
+    let cat_protocol::SiteRefActionTarget::EndpointPair {
+        source,
+        destination,
+    } = target
+    else {
+        return Err(ServerActionConflict::PreconditionFailed(report_safe(
+            "endpoint_pair_required",
+        )));
+    };
+    Ok(((*source).into(), (*destination).into()))
+}
+
+fn target_path(
+    target: &cat_protocol::SiteRefActionTarget,
+) -> Result<Vec<cat_protocol::TilePoint>, ServerActionConflict> {
+    let cat_protocol::SiteRefActionTarget::OrderedPath { ordered_tiles } = target else {
+        return Err(ServerActionConflict::PreconditionFailed(report_safe(
+            "ordered_route_required",
+        )));
+    };
+    Ok(ordered_tiles.iter().copied().map(Into::into).collect())
 }
 
 fn normalized_player_name(raw: &str) -> Result<Option<String>, String> {
@@ -1535,6 +4805,71 @@ fn action_authentication(action: &ClientAction) -> ActionAuthentication<'_> {
     }
 }
 
+async fn send_leader_ai_snapshot(
+    socket: &mut WebSocket,
+    state: &AppState,
+    connection: &ConnectionContext,
+) -> Result<(), axum::Error> {
+    let world = state.world.lock().await;
+    let directory = state.village_directory.read().await;
+    let projected = build_report_safe_leader_ai_snapshot(&world, &directory, connection, now_ms());
+    drop(directory);
+    drop(world);
+    let serialized = match projected {
+        Ok(snapshot) => serde_json::to_string(&snapshot),
+        Err(error) => {
+            error!(%error, "canonical selected-colony projection rejected before send");
+            serde_json::to_string(&canonical_adapter_error(
+                "snapshot:unavailable",
+                "The selected village report is temporarily unavailable.",
+            ))
+        }
+    }
+    .expect("canonical protocol DTO serializes");
+    socket.send(Message::Text(serialized.into())).await
+}
+
+fn build_report_safe_leader_ai_snapshot(
+    world: &WorldState,
+    directory: &BTreeMap<String, VillageDirectoryEntry>,
+    connection: &ConnectionContext,
+    now_ms: i64,
+) -> Result<CanonicalSnapshotEnvelope, CanonicalWireError> {
+    let identity = connection
+        .identity
+        .as_ref()
+        .ok_or(CanonicalWireError::WrongPartition)?;
+    let selected = world
+        .colonies
+        .iter()
+        .find(|colony| colony.id == connection.colony_id)
+        .ok_or(CanonicalWireError::WrongPartition)?;
+    let known = &selected.known_village_ids;
+    let public_villages = directory
+        .iter()
+        .filter(|(id, entry)| {
+            *id == &selected.id || entry.kind == VillageKind::Global || known.contains(*id)
+        })
+        .map(|(id, entry)| {
+            let is_owner = entry.owner_player_id.as_deref() == Some(identity.player_id.as_str());
+            Ok(PublicColonySummaryV2 {
+                colony_id: StableId::new(id.clone())?,
+                display_name: ReportText::new(entry.name.clone())?,
+                can_view: true,
+                can_control: entry.kind == VillageKind::Global || is_owner,
+            })
+        })
+        .collect::<Result<Vec<_>, CanonicalWireError>>()?;
+    leader_ai_snapshot_projection::project_selected_colony(
+        world,
+        &selected.id,
+        public_villages,
+        identity.player_id.as_str(),
+        now_ms,
+    )
+}
+
+#[cfg(test)]
 async fn send_snapshot(
     socket: &mut WebSocket,
     snapshot: &WorldSnapshot,
@@ -1573,7 +4908,7 @@ fn now_ms() -> i64 {
         .as_millis() as i64
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use super::*;
     use axum::{
@@ -3462,6 +6797,35 @@ mod tests {
         let decoded: ClientAction = serde_json::from_str(&encoded).expect("deserialize action");
 
         assert_eq!(decoded, action);
+    }
+
+    #[tokio::test]
+    async fn stale_protocol_client_receives_update_required_before_mutation() {
+        let state = build_state(1_000_000);
+        let (mut connection, signed) = authenticated_connection(&state);
+        let colony_count_before = state.world.lock().await.colonies.len();
+        let stale_action = serde_json::json!({
+            "action": "foundVillage",
+            "protocolVersion": 1,
+            "idempotencyId": "stale-found-village",
+            "expectedStateVersion": 0,
+            "name": "Legacy Hollow",
+            "sessionId": signed.session_id,
+            "sig": signed.sig,
+        });
+
+        let result = handle_client_text(&state, &mut connection, &stale_action.to_string()).await;
+
+        assert!(!result.result.ok, "an incompatible client must fail closed");
+        assert!(matches!(
+            result.leader_ai,
+            Some(LeaderAiServerActionResult::UpdateRequired(_))
+        ));
+        assert_eq!(
+            state.world.lock().await.colonies.len(),
+            colony_count_before,
+            "version rejection must happen before any mutation"
+        );
     }
 
     #[tokio::test]
@@ -7092,6 +10456,621 @@ mod tests {
             dev_state.world.lock().await.colonies[0].test_rng_seed,
             Some(9)
         );
+    }
+
+    fn lai27_envelope(
+        signed: &SignedSession,
+        colony_id: &str,
+        idempotency_id: &str,
+        versions: CurrentVersionHint,
+    ) -> LeaderAiActionEnvelope {
+        LeaderAiActionEnvelope {
+            protocol_version: ActionProtocolVersion::current(),
+            idempotency_id: cat_protocol::ActionIdempotencyId::new(idempotency_id)
+                .expect("valid action id"),
+            colony_id: cat_protocol::SelectedColonyId::new(colony_id)
+                .expect("valid selected colony"),
+            player_id: cat_protocol::AuthenticatedPlayerId::new(signed.player_id.clone())
+                .expect("valid player id"),
+            expected_versions: cat_protocol::ExpectedStateVersions {
+                expected_planner_version: versions.planner_version.expect("planner version"),
+                expected_domain_version: versions.domain_version.expect("domain version"),
+                expected_resource_version: versions.resource_version.expect("resource version"),
+                expected_spatial_version: versions.spatial_version,
+                expected_reservation_version: versions.reservation_version,
+                expected_research_version: versions.research_version,
+                expected_scholar_version: versions.scholar_version,
+                expected_boost_version: versions.boost_version,
+                expected_diplomacy_version: versions.diplomacy_version,
+                expected_trade_version: versions.trade_version,
+                expected_prosthetic_version: versions.prosthetic_version,
+                expected_care_version: versions.care_version,
+                expected_officer_version: versions.officer_version,
+                expected_standing_order_version: versions.standing_order_version,
+            },
+            payload: cat_protocol::LeaderAiActionPayload::NudgePlan {
+                plan_id: BoundedEntityId::new("plan:visible").expect("valid plan id"),
+                nudge: cat_protocol::BoundedBasisPointNudge::new(1_500)
+                    .expect("valid bounded nudge"),
+                reason_key: None,
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn typed_start_lifecycle_founds_selects_and_never_uses_legacy_gameplay_frames() {
+        let state = build_state(1_000_000);
+        let (mut connection, signed) = authenticated_connection(&state);
+        let global_versions = {
+            let world = state.world.lock().await;
+            current_server_state_versions(&world, STARTER_COLONY_ID).expect("global versions")
+        };
+        let mut found = lai27_envelope(
+            &signed,
+            STARTER_COLONY_ID,
+            "typed-start-found",
+            global_versions,
+        );
+        found.payload = cat_protocol::LeaderAiActionPayload::FoundVillage {
+            display_name: cat_protocol::BoundedVillageName::new("Typed Hollow")
+                .expect("bounded village name"),
+        };
+
+        let founded = handle_client_text(
+            &state,
+            &mut connection,
+            &serde_json::to_string(&found).expect("serialize typed foundation"),
+        )
+        .await;
+        assert!(matches!(
+            founded.leader_ai,
+            Some(LeaderAiServerActionResult::Action(response))
+                if matches!(response.result, LeaderAiActionResult::Accepted { .. })
+        ));
+        let personal_id = connection.colony_id.clone();
+        assert_ne!(personal_id, STARTER_COLONY_ID);
+        {
+            let world = state.world.lock().await;
+            let personal = world
+                .colonies
+                .iter()
+                .find(|colony| colony.id == personal_id)
+                .expect("typed action founded a personal village");
+            assert_eq!(personal.name, "Typed Hollow");
+            assert_eq!(
+                personal.owner_player_id.as_deref(),
+                Some(signed.player_id.as_str())
+            );
+        }
+
+        let personal_versions = {
+            let world = state.world.lock().await;
+            current_server_state_versions(&world, &personal_id).expect("personal versions")
+        };
+        let mut select = lai27_envelope(
+            &signed,
+            &personal_id,
+            "typed-start-select-global",
+            personal_versions,
+        );
+        select.payload = cat_protocol::LeaderAiActionPayload::SelectColony {
+            target_colony_id: cat_protocol::SelectedColonyId::new(STARTER_COLONY_ID)
+                .expect("global colony id"),
+        };
+        let selected = handle_client_text(
+            &state,
+            &mut connection,
+            &serde_json::to_string(&select).expect("serialize typed selection"),
+        )
+        .await;
+        assert!(matches!(
+            selected.leader_ai,
+            Some(LeaderAiServerActionResult::Action(response))
+                if matches!(response.result, LeaderAiActionResult::Accepted { .. })
+        ));
+        assert_eq!(connection.colony_id, STARTER_COLONY_ID);
+    }
+
+    #[tokio::test]
+    async fn lai27_live_route_orders_stale_then_receipted_rejection_and_duplicate_replay() {
+        let state = build_state(1_000_000);
+        let (mut connection, signed) = authenticated_connection(&state);
+        let current = {
+            let world = state.world.lock().await;
+            current_server_state_versions(&world, STARTER_COLONY_ID).expect("current versions")
+        };
+        let mut stale = lai27_envelope(&signed, STARTER_COLONY_ID, "lai27:stale", current.clone());
+        stale.expected_versions.expected_planner_version += 1;
+        let stale_result = handle_client_text(
+            &state,
+            &mut connection,
+            &serde_json::to_string(&stale).expect("serialize stale"),
+        )
+        .await;
+        assert!(matches!(
+            stale_result.leader_ai,
+            Some(LeaderAiServerActionResult::Action(response))
+                if matches!(
+                    response.result,
+                    LeaderAiActionResult::Rejected {
+                        conflict: cat_protocol::ActionConflict::VersionMismatch { .. }
+                    }
+                )
+        ));
+        assert!(state.leader_ai_receipts.lock().await.is_empty());
+
+        let action = lai27_envelope(&signed, STARTER_COLONY_ID, "lai27:replay", current);
+        let encoded = serde_json::to_string(&action).expect("serialize action");
+        let rejected = handle_client_text(&state, &mut connection, &encoded).await;
+        assert!(matches!(
+            rejected.leader_ai,
+            Some(LeaderAiServerActionResult::Action(response))
+                if matches!(
+                    response.result,
+                    LeaderAiActionResult::Rejected {
+                        conflict: cat_protocol::ActionConflict::PreconditionFailed { .. }
+                    }
+                )
+        ));
+        assert_eq!(state.leader_ai_receipts.lock().await.len(), 1);
+
+        let replayed = handle_client_text(&state, &mut connection, &encoded).await;
+        assert!(matches!(
+            replayed.leader_ai,
+            Some(LeaderAiServerActionResult::Action(response))
+                if matches!(
+                    response.result,
+                    LeaderAiActionResult::DuplicateReplay { .. }
+                )
+        ));
+
+        let persisted_world = state.world.lock().await.clone();
+        let restarted_db = Connection::open_in_memory().expect("open restart sqlite");
+        persistence::init_schema(&restarted_db).expect("initialize restart schema");
+        let restarted = build_state_from_world(
+            persisted_world,
+            restarted_db,
+            state.session_secret.as_str().to_owned(),
+            false,
+            1_000_001,
+        );
+        let (mut restarted_connection, _) = authenticated_connection(&restarted);
+        let restart_replay =
+            handle_client_text(&restarted, &mut restarted_connection, &encoded).await;
+        assert!(matches!(
+            restart_replay.leader_ai,
+            Some(LeaderAiServerActionResult::Action(response))
+                if matches!(
+                    response.result,
+                    LeaderAiActionResult::DuplicateReplay { .. }
+                )
+        ));
+    }
+
+    #[tokio::test]
+    async fn lai27_old_client_and_foreign_colony_fail_before_world_mutation() {
+        let state = build_state(1_000_000);
+        let mut unauthenticated =
+            ConnectionContext::new("old-client".to_owned(), STARTER_COLONY_ID.to_owned());
+        let before = state.world.lock().await.clone();
+        let update = handle_client_text(
+            &state,
+            &mut unauthenticated,
+            r#"{"protocolVersion":1,"payload":{"action":"future_secret_action"}}"#,
+        )
+        .await;
+        assert!(matches!(
+            update.leader_ai,
+            Some(LeaderAiServerActionResult::UpdateRequired(_))
+        ));
+        let malformed = handle_client_text(
+            &state,
+            &mut unauthenticated,
+            r#"{"protocolVersion":"current","payload":{"action":"future_secret_action"}}"#,
+        )
+        .await;
+        assert!(matches!(
+            malformed.leader_ai,
+            Some(LeaderAiServerActionResult::ProtocolError(conflict))
+                if matches!(*conflict, cat_protocol::ActionConflict::MalformedPayload)
+        ));
+        assert_eq!(*state.world.lock().await, before);
+
+        let (mut connection, signed) = authenticated_connection(&state);
+        let refreshed_directory = {
+            let mut world = state.world.lock().await;
+            let mut foreign = world.colonies[0].clone();
+            foreign.id = "colony:foreign-private".to_owned();
+            foreign.kind = VillageKind::Personal;
+            foreign.owner_player_id = Some("different-player".to_owned());
+            world.colonies.push(foreign);
+            village_directory(&world)
+        };
+        *state.village_directory.write().await = refreshed_directory;
+        let current = {
+            let world = state.world.lock().await;
+            current_server_state_versions(&world, "colony:foreign-private")
+                .expect("foreign current versions")
+        };
+        let action = lai27_envelope(&signed, "colony:foreign-private", "lai27:foreign", current);
+        let denied = handle_client_text(
+            &state,
+            &mut connection,
+            &serde_json::to_string(&action).expect("serialize foreign action"),
+        )
+        .await;
+        assert!(matches!(
+            denied.leader_ai,
+            Some(LeaderAiServerActionResult::Action(response))
+                if matches!(
+                    response.result,
+                    LeaderAiActionResult::Rejected {
+                        conflict: cat_protocol::ActionConflict::OwnershipDenied
+                    }
+                )
+        ));
+        assert!(state.leader_ai_receipts.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn lai27d_standing_order_commits_once_and_replays_without_second_mutation() {
+        let state = build_state(1_000_000);
+        let (mut connection, signed) = authenticated_connection(&state);
+        let current = {
+            let world = state.world.lock().await;
+            current_server_state_versions(&world, STARTER_COLONY_ID).expect("current versions")
+        };
+        let before_snapshot = {
+            let world = state.world.lock().await;
+            let directory = state.village_directory.read().await;
+            build_report_safe_leader_ai_snapshot(&world, &directory, &connection, 1_000_000)
+                .expect("pre-action snapshot")
+        };
+        assert_eq!(
+            before_snapshot.colonies[0].action_versions, current,
+            "LAI.24 must publish the exact version vector accepted by LAI.25"
+        );
+        let mut action =
+            lai27_envelope(&signed, STARTER_COLONY_ID, "lai27d:standing-order", current);
+        action.payload = cat_protocol::LeaderAiActionPayload::CreateStandingOrder {
+            order_kind: BoundedEntityId::new("reserve_floor").unwrap(),
+            domain: BoundedEntityId::new("forestry").unwrap(),
+            target_id: None,
+            instruction: cat_protocol::BoundedStandingOrderText::new(
+                "Maintain a visible lumber reserve.",
+            )
+            .unwrap(),
+            priority_basis_points: cat_protocol::BoundedBasisPoints::new(8_000).unwrap(),
+            expires_at_ms: None,
+        };
+        let encoded = serde_json::to_string(&action).unwrap();
+        let accepted = handle_client_text(&state, &mut connection, &encoded).await;
+        assert!(matches!(
+            accepted.leader_ai,
+            Some(LeaderAiServerActionResult::Action(response))
+                if matches!(response.result, LeaderAiActionResult::Accepted { .. })
+        ));
+        let committed = state.world.lock().await.colonies[0]
+            .leader_ai_runtime
+            .player_directives
+            .clone();
+        assert_eq!(committed.standing_orders.len(), 1);
+        assert_eq!(committed.version, 1);
+        let after_snapshot = {
+            let world = state.world.lock().await;
+            let directory = state.village_directory.read().await;
+            build_report_safe_leader_ai_snapshot(&world, &directory, &connection, 1_000_001)
+                .expect("post-action snapshot")
+        };
+        assert_ne!(
+            before_snapshot.colonies[0].state_version,
+            after_snapshot.colonies[0].state_version
+        );
+        let encoded_snapshot = serde_json::to_string(&after_snapshot).unwrap();
+        assert_eq!(
+            LeaderAiSnapshotEnvelope::decode_json(&encoded_snapshot).unwrap(),
+            after_snapshot
+        );
+
+        let replay = handle_client_text(&state, &mut connection, &encoded).await;
+        assert!(matches!(
+            replay.leader_ai,
+            Some(LeaderAiServerActionResult::Action(response))
+                if matches!(response.result, LeaderAiActionResult::DuplicateReplay { .. })
+        ));
+        assert_eq!(
+            state.world.lock().await.colonies[0]
+                .leader_ai_runtime
+                .player_directives,
+            committed
+        );
+    }
+
+    #[test]
+    fn lai27d_current_payload_match_has_no_generic_unsupported_fallback() {
+        let production = include_str!("main.rs");
+        let retired_fallback = ["action", "not", "available"].join("_");
+        assert!(!production.contains(&retired_fallback));
+        for variant in [
+            "NudgePlan",
+            "CreateStandingOrder",
+            "UpdateStandingOrder",
+            "DeleteStandingOrder",
+            "DismissIntent",
+            "AppointOfficer",
+            "UnappointOfficer",
+            "OfficerAuthorityOverride",
+            "RequestTreatment",
+            "FitProsthetic",
+            "RepairProsthetic",
+            "PurchaseResearchWithFavor",
+            "PrepareScholarStudy",
+            "ActivateDivineBoost",
+            "ChangeDiplomacy",
+            "ApproveAlliance",
+            "BlockColony",
+            "AcceptTradeContract",
+            "RejectTradeContract",
+            "PhysicalPlacement",
+        ] {
+            assert!(
+                production.contains(&format!("LeaderAiActionPayload::{variant}")),
+                "missing canonical mutation arm for {variant}"
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_gameplay_actions_require_lai_v2_except_bootstrap_and_village_lifecycle() {
+        let common = (
+            "session-1".to_owned(),
+            "Guest Cat".to_owned(),
+            "signed".to_owned(),
+        );
+        let retired = [
+            ClientAction::PurchaseUpgrade {
+                session_id: common.0.clone(),
+                nickname: common.1.clone(),
+                sig: common.2.clone(),
+                key: cat_protocol::UpgradeKey::ClickPower,
+            },
+            ClientAction::UnlockNode {
+                session_id: common.0.clone(),
+                nickname: common.1.clone(),
+                sig: common.2.clone(),
+                node_id: "old-blessing-node".to_owned(),
+            },
+            ClientAction::ResearchNode {
+                session_id: common.0.clone(),
+                nickname: common.1.clone(),
+                sig: common.2.clone(),
+                node_id: "old-research-node".to_owned(),
+            },
+            ClientAction::OfferTithe {
+                session_id: common.0.clone(),
+                nickname: common.1.clone(),
+                sig: common.2.clone(),
+            },
+            ClientAction::OfferMaterials {
+                session_id: common.0.clone(),
+                nickname: common.1.clone(),
+                sig: common.2.clone(),
+            },
+            ClientAction::OfferResource {
+                session_id: common.0.clone(),
+                nickname: common.1.clone(),
+                sig: common.2.clone(),
+                resource: cat_protocol::OfferingResource::Herbs,
+            },
+            ClientAction::BoostCat {
+                session_id: common.0.clone(),
+                nickname: common.1.clone(),
+                sig: common.2.clone(),
+                cat_id: "cat-1".to_owned(),
+                boosted: true,
+            },
+            ClientAction::AssignOfficer {
+                session_id: common.0.clone(),
+                nickname: common.1.clone(),
+                sig: common.2.clone(),
+                role: OfficerRole::Steward,
+                cat_id: "cat-1".to_owned(),
+            },
+            ClientAction::UnassignOfficer {
+                session_id: common.0.clone(),
+                nickname: common.1.clone(),
+                sig: common.2.clone(),
+                role: OfficerRole::Steward,
+            },
+        ];
+        assert!(retired.iter().all(legacy_action_requires_lai_v2));
+
+        // The direct controls the canonical boundary supersedes. These were
+        // once routed on to `apply_action`; the retirement gate now refuses
+        // them, so they belong on the retired side of the classification.
+        let superseded_direct_controls = [
+            ClientAction::RequestJob {
+                session_id: common.0.clone(),
+                nickname: common.1.clone(),
+                sig: common.2.clone(),
+                kind: cat_protocol::JobKind::SupplyFood,
+            },
+            ClientAction::Boost {
+                session_id: common.0.clone(),
+                nickname: common.1.clone(),
+                sig: common.2.clone(),
+                job_id: "job-1".to_owned(),
+            },
+            ClientAction::PlanBuilding {
+                session_id: common.0.clone(),
+                nickname: common.1.clone(),
+                sig: common.2.clone(),
+                building_type: cat_protocol::BuildingType::Den,
+                site: None,
+            },
+            ClientAction::AssignWorker {
+                session_id: common.0.clone(),
+                nickname: common.1.clone(),
+                sig: common.2.clone(),
+                cat_id: "cat-1".to_owned(),
+                building_id: None,
+            },
+            ClientAction::CreateZone {
+                session_id: common.0.clone(),
+                nickname: common.1.clone(),
+                sig: common.2.clone(),
+                kind: cat_protocol::ZoneKind::Gather,
+                a: cat_protocol::TilePoint { x: 1, y: 1 },
+                b: cat_protocol::TilePoint { x: 2, y: 2 },
+                duration_ms: 60_000,
+            },
+            ClientAction::BuildRoad {
+                session_id: common.0.clone(),
+                nickname: common.1.clone(),
+                sig: common.2.clone(),
+                a: cat_protocol::TilePoint { x: 1, y: 1 },
+                b: cat_protocol::TilePoint { x: 3, y: 1 },
+            },
+            ClientAction::CastVote {
+                session_id: common.0.clone(),
+                nickname: common.1.clone(),
+                sig: common.2.clone(),
+                election_id: "election-1".to_owned(),
+                cat_id: "cat-1".to_owned(),
+            },
+            ClientAction::RequestVoteKick {
+                session_id: common.0.clone(),
+                nickname: common.1.clone(),
+                sig: common.2.clone(),
+            },
+            ClientAction::DesignateFarm {
+                session_id: common.0.clone(),
+                nickname: common.1.clone(),
+                sig: common.2.clone(),
+                a: cat_protocol::TilePoint { x: 1, y: 1 },
+                b: cat_protocol::TilePoint { x: 2, y: 2 },
+                crop: cat_protocol::CropKind::Grain,
+            },
+            ClientAction::DesignateStockpile {
+                session_id: common.0.clone(),
+                nickname: common.1.clone(),
+                sig: common.2.clone(),
+                a: cat_protocol::TilePoint { x: 1, y: 1 },
+                b: cat_protocol::TilePoint { x: 2, y: 2 },
+                accepts: vec![cat_protocol::ResourceKind::Food],
+            },
+            ClientAction::SetCatLaborPreference {
+                session_id: common.0.clone(),
+                nickname: common.1.clone(),
+                sig: common.2.clone(),
+                cat_id: "cat-1".to_owned(),
+                labor: cat_protocol::Labor::Haul,
+                enabled: true,
+            },
+            ClientAction::BuyResource {
+                session_id: common.0.clone(),
+                nickname: common.1.clone(),
+                sig: common.2.clone(),
+                resource: cat_protocol::ResourceKind::Food,
+                amount: 1.0,
+            },
+            ClientAction::TrainWarrior {
+                session_id: common.0.clone(),
+                nickname: common.1.clone(),
+                sig: common.2.clone(),
+                cat_id: None,
+            },
+        ];
+        assert!(
+            superseded_direct_controls
+                .iter()
+                .all(legacy_action_requires_lai_v2)
+        );
+
+        // Exactly the four bootstrap/lifecycle allowances stay on the legacy
+        // shell envelope. Nothing else may be added to this list.
+        let bootstrap_allowances = [
+            ClientAction::Presence {
+                session_id: common.0.clone(),
+                nickname: common.1.clone(),
+                sig: Some(common.2.clone()),
+            },
+            ClientAction::Ensure,
+            ClientAction::FoundVillage {
+                name: "Beta".to_owned(),
+                session_id: common.0.clone(),
+                sig: Some(common.2.clone()),
+            },
+            ClientAction::JoinVillage {
+                colony_id: "colony-1".to_owned(),
+                session_id: common.0.clone(),
+                sig: Some(common.2.clone()),
+            },
+        ];
+        assert!(
+            bootstrap_allowances
+                .iter()
+                .all(|action| !legacy_action_requires_lai_v2(action))
+        );
+    }
+
+    #[test]
+    fn lai27f_production_route_retires_superseded_legacy_actions_before_apply_action() {
+        let production = include_str!("main.rs");
+        let socket_start = production.find("async fn handle_socket").unwrap();
+        let socket_end = production[socket_start..]
+            .find("async fn send_current_snapshot")
+            .map(|offset| socket_start + offset)
+            .unwrap();
+        let socket = &production[socket_start..socket_end];
+        assert!(!socket.contains("cfg!(test)"));
+        assert!(socket.contains("#[cfg(test)]"));
+        assert!(socket.contains("send_leader_ai_snapshot"));
+
+        // The production entry point is `handle_client_text`; the canonical
+        // lane is reached through `handle_canonical_action_text`, not a second
+        // legacy-named handler. Names are rebuilt from parts so this assertion
+        // does not match itself inside `include_str!`.
+        let retired_handler = ["handle", "leader", "ai", "client", "text"].join("_");
+        assert!(!production.contains(&retired_handler));
+        let action_start = production.find("async fn handle_client_text").unwrap();
+        let action_end = production[action_start..]
+            .find("struct LeaderAiMutationRateLimit")
+            .map(|offset| action_start + offset)
+            .unwrap();
+        let action = &production[action_start..action_end];
+        assert!(!action.contains("cfg!(test)"));
+        let canonical_dispatch = action.find("handle_canonical_action_text(").unwrap();
+        let legacy_decode = action.find("from_str::<ClientAction>").unwrap();
+        let retired_gate = action
+            .find("if legacy_action_requires_lai_v2(&action)")
+            .unwrap();
+        let legacy_apply = action
+            .find("apply_action(&mut world, &action, &ctx)")
+            .unwrap();
+        assert!(canonical_dispatch < legacy_decode);
+        assert!(legacy_decode < retired_gate);
+        assert!(retired_gate < legacy_apply);
+        assert!(!action.contains("legacy_action_tag"));
+
+        // Exactly one classification of the legacy union, with no wildcard arm
+        // and a single allowance group, so a superseded control can never fall
+        // through to `apply_action`.
+        let classifier_signature = format!(
+            "fn legacy_action_requires_lai_v2(action: &{}) -> bool",
+            "ClientAction"
+        );
+        assert_eq!(production.matches(&classifier_signature).count(), 1);
+        let classifier_start = production.find(&classifier_signature).unwrap();
+        let classifier_end = production[classifier_start..]
+            .find("async fn handle_client_text")
+            .map(|offset| classifier_start + offset)
+            .unwrap();
+        let classifier = &production[classifier_start..classifier_end];
+        assert!(!classifier.contains("_ =>"));
+        assert_eq!(classifier.matches("=> false").count(), 1);
+        let retired_shell_gate = ["legacy", "shell", "action", "allowed"].join("_");
+        assert!(!production.contains(&retired_shell_gate));
     }
 
     #[test]

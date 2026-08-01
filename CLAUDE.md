@@ -7,20 +7,37 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **Idle Cat Forest** — "an idle version of Dwarf Fortress, played by cats, in a forest." A
 top-down, single-level god-sim: a cat colony lives, works, breeds, ages, researches, and
 fights on its own, driven by an authoritative server that ticks the simulation once a second
-whether or not anyone is watching. Players are gods, not controllers — found villages, paint
-zones, boost jobs, assign leadership roles, vote, and spend a slow tech tree.
+whether or not anyone is watching. Players are gods, not routine controllers: broad nudges,
+God-lane research/preparation, temporary divine aid, one election backing block, personal stance,
+and authorized expulsion are allowed; exact work/sites/buildings/storage/food/officers remain AI-owned.
 
 Built as a Rust **Cargo workspace** under `crates/`:
 - **cat-sim** — pure, deterministic simulation core (no I/O). `world_tick()` is the single
-  source of truth, 53 ordered phases per colony per tick.
-- **cat-protocol** — `serde` wire DTOs (`WorldSnapshot`/`ColonySnapshot` + `ClientAction`)
-  shared by server and client.
+  source of truth; LAI.46/63 own the final integrated phase order per colony.
+- **cat-protocol** — `serde` wire DTOs: the wider-world snapshot plus the final report-safe,
+  authenticated, expected-versioned integrated snapshot/action surface.
 - **cat-server** — tokio + axum authoritative server: runs `world_tick` for every colony once
   a second, broadcasts snapshots over WebSocket, persists to SQLite (`rusqlite`).
 - **cat-client** — Bevy 0.19 renderer/UI (library, native + wasm-targetable), top-down.
 - **cat-desktop** / **cat-web** — thin native / wasm launcher binaries over `cat-client`.
 - **cat-dev** — `cargo dev`, a local launcher that builds + runs `cat-server` + `cat-desktop`
   together.
+
+### Leader-intelligence status
+
+The first leader planner is historical baseline. The active LAI.35–70 integration covers
+report-limited planning, exact spatial tasks, skills/families/governance, staged construction/
+storage, the Hole, Notes/Void two-lane research, divine policy, care, diplomacy/barter, fresh
+persistence, server routing, and the five-screen Bevy surface. Read
+`docs/leader-ai-overhaul/README.md` and its additive `BOARD.md` before changing them. Use
+`extending-the-system.md` for all current new-content/system recipes,
+`diagnostics-and-debugging.md` for bounded traces, and `browser-playtests/README.md` for the signed
+Portless/Playwright journey.
+
+LAI.34 is not final acceptance for the new plans. Shrine/Favor/Blessings, generic stored Food/Fish/
+Preserves, scholar Insight, coins, direct routine base-world controls, semantic gameplay migration,
+duplicate research/protocol/UI authorities, and the old navigation are deletion targets. Consult
+the board for exact per-card status; do not claim campaign/browser acceptance before LAI.69–70.
 
 **The platform rebuild, cutover, and maintained P12–P19 product contract are complete — this tree
 is now the Rust/Bevy game.** The game originally shipped
@@ -54,9 +71,9 @@ BEVY_ASSET_ROOT=$PWD CAT_SERVER_URL=ws://127.0.0.1:8787/ws cargo run -p cat-desk
 rm data/cat.db                # SQLite is recreated + migrated automatically on next server start
 
 # Testing
-cargo nextest run -p cat-sim       # 770+ pure unit/integration tests, no I/O (preferred runner)
-cargo nextest run --workspace      # every workspace crate, including client logic/UI tests
-cargo test -p cat-sim              # works too if cargo-nextest isn't installed
+cargo nextest run -p cat-sim <focused-filter>  # smallest relevant regression
+cargo nextest run --workspace --profile smoke  # maintained local cross-crate gate
+cargo test -p cat-sim <focused-filter>         # focused fallback
 
 # Quality (must be green before any commit, per AGENTS.md)
 cargo clippy --workspace --all-targets -- -D warnings
@@ -73,19 +90,16 @@ from this tree — it only ever drove the old web game, which now lives on branc
 ## Architecture
 
 ```
-cat-sim::world_tick()  ──every colony, every 1s──▶  cat-server (owns the only WorldState)
-        ▲                                                    │
-        │ apply_action()                                     │ build_snapshot()
-        │                                                     ▼
-cat-server  ◀── ClientAction (JSON over WS) ──  cat-client  ◀── WorldSnapshot (JSON over WS)
-                                                     │
-                                                     ▼
-                                          Bevy ECS: sprites, HUD, input
+cat-sim::world_tick() ─▶ WorldSnapshot + report-safe LAI.24 ─▶ cat-server ─▶ cat-client
+        ▲                                                        │
+        └──── pure mutation adapters ◀── authenticated/versioned LAI.25 action
 ```
 
-The server is the single source of truth. Clients hold no authoritative state — every frame
-they render whatever `WorldSnapshot` they last received, and a player action is only reflected
-once the server's next tick includes its effect. No client-side prediction.
+The server is the single source of truth. Clients hold no authoritative state: the wider world
+renders from `WorldSnapshot`, leader panels render from LAI.24, and an action is reflected only
+after authoritative mutation and snapshot publication. Legacy Presence bootstraps identity;
+authenticated non-overlapping base-world frames remain supported, while retired
+leader/progression frames are rejected. No client-side prediction.
 
 ### The tick
 
@@ -116,11 +130,11 @@ tests possible (same seed → byte-identical trajectory across two independent r
 | --- | --- |
 | Foundation | `rng`, `types`, `entities`, `cost_constants`, `needs_constants`, `test_acceleration` |
 | World generation | `noise`, `terrain_gen`, `world_gen`, `biomes`, `climate`, `village_sites` |
-| Cat AI | `pathfinding`, `movement`, `policy`, `tasks`, `cat_ai`, `leader_ai`, `leader_director`, `officers` |
+| Cat AI/planning | `pathfinding`, `movement`, `policy`, `tasks`, `cat_ai`, `planner_core`, `beliefs`, `intent_graph`, `leader_planner`, `officer_expertise`, `officer_requests`, `scheduler`, `workforce_matcher`; old `leader_ai`/`leader_director` are compatibility history |
 | Life sim | `needs`, `age`, `breeding`, `genetics`, `life_sim`, `survival` |
-| Economy | `idle_engine`, `idle_rules`, `production`, `processing`, `farming`, `productivity`, `smithy`, `station_recipes`, `storage`, `shrine`, `trips`, `transport`, `village_trade_routes`, `depletion`, `spoilage`, `housing`, `roads`, `village_layout`, `village_area`, `stockpiles`, `skills`, `labor_pressure`, `ledger` |
-| Military & governance | `threat`, `warriors`, `combat`, `elections`, `zones`, `upgrade_tree` |
-| Item economy | `items`, `recipes`, `trader`, `research_catalog`, `migration` |
+| Economy/village | `food_ecology`, `cookhouse`, `fishing`, `quality_lots`, `material_crafting`, `physical_storage`, `construction_stages`, `village_infrastructure`, plus integrated production/hauling adapters |
+| Military/family/governance | `hunting_lair`, threat/combat leaves, `cat_capabilities`, `family_specialization`, `family_housing`, `cat_governance`, officer leaves |
+| Hole/progression/divine/barter | `black_hole`, unified progression over research/scholar/boost leaves, `food_divine_policy`, `diplomacy`, `moneyless_barter`; `favor`/`shrine_offerings` are deletion targets |
 | Orchestration | `world_tick` (the tick loop), `actions` (pure `apply_action` + `build_snapshot`) |
 
 Each module's doc comment cites the original TypeScript file it was ported from (e.g.
@@ -130,19 +144,19 @@ curves, pathfinding cost model, world_tick phase list, per-phase P12–P19 gamep
 in `docs/migration/specs/` — read the relevant spec before touching a system, don't rely on
 memory of the old TS code.
 
-The research ledger is data-built rather than maintained as 487 handwritten Rust entries:
-`research_catalog_legacy.json` preserves the original studies and `research_catalog_tracks.json`
-defines named families and stages. `research_catalog.rs` expands both sources, validates unique
-IDs/dependencies/effect bindings, and exposes the one catalog used by simulation and snapshots.
+The canonical research graph derives its finite total from content, contains fourteen level-1–10
+tracks, repeatable level 11+, and real AND/convergence junctions. Ordinary scholar work creates
+Notes; Hole feeds create Void. The God lane queues physical work/preparation; the free Leader lane
+uses its rolling seven-day quota and normally avoids the funded God target.
 
-**Leader and officers.** The utility-AI director retains only the bounded founding safety floor
-for hunting, emergency water, and scouting. Steward, Accountant, Forester, Farmer, Captain,
-Loremaster, and Cloth Leader are live assignable roles with researched building gates; a vacant
-specialist office returns its domain to signed manual play. `docs/LEADER_AI_DESIGN.md` is historical
-design provenance. Current authority and verification live in
-[`docs/IMPLEMENTATION_AUDIT.md`](docs/IMPLEMENTATION_AUDIT.md).
+**Leader and officers.** The persistent founding Leader plans across all essential domains from
+beliefs and report-gated knowledge. Steward, Accountant, Forester, Farmer, Captain, Loremaster,
+and Cloth Leader own specialist reviews and structured requests; expertise changes cadence,
+candidate breadth, omission, and report detail. `docs/LEADER_AI_DESIGN.md` and the bounded utility
+director are historical provenance. Current authority and verification live in
+`docs/leader-ai-overhaul/`.
 
-### Maintained product status
+### Historical P12–P19 product status
 
 Do not maintain a second detailed backlog in this file. The evidence-backed status source is
 [`docs/IMPLEMENTATION_AUDIT.md`](docs/IMPLEMENTATION_AUDIT.md), and the concrete correction queue is
@@ -152,15 +166,16 @@ Do not maintain a second detailed backlog in this file. The evidence-backed stat
   shared terrain and physical trade, exact roads/rail/shipping, all 25 building compositions, and
   native/optimized-WASM Adventure UI campaigns are live. Twelve `Crews` studies add real concurrent
   station slots; thirteen others are completed-building-scoped services rather than fake slots.
-  Treat the linked evidence trackers—not older phase prose—as authoritative.
+  Treat this as the pre-LAI baseline. The overhaul board governs the current Plan 1+2
+  implementation and its still-open final gates.
 
 ### cat-protocol — the wire contract
 
-One dependency (`serde`). `WorldSnapshot` (top-level, `Vec<ColonySnapshot>` + world fields) /
-`ColonySnapshot` (one colony's full renderable state) / `ClientAction` (a large enum covering
-everything a player can do — found/join village, request job, boost, purchase upgrade, vote,
-zones, plan building, unlock node, assign worker/officer, train warrior, defend raid, build
-road, designate stockpile/gather spot, sell/buy goods, boost cat, test-acceleration controls).
+One dependency (`serde`). The wider world uses `WorldSnapshot`/`ColonySnapshot`. Leader
+intelligence uses report-safe LAI.24 snapshot envelopes and authenticated expected-versioned
+LAI.25 action envelopes with typed conflicts and idempotent outcomes. The broad legacy
+`ClientAction` enum remains for Presence, compatibility auditing, and pure adapters while old
+controls are migrated; it is not a supported second production action protocol.
 Field names are `camelCase` on the wire (matching the old TS API shape where it still matters).
 `WorldSnapshot.protocolVersion` is serialized first. Increment `PROTOCOL_VERSION` before any
 change that can make an older client reject a nested snapshot; the client then keeps its last
@@ -170,9 +185,9 @@ Wire collection counts/indices use fixed-width integers, not target-width `usize
 ### cat-server — the authoritative server
 
 `GET /health` liveness probe; `GET /ready` stateful readiness probe; `GET /ws` WebSocket upgrade
-(each connection reads `ClientAction`
-JSON frames, calls `apply_action` against the shared `Arc<Mutex<WorldState>>`, forwards the
-broadcast `WorldSnapshot` stream). A `tokio::spawn`ed loop schedules `world_tick` once per second
+(each connection performs header-first protocol checks, bootstraps Presence, routes LAI.25
+envelopes through ownership/version/idempotency guards, and forwards `WorldSnapshot` plus LAI.24).
+A `tokio::spawn`ed loop schedules `world_tick` once per second
 for the whole world (fixed `Duration::from_secs(1)` in `main.rs`). Simulation, snapshot building,
 and synchronous SQLite work run on Tokio's blocking pool. New sockets clone a
 startup-initialized last-completed snapshot; save ticks clone completed world state and release
@@ -199,9 +214,9 @@ terrain generated client-side from the shared `world_seed` (via `cat_sim::genera
 specialization/officer badge, carrying marker), label-free roofed homes and typed open stations,
 stockpiles/gather spots, crop stages, raiders, and zone overlays. The HUD covers resources,
 census, events, trade, officers, persistent village selection, and inspectors. A full-page
-  487-study ledger supports filter/search/pan/zoom and signed purchase of every affordable study.
-  All studies are live, all 108 recipes have physical descriptors, and every generated resource
-  payload has an authoritative consumer; no research card is disabled as `FUTURE`.
+  integrated client target is exactly Log/Stores/Village/Research/Council with six Council tabs.
+  Research presents the canonical graph, physical God queue/preparation, free Leader lane,
+  Notes/Void, permits, repeatables, and boosts. It never restores `research_ui.rs`.
 
 Art: curated pixel sprites under
 `public/images/game/{terrain,nature,buildings,interior,infra,props,farm,enemies}/` plus the
@@ -249,13 +264,14 @@ the corresponding struct field and read/write code).
   for ordinary cats and 288 for leaders/healers; archived 48/57.6-hour fixtures are history.
 - **`cat-protocol`**: serde round-trip tests (serialize → deserialize → equal).
 - **`cat-server`**: integration tests spin up the axum app in-process (no real socket needed)
-  and drive it through `ClientAction` JSON (e.g. founding a village, asserting the shared
-  snapshot updates).
+  and drive current LAI.25 envelopes through the signed router; compatibility tests separately
+  prove Presence bootstrap and old-client `UPDATE_REQUIRED` behavior.
 - **`cat-client`**: logic/UI-shape tests plus manual own-framebuffer verification (see above).
 - Any new simulation constant/limit needs a boundary test in the owning `cat-sim` module, same
   discipline the old TS project enforced.
 
-Quality gate before any commit (per `AGENTS.md`): `cargo nextest run -p <crate>`,
+Quality gate before any commit (per `AGENTS.md`): the smallest focused regression plus
+`cargo nextest run --workspace --profile smoke`,
 `cargo clippy -p <crate> --all-targets -- -D warnings`, `cargo fmt`.
 
 ## Git Hooks (lefthook)
@@ -306,9 +322,11 @@ The world ticks once a second (fixed; not currently configurable via env var).
   clean -p cat-sim` and retest.
 - Docs describing the old TypeScript/Next.js game (`docs/plan.md`, `docs/ROADMAP.md`,
   `docs/LEADER_AI_DESIGN.md`, `docs/TERRAIN_DESIGN.md`, `docs/ENGINE_PLATFORM.md`,
-  `docs/ENGINE_FRONTEND.md`, `docs/TASKS.md`, `docs/TESTING.md`, `docs/UI_CONCEPTS.md`) are
+  `docs/ENGINE_FRONTEND.md`, `docs/TASKS.md`, `docs/UI_CONCEPTS.md`) are
   marked superseded and kept only as design-history reference — they don't describe how to
   build, run, or test this project anymore.
+- `docs/TESTING.md` is maintained and authoritative for the Rust/Bevy local-smoke/remote-full
+  workflow.
 
 ## Key Documentation
 
@@ -320,6 +338,9 @@ The world ticks once a second (fixed; not currently configurable via env var).
 - `docs/HANDOFF.md` — migration status + hard-won Bevy/codex build lessons
 - `docs/IMPLEMENTATION_AUDIT.md` — authoritative shipped/follow-up status and verification matrix
 - `docs/FIX_LOG.md` — reproduced correction queue and evidence-backed verified fixes
+- `docs/leader-ai-overhaul/README.md` — current planner/progression design, implementation board,
+  extension recipes, diagnostics, and browser acceptance contracts
+- `docs/TESTING.md` — maintained Rust/Bevy and leader-AI test workflow
 - `docs/migration/BOARD.md` — phase-by-phase task board (P0–P9 tracked in detail; later phases
   tracked in `docs/migration/specs/` and the git log)
 - `docs/migration/specs/` — design specs for pathfinding, leader director, `world_tick`, and

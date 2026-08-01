@@ -329,11 +329,14 @@ pub const BIOME_PROPERTIES: [BiomeProperties; 11] = [
         biome_type: BiomeType::CaveEntrance,
         base_danger: 60.0,
         base_resources: BaseResources {
-            food: ResourceRange { min: 0, max: 0 },
+            // Cave mouths are the canonical hunting sources. The units model
+            // prey trails and dens around the entrance, not food lying on the
+            // ground; visible Hunt work must therefore pin this exact tile.
+            food: ResourceRange { min: 24, max: 48 },
             herbs: ResourceRange { min: 0, max: 0 },
             water: 0,
         },
-        max_resources: MaxResources { food: 0, herbs: 0 },
+        max_resources: MaxResources { food: 80, herbs: 0 },
         travel_speed: 1.0,
         name: "Cave Entrance",
     },

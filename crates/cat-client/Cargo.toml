@@ -7,10 +7,13 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+accesskit = "0.24.1"
 # Renderer/UI/windowing features common to native + wasm. Cargo unions these
 # with the target-specific bevy entries below, so native keeps x11/wayland/
 # multi_threaded and wasm adds the WebGL2 backend.
 bevy = { version = "0.19", default-features = false, features = ["bevy_asset", "bevy_core_pipeline", "bevy_render", "bevy_sprite", "bevy_text", "bevy_ui", "bevy_winit", "bevy_log", "default_font", "png", "bevy_sprite_render", "bevy_ui_render", "custom_cursor"] }
+bevy_a11y = "0.19.0"
+bevy_input_focus = "0.19.0"
 cat-protocol.workspace = true
 cat-sim.workspace = true
 ewebsock = "0.8.0"

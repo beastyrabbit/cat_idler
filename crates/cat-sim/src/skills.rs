@@ -120,13 +120,21 @@ impl Labor {
             BuildingType::Clothier | BuildingType::Tannery => Some(Self::Textile),
             BuildingType::Smithy | BuildingType::Smelter => Some(Self::Metalwork),
             BuildingType::ResearchHut | BuildingType::School => Some(Self::Research),
-            BuildingType::Den
+            // LAI.46 stations. Cookhouse work is food preparation; Fishing Hut
+            // staffing supports shoreline fishing. Neither maps onto a legacy
+            // scalar production labor, so both stay `None` here while the
+            // canonical LAI.46 skill catalog owns their real XP declarations.
+            BuildingType::Cookhouse
+            | BuildingType::FishingHut
+            | BuildingType::Den
             | BuildingType::FoodStorage
             | BuildingType::WaterBowl
             | BuildingType::Beds
             | BuildingType::HerbGarden
             | BuildingType::Nursery
             | BuildingType::ElderCorner
+            | BuildingType::FamilyHome
+            | BuildingType::ElderLodge
             | BuildingType::Walls
             | BuildingType::MouseFarm
             | BuildingType::Shrine

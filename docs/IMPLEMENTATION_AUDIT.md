@@ -1,6 +1,6 @@
 # Idle Cat Forest implementation audit and fix tracker
 
-Last updated: 2026-07-21
+Last updated: 2026-07-25
 
 Idle Cat Forest is a non-commercial game project; that status is established and not an open
 audit item.
@@ -10,6 +10,34 @@ It records only the current Rust/Bevy game's promises and gaps. Documents explic
 historical or superseded are reference material, not an implementation backlog.
 
 Status key: `open`, `in progress`, `verified`, `deferred`.
+
+## Current Plan 1+2 integration audit
+
+The authoritative design and additive evidence ledger are
+[`leader-ai-overhaul/README.md`](leader-ai-overhaul/README.md) and
+[`leader-ai-overhaul/BOARD.md`](leader-ai-overhaul/BOARD.md). The exact stored plans and complete
+P1/P2 registers govern the report-safe planner, skills/families/governance, physical tasks,
+construction/storage, Hole/Notes/Void research, care/divine policy, diplomacy/barter, fresh
+persistence, server routing, five-screen client, art, diagnostics, and deletion path.
+
+The LAI.34 result is **historical baseline, not final acceptance**. LAI.35–70 is in progress.
+Pure foundations and documentation may be `dev`; runtime/protocol/fresh-persistence/server/client/
+art/diagnostic/legacy-deletion cards remain open until their actual board evidence exists. No old
+campaign or browser artifact proves the new systems. The final serialized campaign, one-worker
+Playwright, and independent visible-browser matrix must be rerun after the integrated cutover.
+The detailed extension, implementation, diagnostics, and browser contracts are:
+
+- [`leader-ai-overhaul/extending-the-system.md`](leader-ai-overhaul/extending-the-system.md)
+- [`leader-ai-overhaul/content-authoring-guide.md`](leader-ai-overhaul/content-authoring-guide.md)
+- [`leader-ai-overhaul/integrated-implementation-map.md`](leader-ai-overhaul/integrated-implementation-map.md)
+- [`leader-ai-overhaul/hole-research-progression.md`](leader-ai-overhaul/hole-research-progression.md)
+- [`leader-ai-overhaul/diagnostics-and-debugging.md`](leader-ai-overhaul/diagnostics-and-debugging.md)
+- [`leader-ai-overhaul/browser-playtests/README.md`](leader-ai-overhaul/browser-playtests/README.md)
+
+The verification matrix below is preserved as the P12–P19/pre-integration baseline. Its references
+to Shrine, Favor, blessings, tithes, generic resources, coins, 487/531 studies,
+`global_upgrade_points`, direct actions, and compatibility migration are historical evidence and
+explicit deletion targets. They are not current promises or tests that can close LAI.35–70.
 
 ## Active fixes
 

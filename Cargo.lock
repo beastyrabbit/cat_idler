@@ -1956,7 +1956,10 @@ dependencies = [
 name = "cat-client"
 version = "0.1.0"
 dependencies = [
+ "accesskit",
  "bevy",
+ "bevy_a11y",
+ "bevy_input_focus",
  "cat-protocol",
  "cat-sim",
  "ewebsock",

@@ -588,12 +588,23 @@ fn hunt_destination(context: &JobDestinationContext<'_>) -> Option<WorldPos> {
         return Some(context.food_tiles[index]);
     }
 
-    let angle = context.roll * std::f64::consts::PI * 2.0;
-    let range = HUNT_RANGE_MIN + context.roll * (HUNT_RANGE_MAX - HUNT_RANGE_MIN);
-    Some(WorldPos {
-        x: (context.anchor.x + angle.cos() * range).round(),
-        y: (context.anchor.y + angle.sin() * range).round(),
-    })
+    // A production Hunt must name a revealed, reachable physical source. Keeping
+    // the objective absent prevents the UI and reservation system from displaying
+    // a fabricated task marker on an arbitrary radial tile.
+    #[cfg(not(test))]
+    return None;
+
+    // Preserve the archived TypeScript movement fixture only inside this module's
+    // parity tests. The authoritative LAI runtime never uses this radial fallback.
+    #[cfg(test)]
+    {
+        let angle = context.roll * std::f64::consts::PI * 2.0;
+        let range = HUNT_RANGE_MIN + context.roll * (HUNT_RANGE_MAX - HUNT_RANGE_MIN);
+        Some(WorldPos {
+            x: (context.anchor.x + angle.cos() * range).round(),
+            y: (context.anchor.y + angle.sin() * range).round(),
+        })
+    }
 }
 
 fn record_tiles(

@@ -29,6 +29,15 @@ pub const BREEDING_ESTABLISHMENT_GAME_HOURS: u64 = 36;
 /// fast prosperity response, while breeding remains slow generational growth.
 pub const BASE_BREEDING_CHANCE_PER_HOUR: f64 = 0.001;
 pub const SPECIALIST_BREEDING_BONUS: f64 = 0.0002;
+/// The recovery controller never raises an eligible cat above a five-percent
+/// hourly conception chance. Housing, food, water, the one-conception-per-tick
+/// limit, and gestation still bound the actual population response.
+pub const LINEAGE_RECOVERY_MAX_CHANCE_PER_HOUR: f64 = 0.05;
+/// A recovery conception is considered reliable only when its gestation can
+/// finish before the ordinary adult-to-elder boundary. Older adults retain the
+/// authored base chance, but are not used to promise replacement births that
+/// old-age mortality may erase before delivery.
+pub const RELIABLE_CONCEPTION_MAX_AGE_HOURS: f64 = 240.0 - GESTATION_GAME_HOURS;
 /// Blessings remain useful without turning the old 2%-per-blessing helper into an
 /// instant litter faucet. Its already-capped bonus is scaled to at most 0.035%/h,
 /// preserving roughly the same proportion after the slower base-rate change.
@@ -113,6 +122,36 @@ pub fn conception_probability(
 
     let per_hour = cat_breeding_chance_per_hour(specialization, blessings);
     js_max(0.0, js_min(1.0, per_hour * elapsed_game_hours))
+}
+
+/// Preserve the authored slow conception rate while applying bounded
+/// replacement pressure when a village falls below its founding lineage floor.
+///
+/// Dividing the missing future residents by the colony's remaining reliable
+/// fertile cat-hours yields the per-cat hourly hazard required to replace that
+/// generation in expectation. Existing pregnancies count toward the secured
+/// lineage before this function is called.
+#[must_use]
+pub fn lineage_recovery_conception_probability(
+    specialization: Option<CatSpecialization>,
+    blessings: f64,
+    elapsed_game_hours: f64,
+    births_needed: usize,
+    remaining_reliable_fertile_hours: f64,
+    candidate_reliable_fertile_hours: f64,
+) -> f64 {
+    let authored = conception_probability(specialization, blessings, elapsed_game_hours);
+    if births_needed == 0
+        || elapsed_game_hours <= 0.0
+        || remaining_reliable_fertile_hours <= 0.0
+        || candidate_reliable_fertile_hours <= 0.0
+    {
+        return authored;
+    }
+
+    let recovery_per_hour = (births_needed as f64 / remaining_reliable_fertile_hours)
+        .clamp(0.0, LINEAGE_RECOVERY_MAX_CHANCE_PER_HOUR);
+    authored.max((recovery_per_hour * elapsed_game_hours).clamp(0.0, 1.0))
 }
 
 #[must_use]
@@ -210,11 +249,12 @@ mod tests {
     use super::{
         BASE_BREEDING_CHANCE_PER_HOUR, BREEDING_FOOD_PER_CAT, BREEDING_MIN_FOOD_RATIO,
         BREEDING_MIN_WATER_RATIO, BREEDING_WATER_PER_CAT, ColonyBreedingState,
-        LEADERSHIP_GAIN_PER_HOUR, SPECIALIST_BREEDING_BONUS, can_work,
+        LEADERSHIP_GAIN_PER_HOUR, LINEAGE_RECOVERY_MAX_CHANCE_PER_HOUR,
+        RELIABLE_CONCEPTION_MAX_AGE_HOURS, SPECIALIST_BREEDING_BONUS, can_work,
         cat_breeding_chance_per_hour, colony_can_breed, conception_probability, get_life_stage,
-        inherit_stats, leadership_after_tenure, old_age_death_probability,
-        stage_work_effectiveness, trade_level, trade_speed_multiplier, trade_yield_multiplier,
-        workforce_weight,
+        inherit_stats, leadership_after_tenure, lineage_recovery_conception_probability,
+        old_age_death_probability, stage_work_effectiveness, trade_level, trade_speed_multiplier,
+        trade_yield_multiplier, workforce_weight,
     };
     use crate::{entities::CatStats, types::CatSpecialization, types::LifeStage};
 
@@ -387,6 +427,54 @@ mod tests {
             "elapsed scaling remains slow even with many blessings",
         );
         assert_f64_bits(conception_probability(None, 0.0, 0.0), 0.0, "zero");
+    }
+
+    #[test]
+    fn lineage_recovery_uses_the_finite_reproductive_opportunity_budget() {
+        assert_f64_bits(
+            RELIABLE_CONCEPTION_MAX_AGE_HOURS,
+            222.0,
+            "reliable conception age",
+        );
+        assert_f64_bits(
+            LINEAGE_RECOVERY_MAX_CHANCE_PER_HOUR,
+            0.05,
+            "recovery hourly cap",
+        );
+
+        // Six missing future residents across 300 reliable fertile cat-hours
+        // requires a two-percent per-cat hourly hazard.
+        assert_f64_bits(
+            lineage_recovery_conception_probability(None, 0.0, 1.0, 6, 300.0, 50.0),
+            0.02,
+            "replacement hazard",
+        );
+        // Once the floor is secured, and for a candidate whose reliable window
+        // has closed, the authored slow probability remains untouched.
+        assert_f64_bits(
+            lineage_recovery_conception_probability(None, 0.0, 1.0, 0, 300.0, 50.0),
+            0.001,
+            "secured lineage",
+        );
+        assert_f64_bits(
+            lineage_recovery_conception_probability(None, 0.0, 1.0, 6, 300.0, 0.0),
+            0.001,
+            "late adult",
+        );
+    }
+
+    #[test]
+    fn lineage_recovery_is_bounded_for_tiny_old_cohorts_and_coarse_ticks() {
+        assert_f64_bits(
+            lineage_recovery_conception_probability(None, 0.0, 1.0, 20, 10.0, 10.0),
+            0.05,
+            "hourly recovery cap",
+        );
+        assert_f64_bits(
+            lineage_recovery_conception_probability(None, 0.0, 24.0, 20, 10.0, 10.0),
+            1.0,
+            "probability cap",
+        );
     }
 
     #[test]

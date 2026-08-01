@@ -1,0 +1,162 @@
+{
+  "schemaVersion": 1,
+  "card": "LAI.32",
+  "purpose": "Deterministic 30-day campaign matrix and release-profile contract for the post-cutover leader AI.",
+  "liveProvidersCalled": false,
+  "duration": {
+    "gameDays": 30,
+    "gameHours": 720,
+    "defaultCadenceMs": 900000,
+    "tickPartitionsSeconds": [1, 60, 900, 3600]
+  },
+  "successThresholds": {
+    "freshMinimumSuccesses": 85,
+    "establishedMinimumSuccesses": 97,
+    "seedsPerSet": 100
+  },
+  "seedFormula": "seed = seedStart + index for 0 <= index < seedCount",
+  "sets": [
+    {
+      "id": "fresh_colony",
+      "category": "fresh",
+      "seedStart": 320000,
+      "seedCount": 100,
+      "description": "New colony with no prebuilt late-game support."
+    },
+    {
+      "id": "established_colony",
+      "category": "established",
+      "seedStart": 321000,
+      "seedCount": 100,
+      "description": "Stable village with core food, water, storage, and Hole access."
+    },
+    {
+      "id": "mature_research_trade_colony",
+      "category": "mature",
+      "seedStart": 322000,
+      "seedCount": 100,
+      "description": "Late-midgame village with scholars, research frontier, boosts, diplomacy, and trade."
+    },
+    {
+      "id": "extreme_scarcity",
+      "category": "scarcity",
+      "seedStart": 323000,
+      "seedCount": 100,
+      "description": "Low food, water, storage, worker, route, and replacement-resource margins."
+    },
+    {
+      "id": "extreme_devout",
+      "category": "personality",
+      "seedStart": 324000,
+      "seedCount": 100,
+      "description": "Highly Devout leadership pressure with endless Hole demand."
+    },
+    {
+      "id": "extreme_skeptical",
+      "category": "personality",
+      "seedStart": 325000,
+      "seedCount": 100,
+      "description": "Highly Skeptical leadership pressure with delayed or omitted Hole work."
+    },
+    {
+      "id": "extreme_mercantile",
+      "category": "personality",
+      "seedStart": 326000,
+      "seedCount": 100,
+      "description": "Highly Mercantile valuation pressure and trade preference."
+    },
+    {
+      "id": "extreme_self_sufficient",
+      "category": "personality",
+      "seedStart": 327000,
+      "seedCount": 100,
+      "description": "Highly Self-sufficient valuation pressure and trade avoidance."
+    },
+    {
+      "id": "extreme_bold",
+      "category": "personality",
+      "seedStart": 328000,
+      "seedCount": 100,
+      "description": "Highly Bold risk posture under hazards, injuries, and route pressure."
+    },
+    {
+      "id": "extreme_cautious",
+      "category": "personality",
+      "seedStart": 329000,
+      "seedCount": 100,
+      "description": "Highly Cautious risk posture under hazards, injuries, and route pressure."
+    },
+    {
+      "id": "injury_prosthetic_stress",
+      "category": "injury",
+      "seedStart": 330000,
+      "seedCount": 100,
+      "description": "Injury, treatment, refusal, prosthetic fitting, repair, and cargo conservation pressure."
+    },
+    {
+      "id": "multi_colony",
+      "category": "multi_colony",
+      "seedStart": 331000,
+      "seedCount": 100,
+      "description": "Multiple villages with isolated private state and public diplomacy/trade facts."
+    },
+    {
+      "id": "reservation_contention",
+      "category": "contention",
+      "seedStart": 332000,
+      "seedCount": 100,
+      "description": "Cross-colony and intra-colony reservations contending for source, route, endpoint, cargo, tools, and workers."
+    },
+    {
+      "id": "hole_omission_bad_resource_choices",
+      "category": "hole",
+      "seedStart": 333000,
+      "seedCount": 100,
+      "description": "Belief-driven Hole choices including good packages, stale poor packages, omission, and replacement work."
+    },
+    {
+      "id": "research_quota",
+      "category": "research",
+      "seedStart": 334000,
+      "seedCount": 100,
+      "description": "Affordable frontier, seven-day free Leader quota, no carryover, Research Notes, physical preparation, and Void-funded God-lane pressure."
+    },
+    {
+      "id": "diplomacy_trade",
+      "category": "diplomacy_trade",
+      "seedStart": 335000,
+      "seedCount": 100,
+      "description": "Consent, alliance/block, valuation, escrow, route, cargo, recovery, and stable trade ordering."
+    },
+    {
+      "id": "restart_partition",
+      "category": "restart_partition",
+      "seedStart": 336000,
+      "seedCount": 100,
+      "description": "Restart at active Hole, Void Insight, Research Notes, boost, task, injury, prosthetic, diplomacy, trade, and route stages plus tick partition twins."
+    }
+  ],
+  "requiredInvariants": [
+    "bounded_state_and_queues",
+    "no_starvation_caused_solely_by_endless_hole_demand",
+    "believable_good_and_bad_leader_variation",
+    "at_least_four_normal_affordable_automatic_research_commits_in_30_days",
+    "exact_void_insight_conservation",
+    "hunt_water_workshop_spatial_invariants",
+    "hidden_regeneration_secrecy_below_effective_report_level_4",
+    "no_duplicate_mutations_or_replay",
+    "tick_partition_twins",
+    "restart_twins"
+  ],
+  "releaseProfile": {
+    "baselineFixture": "docs/leader-ai-overhaul/fixtures/lai1_release_baseline.json",
+    "profile": "release",
+    "buildCommand": "cargo build --release -p cat-sim --example playtest",
+    "measurementCommand": "SEED=20240712 HOURS=720 CADENCE_MS=900000 EXPECT_FEATURES=leader-ai STRICT=1 VERIFY_DETERMINISM=1 target/release/examples/playtest",
+    "baselineMedianWallSeconds": 18.77,
+    "baselineMedianPeakRssKiB": 11960,
+    "allowedRegressionPercent": 25,
+    "maximumMedianWallSeconds": 23.4625,
+    "maximumMedianPeakRssKiB": 14950
+  }
+}

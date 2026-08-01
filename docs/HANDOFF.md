@@ -9,12 +9,35 @@ on its own, ticked once a second by an authoritative server. Read this file, the
 `docs/GAME_VISION.md` (the maintained design) and `docs/IMPLEMENTATION_AUDIT.md` (the evidence
 ledger). `docs/migration/BOARD.md` preserves the phase history and its current rollup.
 
+**The first LAI.34 cutover completed on 2026-07-23; the exact LAI.35–70 Plan 1+2 integration is
+currently in progress.** Its maintained source of truth is
+[`docs/leader-ai-overhaul/README.md`](leader-ai-overhaul/README.md), with the additive delivery
+ledger in [`docs/leader-ai-overhaul/BOARD.md`](leader-ai-overhaul/BOARD.md). Start there before
+changing planning, officers, reports, spatial tasks, skills/families/governance,
+Hole/Notes/Void/research, construction/storage, care, divine policy, diplomacy/barter, protocol,
+persistence, or UI behavior. The extension guide documents exactly how to add a
+workshop, task/site, office, resource, research effect, action, persisted field, or browser
+checkpoint without bypassing determinism, report secrecy, spatial resolution, or versioning:
+[`extending-the-system.md`](leader-ai-overhaul/extending-the-system.md) and
+[`integrated-implementation-map.md`](leader-ai-overhaul/integrated-implementation-map.md).
+
+The board distinguishes completed pure foundations from still-open runtime/protocol/persistence/
+server/client/art/diagnostic/deletion acceptance. Do not treat the old utility director,
+Shrine/Favor/Blessings, generic stored Food/Fish/Preserves, scholar Insight, coin settlement,
+direct routine `ClientAction`s, semantic gameplay migration, or the old research/navigation UI as
+supported compatibility. The integrated target has one authority for each domain.
+
+For local diagnosis, enable the bounded phase/action traces described in
+[`diagnostics-and-debugging.md`](leader-ai-overhaul/diagnostics-and-debugging.md). Keep expensive
+commands serialized (`CARGO_BUILD_JOBS=1`, one test thread, one heavy process); browser acceptance
+uses the signed fixture and named Portless routes, never a fabricated snapshot.
+
 **The web→Rust/Bevy migration is complete.** Work on **`main`** (repo root
 `/mnt/storage/workspace/projects/cat_idler`). The P11 cutover landed 2026-07-11: the old
 TypeScript/Next.js game was removed from this tree and is preserved — runnable — on branch
 `archive/web-game` (tag `web-final`, `8d3bc5a`). It is reference material, never the target.
 
-## State of the game (verified 2026-07-16)
+## Historical P12–P19 state (verified 2026-07-16)
 
 The maintained P12–P19 design is implemented and evidence-backed. Do not infer a new backlog
 from historical phase prose or dated intermediate counts; use `docs/IMPLEMENTATION_AUDIT.md`
@@ -23,6 +46,11 @@ and `docs/FIX_LOG.md`.
 The 2026-07-16 integrated correction set is closed. Its combined exact-cadence passive,
 observed-state signed player, persistence, and 1024×768/1920×1080 client-framebuffer gate passes;
 the reproducible evidence is maintained in `docs/FIX_LOG.md`.
+
+The following contracts are verified pre-LAI historical baseline. Where they name the bounded
+founding Leader, 487/531-study ledgers, blessings, tithes, rituals, coins, direct public actions, or
+manual office ownership, consult the overhaul directory for the current derived research graph,
+Notes/Void/two-lane planner, physical barter, broad God authority, and delivery status.
 
 Key shipped contracts:
 
@@ -66,8 +94,9 @@ Key shipped contracts:
 - Passive deterministic campaigns, observed-state guided campaigns, all public action variants,
   persistence/restart campaigns, and native/WASM framebuffers are recorded in the audit. The
   compact world HUD keeps only critical survival stores visible, the complete inventory is in
-  Stores [G], and one command category expands at a time. The research ledger remains 487/487 with
-  no `FUTURE` entries.
+  Stores [G], and one command category expands at a time. The historical research ledger was
+  487/487 with no `FUTURE` entries; the production LAI surface now uses the canonical 531-study
+  manifest and Favor.
 
 Dev tooling includes `CAT_BRP=1` for Bevy Remote Protocol inspection and a headless playtest
 harness:
@@ -82,8 +111,8 @@ for a player-established economy; they must dispatch real `ClientAction`s from o
 
 ## NEXT STEPS
 
-1. **Keep the tiered test workflow healthy.** Run focused regressions and the two-thread smoke
-   profile locally; every push must leave the four full Forgejo test shards green. See
+1. **Keep the tiered test workflow healthy.** Run focused regressions and serialized local smoke;
+   every push must leave the four full Forgejo test shards green. See
    `docs/TESTING.md`.
 2. **Optionally tune WASM transfer weight.** Browser boot, reconnect, action feedback, responsive
    layout, caching, and the production image are verified. Further bundle-size/thread work is an

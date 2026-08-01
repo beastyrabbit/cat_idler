@@ -1,0 +1,133 @@
+{
+  "schemaVersion": 1,
+  "plannerState": {
+    "requiredFields": [
+      "schemaVersion",
+      "planningClock",
+      "planningEpoch",
+      "posture",
+      "leaderId",
+      "officerIds",
+      "beliefStore",
+      "reportVersions",
+      "liveIntents",
+      "terminalIntents",
+      "officerRequests",
+      "standingOrders",
+      "currentNudge",
+      "reservations",
+      "retries",
+      "researchQuota",
+      "shrinePlanningState",
+      "rationaleFingerprints"
+    ],
+    "liveIntentCap": 128,
+    "terminalIntentCap": 256
+  },
+  "beliefSecrecy": {
+    "reportedFood": 60,
+    "hiddenFoodVariants": [0, 200],
+    "reportLevel": 3,
+    "regenerationVisible": false
+  },
+  "spatialCases": [
+    {
+      "category": "hunt",
+      "objectiveKind": "resource_source",
+      "workKind": "perimeter_slot",
+      "deliveryKind": "stockpile"
+    },
+    {
+      "category": "fetch_water",
+      "objectiveKind": "water_source",
+      "workKind": "dry_bank_slot",
+      "deliveryKind": "consumer_or_stockpile"
+    },
+    {
+      "category": "workshop_work",
+      "objectiveKind": "building_footprint",
+      "workKind": "workshop_slot",
+      "deliveryKind": "output_compartment_or_stockpile"
+    },
+    {
+      "category": "haul_delivery",
+      "objectiveKind": "source_cargo",
+      "workKind": "pickup_then_route_contact",
+      "deliveryKind": "precommitted_endpoint"
+    }
+  ],
+  "siteRefVariants": [
+    "exact_tile",
+    "anchored_rectangle",
+    "ordered_tile_set",
+    "building",
+    "stockpile",
+    "resource_source",
+    "ordered_route",
+    "shrine",
+    "village_trade_endpoint"
+  ],
+  "workshop": {
+    "anchor": {
+      "x": 40,
+      "y": -3
+    },
+    "width": 3,
+    "height": 3,
+    "tiles": [
+      { "x": 40, "y": -3 },
+      { "x": 41, "y": -3 },
+      { "x": 42, "y": -3 },
+      { "x": 40, "y": -2 },
+      { "x": 41, "y": -2 },
+      { "x": 42, "y": -2 },
+      { "x": 40, "y": -1 },
+      { "x": 41, "y": -1 },
+      { "x": 42, "y": -1 }
+    ]
+  },
+  "shrineFavor": {
+    "legacyGlobalUpgradePoints": 7,
+    "legacyUnspentResearchPoints": 5,
+    "expectedFavor": 12,
+    "migrationVersion": 1,
+    "forbiddenProductionPaths": [
+      "tithe",
+      "offering_cooldown",
+      "scalar_blessing"
+    ]
+  },
+  "protocol": {
+    "legacyVersion": 1,
+    "rejectionCode": "UPDATE_REQUIRED",
+    "mutationFields": [
+      "protocolVersion",
+      "idempotencyId",
+      "expectedStateVersion"
+    ]
+  },
+  "campaign": {
+    "days": 30,
+    "seedsPerPopulation": 100,
+    "seedStart": 0,
+    "populations": [
+      "fresh",
+      "established",
+      "mature_research_trade",
+      "migrated_legacy",
+      "highly_devout",
+      "highly_skeptical",
+      "highly_mercantile",
+      "highly_self_sufficient",
+      "highly_bold",
+      "highly_cautious",
+      "officer_vacancy",
+      "leader_succession",
+      "multi_colony_contention"
+    ],
+    "tickPartitionsSeconds": [1, 60, 900, 3600],
+    "freshMinimumSuccesses": 85,
+    "establishedMinimumSuccesses": 97,
+    "maximumPerformanceRegressionPercent": 25
+  }
+}

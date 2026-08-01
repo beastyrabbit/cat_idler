@@ -7,12 +7,25 @@ and any changed Bevy visuals have been verified.
 
 ## Open fix queue
 
-No reproduced gameplay or maintained-design defect is open after the 2026-07-16 generalized
-correction gate. New findings belong here before implementation begins.
+The 2026-07-16 generalized correction gate has no reopened item. The 2026-07-23
+leader-intelligence cutover also has no reproduced implementation defect in this queue. Its
+one-planner/one-currency/one-offering/one-action-path proof, serialized campaign and persistence
+evidence, eight release Playwright journeys, and independent fixed-canvas visible-browser action
+are recorded in [`leader-ai-overhaul/BOARD.md`](leader-ai-overhaul/BOARD.md).
+
+The full 1,700-seed campaign matrix and four Forgejo hash partitions remain external release
+publication executions, not open implementation fixes. Newly reproduced defects still belong here
+before implementation begins.
+
+The extension and diagnosis workflows are documented in
+[`leader-ai-overhaul/extending-the-system.md`](leader-ai-overhaul/extending-the-system.md),
+[`leader-ai-overhaul/diagnostics-and-debugging.md`](leader-ai-overhaul/diagnostics-and-debugging.md),
+and [`leader-ai-overhaul/browser-playtests/README.md`](leader-ai-overhaul/browser-playtests/README.md).
 
 ## Playtest cadence
 
-**Current state:** the combined generalized gate is verified.
+**Current state:** the 2026-07-16 combined generalized gate and the 2026-07-23 LAI.34 local
+implementation/browser gate are verified. Remote release publication gates remain mandatory.
 
 Focused tests run while a change is being built only as fast safety checks. They do not close a
 finding and they are not counted as a playtest. Several related fixes are integrated first; then

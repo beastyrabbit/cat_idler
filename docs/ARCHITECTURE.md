@@ -10,6 +10,32 @@ port status see `docs/migration/specs/` and `docs/migration/BOARD.md`; for hard-
 build/tooling lessons see `docs/HANDOFF.md`. This doc stays at the "how the pieces fit
 together" altitude.
 
+## Leader AI production path and cutover boundary
+
+`cat-sim::world_tick()` executes one versioned leader-intelligence pipeline per colony. Its
+ordered phases collect observations, accept report-gated officer knowledge, update bounded
+beliefs and intent graphs, score deterministic strategic plans, resolve exact spatial objectives,
+reserve cats/sites/routes/cargo atomically, execute physical work, and reconcile families,
+governance, construction/storage, the Hole, Notes/Void research, divine policy, care, diplomacy,
+and barter state. The final LAI.46/63 cutover deletes the old utility director and every dual
+mutation path.
+
+The v2 LAI.24 projection contains report-safe snapshots and action-specific version lanes.
+`cat-server` authenticates, idempotently applies, persists, and immediately acknowledges those
+actions before broadcasting an updated snapshot. `cat-client` renders the same authoritative
+plans, reports, care and progression data plus exact task footprints; it never reconstructs hidden
+truth. Canonical planner IDs may contain `|`, while player action/principal IDs remain strictly
+bounded. See [`leader-ai-overhaul/README.md`](leader-ai-overhaul/README.md) for the full contract,
+extension workflow, diagnostics, and acceptance evidence.
+
+The LAI.34 implementation is historical baseline. LAI.35–70 replaces its protocol/action/schema/UI
+assumptions in one integrated cutover. Direct construction, zone, job, worker, food-list, officer,
+production, and route controls are removed or rejected wherever they bypass Leader authority.
+Legacy scalar fields and helper bodies are deletion evidence, not restart compatibility;
+they are not a feature flag, shadow planner, alternate currency, or second offering path. The
+local acceptance evidence and external release-publication gates live on the
+[LAI board](leader-ai-overhaul/BOARD.md).
+
 ## The workspace
 
 ```
@@ -23,7 +49,21 @@ Cargo workspace (edition 2024, resolver "3")
 └── crates/cat-dev       `cargo dev` — local launcher, builds/runs server+desktop together
 ```
 
-Data flow, end to end:
+Current leader-intelligence control flow:
+
+```
+cat-sim::world_tick() ─▶ report-safe LAI.24 snapshot ─▶ cat-server ─▶ cat-client panels
+        ▲                                                  │
+        └──── pure mutation adapters ◀── authenticated, expected-versioned LAI.25 action
+```
+
+The existing `WorldSnapshot` stream still renders the wider world. The client uses LAI.25 for
+leader/progression controls and retains `ClientAction` only for non-overlapping base-world
+operations. The server classifies every legacy frame: retired overlaps return `UPDATE_REQUIRED`,
+while authenticated base-world actions continue through the existing rate-limit, ownership, and
+`apply_action` path.
+
+Historical base-world data flow:
 
 ```
 cat-sim::world_tick()  ──every colony, every 1s──▶  cat-server (owns the only WorldState)
@@ -36,10 +76,11 @@ cat-server  ◀── ClientAction (JSON over WS) ──  cat-client  ◀── 
                                           Bevy ECS: sprites, HUD, input
 ```
 
-The server is the single source of truth. Clients hold no authoritative state — every frame
-they render whatever `WorldSnapshot` they last received, and every player action is a
-`ClientAction` sent to the server and only reflected once the server's next tick includes its
-effect. There is no client-side prediction.
+The server is the single source of truth. Clients hold no authoritative state: the wider world
+renders from `WorldSnapshot`, leader-intelligence panels render from LAI.24, and accepted changes
+appear only after authoritative server mutation and snapshot publication. There is no client-side
+prediction. The `ClientAction`-only wording in the historical diagram does not describe the
+current LAI mutation contract.
 
 ## cat-sim — the simulation core
 
@@ -102,21 +143,24 @@ through this one function, same discipline the TS game enforced for `workerTick`
 | --- | --- |
 | Foundation | `rng`, `types`, `entities`, `cost_constants`, `needs_constants`, `test_acceleration` |
 | World generation | `noise`, `terrain_gen`, `world_gen`, `biomes`, `climate` |
-| Cat AI | `pathfinding`, `movement`, `policy`, `tasks`, `cat_ai`, `leader_ai`, `leader_director`, `officers` |
+| Cat AI and planning | `pathfinding`, `movement`, `policy`, `tasks`, `cat_ai`, `planner_core`, `beliefs`, `intent_graph`, `leader_planner`, `officer_expertise`, `officer_requests`, `scheduler`, `workforce_matcher`; `leader_ai`/`leader_director` are compatibility history |
 | Life sim | `needs`, `age`, `breeding`, `genetics`, `life_sim`, `survival`, `migration` |
-| Economy | `idle_engine`, `idle_rules`, `production`, `processing`, `productivity`, `farming`, `smithy`, `storage`, `shrine`, `trips`, `depletion`, `spoilage`, `housing`, `roads`, `transport`, `village_layout`, `village_area`, `village_sites`, `stockpiles`, `skills`, `ledger` |
-| Military & governance | `threat`, `warriors`, `combat`, `elections`, `zones`, `upgrade_tree` |
-| Item and research economy | `items`, `recipes`, `station_recipes`, `research_catalog`, `trader` |
+| Economy and village | `food_ecology`, `cookhouse`, `fishing`, `quality_lots`, `material_crafting`, `physical_storage`, `construction_stages`, `village_infrastructure`, plus integrated production/hauling/runtime adapters |
+| Military, families, and governance | `hunting_lair`, `threat`, `warriors`, `combat`, `cat_capabilities`, `family_specialization`, `family_housing`, `cat_governance`, officer leaves |
+| Hole, progression, divine, and barter | `black_hole`, unified progression/research authority over `research_manifest`/scholar/boost leaves, `food_divine_policy`, `diplomacy`, `moneyless_barter`; legacy `favor`/`shrine_offerings` are deletion targets |
 | Orchestration | `world_tick` (the tick loop), `actions` (pure `apply_action` + `build_snapshot`) |
 
 Each module's doc comment cites the original TypeScript file it was ported from (e.g.
 `leader_director.rs` ← `lib/game/leaderDirector.ts`), per `AGENTS.md`'s commenting convention —
 that's the fastest way to find the ported behavior's original spec and tests.
 
-### Maintained product state
+### Historical P12–P19 product state
 
-The migration and maintained P12–P19 product contract are complete. The authoritative evidence
+The migration and P12–P19 product contract are historical baseline. The authoritative evidence
 ledger is `docs/IMPLEMENTATION_AUDIT.md`; the migration board retains dated implementation history.
+The bullets below preserve that pre-LAI baseline. Current Plan 1+2 behavior and implementation
+status follow the overhaul directory and
+[`integrated-implementation-map.md`](leader-ai-overhaul/integrated-implementation-map.md).
 
 - **Manual-to-officer control.** The founding Leader retains only a bounded hunt/water/scout
   safety floor. Seven specialist offices own distinct automation categories, and vacancies leave
@@ -187,6 +231,14 @@ over the WebSocket:
   equip/unequip/repair, station queue editing, rail/dock/vehicle construction and transport
   routing, raids, and the three release-disabled test controls. The exhaustive enum in
   `crates/cat-protocol/src/lib.rs` is authoritative when this inventory changes.
+- **`LeaderAiSnapshotEnvelope` / `LeaderAiActionEnvelope`** — protocol-v2 LAI.24/LAI.25
+  report-safe snapshot and authenticated mutation contracts. Actions carry selected-colony
+  ownership, exact action-specific expected versions, bounded idempotency IDs, and typed
+  accepted/rejected/duplicate outcomes.
+
+The production server rejects retired leader/progression legacy frames with `UPDATE_REQUIRED`.
+Presence bootstrap and authenticated non-overlapping base-world actions remain supported through
+this inventory; LAI.25 is the only leader/progression mutation path.
 
 Field names are `camelCase` on the wire (matching the old TS API shape where it still matters)
 via `#[serde(rename_all = "camelCase")]`-style annotations; most actions carry `session_id` /
@@ -201,9 +253,9 @@ retains the last frame as stale, and shows `UPDATE REQUIRED`. Legacy snapshots d
 `crates/cat-server` (tokio + axum) is a single binary:
 
 - `GET /health` → `"ok"` liveness probe; `GET /ready` checks persisted-state readiness.
-- `GET /ws` → WebSocket upgrade. Each connection is a task that reads `ClientAction` JSON
-  frames, calls `apply_action` against the shared `Arc<Mutex<WorldState>>`, and forwards the
-  broadcast `WorldSnapshot` stream.
+- `GET /ws` → WebSocket upgrade. Each connection performs header-first protocol checks, accepts
+  Presence bootstrap, routes authenticated LAI.25 frames through ownership/version/idempotency
+  guards, and forwards both the wider-world `WorldSnapshot` and selected-colony LAI.24 projection.
 - A `tokio::spawn`ed loop schedules `world_tick` **once per second** for the whole world (not
   currently configurable — the interval is `Duration::from_secs(1)` in `main.rs`). CPU-heavy
   simulation, snapshot construction, and synchronous SQLite work run on Tokio's blocking pool.
@@ -255,8 +307,10 @@ stations, stockpiles/gather spots, raiders, crop stages, and zone overlays. The 
 shows critical survival stores and colony status; the Stores menu owns the full inventory, while
 category menus expose map tools and signed commands without a permanent button wall. Census,
 event log, trade, officers, village selection, authoritative election countdown/open-election controls, and
-cat/building inspectors. Its full-page research screen renders and purchases the complete
-487-study ("about 500") catalog with filter/search/pan/zoom.
+cat/building inspectors. The integrated client replaces this historical navigation with exactly
+Log/Stores/Village/Research/Council and six Council tabs. Research renders the canonical graph,
+God queue/preparation, free Leader lane, Notes/Void, permits, repeatables, and boosts; the client
+never reconstructs hidden availability or task geometry.
 The maintained P18 Adventure 9-patch/button/progress/minimap/cursor foundation is implemented and
 native-framebuffer verified at 1024×768, 1280×800, and 1920×1080. The compact menus also pass
 current narrow/wide native inspection and the shared WASM compile gate.
@@ -299,8 +353,9 @@ attaching a fresh client to a stale, pre-rebuild server.
   workspace count that becomes false on the next integrated slice.
 - **`cat-protocol`**: serde round-trip tests (serialize → deserialize → equal).
 - **`cat-server`**: integration tests spin up the axum app in-process (no real socket needed)
-  and drive it through `ClientAction` JSON, e.g. founding a village and asserting the shared
-  snapshot updates.
+  and drive signed LAI.25 envelopes through the production router. Dedicated compatibility tests
+  cover Presence bootstrap, header-first old-client rejection, and pure legacy adapters without
+  treating them as a second production path.
 - **`cat-client`**: logic/UI-shape tests supplement manual visual checks. Rendering is verified
   by capturing the client's own framebuffer to a PNG and reading it back (method documented in
   `docs/HANDOFF.md`), since "it compiles" has previously hidden a black-screen regression.

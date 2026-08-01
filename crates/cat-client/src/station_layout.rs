@@ -323,6 +323,8 @@ pub(crate) const fn building_visual(building: BuildingType) -> BuildingVisual {
         BuildingType::HerbGarden => BuildingVisual::Open(&HERB_GARDEN),
         BuildingType::Nursery => BuildingVisual::Roofed(ResidentialFacade::Cottage),
         BuildingType::ElderCorner => BuildingVisual::Roofed(ResidentialFacade::Cottage),
+        BuildingType::FamilyHome => BuildingVisual::Roofed(ResidentialFacade::Cottage),
+        BuildingType::ElderLodge => BuildingVisual::Roofed(ResidentialFacade::Cottage),
         BuildingType::Walls => BuildingVisual::Infrastructure,
         BuildingType::MouseFarm => BuildingVisual::Open(&MOUSE_FARM),
         BuildingType::Shrine => BuildingVisual::Open(&SHRINE),
@@ -348,7 +350,7 @@ pub(crate) const fn building_visual(building: BuildingType) -> BuildingVisual {
 mod tests {
     use super::*;
 
-    const ALL_BUILDINGS: [BuildingType; 25] = [
+    const ALL_BUILDINGS: [BuildingType; 27] = [
         BuildingType::Den,
         BuildingType::FoodStorage,
         BuildingType::WaterBowl,
@@ -356,6 +358,8 @@ mod tests {
         BuildingType::HerbGarden,
         BuildingType::Nursery,
         BuildingType::ElderCorner,
+        BuildingType::FamilyHome,
+        BuildingType::ElderLodge,
         BuildingType::Walls,
         BuildingType::MouseFarm,
         BuildingType::Shrine,
@@ -378,7 +382,7 @@ mod tests {
 
     #[test]
     fn every_protocol_building_has_one_explicit_visual_treatment() {
-        assert_eq!(ALL_BUILDINGS.len(), 25);
+        assert_eq!(ALL_BUILDINGS.len(), 27);
         for building in ALL_BUILDINGS {
             match building_visual(building) {
                 BuildingVisual::Open(layout) => {
@@ -466,6 +470,8 @@ mod tests {
                 BuildingType::Beds,
                 BuildingType::Nursery,
                 BuildingType::ElderCorner,
+                BuildingType::FamilyHome,
+                BuildingType::ElderLodge,
             ]
         );
     }

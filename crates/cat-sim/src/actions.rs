@@ -924,6 +924,8 @@ fn plan_building(
             | BuildingType::HerbGarden
             | BuildingType::Nursery
             | BuildingType::ElderCorner
+            | BuildingType::FamilyHome
+            | BuildingType::ElderLodge
             | BuildingType::Walls
             | BuildingType::MouseFarm
             | BuildingType::Workshop
@@ -6598,6 +6600,8 @@ fn proto_to_sim_building_type(building_type: proto::BuildingType) -> Option<Buil
         proto::BuildingType::HerbGarden => Some(BuildingType::HerbGarden),
         proto::BuildingType::Nursery => Some(BuildingType::Nursery),
         proto::BuildingType::ElderCorner => Some(BuildingType::ElderCorner),
+        proto::BuildingType::FamilyHome => Some(BuildingType::FamilyHome),
+        proto::BuildingType::ElderLodge => Some(BuildingType::ElderLodge),
         proto::BuildingType::Walls => Some(BuildingType::Walls),
         proto::BuildingType::MouseFarm => Some(BuildingType::MouseFarm),
         proto::BuildingType::Shrine => Some(BuildingType::Shrine),
@@ -6628,6 +6632,8 @@ fn sim_to_proto_building_type(building_type: BuildingType) -> Option<proto::Buil
         BuildingType::HerbGarden => Some(proto::BuildingType::HerbGarden),
         BuildingType::Nursery => Some(proto::BuildingType::Nursery),
         BuildingType::ElderCorner => Some(proto::BuildingType::ElderCorner),
+        BuildingType::FamilyHome => Some(proto::BuildingType::FamilyHome),
+        BuildingType::ElderLodge => Some(proto::BuildingType::ElderLodge),
         BuildingType::Walls => Some(proto::BuildingType::Walls),
         BuildingType::MouseFarm => Some(proto::BuildingType::MouseFarm),
         BuildingType::Shrine => Some(proto::BuildingType::Shrine),
@@ -6649,6 +6655,12 @@ fn sim_to_proto_building_type(building_type: BuildingType) -> Option<proto::Buil
         BuildingType::Smelter => Some(proto::BuildingType::Smelter),
         BuildingType::Mill => Some(proto::BuildingType::Mill),
         BuildingType::Sawmill => Some(proto::BuildingType::Sawmill),
+        // LAI.46 added these live station identities to the simulation. The
+        // wire enum is owned by LAI.47/LAI.64; until that card lands there is
+        // deliberately no legacy protocol variant, so this projection reports a
+        // typed gap instead of aliasing a Cookhouse or Fishing Hut onto an
+        // unrelated building.
+        BuildingType::Cookhouse | BuildingType::FishingHut => None,
     }
 }
 

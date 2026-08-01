@@ -7,10 +7,21 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+mod lai24_snapshot;
+mod lai25_action;
+pub mod lai64;
+
+pub use lai24_snapshot::*;
+pub use lai25_action::*;
+pub use lai64::*;
+
 /// Increment whenever a wire change can make an older client reject a snapshot.
 /// Clients inspect this first field before decoding the nested world, so a schema
 /// mismatch produces an explicit update-required state instead of a frozen scene.
-pub const PROTOCOL_VERSION: u32 = 1;
+/// LAI.64's single canonical wire generation.  The LAI.24/25 DTOs remain
+/// temporarily exported only so the server/client adapter cutover can be made
+/// atomically by their owners; new endpoints must use the `Canonical*` types.
+pub const PROTOCOL_VERSION: u32 = 3;
 
 const fn current_protocol_version() -> u32 {
     PROTOCOL_VERSION
@@ -1646,6 +1657,9 @@ pub enum BuildingType {
     Smelter,
     Mill,
     Sawmill,
+    /// Plan 2 family institutions are additive wire variants.
+    FamilyHome,
+    ElderLodge,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]

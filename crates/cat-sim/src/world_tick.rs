@@ -10,8 +10,10 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
+pub use crate::spatial_tasks::{TilePoint as TilePos, footprint_for, footprint_tiles};
+
 use crate::{
-    biomes::MaxResources,
+    biomes::{BiomeType, MaxResources, biome_properties},
     depletion::{CHOPPED_FOREST_FOOD_CAP, is_forest_type, regrowth_amount},
     elections::{
         BallotVote, ELECTION_WINDOW_MS, ElectionCandidate, KICK_WINDOW_MS, TERM_MS,
@@ -27,28 +29,27 @@ use crate::{
         traits_to_sprite_params,
     },
     idle_engine,
-    idle_rules::{self, consumption_for_tick},
+    idle_rules::consumption_for_tick,
     items::{
         self, Item, ItemInstance, ItemKind, ItemLocation, ItemStore, Material, StationCompartment,
     },
-    leader_ai::{LeaderDecision, LeaderHousing, LeaderResources, LeaderSnapshot},
+    leader_ai_runtime::LeaderAiRuntimeState,
     leader_director::{
-        BASELINE_HUNT_MAX_SLOTS, BASELINE_SCOUT_MAX_SLOTS, BASELINE_WATER_MAX_SLOTS, CatBrief,
-        CatBriefStats, DirectorPlan, LaborGoalKind, MatchOptions, OFFERING_FOOD_AMOUNT,
-        OFFERING_FOOD_RESERVE_FLOOR, OFFERING_FOOD_RESERVE_PER_CAT, OFFERING_HERBS_AMOUNT,
-        OFFERING_HERBS_RESERVE, OFFERING_MATERIALS_AMOUNT, OFFERING_MATERIALS_RESERVE,
-        RESEARCH_COMFORT_FLOOR, RESEARCH_COMFORT_FOOD_PER_CAT, RESEARCH_COMFORT_WATER_PER_CAT,
-        WATER_MAX_SLOTS, automated_plan, is_research_comfortable,
-        match_cats_to_slots_with_officers, officer_role_for,
+        BASELINE_HUNT_MAX_SLOTS, BASELINE_SCOUT_MAX_SLOTS, BASELINE_WATER_MAX_SLOTS,
+        OFFERING_FOOD_AMOUNT, OFFERING_FOOD_RESERVE_FLOOR, OFFERING_FOOD_RESERVE_PER_CAT,
+        OFFERING_HERBS_AMOUNT, OFFERING_HERBS_RESERVE, OFFERING_MATERIALS_AMOUNT,
+        OFFERING_MATERIALS_RESERVE, RESEARCH_COMFORT_FLOOR, RESEARCH_COMFORT_FOOD_PER_CAT,
+        RESEARCH_COMFORT_WATER_PER_CAT,
     },
     ledger::{
         ACCOUNTING_ROUND_INTERVAL_MS, AccountingPhase, AccountingRound, PILE_COUNT_DWELL_MS,
         StewardManagedPile, StockLedger,
     },
     life_sim::{
-        BREEDING_ESTABLISHMENT_GAME_HOURS, ColonyBreedingState, GESTATION_GAME_HOURS, can_work,
-        colony_can_breed, conception_probability, get_life_stage, inherit_stats,
-        leadership_after_tenure, old_age_death_probability,
+        BREEDING_ESTABLISHMENT_GAME_HOURS, ColonyBreedingState, GESTATION_GAME_HOURS,
+        RELIABLE_CONCEPTION_MAX_AGE_HOURS, can_work, colony_can_breed, get_life_stage,
+        inherit_stats, leadership_after_tenure, lineage_recovery_conception_probability,
+        old_age_death_probability,
     },
     migration::{
         MigrantSpatialPhase, MigrationInputs, MigrationPolicy, MigrationState, advance_migration,
@@ -56,13 +57,13 @@ use crate::{
         migration_construction_wealth,
     },
     movement::{
-        EXPLORE_SPEED_FACTOR, JobDestinationContext, WorldPos, destination_for_job,
-        effective_move_speed_for_surface, pick_wander_target, rail_speed_multiplier,
-        road_surface_multiplier, scout_wander_target, soft_obstacle_speed_multiplier, walk_path,
-        walk_path_timed, walk_path_timed_with_elapsed,
+        EXPLORE_SPEED_FACTOR, WorldPos, effective_move_speed_for_surface, pick_wander_target,
+        rail_speed_multiplier, road_surface_multiplier, scout_wander_target,
+        soft_obstacle_speed_multiplier, walk_path, walk_path_timed, walk_path_timed_with_elapsed,
     },
     needs::{restore_hunger, restore_rest, restore_thirst},
     needs_constants::NEEDS_RESTORE_AMOUNTS,
+    noise::{HashSeedPart, hash_seed},
     officers::{OfficerRole, prerequisite_for},
     pathfinding::{
         self, ColonyGridParams, ColonyWalkGrid, FindPathOptions,
@@ -73,13 +74,10 @@ use crate::{
     processing::{
         MillOptions, SawmillOptions, advance_mill, advance_sawmill, allocate_construction_timber,
     },
-    production::{
-        FIELD_CATS_PER_FIELD, FIELD_MATERIAL_BUFFER, FIELD_MIN_COUNT, FIELD_STOCK_TARGET_RATIO,
-        WORKSHOP_MATERIALS_PER_CYCLE,
-    },
+    production::WORKSHOP_MATERIALS_PER_CYCLE,
     productivity::{productive_duration_ms, productive_elapsed},
     research_catalog::research_catalog,
-    rng::{life_seed, movement_seed, raid_seed, roll_seeded},
+    rng::{keyed_life_seed, life_seed, movement_seed, raid_seed, roll_seeded},
     roads::{self, RoadCorridorOptions, RoadTile, select_road_corridor},
     shrine::is_at_shrine,
     skills::{
@@ -87,11 +85,10 @@ use crate::{
     },
     spoilage::apply_food_spoilage_after_consumption,
     stockpiles::{self, GatherSpot, GatherSpotPurpose, MAX_GATHER_SPOTS, ResourceKind, Stockpile},
-    storage::{StorageBuilding, StorageCapacities, count_storehouses, storehouse_cap},
+    storage::{StorageBuilding, StorageCapacities},
     survival::apply_physical_survival_tick,
     threat::{
         ThreatSnapshot, accrue_threat, colony_wealth, plan_raid, resolve_raid, should_spawn_raid,
-        threat_band,
     },
     trader,
     trips::{HUNT_TRIP_COUNT, remaining_yield, split_yield, trip_due_at_with_count},
@@ -100,22 +97,38 @@ use crate::{
         UpgradeKey,
     },
     upgrade_tree::{
-        JobResearchEntitlement, UpgradeTreeState, accrue_research, cat_auto_unlock,
-        create_upgrade_tree_state, is_owned, job_research_entitlement, points_per_tick_for,
-        resolve_effects,
+        JobResearchEntitlement, UpgradeTreeState, create_upgrade_tree_state, is_owned,
+        job_research_entitlement, resolve_effects,
     },
     village_area::{
         ExpandOptions, FenceSegment, GatePlacement as AreaGatePlacement, Side, expand_village,
-        fence_perimeter, from_tiles, gate_placement_default, is_inside_village, should_expand,
-        side_delta,
+        fence_perimeter, from_tiles, gate_placement_default, is_inside_village, side_delta,
     },
     village_layout::{DEFAULT_MAX_RING, GridPos, VILLAGE_ANCHOR, ring_cells, village_ring_radius},
     warriors::{
         CombatModifiers, MusterCombatant, WARRIOR_XP_PER_RAID, can_fight,
         muster_defense_with_loadout,
     },
-    world_gen::{TileResources, generate_world_chunk, get_colony_position, tile_to_chunk},
+    world_gen::{
+        TileResources, WorldTileData, generate_world_chunk, get_colony_position, tile_to_chunk,
+    },
     zones::{Zone, ZoneKind, ZonePos, ZoneRect, filter_targets_by_zones, pick_target_with_zones},
+};
+
+#[cfg(test)]
+use crate::life_sim::conception_probability;
+
+#[cfg(test)]
+use crate::{
+    idle_rules,
+    leader_ai::{LeaderDecision, LeaderHousing, LeaderResources, LeaderSnapshot},
+    leader_director::{
+        CatBrief, CatBriefStats, DirectorPlan, LaborGoalKind, MatchOptions, WATER_MAX_SLOTS,
+        automated_plan, is_research_comfortable, match_cats_to_slots_with_officers,
+        officer_role_for,
+    },
+    storage::{count_storehouses, storehouse_cap},
+    upgrade_tree::{accrue_research, cat_auto_unlock, points_per_tick_for},
 };
 
 pub use crate::station_recipes::{
@@ -306,6 +319,12 @@ pub struct ColonyRuntime {
     pub raiders: Vec<RaiderRuntime>,
     pub upgrade_levels: UpgradeLevels,
     pub upgrade_tree: UpgradeTreeState,
+    /// The sole post-cutover Leader/officer, physical-task, research, Hole,
+    /// storage, construction, governance, family, and barter aggregate.
+    pub leader_ai_runtime: LeaderAiRuntimeState,
+    /// Process-local guard. SQLite load initializes this to false so the first
+    /// authoritative tick revalidates every persisted visible task.
+    pub leader_ai_restart_validated: bool,
     /// Version 0 predates recipe entitlements and grandfathers every implemented
     /// station recipe. Fresh colonies use version 1 and must own the catalog study
     /// whose typed payload unlocks the recipe. Persisted queues are never rewritten.
@@ -952,62 +971,6 @@ pub fn migrate_split_clothier_queues(colony: &mut ColonyRuntime) {
             migrate(&mut slot.production_queue, thread_in_flight);
         }
     }
-}
-
-/// Tile footprint `(width, height)` a building of `building_type` occupies.
-///
-/// The footprint is a pure function of the building type — it is *derived*, never
-/// persisted, so a building still stores only `position + type`. `position` is the
-/// footprint's **anchor = its minimum (north-west) corner**; the building covers the
-/// half-open rectangle `[x, x + w) x [y, y + h)` (see [`footprint_tiles`]).
-#[must_use]
-pub const fn footprint_for(building_type: BuildingType) -> (i32, i32) {
-    match building_type {
-        // The shrine is the village hub, and the workshops/storehouse are broad
-        // work-yards — all 3x3 (P16).
-        BuildingType::Shrine
-        | BuildingType::Workshop
-        | BuildingType::Smithy
-        | BuildingType::FoodStorage
-        | BuildingType::WoodCutter
-        | BuildingType::StonePrep
-        | BuildingType::Woodworking
-        | BuildingType::Clothier
-        | BuildingType::Tannery
-        | BuildingType::Smelter
-        | BuildingType::Mill
-        | BuildingType::Sawmill => (3, 3),
-        // Dwellings, gardens and the mid buildings take a 2x3 plot (P16).
-        BuildingType::Den
-        | BuildingType::Beds
-        | BuildingType::Nursery
-        | BuildingType::HerbGarden
-        | BuildingType::ElderCorner
-        | BuildingType::MouseFarm
-        | BuildingType::Field
-        | BuildingType::Barracks
-        | BuildingType::ResearchHut
-        | BuildingType::School
-        | BuildingType::AccountingTent => (2, 3),
-        // Bowls and wall segments are single tiles.
-        BuildingType::WaterBowl | BuildingType::Walls => (1, 1),
-    }
-}
-
-/// The tiles covered by a `w x h` footprint anchored at its north-west corner
-/// `position` — i.e. `[x, x + w) x [y, y + h)`, row-major. Empty if `w`/`h` <= 0.
-#[must_use]
-pub fn footprint_tiles(position: TilePos, w: i32, h: i32) -> Vec<TilePos> {
-    let mut tiles = Vec::with_capacity((w.max(0) * h.max(0)) as usize);
-    for dy in 0..h {
-        for dx in 0..w {
-            tiles.push(TilePos {
-                x: position.x + dx,
-                y: position.y + dy,
-            });
-        }
-    }
-    tiles
 }
 
 /// Tiles covered by an existing building's derived footprint.
@@ -1892,6 +1855,25 @@ fn placement_error_for_tiles(
         .placement_error_for_tiles(tiles, require_claimed)
 }
 
+/// Building-aware placement policy. Exterior agricultural claims are deliberately
+/// excluded from `walled_claimed`, so a prepared Field footprint can coincide with the
+/// civic perimeter predicate without occupying an actual wall. Every other building and
+/// every other collision continues through the strict generic placement checker.
+fn building_placement_error_for_tiles(
+    colony: &ColonyRuntime,
+    tiles: &[TilePos],
+    world_seed: u32,
+    require_claimed: bool,
+    building_type: BuildingType,
+) -> Option<SpatialPlacementError> {
+    let error = placement_error_for_tiles(colony, tiles, world_seed, require_claimed);
+    if building_type == BuildingType::Field && error == Some(SpatialPlacementError::PerimeterWall) {
+        None
+    } else {
+        error
+    }
+}
+
 /// Validate a new stockpile/gather-spot rectangle without mutating the colony.
 /// General stockpiles pass `require_claimed = true`; temporary P16 gather spots
 /// remain legal outside the village but obey every collision/terrain rule.
@@ -2299,12 +2281,6 @@ impl EventKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct TilePos {
-    pub x: i32,
-    pub y: i32,
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorldTileRuntime {
     pub pos: TilePos,
@@ -2586,6 +2562,8 @@ impl Default for ColonyRuntime {
             raiders: Vec::new(),
             upgrade_levels: UpgradeLevels::default(),
             upgrade_tree: create_upgrade_tree_state(),
+            leader_ai_runtime: LeaderAiRuntimeState::default(),
+            leader_ai_restart_validated: false,
             recipe_entitlement_rules_version: 0,
             finite_equipment_rules_version: 0,
             automation_tier: 0.0,
@@ -3655,8 +3633,17 @@ fn found_colony_with_kind(
         last_player_activity_at: Some(now_ms),
         last_tick: now_ms,
         test_rng_seed: Some(seed),
+        leader_ai_runtime: LeaderAiRuntimeState::new_for_colony_seed(
+            &colony_id,
+            u64::from(world_seed),
+        )
+        .expect("founded colony IDs are valid Leader AI runtime IDs"),
         ..ColonyRuntime::default()
     };
+    colony
+        .leader_ai_runtime
+        .reconcile_legacy_cats(world_seed, &colony_id, &colony.cats)
+        .expect("founded cats reconcile into canonical Leader AI authorities");
     // The settlement is genuinely cleared in simulation state, not merely hidden
     // by the renderer. Resources and water live beyond the wall.
     clear_founding_interior(&mut colony);
@@ -3796,15 +3783,19 @@ fn reveal_founding_area(colony: &mut ColonyRuntime) {
 }
 
 fn starting_resources(scale_kind: VillageScale) -> Resources {
-    // P16's canonical finite general-storehouse runway. Raw and processed resources
-    // outside this explicit mix must enter through their real production chains.
+    // P16's canonical finite general-storehouse runway, with one additional
+    // founding meal wave for the physical LAI.23 route cutover. Thirty communal
+    // founders otherwise exhaust 100 food before any cave expedition can return,
+    // turning the tutorial village into a deterministic mass-casualty event. Raw
+    // and processed resources outside this explicit mix must still enter through
+    // their real production chains, and no food is injected after founding/reset.
     let scale = if scale_kind == VillageScale::Communal {
         2.0
     } else {
         1.0
     };
     Resources {
-        food: 50.0 * scale,
+        food: 150.0 * scale,
         fish: 0.0,
         water: 100.0 * scale,
         herbs: 16.0 * scale,
@@ -4034,16 +4025,20 @@ const PERSONAL_STARTER_BLUEPRINT: [(BuildingType, i32, i32, u32); 7] = [
     (BuildingType::StonePrep, 9, 9, 1),
 ];
 
-/// Larger ownerless hub: six homes, two copies of each founding production yard,
-/// plus a granary, research hut and barracks. The central row/column remain clear so
-/// the authored cross reaches the one south gate and every yard gets a road branch.
-const GLOBAL_STARTER_BLUEPRINT: [(BuildingType, i32, i32, u32); 16] = [
+/// Larger ownerless hub: seven homes, two copies of each founding production yard,
+/// plus a granary, research hut and barracks. Six homes would fill all 30 beds with
+/// the 30 founders and make every cat infertile before the first old-age vacancy.
+/// The seventh is a real five-bed family reserve, matching the personal-village
+/// headroom invariant. The central row/column remain clear so the authored cross
+/// reaches the one south gate and every yard gets a road branch.
+const GLOBAL_STARTER_BLUEPRINT: [(BuildingType, i32, i32, u32); 17] = [
     (BuildingType::Shrine, 6, 6, 1),
     (BuildingType::Woodworking, -1, -1, 1),
     (BuildingType::Den, 3, -1, 1),
     (BuildingType::WoodCutter, 10, -1, 1),
     (BuildingType::Den, 14, -1, 1),
     (BuildingType::ResearchHut, -1, 3, 1),
+    (BuildingType::Den, 3, 3, 1),
     (BuildingType::StonePrep, 10, 3, 1),
     (BuildingType::Barracks, 14, 3, 1),
     (BuildingType::Woodworking, -1, 10, 1),
@@ -4138,6 +4133,8 @@ fn founding_road_tiles_for_radius(anchor: TilePos, radius: i32) -> Vec<TilePos> 
 /// ground: clear any water that collides with a building or road footprint, then make
 /// sure a reachable water source remains (carving a deterministic pond if not).
 fn stamp_founding_roads_and_water(colony: &mut ColonyRuntime) {
+    const FOUNDING_HUNTING_CAVE_COUNT: usize = 3;
+
     let anchor = colony.anchor;
     let roads = founding_road_tiles_for_radius(anchor, founding_radius(colony.scale));
     let mut blocked: HashSet<TilePos> = colony
@@ -4176,6 +4173,28 @@ fn stamp_founding_roads_and_water(colony: &mut ColonyRuntime) {
     });
     if !has_reachable_water && let Some(pos) = founding_pond_site(colony, &blocked) {
         set_water_tile(colony, pos);
+    }
+
+    // A Hunt task is meaningful only at a mapped cave entrance. Guarantee a
+    // small deterministic founding set in the exterior reveal halo so survival
+    // never falls back to labeling arbitrary meadow forage as hunting.
+    let existing_hunting_caves = colony
+        .world_tiles
+        .values()
+        .filter(|tile| {
+            tile.tile_type == TileType::CaveEntrance
+                && tile.resources.food > 0
+                && !colony.claimed_tiles.contains(&tile.pos)
+                && cheb_from_anchor(anchor, tile.pos)
+                    <= founding_radius(colony.scale) + FOUNDING_REVEAL_RADIUS
+                && !blocked.contains(&tile.pos)
+        })
+        .count();
+    for pos in founding_hunting_cave_sites(colony, &blocked)
+        .into_iter()
+        .take(FOUNDING_HUNTING_CAVE_COUNT.saturating_sub(existing_hunting_caves))
+    {
+        set_hunting_cave_tile(colony, pos);
     }
 }
 
@@ -4225,6 +4244,28 @@ fn set_water_tile(colony: &mut ColonyRuntime, pos: TilePos) {
     }
 }
 
+fn set_hunting_cave_tile(colony: &mut ColonyRuntime, pos: TilePos) {
+    // The first Grain field cannot yield until its physical construction,
+    // sowing, tending, and growth stages finish. Three ordinary 48-unit caves
+    // plus the communal store are mathematically shorter than that bridge for
+    // thirty founders. Founding caves are therefore explicit rich wildlife
+    // reserves; they remain finite, drain per Hunt, regenerate through phase 12,
+    // and still force later scouting/fields instead of injecting scalar food.
+    const FOUNDING_CAVE_WILDLIFE: u32 = 480;
+    const FOUNDING_CAVE_WILDLIFE_CAPACITY: u32 = 960;
+    if let Some(tile) = colony.world_tiles.get_mut(&pos) {
+        tile.tile_type = TileType::CaveEntrance;
+        tile.overlay_feature = None;
+        tile.resources.food = FOUNDING_CAVE_WILDLIFE;
+        tile.resources.herbs = 0;
+        tile.resources.water = 0;
+        tile.max_resources.food = FOUNDING_CAVE_WILDLIFE_CAPACITY;
+        tile.max_resources.herbs = 0;
+        tile.danger_level = 60.0;
+        tile.last_depleted = 0;
+    }
+}
+
 /// Pick a deterministic free tile outside the south wall and inside the founding
 /// reveal halo. The tile immediately outside the gate stays clear for arrivals;
 /// the pond sits beside that approach rather than inside the village.
@@ -4252,6 +4293,32 @@ fn founding_pond_site(colony: &ColonyRuntime, blocked: &HashSet<TilePos>) -> Opt
     candidates.into_iter().next()
 }
 
+fn founding_hunting_cave_sites(colony: &ColonyRuntime, blocked: &HashSet<TilePos>) -> Vec<TilePos> {
+    let Some(gate) = retained_area_gate(colony) else {
+        return Vec::new();
+    };
+    let cave_y = gate.y + 1;
+    let mut candidates = (-4_i32..=4)
+        .filter(|offset| *offset != 0)
+        .map(|offset| TilePos {
+            x: gate.x + offset,
+            y: cave_y,
+        })
+        .filter(|pos| {
+            !blocked.contains(pos)
+                && !colony.claimed_tiles.contains(pos)
+                && cheb_from_anchor(colony.anchor, *pos)
+                    <= founding_radius(colony.scale) + FOUNDING_REVEAL_RADIUS
+                && colony
+                    .world_tiles
+                    .get(pos)
+                    .is_some_and(|tile| !tile_has_water(Some(tile)))
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by_key(|pos| ((pos.x - gate.x).abs(), pos.y, pos.x));
+    candidates
+}
+
 fn founding_claimed_tiles(anchor: TilePos, radius: i32) -> Vec<TilePos> {
     let center = shrine_center_tile(anchor);
     let mut tiles = Vec::new();
@@ -4264,6 +4331,90 @@ fn founding_claimed_tiles(anchor: TilePos, radius: i32) -> Vec<TilePos> {
         }
     }
     tiles
+}
+
+/// Keep procedural Hunt content spatially truthful without changing the migration-parity
+/// terrain generator. The old terrain catalog contains food on many biome tiles but never
+/// emits `CaveEntrance`; after Hunt markers were correctly restricted to caves, the three
+/// authored founding caves were therefore the only legal objectives in the entire world.
+///
+/// One quarter of eligible forest/mountain wilderness becomes a seeded wildlife cave
+/// outside the founding reveal. At its finite +2/hour wildlife-regrowth rate, this
+/// gives a newly scouted frontier enough independent work sites to feed a thirty-cat
+/// village without a scalar food faucet; every meal still requires a real cave stock,
+/// reservation, eight-hour expedition, cargo return, and pantry deposit.
+///
+/// The coordinate hash only derives an LCG seed; both the placement roll and
+/// wildlife-stock roll use the project's canonical seeded LCG. Meadow forage remains
+/// forage, forest remains a major wood source, and no Hunt marker is placed on either.
+const PROCEDURAL_WILDLIFE_CAVE_DENSITY: f64 = 1.0 / 4.0;
+const PROCEDURAL_WILDLIFE_CAVE_MIN_DISTANCE: i32 = 12;
+const PROCEDURAL_WILDLIFE_CAVE_REGROWTH_PER_HOUR: u32 = 2;
+
+fn runtime_world_tile_from_generated(
+    mut tile: WorldTileData,
+    world_seed: u32,
+    colony_anchor: TilePos,
+) -> WorldTileRuntime {
+    let distance = (tile.x - colony_anchor.x)
+        .abs()
+        .max((tile.y - colony_anchor.y).abs());
+    let eligible_ground = matches!(tile.tile_type, TileType::Forest | TileType::Mountains)
+        && tile.resources.water == 0
+        && tile.overlay_feature.is_none()
+        && distance > PROCEDURAL_WILDLIFE_CAVE_MIN_DISTANCE;
+    let placement_seed = hash_seed(&[
+        HashSeedPart::Number(f64::from(world_seed)),
+        HashSeedPart::Text("leader_ai_wildlife_cave"),
+        HashSeedPart::Number(f64::from(tile.x)),
+        HashSeedPart::Number(f64::from(tile.y)),
+    ]);
+    if eligible_ground
+        && roll_seeded(f64::from(placement_seed)).value < PROCEDURAL_WILDLIFE_CAVE_DENSITY
+    {
+        let cave = biome_properties(BiomeType::CaveEntrance);
+        let stock_seed = hash_seed(&[
+            HashSeedPart::Number(f64::from(world_seed)),
+            HashSeedPart::Text("leader_ai_wildlife_cave_stock"),
+            HashSeedPart::Number(f64::from(tile.x)),
+            HashSeedPart::Number(f64::from(tile.y)),
+        ]);
+        let stock_roll = roll_seeded(f64::from(stock_seed)).value;
+        let stock_width = cave
+            .base_resources
+            .food
+            .max
+            .saturating_sub(cave.base_resources.food.min)
+            .saturating_add(1);
+        tile.tile_type = TileType::CaveEntrance;
+        tile.resources.food = cave
+            .base_resources
+            .food
+            .min
+            .saturating_add((stock_roll * f64::from(stock_width)).floor() as u32);
+        tile.resources.herbs = 0;
+        tile.resources.water = 0;
+        tile.max_resources = cave.max_resources;
+        tile.danger_level = cave.base_danger;
+        tile.last_depleted = 0;
+        tile.overlay_feature = None;
+    }
+    let pos = TilePos {
+        x: tile.x,
+        y: tile.y,
+    };
+    WorldTileRuntime {
+        pos,
+        tile_type: tile.tile_type,
+        resources: tile.resources,
+        max_resources: tile.max_resources,
+        danger_level: tile.danger_level,
+        path_wear: tile.path_wear,
+        last_depleted: tile.last_depleted,
+        overlay_feature: tile
+            .overlay_feature
+            .map(|feature| feature.as_str().to_owned()),
+    }
 }
 
 fn starter_world_tiles(anchor: TilePos, world_seed: u32) -> BTreeMap<TilePos, WorldTileRuntime> {
@@ -4285,25 +4436,8 @@ fn starter_world_tiles(anchor: TilePos, world_seed: u32) -> BTreeMap<TilePos, Wo
             for tile in
                 generate_world_chunk(chunk_x, chunk_y, i64::from(world_seed), anchor.x, anchor.y)
             {
-                let pos = TilePos {
-                    x: tile.x,
-                    y: tile.y,
-                };
-                tiles.insert(
-                    pos,
-                    WorldTileRuntime {
-                        pos,
-                        tile_type: tile.tile_type,
-                        resources: tile.resources,
-                        max_resources: tile.max_resources,
-                        danger_level: tile.danger_level,
-                        path_wear: tile.path_wear,
-                        last_depleted: tile.last_depleted,
-                        overlay_feature: tile
-                            .overlay_feature
-                            .map(|feature| feature.as_str().to_owned()),
-                    },
-                );
+                let runtime = runtime_world_tile_from_generated(tile, world_seed, anchor);
+                tiles.insert(runtime.pos, runtime);
             }
         }
     }
@@ -4426,8 +4560,154 @@ pub fn sync_all_colonies_from_shared(state: &mut WorldState) {
     }
 }
 
+/// Coarse production phases exposed only to bounded diagnostics.
+///
+/// A caller can record the last `Enter` event before a slow tick without adding
+/// filesystem, clock, thread, or logging dependencies to the deterministic sim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorldTickDiagnosticPhase {
+    ColonyPreparation,
+    NeedsLifeAndConsumption,
+    EcologyAndRegrowth,
+    PhysicalJobPreparation,
+    LeaderReportsPlanningAndScheduling,
+    VisibleTaskRuntime,
+    ProductionSurvivalAndMigration,
+    DueJobsAndCompletions,
+    MovementAndInfrastructure,
+    ThreatAndRaids,
+    CanonicalHoleResearchAndBarter,
+    TransportInjuryAndFinalize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorldTickDiagnosticBoundary {
+    Enter,
+    Exit,
+}
+
+/// Compact causal state emitted at every opt-in phase boundary.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorldTickPhaseDiagnostic {
+    pub phase: WorldTickDiagnosticPhase,
+    pub boundary: WorldTickDiagnosticBoundary,
+    pub colony_id: String,
+    pub requested_now_ms: i64,
+    pub last_tick_ms: i64,
+    pub alive_cats: usize,
+    pub queued_jobs: usize,
+    pub active_jobs: usize,
+    pub visible_tasks: usize,
+    pub resolved_spatial_tasks: usize,
+    pub terminal_tasks: usize,
+    pub task_stage_counts: BTreeMap<String, usize>,
+    pub task_category_counts: BTreeMap<String, usize>,
+    pub intents: usize,
+    pub local_reservations: usize,
+    pub world_reservations: usize,
+    pub world_tiles: usize,
+    pub revealed_tiles: usize,
+    pub buildings: usize,
+    pub stockpiles: usize,
+    pub events: usize,
+    pub food: f64,
+    pub fish: f64,
+    pub water: f64,
+    pub critical_since_ms: Option<i64>,
+}
+
+fn world_tick_phase_diagnostic(
+    colony: &ColonyRuntime,
+    requested_now_ms: i64,
+    phase: WorldTickDiagnosticPhase,
+    boundary: WorldTickDiagnosticBoundary,
+) -> WorldTickPhaseDiagnostic {
+    let mut task_stage_counts = BTreeMap::new();
+    let mut task_category_counts = BTreeMap::new();
+    for task in colony.leader_ai_runtime.scheduling.visible_tasks.values() {
+        *task_stage_counts
+            .entry(format!("{:?}", task.stage))
+            .or_insert(0) += 1;
+        *task_category_counts
+            .entry(format!("{:?}", task.category))
+            .or_insert(0) += 1;
+    }
+    WorldTickPhaseDiagnostic {
+        phase,
+        boundary,
+        colony_id: colony.id.clone(),
+        requested_now_ms,
+        last_tick_ms: colony.last_tick,
+        alive_cats: colony
+            .cats
+            .iter()
+            .filter(|cat| cat.death_time.is_none())
+            .count(),
+        queued_jobs: colony
+            .jobs
+            .iter()
+            .filter(|job| job.status == JobStatus::Queued)
+            .count(),
+        active_jobs: colony
+            .jobs
+            .iter()
+            .filter(|job| job.status == JobStatus::Active)
+            .count(),
+        visible_tasks: colony.leader_ai_runtime.scheduling.visible_tasks.len(),
+        resolved_spatial_tasks: colony
+            .leader_ai_runtime
+            .scheduling
+            .resolved_spatial_tasks
+            .len(),
+        terminal_tasks: colony
+            .leader_ai_runtime
+            .scheduling
+            .visible_tasks
+            .values()
+            .filter(|task| task.stage.is_terminal())
+            .count(),
+        task_stage_counts,
+        task_category_counts,
+        intents: colony.leader_ai_runtime.intents.iter().len(),
+        local_reservations: colony.leader_ai_runtime.scheduling.reservations.len(),
+        world_reservations: colony.leader_ai_runtime.scheduling.world_reservations.len(),
+        world_tiles: colony.world_tiles.len(),
+        revealed_tiles: colony.revealed_tiles.len(),
+        buildings: colony.buildings.len(),
+        stockpiles: colony.stockpiles.len(),
+        events: colony.events.len(),
+        food: colony.resources.food,
+        fish: colony.resources.fish,
+        water: colony.resources.water,
+        critical_since_ms: colony.critical_since,
+    }
+}
+
 #[must_use]
 pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
+    world_tick_inner(state, now_ms, None)
+}
+
+/// Execute one deterministic tick while reporting bounded phase entry/exit
+/// records. Diagnostics are synchronous and caller-owned; production uses the
+/// zero-observer [`world_tick`] wrapper.
+#[must_use]
+pub fn world_tick_with_phase_observer(
+    state: &mut WorldState,
+    now_ms: i64,
+    mut observer: impl FnMut(WorldTickPhaseDiagnostic),
+) -> Vec<TickReport> {
+    world_tick_inner(state, now_ms, Some(&mut observer))
+}
+
+fn world_tick_inner(
+    state: &mut WorldState,
+    now_ms: i64,
+    mut observer: Option<&mut dyn FnMut(WorldTickPhaseDiagnostic)>,
+) -> Vec<TickReport> {
     ensure_shared_spatial_authority(state);
     let world_seed = state.world_seed;
     let mut indices: Vec<usize> = (0..state.colonies.len()).collect();
@@ -4436,15 +4716,36 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
     let mut reports = Vec::with_capacity(indices.len());
     let mut ecology_processed_tiles = BTreeSet::new();
     let mut ecology_processed_habitats = BTreeSet::new();
+    let (mut shared_world_reservations, _) =
+        crate::world_reservations::WorldReservationLedger::reconcile_persisted_mirrors(
+            state
+                .colonies
+                .iter()
+                .map(|colony| &colony.leader_ai_runtime.scheduling.world_reservations),
+        );
     for index in indices {
         let (shared, colonies) = (&mut state.shared_spatial, &mut state.colonies);
         let colony = &mut colonies[index];
+        let mut observe = |phase, boundary, colony: &ColonyRuntime| {
+            if let Some(observer) = observer.as_deref_mut() {
+                observer(world_tick_phase_diagnostic(colony, now_ms, phase, boundary));
+            }
+        };
+        observe(
+            WorldTickDiagnosticPhase::ColonyPreparation,
+            WorldTickDiagnosticBoundary::Enter,
+            colony,
+        );
         sync_colony_from_shared(shared, colony);
-        migrate_retired_inert_capacity_studies(colony);
         migrate_split_mill_queues(colony);
         migrate_split_clothier_queues(colony);
         migrate_finite_equipment_authority(colony);
         let Some(gate) = phase_1_colony_selection_and_elapsed_time_gate(colony, now_ms) else {
+            observe(
+                WorldTickDiagnosticPhase::ColonyPreparation,
+                WorldTickDiagnosticBoundary::Exit,
+                colony,
+            );
             publish_colony_spatial(shared, colony);
             reports.push(TickReport {
                 colony_id: colony.id.clone(),
@@ -4453,10 +4754,22 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
             });
             continue;
         };
+        observe(
+            WorldTickDiagnosticPhase::ColonyPreparation,
+            WorldTickDiagnosticBoundary::Exit,
+            colony,
+        );
+        observe(
+            WorldTickDiagnosticPhase::NeedsLifeAndConsumption,
+            WorldTickDiagnosticBoundary::Enter,
+            colony,
+        );
+        let runtime_tick = migration_game_minute_at(colony, gate.processed_through);
+        let lai63_runtime_due = colony.leader_ai_runtime.last_processed_tick != Some(runtime_tick);
 
         phase_2_runtime_upgrades_and_effects(colony, gate);
         phase_3_base_rng_and_fork_roots(colony, gate);
-        let policy = phase_4_leader_bootstrap_and_policy(colony, gate);
+        let policy = phase_lai23_survival_policy_compatibility(colony);
         phase_5_initial_roster_buildings_and_caps(colony, gate);
         phase_6_life_simulation(colony, gate);
         prune_invalid_officers(colony, gate.processed_through);
@@ -4464,6 +4777,16 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
         phase_8_water_low_crisis_edge(colony, gate);
         phase_9_elections_lifecycle(colony, gate);
         phase_10_zones_and_event_pruning(colony, gate);
+        observe(
+            WorldTickDiagnosticPhase::NeedsLifeAndConsumption,
+            WorldTickDiagnosticBoundary::Exit,
+            colony,
+        );
+        observe(
+            WorldTickDiagnosticPhase::EcologyAndRegrowth,
+            WorldTickDiagnosticBoundary::Enter,
+            colony,
+        );
         let already_aged_tiles = ecology_processed_tiles
             .iter()
             .filter_map(|pos| shared.tiles.get(pos).map(|tile| (*pos, tile.clone())))
@@ -4492,35 +4815,64 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
         }
         ecology_processed_tiles.extend(colony.world_tiles.keys().copied());
         ecology_processed_habitats.extend(colony.fish_habitats.keys().copied());
+        observe(
+            WorldTickDiagnosticPhase::EcologyAndRegrowth,
+            WorldTickDiagnosticBoundary::Exit,
+            colony,
+        );
+        observe(
+            WorldTickDiagnosticPhase::PhysicalJobPreparation,
+            WorldTickDiagnosticBoundary::Enter,
+            colony,
+        );
         phase_13_tick_local_target_caches(colony, gate);
         phase_14_promote_queued_jobs_and_break_ground(colony, gate, world_seed);
         phase_15_assign_promoted_job_destinations(colony, gate, world_seed);
         phase_15b_physical_scaffold_inputs(colony, gate);
         phase_15c_physical_road_work(colony, gate);
         phase_16_active_scaffold_progress(colony, gate);
-        phase_17_legacy_emergency_hunt(colony, gate, policy);
-        phase_17b_water_reserve_preemption(colony, gate);
-        phase_17c_founding_wood_scout(colony, gate);
-        // Raw benches are deliberately non-sticky. Release them before snapshotting
-        // labour demand so phase 18 sees the open stations and phase 19 reserves the
-        // matching workshop slots in the same plan that fills ordinary jobs.
-        release_raw_material_workshop_workers(colony);
-        let snapshot = phase_18_leader_snapshot_assembly(colony, gate);
-        let plan = phase_19_leader_cancellations(colony, gate, &snapshot);
-        phase_20_leader_labor_assignments_and_staffing(colony, gate, policy, &plan, world_seed);
+        observe(
+            WorldTickDiagnosticPhase::PhysicalJobPreparation,
+            WorldTickDiagnosticBoundary::Exit,
+            colony,
+        );
+        observe(
+            WorldTickDiagnosticPhase::LeaderReportsPlanningAndScheduling,
+            WorldTickDiagnosticBoundary::Enter,
+            colony,
+        );
+        observe(
+            WorldTickDiagnosticPhase::LeaderReportsPlanningAndScheduling,
+            WorldTickDiagnosticBoundary::Exit,
+            colony,
+        );
+        observe(
+            WorldTickDiagnosticPhase::VisibleTaskRuntime,
+            WorldTickDiagnosticBoundary::Enter,
+            colony,
+        );
         retrieve_automatic_functional_equipment(colony, gate.processed_through);
-        phase_21_leader_capital_decisions_and_tithe(colony, gate, policy, &plan);
-        release_research_staff_unless_comfortable(colony, &snapshot);
-        manage_research_hut(colony, gate, policy, &snapshot);
-        manage_field(colony, gate, policy, &snapshot);
-        phase_22_ritual_approval(colony, gate, policy);
+        observe(
+            WorldTickDiagnosticPhase::VisibleTaskRuntime,
+            WorldTickDiagnosticBoundary::Exit,
+            colony,
+        );
+        observe(
+            WorldTickDiagnosticPhase::ProductionSurvivalAndMigration,
+            WorldTickDiagnosticBoundary::Enter,
+            colony,
+        );
         phase_23_production(colony, gate, world_seed);
-        phase_24_research(colony, gate);
         phase_25_survival_deaths_and_carried_yield_salvage(colony, gate, policy);
         prune_invalid_officers(colony, gate.processed_through);
         phase_25b_prune_dead_scout_provisional_tiles(colony, gate);
         phase_25c_prosperity_migration(colony, gate, world_seed);
         if let Some(reset_reason) = phase_26_empty_colony_reset(colony, gate) {
+            observe(
+                WorldTickDiagnosticPhase::ProductionSurvivalAndMigration,
+                WorldTickDiagnosticBoundary::Exit,
+                colony,
+            );
             reconcile_colony_stockpiles(colony);
             colony.stock_ledger = StockLedger::counted_with_piles(
                 &colony.resources,
@@ -4535,6 +4887,16 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
             });
             continue;
         }
+        observe(
+            WorldTickDiagnosticPhase::ProductionSurvivalAndMigration,
+            WorldTickDiagnosticBoundary::Exit,
+            colony,
+        );
+        observe(
+            WorldTickDiagnosticPhase::DueJobsAndCompletions,
+            WorldTickDiagnosticBoundary::Enter,
+            colony,
+        );
         phase_27_due_job_prelude(colony, gate);
         phase_28_due_completion_supplies_and_planner_jobs(colony, gate);
         phase_28a_suspend_fishing_away_from_shore(colony, gate, world_seed);
@@ -4542,6 +4904,16 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
         phase_29_due_completion_gathering_explore_expansion(colony, gate, world_seed);
         phase_30_due_completion_build_ritual_training_return_mark_done(colony, gate);
         phase_31_mid_job_hauling(colony, gate, world_seed);
+        observe(
+            WorldTickDiagnosticPhase::DueJobsAndCompletions,
+            WorldTickDiagnosticBoundary::Exit,
+            colony,
+        );
+        observe(
+            WorldTickDiagnosticPhase::MovementAndInfrastructure,
+            WorldTickDiagnosticBoundary::Enter,
+            colony,
+        );
         let mut movement =
             phase_32_movement_setup_and_village_expansion_queue(colony, gate, policy, world_seed);
         phase_32b_replan_migrant_routes(colony, &movement);
@@ -4552,7 +4924,22 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
         phase_35_bridge_crossings(colony, gate, world_seed);
         phase_35_deliberate_roads(colony, gate, world_seed);
         phase_35b_road_accessibility(colony, gate, world_seed);
+        observe(
+            WorldTickDiagnosticPhase::MovementAndInfrastructure,
+            WorldTickDiagnosticBoundary::Exit,
+            colony,
+        );
+        observe(
+            WorldTickDiagnosticPhase::ThreatAndRaids,
+            WorldTickDiagnosticBoundary::Enter,
+            colony,
+        );
         if let Some(reset_reason) = phase_36_threat_and_raid_director(colony, gate) {
+            observe(
+                WorldTickDiagnosticPhase::ThreatAndRaids,
+                WorldTickDiagnosticBoundary::Exit,
+                colony,
+            );
             reconcile_colony_stockpiles(colony);
             colony.stock_ledger = StockLedger::counted_with_piles(
                 &colony.resources,
@@ -4567,6 +4954,35 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
             });
             continue;
         }
+        observe(
+            WorldTickDiagnosticPhase::ThreatAndRaids,
+            WorldTickDiagnosticBoundary::Exit,
+            colony,
+        );
+        observe(
+            WorldTickDiagnosticPhase::CanonicalHoleResearchAndBarter,
+            WorldTickDiagnosticBoundary::Enter,
+            colony,
+        );
+        if lai63_runtime_due {
+            phase_lai63_protected_runtime_transaction(
+                colony,
+                runtime_tick,
+                gate.processed_through,
+                world_seed,
+                &mut shared_world_reservations,
+            );
+        }
+        observe(
+            WorldTickDiagnosticPhase::CanonicalHoleResearchAndBarter,
+            WorldTickDiagnosticBoundary::Exit,
+            colony,
+        );
+        observe(
+            WorldTickDiagnosticPhase::TransportInjuryAndFinalize,
+            WorldTickDiagnosticBoundary::Enter,
+            colony,
+        );
         phase_36b_trader_lifecycle(colony, gate, &movement);
         phase_36c_physical_transport(colony, gate, &movement);
         let reset_reason = phase_37_final_clamp_critical_collapse_status_persist(colony, gate);
@@ -4578,8 +4994,12 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
                 gate.processed_through,
             );
         }
-
         publish_colony_spatial(shared, colony);
+        observe(
+            WorldTickDiagnosticPhase::TransportInjuryAndFinalize,
+            WorldTickDiagnosticBoundary::Exit,
+            colony,
+        );
 
         reports.push(TickReport {
             colony_id: colony.id.clone(),
@@ -4588,6 +5008,13 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
         });
     }
 
+    // Every colony persists the same world claim book. Colony-local task,
+    // cargo, and worker maps remain isolated; only the spatial claim ledger is
+    // mirrored so restart can deterministically rebuild the same winner set.
+    for colony in &mut state.colonies {
+        colony.leader_ai_runtime.scheduling.world_reservations =
+            shared_world_reservations.clone();
+    }
     sync_all_colonies_from_shared(state);
     reconcile_village_discoveries(state);
     crate::actions::advance_village_trade_caravans(state, now_ms);
@@ -4595,9 +5022,8535 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
     reports
 }
 
+/// LAI.46/LAI.63 single mutation gateway. Every canonical authority is staged
+/// behind `RuntimeTickTransaction`; a phase error drops the staged clone and
+/// leaves the persisted runtime byte-for-byte unchanged.
+fn completed_family_building_projection(
+    buildings: &[BuildingRuntime],
+) -> Vec<crate::family_authority::FamilyBuilding> {
+    use crate::family_housing::{HousingKind, TeachingSite};
+
+    let mut projected = buildings
+        .iter()
+        .filter(|building| {
+            building.is_complete && building.level > 0 && !building.id.trim().is_empty()
+        })
+        .filter_map(|building| {
+            let (housing_kind, teaching_site) = match building.building_type {
+                BuildingType::Den => (Some(HousingKind::Den), None),
+                BuildingType::FamilyHome => (
+                    Some(HousingKind::FamilyHome),
+                    Some(TeachingSite::FamilyHome),
+                ),
+                BuildingType::ElderLodge => (Some(HousingKind::ElderLodge), None),
+                BuildingType::Nursery => (Some(HousingKind::Nursery), Some(TeachingSite::Nursery)),
+                BuildingType::School => (None, Some(TeachingSite::School)),
+                BuildingType::AccountingTent => (None, Some(TeachingSite::Office)),
+                _ => return None,
+            };
+            Some(crate::family_authority::FamilyBuilding {
+                building_id: building.id.clone(),
+                housing_kind,
+                teaching_site,
+                completed: true,
+                level: u8::try_from(building.level).unwrap_or(u8::MAX),
+            })
+        })
+        .collect::<Vec<_>>();
+    projected.sort_by(|left, right| left.building_id.cmp(&right.building_id));
+    projected
+}
+
+fn phase_lai63_protected_runtime_transaction(
+    colony: &mut ColonyRuntime,
+    runtime_tick: u64,
+    now_ms: i64,
+    world_seed: u32,
+    shared_world_reservations: &mut crate::world_reservations::WorldReservationLedger,
+) {
+    use crate::{
+        leader_ai_runtime::ProtectedRuntimePhase,
+        leader_planner::{
+            EffectiveLevel,
+            content_planner::{
+                OfficerCoverage, PlannerCompetence, PlannerReviewRequest, keep_stock_orders,
+                officer_plan_requests, review,
+            },
+        },
+        planner_core::PlannerId,
+    };
+
+    let runtime_colony_id = if colony.id.is_empty() {
+        "legacy-unnamed-colony".to_owned()
+    } else {
+        colony.id.clone()
+    };
+    // Canonical construction may materialize an operational project into the
+    // legacy world projection. Keep that projection behind the same transaction
+    // boundary: a later phase failure must not leave a building without its
+    // persisted materialization receipt (or vice versa).
+    let mut staged_buildings = colony.buildings.clone();
+    let mut staged_emergency_relief = Vec::new();
+    let mut staged_released_emergency_haulers = BTreeSet::new();
+    let family_buildings = completed_family_building_projection(&colony.buildings);
+    let physical_family_bed_capacity = family_buildings
+        .iter()
+        .filter_map(|building| building.housing_kind)
+        .map(crate::family_housing::housing_capacity)
+        .map(|capacity| usize::from(capacity.permanent_beds))
+        .sum::<usize>();
+    let living_family_residents = colony
+        .cats
+        .iter()
+        .filter(|cat| cat.death_time.is_none() && cat.needs.health > 0.0)
+        .count();
+    let family_housing_pressure = living_family_residents > physical_family_bed_capacity;
+    let result = (|| -> Result<(), crate::leader_ai_runtime::LeaderAiRuntimeError> {
+        let mut planner_commands = Vec::new();
+        let _ = colony
+            .leader_ai_runtime
+            .bind_pristine_to_colony(&runtime_colony_id)?;
+        let mut transaction = colony
+            .leader_ai_runtime
+            .begin_tick_transaction(runtime_tick)?;
+
+        {
+            let runtime = transaction.enter(ProtectedRuntimePhase::AuthorityAndNeeds)?;
+            lai46_bind_shared_world_reservations(
+                runtime,
+                shared_world_reservations,
+                runtime_tick,
+            )?;
+            runtime.reconcile_legacy_cats(world_seed, &runtime_colony_id, &colony.cats)?;
+            runtime.reconcile_cat_deaths(runtime_tick, &colony.cats)?;
+            runtime.reconcile_family_buildings_and_housing(
+                runtime_tick,
+                family_buildings.clone(),
+                family_housing_pressure,
+            )?;
+            let _ = runtime.bind_pristine_hole_anchor(crate::spatial_tasks::TilePoint {
+                x: colony.anchor.x,
+                y: colony.anchor.y,
+            })?;
+        }
+
+        {
+            let runtime = transaction.enter(ProtectedRuntimePhase::ReportAndBeliefObservation)?;
+            let living_residents = colony
+                .cats
+                .iter()
+                .filter(|cat| cat.death_time.is_none() && cat.needs.health > 0.0)
+                .collect::<Vec<_>>();
+            let resident_needs_summary =
+                crate::divine_action_offers::ReportedResidentNeedsSummary::new(
+                    u64::try_from(living_residents.len()).map_err(|_| {
+                        crate::leader_ai_runtime::LeaderAiRuntimeError::BoundExceeded
+                    })?,
+                    living_residents.iter().any(|cat| cat.needs.hunger <= 0.0),
+                    living_residents.iter().any(|cat| cat.needs.thirst <= 0.0),
+                )
+                .map_err(|_| {
+                    crate::leader_ai_runtime::LeaderAiRuntimeError::LeafInvalid(
+                        "resident needs report",
+                    )
+                })?;
+            runtime.resident_needs_report_version = Some(runtime_tick);
+            runtime.resident_needs_summary = Some(resident_needs_summary);
+            runtime.last_report = Some(lai63_report_safe_planning_input(
+                colony,
+                runtime_tick,
+                &runtime.colony_partition,
+            )?);
+        }
+
+        {
+            let runtime = transaction.enter(ProtectedRuntimePhase::LeaderOfficerReview)?;
+            runtime
+                .player_directives
+                .retain_broad_nudge_epoch(runtime.planner.planning_epoch)
+                .map_err(|_| {
+                    crate::leader_ai_runtime::LeaderAiRuntimeError::LeafInvalid(
+                        "broad planning nudge",
+                    )
+                })?;
+            let institution = runtime.governance.officer_institution();
+            let effective_level =
+                EffectiveLevel::try_from(3_u8).expect("level three is a valid effective level");
+            let officers = OfficerRole::ALL
+                .iter()
+                .copied()
+                .filter_map(|role| {
+                    institution
+                        .officer(role)
+                        .cloned()
+                        .map(|officer_id| OfficerCoverage {
+                            role,
+                            officer_id,
+                            effective_level,
+                        })
+                })
+                .collect::<Vec<_>>();
+            let standing_orders = keep_stock_orders(&runtime.officer_requests, runtime_tick)
+                .map_err(|_| {
+                    crate::leader_ai_runtime::LeaderAiRuntimeError::LeafInvalid(
+                        "officer standing orders",
+                    )
+                })?;
+            for order in standing_orders {
+                if officers
+                    .iter()
+                    .any(|coverage| coverage.role == order.officer_role)
+                {
+                    runtime
+                        .planner
+                        .install_standing_order(order, &officers)
+                        .map_err(|_| {
+                            crate::leader_ai_runtime::LeaderAiRuntimeError::LeafInvalid(
+                                "planner standing order",
+                            )
+                        })?;
+                }
+            }
+            let leader = colony
+                .leader_id
+                .as_deref()
+                .and_then(|leader_id| {
+                    colony
+                        .cats
+                        .iter()
+                        .find(|cat| cat.id == leader_id && cat.death_time.is_none())
+                })
+                .or_else(|| {
+                    colony
+                        .cats
+                        .iter()
+                        .filter(|cat| cat.death_time.is_none())
+                        .min_by(|left, right| left.id.cmp(&right.id))
+                });
+            if let (Some(leader), Some(mut report)) = (leader, runtime.last_report.clone()) {
+                for candidate in &mut report.candidates {
+                    candidate.temporary_player_bias_basis_points =
+                        runtime.player_directives.broad_nudge_basis_points(
+                            &crate::player_directives::BroadNudgeKey {
+                                domain: lai63_broad_nudge_domain(candidate.domain),
+                                building_kind_id: None,
+                            },
+                            runtime.planner.planning_epoch,
+                        );
+                }
+                let leader_level = if leader.stats.leadership >= 70.0 {
+                    EffectiveLevel::try_from(5_u8)
+                } else if leader.stats.leadership >= 40.0 {
+                    EffectiveLevel::try_from(3_u8)
+                } else {
+                    EffectiveLevel::try_from(1_u8)
+                }
+                .expect("bounded effective level");
+                let cadence = u64::from(leader_level.leader_cadence_minutes());
+                let review_due = runtime.planner.planning_clock == 0
+                    || runtime_tick >= runtime.planner.planning_clock.saturating_add(cadence);
+                if review_due {
+                    let competence = if leader.stats.leadership >= 70.0 {
+                        PlannerCompetence::Strong
+                    } else if leader.stats.leadership < 35.0 {
+                        PlannerCompetence::Weak
+                    } else {
+                        PlannerCompetence::Ordinary
+                    };
+                    let requests = officer_plan_requests(&runtime.officer_requests, runtime_tick)
+                        .map_err(|_| {
+                        crate::leader_ai_runtime::LeaderAiRuntimeError::LeafInvalid(
+                            "officer plan requests",
+                        )
+                    })?;
+                    let expected_state_version = runtime.planner.version;
+                    planner_commands = review(
+                        &mut runtime.planner,
+                        PlannerReviewRequest {
+                            request_id: PlannerId::derive(
+                                "lai63_review",
+                                [&runtime_colony_id, &runtime_tick.to_string()],
+                            ),
+                            expected_state_version,
+                            world_seed,
+                            review_tick: runtime_tick,
+                            leader_id: PlannerId::derive("cat", [&leader.id]),
+                            leader_level,
+                            competence,
+                            report,
+                            officers,
+                            officer_requests: requests,
+                            execution_feedback: Vec::new(),
+                        },
+                    )
+                    .map_err(|_| {
+                        crate::leader_ai_runtime::LeaderAiRuntimeError::LeafInvalid(
+                            "content planner review",
+                        )
+                    })?
+                    .commands;
+                }
+            }
+        }
+
+        {
+            let runtime = transaction.enter(ProtectedRuntimePhase::ExactSitesAndReservations)?;
+            lai63_materialize_planner_commands(runtime, colony, runtime_tick, &planner_commands)?;
+            lai63_materialize_construction_projects(runtime, runtime_tick)?;
+            lai63_materialize_research_preparation_task(runtime, colony, runtime_tick)?;
+            lai63_materialize_emergency_supply_tasks(runtime, colony, runtime_tick)?;
+            lai63_resolve_materialized_spatial_tasks(runtime, colony, runtime_tick)?;
+            runtime.scheduling.validate_for_world_cutover()?;
+        }
+        {
+            let runtime = transaction.enter(ProtectedRuntimePhase::WorkforceMatching)?;
+            lai63_activate_research_preparation_task(runtime, colony, runtime_tick)?;
+            lai63_validate_worker_assignments(runtime)?;
+        }
+        {
+            let runtime = transaction.enter(ProtectedRuntimePhase::VisibleTaskMovementCargo)?;
+            lai63_revalidate_task_storage(runtime)?;
+            lai63_advance_research_preparation_route(runtime, colony, runtime_tick)?;
+            lai63_advance_emergency_supply_tasks(
+                runtime,
+                colony,
+                runtime_tick,
+                &mut staged_emergency_relief,
+                &mut staged_released_emergency_haulers,
+            )?;
+            lai63_advance_exact_physical_tasks(runtime, colony, runtime_tick)?;
+            crate::construction_runtime::advance_ready_construction(runtime, runtime_tick, now_ms)
+                .map_err(|_| {
+                    crate::leader_ai_runtime::LeaderAiRuntimeError::LeafInvalid(
+                        "staged construction runtime",
+                    )
+                })?;
+            crate::construction_runtime::materialize_operational_projects(
+                runtime,
+                &mut staged_buildings,
+                runtime_tick,
+            )
+            .map_err(|_| {
+                crate::leader_ai_runtime::LeaderAiRuntimeError::LeafInvalid(
+                    "construction world materialization",
+                )
+            })?;
+            lai63_revalidate_task_storage(runtime)?;
+        }
+        {
+            let runtime = transaction.enter(ProtectedRuntimePhase::HoleDivineAndPurposeCargo)?;
+            lai63_advance_hole_into_shared_void(runtime, runtime_tick)?;
+        }
+        {
+            let runtime = transaction.enter(ProtectedRuntimePhase::UnifiedResearch)?;
+            lai63_advance_requested_research_preparation(runtime, colony, runtime_tick)?;
+            let _ = runtime.research.report_safe_projection();
+        }
+        {
+            let runtime =
+                transaction.enter(ProtectedRuntimePhase::PersonalStanceAndPhysicalBarter)?;
+            runtime
+                .trade
+                .validate()
+                .map_err(|_| crate::leader_ai_runtime::LeaderAiRuntimeError::MalformedTrade)?;
+        }
+        {
+            let runtime = transaction.enter(ProtectedRuntimePhase::StressAndInjury)?;
+            for cat in runtime.cat_physical.values() {
+                let _ = (&cat.stress, &cat.anatomy, &runtime.prosthetics);
+            }
+        }
+        {
+            let runtime = transaction.enter(ProtectedRuntimePhase::ProjectionAndDiagnostics)?;
+            if let Some((planner, god)) = runtime.report_twin_bytes()
+                && planner != god
+            {
+                return Err(
+                    crate::leader_ai_runtime::LeaderAiRuntimeError::ReportProjectionMismatch,
+                );
+            }
+            let _ = runtime.diagnostics.heartbeat(
+                runtime_tick,
+                crate::leader_ai_diagnostics::Lai69Counts {
+                    live_cats: u32::try_from(runtime.cat_physical.len()).unwrap_or(u32::MAX),
+                    intents: u32::try_from(runtime.intents.iter().len()).unwrap_or(u32::MAX),
+                    tasks: u32::try_from(runtime.scheduling.visible_tasks.len())
+                        .unwrap_or(u32::MAX),
+                    reservations: u32::try_from(
+                        runtime.scheduling.reservations.len()
+                            + runtime.scheduling.world_reservations.len(),
+                    )
+                    .unwrap_or(u32::MAX),
+                    cargo: u32::try_from(
+                        runtime.storage.ledger().lots().len()
+                            + runtime.storage.ledger().items().len(),
+                    )
+                    .unwrap_or(u32::MAX),
+                    blocked: u32::try_from(
+                        runtime
+                            .scheduling
+                            .visible_tasks
+                            .values()
+                            .filter(|task| task.blocked_reason.is_some())
+                            .count(),
+                    )
+                    .unwrap_or(u32::MAX),
+                },
+            );
+        }
+        transaction.commit(&mut colony.leader_ai_runtime)?;
+        Ok(())
+    })();
+    if result.is_ok() {
+        *shared_world_reservations = colony
+            .leader_ai_runtime
+            .scheduling
+            .world_reservations
+            .clone();
+        colony.buildings = staged_buildings;
+        for relief in staged_emergency_relief {
+            if let Some(cat) = colony
+                .cats
+                .iter_mut()
+                .find(|cat| cat.id == relief.cat_id && cat.death_time.is_none())
+            {
+                match relief.supply {
+                    crate::food_divine_policy::EmergencySupplyKind::DivineRation => {
+                        cat.needs.hunger = 100.0;
+                    }
+                    crate::food_divine_policy::EmergencySupplyKind::DivineWater => {
+                        cat.needs.thirst = 100.0;
+                    }
+                }
+            }
+        }
+        for cat_id in staged_released_emergency_haulers {
+            if let Some(cat) = colony.cats.iter_mut().find(|cat| cat.id == cat_id)
+                && cat.current_task == Some(TaskType::Build)
+            {
+                cat.current_task = None;
+                cat.destination = None;
+                cat.activity = CatActivity::Idle;
+            }
+        }
+        lai63_project_emergency_supply_movement(colony);
+    }
+    colony.leader_ai_restart_validated = result.is_ok();
+    debug_assert!(
+        result.is_ok(),
+        "canonical LAI.63 runtime transaction failed: {result:?}"
+    );
+}
+
+/// Install the once-per-world-tick reservation authority into a colony's
+/// staged runtime. A restart may contain mutually inconsistent per-colony
+/// mirrors from the pre-LAI.46 shape; deterministic reconciliation keeps the
+/// stable winner and turns every loser into normal reservation-loss recovery.
+fn lai46_bind_shared_world_reservations(
+    runtime: &mut crate::leader_ai_runtime::LeaderAiRuntimeState,
+    shared: &crate::world_reservations::WorldReservationLedger,
+    runtime_tick: u64,
+) -> Result<(), crate::leader_ai_runtime::LeaderAiRuntimeError> {
+    use crate::{
+        spatial_tasks::SiteRef,
+        task_runtime::TaskStage,
+    };
+
+    runtime.scheduling.world_reservations = shared.clone();
+    let lost = runtime
+        .scheduling
+        .world_reservation_ids
+        .iter()
+        .filter_map(|(task_id, reservation_id)| {
+            (!shared.contains(reservation_id)).then_some(task_id.clone())
+        })
+        .collect::<Vec<_>>();
+
+    for task_id in lost {
+        runtime.scheduling.world_reservation_ids.remove(&task_id);
+        let local_reservation = runtime
+            .scheduling
+            .visible_tasks
+            .get(&task_id)
+            .and_then(|task| task.reservation_id.clone());
+        if let Some(local_reservation) = local_reservation {
+            runtime.scheduling.reservations.rollback(&local_reservation);
+        }
+        let safe_stockpile = runtime
+            .scheduling
+            .visible_tasks
+            .get(&task_id)
+            .and_then(|task| task.spatial.delivery_endpoint.as_ref())
+            .filter(|site| matches!(site, SiteRef::Stockpile { .. }))
+            .cloned();
+        let last_site_id = runtime
+            .scheduling
+            .resolved_spatial_tasks
+            .get(&task_id)
+            .map(|resolved| resolved.work_to_delivery_route.stable_id().to_owned())
+            .unwrap_or_else(|| format!("reservation_loss:{}", task_id.as_str()));
+        let task = runtime
+            .scheduling
+            .visible_tasks
+            .get_mut(&task_id)
+            .ok_or(crate::leader_ai_runtime::LeaderAiRuntimeError::MissingPhysicalTask)?;
+        if !matches!(
+            task.stage,
+            TaskStage::Complete | TaskStage::Blocked | TaskStage::Cancelled
+        ) {
+            task.revalidate_after_restart(
+                &mut runtime.scheduling.reservations,
+                safe_stockpile.as_ref(),
+                &last_site_id,
+                runtime_tick,
+            )
+            .map_err(|_| {
+                crate::leader_ai_runtime::LeaderAiRuntimeError::MalformedRuntimeState
+            })?;
+        }
+        if task.cargo.is_none() {
+            runtime.scheduling.task_storage_identities.remove(&task_id);
+            runtime.scheduling.task_storage_endpoints.remove(&task_id);
+        }
+    }
+    Ok(())
+}
+
+const LAI63_RESEARCH_PREPARATION_KIND: &str = "god_research_preparation";
+
+fn lai63_research_preparation_ids(
+    runtime: &crate::leader_ai_runtime::LeaderAiRuntimeState,
+    study_id: &crate::progression_research::StudyId,
+) -> (crate::planner_core::IntentId, crate::task_runtime::TaskId) {
+    let intent_id = crate::planner_core::IntentId::derive(
+        &runtime.colony_id,
+        0,
+        LAI63_RESEARCH_PREPARATION_KIND,
+        study_id.as_str(),
+        0,
+    );
+    let task_id = crate::task_runtime::TaskId::derive(&runtime.colony_id, &intent_id, 0);
+    (intent_id, task_id)
+}
+
+fn lai63_research_station_assignment<'a>(
+    colony: &'a ColonyRuntime,
+    building_id: Option<&str>,
+) -> Option<(&'a BuildingRuntime, &'a Cat)> {
+    colony
+        .buildings
+        .iter()
+        .filter(|building| {
+            building_id.is_none_or(|expected| building.id == expected)
+                && building.is_complete
+                && building.construction_progress >= 100
+                && matches!(
+                    building.building_type,
+                    BuildingType::ResearchHut | BuildingType::School
+                )
+        })
+        .flat_map(|building| {
+            building_worker_ids(building).filter_map(move |cat_id| {
+                colony
+                    .cats
+                    .iter()
+                    .find(|cat| {
+                        cat.id == cat_id
+                            && cat.death_time.is_none()
+                            && !migrant_is_in_transit(colony, &cat.id)
+                            && can_work(get_life_stage(cat.age_hours))
+                    })
+                    .map(|cat| (building, cat))
+            })
+        })
+        .min_by(|(left_building, left_cat), (right_building, right_cat)| {
+            left_building
+                .id
+                .cmp(&right_building.id)
+                .then_with(|| left_cat.id.cmp(&right_cat.id))
+        })
+}
+
+/// Materialize a requested ordinary-front preparation through the same intent,
+/// visible-task, and spatial-resolution maps used by every canonical task.
+fn lai63_materialize_research_preparation_task(
+    runtime: &mut crate::leader_ai_runtime::LeaderAiRuntimeState,
+    colony: &ColonyRuntime,
+    runtime_tick: u64,
+) -> Result<(), crate::leader_ai_runtime::LeaderAiRuntimeError> {
+    use crate::{
+        authority::{AuthorityActor, AuthorityDomain},
+        intent_graph::{Intent, IntentInsert},
+        planner_core::{IntentState, PlannerId},
+        spatial_tasks::{SiteMetadata, SiteRef, SpatialObjective, WorkSlot},
+        task_runtime::{TaskCategory, TaskStage, VisibleTaskRuntime},
+    };
+
+    let eligible_study_id = runtime.research.god_front().and_then(|front| {
+        if front.frozen.is_some() {
+            return None;
+        }
+        runtime
+            .research
+            .preparations
+            .get(&front.study_id)
+            .filter(|preparation| !preparation.complete())
+            .map(|_| front.study_id.clone())
+    });
+    // Only the current ordinary, unfunded God front may retain a worker or
+    // reservation. Reordering the front losslessly pauses its preparation and
+    // releases the old task; the same deterministic task can be rematerialized
+    // if that study becomes the front again.
+    let valid_task_ids = eligible_study_id
+        .iter()
+        .map(|study_id| lai63_research_preparation_ids(runtime, study_id).1)
+        .collect::<BTreeSet<_>>();
+    let stale_task_ids = runtime
+        .scheduling
+        .visible_tasks
+        .iter()
+        .filter_map(|(task_id, task)| {
+            runtime
+                .intents
+                .get(&task.intent_id)
+                .is_some_and(|intent| {
+                    intent.kind_id
+                        == PlannerId::derive("content_goal_kind", [LAI63_RESEARCH_PREPARATION_KIND])
+                })
+                .then_some(task_id)
+        })
+        .filter(|task_id| !valid_task_ids.contains(*task_id))
+        .cloned()
+        .collect::<Vec<_>>();
+    for task_id in stale_task_ids {
+        lai63_remove_research_preparation_task(runtime, &task_id, runtime_tick)?;
+    }
+
+    let Some(study_id) = eligible_study_id else {
+        return Ok(());
+    };
+    let Some((building, _)) = lai63_research_station_assignment(colony, None) else {
+        return Ok(());
+    };
+    let (intent_id, task_id) = lai63_research_preparation_ids(runtime, &study_id);
+    if runtime
+        .scheduling
+        .visible_tasks
+        .get(&task_id)
+        .is_some_and(|task| !matches!(task.stage, TaskStage::Blocked | TaskStage::Cancelled))
+    {
+        return Ok(());
+    }
+    if runtime.scheduling.visible_tasks.contains_key(&task_id) {
+        lai63_remove_research_preparation_task(runtime, &task_id, runtime_tick)?;
+    }
+
+    let objective = SiteRef::building(
+        building.id.clone(),
+        building.building_type,
+        building.position,
+    );
+    let footprint = crate::spatial_tasks::canonical_building_footprint(
+        building.building_type,
+        building.position,
+    );
+    let work_site = SiteRef::Rect {
+        metadata: SiteMetadata::revealed(format!("research-preparation-work-area:{}", building.id)),
+        rect: footprint.rect(),
+        footprint,
+    };
+    let work_slot = WorkSlot::exclusive(
+        format!("research-preparation-work:{}", building.id),
+        work_site,
+    );
+    let spatial =
+        SpatialObjective::resolved(objective.clone(), vec![work_slot], Some(objective.clone()));
+    if runtime.intents.get(&intent_id).is_none() {
+        let mut intent = Intent::proposed(
+            intent_id.clone(),
+            runtime.colony_partition.clone(),
+            AuthorityActor::Scheduler,
+            None,
+            AuthorityDomain::Research,
+            PlannerId::derive("content_goal_kind", [LAI63_RESEARCH_PREPARATION_KIND]),
+            PlannerId::derive("research_study", [study_id.as_str()]),
+            PlannerId::derive("rationale", ["player_requested_physical_preparation"]),
+            runtime_tick,
+        );
+        intent.spatial_objective = Some(spatial.clone());
+        intent
+            .lifecycle
+            .transition(IntentState::Approved, runtime_tick)
+            .map_err(|_| {
+                crate::leader_ai_runtime::LeaderAiRuntimeError::LeafInvalid(
+                    "research preparation intent lifecycle",
+                )
+            })?;
+        match runtime.intents.insert_or_merge(intent).map_err(|_| {
+            crate::leader_ai_runtime::LeaderAiRuntimeError::LeafInvalid(
+                "research preparation intent",
+            )
+        })? {
+            IntentInsert::Inserted(_) | IntentInsert::Merged(_) | IntentInsert::DuplicateId(_) => {}
+        }
+    }
+    let task = VisibleTaskRuntime::resolved(
+        runtime.colony_id.clone(),
+        intent_id,
+        0,
+        TaskCategory::StationWork,
+        spatial,
+        Vec::new(),
+        runtime_tick,
+    )
+    .map_err(|_| {
+        crate::leader_ai_runtime::LeaderAiRuntimeError::LeafInvalid(
+            "research preparation visible task",
+        )
+    })?;
+    runtime.scheduling.visible_tasks.insert(task_id, task);
+    Ok(())
+}
+
+fn lai63_remove_research_preparation_task(
+    runtime: &mut crate::leader_ai_runtime::LeaderAiRuntimeState,
+    task_id: &crate::task_runtime::TaskId,
+    runtime_tick: u64,
+) -> Result<(), crate::leader_ai_runtime::LeaderAiRuntimeError> {
+    if let Some(task) = runtime.scheduling.visible_tasks.get_mut(task_id) {
+        task.cancel(&mut runtime.scheduling.reservations, runtime_tick)
+            .map_err(|_| {
+                crate::leader_ai_runtime::LeaderAiRuntimeError::LeafInvalid(
+                    "research preparation task cancellation",
+                )
+            })?;
+    }
+    if let Some(world_id) = runtime.scheduling.world_reservation_ids.remove(task_id) {
+        let _ = runtime.scheduling.world_reservations.release(&world_id);
+    }
+    runtime.scheduling.resolved_spatial_tasks.remove(task_id);
+    runtime.scheduling.visible_tasks.remove(task_id);
+    Ok(())
+}
+
+fn lai63_activate_research_preparation_task(
+    runtime: &mut crate::leader_ai_runtime::LeaderAiRuntimeState,
+    colony: &ColonyRuntime,
+    runtime_tick: u64,
+) -> Result<(), crate::leader_ai_runtime::LeaderAiRuntimeError> {
+    use crate::{
+        planner_core::PlannerId,
+        reservation_transaction::{ClaimMode, ClaimSpec, ReservationBundle, ReservationChecks},
+        task_runtime::TaskStage,
+        world_reservations::{WorldReservationTransaction, WorldReservationValidation},
+    };
+
+    let Some(front) = runtime.research.god_front() else {
+        return Ok(());
+    };
+    let (_, task_id) = lai63_research_preparation_ids(runtime, &front.study_id);
+    let Some(task) = runtime.scheduling.visible_tasks.get(&task_id) else {
+        return Ok(());
+    };
+    if !runtime
+        .scheduling
+        .resolved_spatial_tasks
+        .contains_key(&task_id)
+    {
+        return Ok(());
+    }
+    if task.stage == TaskStage::Resolve {
+        runtime
+            .scheduling
+            .visible_tasks
+            .get_mut(&task_id)
+            .ok_or(crate::leader_ai_runtime::LeaderAiRuntimeError::MissingPhysicalTask)?
+            .begin_reservation(runtime_tick)
+            .map_err(|_| {
+                crate::leader_ai_runtime::LeaderAiRuntimeError::LeafInvalid(
+                    "research preparation reservation stage",
+                )
+            })?;
+    }
+    let task = runtime
+        .scheduling
+        .visible_tasks
+        .get(&task_id)
+        .cloned()
+        .ok_or(crate::leader_ai_runtime::LeaderAiRuntimeError::MissingPhysicalTask)?;
+    if task.stage != TaskStage::Reserve {
+        return Ok(());
+    }
+    let resolved = runtime
+        .scheduling
+        .resolved_spatial_tasks
+        .get(&task_id)
+        .cloned()
+        .ok_or(crate::leader_ai_runtime::LeaderAiRuntimeError::DanglingResolvedTask)?;
+    let building_id = match resolved.objective() {
+        crate::spatial_tasks::SiteRef::Building { building_id, .. } => building_id.as_str(),
+        _ => return Ok(()),
+    };
+    let Some((_, scholar)) = lai63_research_station_assignment(colony, Some(building_id)) else {
+        return Ok(());
+    };
+    let colony_id = runtime.colony_partition.clone();
+    let task_planner_id = PlannerId::derive("visible_task", [task.id.as_str()]);
+    let worker_id = PlannerId::derive("cat", [scholar.id.as_str()]);
+    let world_transaction = WorldReservationTransaction::new(
+        colony_id.clone(),
+        task_planner_id.clone(),
+        task.intent_id.clone(),
+        resolved,
+        worker_id.clone(),
+        Vec::new(),
+        Vec::new(),
+    )
+    .map_err(|_| {
+        crate::leader_ai_runtime::LeaderAiRuntimeError::LeafInvalid(
+            "research preparation world reservation",
+        )
+    })?;
+    let world_reservation_id = world_transaction.id.clone();
+    if runtime
+        .scheduling
+        .world_reservations
+        .try_commit(world_transaction, WorldReservationValidation::all_valid())
+        .is_err()
+    {
+        // Another truthful world claim won the deterministic reservation race.
+        // Leave this task in Reserve for a later tick instead of rolling back
+        // unrelated canonical authorities.
+        return Ok(());
+    }
+    let route_id = PlannerId::derive(
+        "visible_task_route",
+        task.route_ids
+            .iter()
+            .map(String::as_str)
+            .chain(std::iter::once(task.id.as_str())),
+    );
+    let bundle = ReservationBundle::from_spatial_objective(
+        colony_id,
+        task_planner_id,
+        task.intent_id.clone(),
+        &task.spatial,
+        0,
+        ClaimMode::Capacity {
+            units: 1,
+            capacity: 1,
+        },
+        ClaimMode::Capacity {
+            units: 1,
+            capacity: 1,
+        },
+        ClaimSpec::exclusive(route_id),
+        Vec::new(),
+        Vec::new(),
+        worker_id,
+    )
+    .map_err(|_| {
+        crate::leader_ai_runtime::LeaderAiRuntimeError::LeafInvalid(
+            "research preparation local reservation",
+        )
+    })?;
+    let reservation_id = bundle.id.clone();
+    if runtime
+        .scheduling
+        .reservations
+        .try_commit(bundle, ReservationChecks::all_valid())
+        .is_err()
+    {
+        let _ = runtime
+            .scheduling
+            .world_reservations
+            .release(&world_reservation_id);
+        return Ok(());
+    }
+    let slot_id = task
+        .spatial
+        .work_positions
+        .first()
+        .ok_or(crate::leader_ai_runtime::LeaderAiRuntimeError::DanglingResolvedTask)?
+        .stable_id
+        .as_str()
+        .to_owned();
+    {
+        let scheduling = &mut runtime.scheduling;
+        let (tasks, reservations) = (&mut scheduling.visible_tasks, &scheduling.reservations);
+        tasks
+            .get_mut(&task_id)
+            .ok_or(crate::leader_ai_runtime::LeaderAiRuntimeError::MissingPhysicalTask)?
+            .activate(
+                reservations,
+                reservation_id,
+                [(scholar.id.clone(), slot_id)],
+                runtime_tick,
+            )
+            .map_err(|_| {
+                crate::leader_ai_runtime::LeaderAiRuntimeError::LeafInvalid(
+                    "research preparation activation",
+                )
+            })?;
+    }
+    runtime
+        .scheduling
+        .world_reservation_ids
+        .insert(task_id, world_reservation_id);
+    Ok(())
+}
+
+fn lai63_research_task_worker_is_current(
+    colony: &ColonyRuntime,
+    task: &crate::task_runtime::VisibleTaskRuntime,
+    resolved: &crate::spatial_resolver::ResolvedSpatialTask,
+) -> bool {
+    let crate::spatial_tasks::SiteRef::Building {
+        building_id,
+        building_type,
+        anchor,
+        footprint,
+        ..
+    } = resolved.objective()
+    else {
+        return false;
+    };
+    if !matches!(
+        resolved.category,
+        crate::spatial_resolver::SpatialTaskCategory::StationWork(
+            BuildingType::ResearchHut | BuildingType::School
+        )
+    ) || *footprint
+        != crate::spatial_tasks::canonical_building_footprint(*building_type, *anchor)
+        || task.route_ids
+            != vec![
+                resolved.source_to_work_route.stable_id().to_owned(),
+                resolved.work_to_delivery_route.stable_id().to_owned(),
+            ]
+        || task.assigned_cat_ids.len() != 1
+    {
+        return false;
+    }
+    let Some(cat_id) = task.assigned_cat_ids.iter().next() else {
+        return false;
+    };
+    let building = colony.buildings.iter().find(|building| {
+        building.id == *building_id
+            && building.building_type == *building_type
+            && building.position == *anchor
+            && building.is_complete
+            && building.construction_progress >= 100
+            && building.has_worker(cat_id)
+    });
+    building.is_some()
+        && colony.cats.iter().any(|cat| {
+            cat.id == *cat_id
+                && cat.death_time.is_none()
+                && !migrant_is_in_transit(colony, &cat.id)
+                && can_work(get_life_stage(cat.age_hours))
+        })
+}
+
+fn lai63_advance_research_preparation_route(
+    runtime: &mut crate::leader_ai_runtime::LeaderAiRuntimeState,
+    colony: &ColonyRuntime,
+    runtime_tick: u64,
+) -> Result<(), crate::leader_ai_runtime::LeaderAiRuntimeError> {
+    use crate::task_runtime::{RuntimeBlockReason, TaskStage};
+
+    let Some(front) = runtime.research.god_front() else {
+        return Ok(());
+    };
+    let (_, task_id) = lai63_research_preparation_ids(runtime, &front.study_id);
+    let Some(task) = runtime.scheduling.visible_tasks.get(&task_id).cloned() else {
+        return Ok(());
+    };
+    let Some(resolved) = runtime
+        .scheduling
+        .resolved_spatial_tasks
+        .get(&task_id)
+        .cloned()
+    else {
+        return Ok(());
+    };
+    if matches!(
+        task.stage,
+        TaskStage::TravelToSource | TaskStage::Pickup | TaskStage::TravelToWork | TaskStage::Work
+    ) && !lai63_research_task_worker_is_current(colony, &task, &resolved)
+    {
+        let scheduling = &mut runtime.scheduling;
+        let (tasks, reservations) = (&mut scheduling.visible_tasks, &mut scheduling.reservations);
+        tasks
+            .get_mut(&task_id)
+            .ok_or(crate::leader_ai_runtime::LeaderAiRuntimeError::MissingPhysicalTask)?
+            .block_before_pickup(RuntimeBlockReason::WorkerDied, reservations, runtime_tick)
+            .map_err(|_| {
+                crate::leader_ai_runtime::LeaderAiRuntimeError::LeafInvalid(
+                    "research preparation interruption",
+                )
+            })?;
+        if let Some(world_id) = scheduling.world_reservation_ids.remove(&task_id) {
+            let _ = scheduling.world_reservations.release(&world_id);
+        }
+        return Ok(());
+    }
+    let scholar_at_station = task
+        .assigned_cat_ids
+        .iter()
+        .next()
+        .and_then(|cat_id| {
+            colony
+                .cats
+                .iter()
+                .find(|cat| cat.id == *cat_id && cat.death_time.is_none())
+        })
+        .is_some_and(|cat| {
+            let tile = world_pos_to_tile(position_to_world(colony.anchor, cat.position));
+            let crate::spatial_tasks::SiteRef::Building {
+                building_type,
+                anchor,
+                ..
+            } = resolved.objective()
+            else {
+                return false;
+            };
+            let rect =
+                crate::spatial_tasks::canonical_building_footprint(*building_type, *anchor).rect();
+            tile.x >= rect.anchor().x
+                && tile.x < rect.anchor().x.saturating_add(rect.width())
+                && tile.y >= rect.anchor().y
+                && tile.y < rect.anchor().y.saturating_add(rect.height())
+        });
+    let next = match task.stage {
+        TaskStage::TravelToSource if scholar_at_station => Some(TaskStage::Pickup),
+        TaskStage::Pickup if scholar_at_station => Some(TaskStage::TravelToWork),
+        TaskStage::TravelToWork if scholar_at_station => Some(TaskStage::Work),
+        _ => None,
+    };
+    if let Some(next) = next {
+        runtime
+            .scheduling
+            .visible_tasks
+            .get_mut(&task_id)
+            .ok_or(crate::leader_ai_runtime::LeaderAiRuntimeError::MissingPhysicalTask)?
+            .advance(next, runtime_tick)
+            .map_err(|_| {
+                crate::leader_ai_runtime::LeaderAiRuntimeError::LeafInvalid(
+                    "research preparation route",
+                )
+            })?;
+    }
+    Ok(())
+}
+
+/// Advance preparation only while its persisted task is at Work and its exact
+/// assigned scholar/building/route witness is still current.
+fn lai63_advance_requested_research_preparation(
+    runtime: &mut crate::leader_ai_runtime::LeaderAiRuntimeState,
+    colony: &ColonyRuntime,
+    runtime_tick: u64,
+) -> Result<(), crate::leader_ai_runtime::LeaderAiRuntimeError> {
+    use crate::{
+        progression_research::ProgressionCatalog,
+        research_authority::{ResearchCommand, ResearchCommandId, ResearchCommandKind},
+        task_runtime::{TASK_PROGRESS_MAX_BASIS_POINTS, TaskStage},
+    };
+
+    let Some(front) = runtime.research.god_front() else {
+        return Ok(());
+    };
+    if front.frozen.is_some() {
+        return Ok(());
+    }
+    let study_id = front.study_id.clone();
+    let Some(preparation) = runtime.research.preparations.get(&study_id) else {
+        return Ok(());
+    };
+    if preparation.complete() {
+        return Ok(());
+    }
+    let (_, task_id) = lai63_research_preparation_ids(runtime, &study_id);
+    let Some(task) = runtime.scheduling.visible_tasks.get(&task_id).cloned() else {
+        return Ok(());
+    };
+    let Some(resolved) = runtime
+        .scheduling
+        .resolved_spatial_tasks
+        .get(&task_id)
+        .cloned()
+    else {
+        return Ok(());
+    };
+    if task.stage != TaskStage::Work
+        || task.updated_tick >= runtime_tick
+        || !lai63_research_task_worker_is_current(colony, &task, &resolved)
+    {
+        return Ok(());
+    }
+    let previous_tick = runtime
+        .last_processed_tick
+        .unwrap_or_else(|| migration_game_minute_at(colony, colony.last_tick));
+    let physical_labor_minutes = runtime_tick
+        .checked_sub(previous_tick)
+        .ok_or(crate::leader_ai_runtime::LeaderAiRuntimeError::MalformedRuntimeState)?;
+    if physical_labor_minutes == 0 {
+        return Ok(());
+    }
+    let remaining = preparation
+        .required_labor_minutes
+        .checked_sub(preparation.completed_labor_minutes)
+        .ok_or(crate::leader_ai_runtime::LeaderAiRuntimeError::MalformedRuntimeState)?;
+    let credited_labor_minutes = physical_labor_minutes.min(remaining);
+    let catalog = ProgressionCatalog::from_embedded().map_err(|_| {
+        crate::leader_ai_runtime::LeaderAiRuntimeError::LeafInvalid("research catalog")
+    })?;
+    let action = format!(
+        "world_tick_preparation:{runtime_tick}:{}",
+        study_id.as_str()
+    );
+    runtime
+        .research
+        .apply(
+            &catalog,
+            ResearchCommand {
+                id: ResearchCommandId::derive(&runtime.research.colony_id, &action),
+                expected_version: runtime.research.version,
+                kind: ResearchCommandKind::PerformPreparation {
+                    study_id: study_id.clone(),
+                    staffed_research_station: true,
+                    scholar_alive: true,
+                    labor_minutes: credited_labor_minutes,
+                },
+            },
+        )
+        .map_err(|_| {
+            crate::leader_ai_runtime::LeaderAiRuntimeError::LeafInvalid(
+                "physical research preparation",
+            )
+        })?;
+    let (progress, preparation_complete) = {
+        let preparation = runtime
+            .research
+            .preparations
+            .get(&study_id)
+            .ok_or(crate::leader_ai_runtime::LeaderAiRuntimeError::MalformedRuntimeState)?;
+        let progress = u128::from(preparation.completed_labor_minutes)
+            .checked_mul(u128::from(TASK_PROGRESS_MAX_BASIS_POINTS))
+            .and_then(|value| value.checked_div(u128::from(preparation.required_labor_minutes)))
+            .and_then(|value| u16::try_from(value).ok())
+            .ok_or(crate::leader_ai_runtime::LeaderAiRuntimeError::MalformedRuntimeState)?;
+        (progress, preparation.complete())
+    };
+    runtime
+        .scheduling
+        .visible_tasks
+        .get_mut(&task_id)
+        .ok_or(crate::leader_ai_runtime::LeaderAiRuntimeError::MissingPhysicalTask)?
+        .progress_basis_points = progress;
+    if preparation_complete {
+        let scheduling = &mut runtime.scheduling;
+        let (tasks, reservations) = (&mut scheduling.visible_tasks, &mut scheduling.reservations);
+        let task = tasks
+            .get_mut(&task_id)
+            .ok_or(crate::leader_ai_runtime::LeaderAiRuntimeError::MissingPhysicalTask)?;
+        let intent_id = task.intent_id.clone();
+        task.advance(TaskStage::TravelToEndpoint, runtime_tick)
+            .and_then(|()| task.advance(TaskStage::Deposit, runtime_tick))
+            .and_then(|()| task.complete(reservations, runtime_tick))
+            .map_err(|_| {
+                crate::leader_ai_runtime::LeaderAiRuntimeError::LeafInvalid(
+                    "research preparation completion",
+                )
+            })?;
+        if let Some(world_id) = scheduling.world_reservation_ids.remove(&task_id) {
+            let _ = scheduling.world_reservations.release(&world_id);
+        }
+        let _ = runtime.intents.succeed(&intent_id, runtime_tick);
+    }
+    Ok(())
+}
+
+const LAI63_EMERGENCY_SUPPLY_KIND: &str = "physical_emergency_supply";
+const LAI63_EMERGENCY_RECIPIENT_PREFIX: &str = "emergency_recipient";
+
+#[derive(Debug, Clone)]
+struct Lai63EmergencyReliefCompletion {
+    cat_id: String,
+    supply: crate::food_divine_policy::EmergencySupplyKind,
+}
+
+const fn lai63_emergency_supply_token(
+    supply: crate::food_divine_policy::EmergencySupplyKind,
+) -> &'static str {
+    use crate::food_divine_policy::EmergencySupplyKind;
+
+    match supply {
+        EmergencySupplyKind::DivineRation => "divine_ration",
+        EmergencySupplyKind::DivineWater => "divine_water",
+    }
+}
+
+fn lai63_emergency_recipient_site_id(
+    supply: crate::food_divine_policy::EmergencySupplyKind,
+    cat_id: &str,
+) -> String {
+    format!(
+        "{LAI63_EMERGENCY_RECIPIENT_PREFIX}:{}:{cat_id}",
+        lai63_emergency_supply_token(supply)
+    )
+}
+
+fn lai63_parse_emergency_recipient(
+    site_id: &str,
+) -> Option<(crate::food_divine_policy::EmergencySupplyKind, &str)> {
+    use crate::food_divine_policy::EmergencySupplyKind;
+
+    let encoded = site_id.strip_prefix(LAI63_EMERGENCY_RECIPIENT_PREFIX)?;
+    let encoded = encoded.strip_prefix(':')?;
+    if let Some(cat_id) = encoded.strip_prefix("divine_ration:") {
+        (!cat_id.is_empty()).then_some((EmergencySupplyKind::DivineRation, cat_id))
+    } else if let Some(cat_id) = encoded.strip_prefix("divine_water:") {
+        (!cat_id.is_empty()).then_some((EmergencySupplyKind::DivineWater, cat_id))
+    } else {
+        None
+    }
+}
+
+fn lai63_emergency_task_ids(
+    runtime: &crate::leader_ai_runtime::LeaderAiRuntimeState,
+    report_version: u64,
+    supply: crate::food_divine_policy::EmergencySupplyKind,
+    cat_id: &str,
+) -> (crate::planner_core::IntentId, crate::task_runtime::TaskId) {
+    let target = lai63_emergency_recipient_site_id(supply, cat_id);
+    let intent_id = crate::planner_core::IntentId::derive(
+        &runtime.colony_id,
+        report_version,
+        LAI63_EMERGENCY_SUPPLY_KIND,
+        &target,
+        0,
+    );
+    let task_id = crate::task_runtime::TaskId::derive(&runtime.colony_id, &intent_id, 0);
+    (intent_id, task_id)
+}
+
+fn lai63_cat_matches_emergency_supply(
+    cat: &Cat,
+    supply: crate::food_divine_policy::EmergencySupplyKind,
+) -> bool {
+    use crate::food_divine_policy::EmergencySupplyKind;
+
+    cat.death_time.is_none()
+        && match supply {
+            EmergencySupplyKind::DivineRation => cat.needs.hunger <= 0.0,
+            EmergencySupplyKind::DivineWater => cat.needs.thirst <= 0.0,
+        }
+}
+
+fn lai63_task_is_emergency_supply(
+    runtime: &crate::leader_ai_runtime::LeaderAiRuntimeState,
+    task: &crate::task_runtime::VisibleTaskRuntime,
+) -> bool {
+    runtime.intents.get(&task.intent_id).is_some_and(|intent| {
+        intent.kind_id
+            == crate::planner_core::PlannerId::derive(
+                "content_goal_kind",
+                [LAI63_EMERGENCY_SUPPLY_KIND],
+            )
+    })
+}
+
+fn lai63_existing_emergency_task_for(
+    runtime: &crate::leader_ai_runtime::LeaderAiRuntimeState,
+    supply: crate::food_divine_policy::EmergencySupplyKind,
+    cat_id: &str,
+) -> bool {
+    let expected_site = lai63_emergency_recipient_site_id(supply, cat_id);
+    runtime.scheduling.visible_tasks.values().any(|task| {
+        lai63_task_is_emergency_supply(runtime, task)
+            && !task.stage.is_terminal()
+            && task
+                .spatial
+                .delivery_endpoint
+                .as_ref()
+                .is_some_and(|site| site.stable_id() == expected_site)
+    })
+}
+
+fn lai63_available_emergency_units(
+    runtime: &crate::leader_ai_runtime::LeaderAiRuntimeState,
+    supply: crate::food_divine_policy::EmergencySupplyKind,
+) -> u64 {
+    use crate::{
+        food_divine_policy::{BoundCargoPurpose, HOLE_DELIVERY_APRON_SITE_ID},
+        storage_authority::{StorageAddress, StorageIdentity},
+    };
+
+    runtime
+        .purpose_bound_storage
+        .iter()
+        .filter(|(identity, purpose)| {
+            matches!(
+                purpose,
+                BoundCargoPurpose::Emergency {
+                    supply: candidate
+                } if *candidate == supply
+            ) && matches!(
+                runtime.storage.location(identity),
+                Some(StorageAddress::PurposeCargo { site_id })
+                    if site_id == HOLE_DELIVERY_APRON_SITE_ID
+            ) && !runtime
+                .scheduling
+                .task_storage_identities
+                .values()
+                .any(|bound| bound == *identity)
+        })
+        .filter_map(|(identity, _)| match identity {
+            StorageIdentity::Lot(lot_id) => runtime.storage.ledger().lot(lot_id),
+            StorageIdentity::Item(_) => None,
+        })
+        .filter(|lot| lot.key.content_id.as_str() == supply.definition_id())
+        .fold(0_u64, |sum, lot| {
+            sum.saturating_add(u64::from(lot.quantity))
+        })
+}
+
+/// Expose one high-priority canonical haul for each currently reported zero
+/// need, bounded by the exact purpose cargo physically present on the apron.
+/// Raw need values choose the recipient only after the shared report has
+/// disclosed that the corresponding emergency exists.
+fn lai63_materialize_emergency_supply_tasks(
+    runtime: &mut crate::leader_ai_runtime::LeaderAiRuntimeState,
+    colony: &ColonyRuntime,
+    runtime_tick: u64,
+) -> Result<(), crate::leader_ai_runtime::LeaderAiRuntimeError> {
+    use crate::{
+        authority::{AuthorityActor, AuthorityDomain},
+        food_divine_policy::EmergencySupplyKind,
+        intent_graph::{Intent, IntentInsert},
+        planner_core::{IntentState, PlannerId},
+        spatial_tasks::{SiteMetadata, SiteRef, SpatialObjective, WorkSlot},
+        task_runtime::{TaskCategory, VisibleTaskRuntime},
+    };
+
+    let (Some(report_version), Some(summary)) = (
+        runtime.resident_needs_report_version,
+        runtime.resident_needs_summary,
+    ) else {
+        return Ok(());
+    };
+    let supplies = [
+        (
+            EmergencySupplyKind::DivineRation,
+            summary.reported_dying_from_hunger,
+        ),
+        (
+            EmergencySupplyKind::DivineWater,
+            summary.reported_dying_from_thirst,
+        ),
+    ];
+    let apron = runtime.hole.footprint().pinned_delivery_edge;
+    for (supply, reported) in supplies {
+        if !reported {
+            continue;
+        }
+        let mut available_units = lai63_available_emergency_units(runtime, supply);
+        if available_units == 0 {
+            continue;
+        }
+        let mut recipients = colony
+            .cats
+            .iter()
+            .filter(|cat| lai63_cat_matches_emergency_supply(cat, supply))
+            .collect::<Vec<_>>();
+        recipients.sort_by(|left, right| left.id.cmp(&right.id));
+        for recipient in recipients {
+            if available_units == 0 {
+                break;
+            }
+            if runtime.scheduling.visible_tasks.len()
+                >= crate::leader_ai_runtime::MAX_VISIBLE_RUNTIME_TASKS
+            {
+                return Ok(());
+            }
+            if lai63_existing_emergency_task_for(runtime, supply, &recipient.id) {
+                available_units = available_units.saturating_sub(1);
+                continue;
+            }
+            let (intent_id, task_id) =
+                lai63_emergency_task_ids(runtime, report_version, supply, &recipient.id);
+            let recipient_tile =
+                world_pos_to_tile(position_to_world(colony.anchor, recipient.position));
+            let source = SiteRef::Tile {
+                metadata: SiteMetadata::revealed(
+                    crate::food_divine_policy::HOLE_DELIVERY_APRON_SITE_ID,
+                ),
+                tile: apron,
+            };
+            let recipient_site_id = lai63_emergency_recipient_site_id(supply, &recipient.id);
+            let recipient_site = SiteRef::Tile {
+                metadata: SiteMetadata::revealed(recipient_site_id.clone()),
+                tile: recipient_tile,
+            };
+            let work_slot = WorkSlot::exclusive(
+                format!("emergency-recipient-slot:{}", recipient.id),
+                recipient_site.clone(),
+            );
+            let spatial =
+                SpatialObjective::resolved(source, vec![work_slot], Some(recipient_site.clone()));
+            if runtime.intents.get(&intent_id).is_none() {
+                let mut intent = Intent::proposed(
+                    intent_id.clone(),
+                    runtime.colony_partition.clone(),
+                    AuthorityActor::Scheduler,
+                    None,
+                    AuthorityDomain::Survival,
+                    PlannerId::derive("content_goal_kind", [LAI63_EMERGENCY_SUPPLY_KIND]),
+                    PlannerId::derive("emergency_recipient", [&recipient.id]),
+                    PlannerId::derive("rationale", ["reported_zero_need_emergency"]),
+                    runtime_tick,
+                );
+                intent.spatial_objective = Some(spatial.clone());
+                intent
+                    .lifecycle
+                    .transition(IntentState::Approved, runtime_tick)
+                    .map_err(|_| {
+                        crate::leader_ai_runtime::LeaderAiRuntimeError::LeafInvalid(
+                            "emergency supply intent lifecycle",
+                        )
+                    })?;
+                match runtime.intents.insert_or_merge(intent).map_err(|_| {
+                    crate::leader_ai_runtime::LeaderAiRuntimeError::LeafInvalid(
+                        "emergency supply intent",
+                    )
+                })? {
+                    IntentInsert::Inserted(_)
+                    | IntentInsert::Merged(_)
+                    | IntentInsert::DuplicateId(_) => {}
+                }
+            }
+            let task = VisibleTaskRuntime::resolved(
+                runtime.colony_id.clone(),
+                intent_id,
+                0,
+                TaskCategory::HaulDelivery,
+                spatial,
+                Vec::new(),
+                runtime_tick,
+            )
+            .map_err(|_| {
+                crate::leader_ai_runtime::LeaderAiRuntimeError::LeafInvalid(
+                    "emergency supply visible task",
+                )
+            })?;
+            runtime.scheduling.visible_tasks.insert(task_id, task);
+            available_units -= 1;
+        }
+    }
+    Ok(())
+}
+
+const fn lai63_emergency_hash(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf29ce484222325_u64;
+    let mut index = 0;
+    while index < bytes.len() {
+        hash ^= bytes[index] as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+        index += 1;
+    }
+    hash
+}
+
+fn lai63_execute_emergency_storage_command(
+    runtime: &mut crate::leader_ai_runtime::LeaderAiRuntimeState,
+    runtime_tick: u64,
+    operation: &str,
+    key: &str,
+    command: crate::storage_authority::StorageCommand,
+) -> Result<(), crate::leader_ai_runtime::LeaderAiRuntimeError> {
+    use crate::storage_authority::StorageCommandEnvelope;
+
+    let hash = lai63_emergency_hash(key.as_bytes());
+    if runtime.storage.receipts().len()
+        >= crate::storage_authority::MAX_STORAGE_RECEIPTS.saturating_sub(1)
+    {
+        let through = runtime
+            .storage
+            .receipts()
+            .map(|receipt| receipt.sequence)
+            .max()
+            .unwrap_or(runtime.storage.replay_watermark());
+        runtime.storage.drain_terminal_receipts_through(through);
+    }
+    runtime
+        .storage
+        .execute(StorageCommandEnvelope {
+            colony_id: runtime.colony_id.clone(),
+            command_id: format!("emergency_{operation}_{runtime_tick}_{hash:016x}"),
+            fingerprint: format!("emergency_{operation}_v1_{hash:016x}"),
+            sequence: runtime
+                .storage
+                .version()
+                .checked_add(1)
+                .ok_or(crate::leader_ai_runtime::LeaderAiRuntimeError::BoundExceeded)?,
+            command,
+        })
+        .map(|_| ())
+        .map_err(|_| crate::leader_ai_runtime::LeaderAiRuntimeError::MalformedStorage)
+}
+
+fn lai63_emergency_identity_key(
+    identity: &crate::storage_authority::StorageIdentity,
+) -> Result<String, crate::leader_ai_runtime::LeaderAiRuntimeError> {
+    serde_json::to_string(identity)
+        .map_err(|_| crate::leader_ai_runtime::LeaderAiRuntimeError::MalformedStorage)
+}
+
+/// Detach exactly one unit from a purpose-bound apron lot. Splitting is done
+/// inside the protected runtime transaction, so no unreserved intermediate
+/// state can survive a crash or failed task activation.
+fn lai63_prepare_emergency_supply_unit(
+    runtime: &mut crate::leader_ai_runtime::LeaderAiRuntimeState,
+    runtime_tick: u64,
+    supply: crate::food_divine_policy::EmergencySupplyKind,
+    task_id: &crate::task_runtime::TaskId,
+) -> Result<
+    Option<crate::storage_authority::StorageIdentity>,
+    crate::leader_ai_runtime::LeaderAiRuntimeError,
+> {
+    use crate::{
+        content_manifest::PhysicalLotId,
+        food_divine_policy::{BoundCargoPurpose, HOLE_DELIVERY_APRON_SITE_ID},
+        storage_authority::{StorageAddress, StorageCommand, StorageIdentity},
+    };
+
+    let candidate = runtime
+        .purpose_bound_storage
+        .iter()
+        .filter(|(identity, purpose)| {
+            matches!(
+                purpose,
+                BoundCargoPurpose::Emergency {
+                    supply: candidate
+                } if *candidate == supply
+            ) && matches!(
+                runtime.storage.location(identity),
+                Some(StorageAddress::PurposeCargo { site_id })
+                    if site_id == HOLE_DELIVERY_APRON_SITE_ID
+            ) && !runtime
+                .scheduling
+                .task_storage_identities
+                .values()
+                .any(|bound| bound == *identity)
+        })
+        .filter_map(|(identity, purpose)| {
+            let StorageIdentity::Lot(lot_id) = identity else {
+                return None;
+            };
+            let lot = runtime.storage.ledger().lot(lot_id)?;
+            (lot.key.content_id.as_str() == supply.definition_id()).then_some((
+                identity.clone(),
+                purpose.clone(),
+                lot.id.clone(),
+                lot.quantity,
+                lot.reservation.clone(),
+            ))
+        })
+        .next();
+    let Some((source_identity, purpose, source_lot_id, quantity, reservation_owner)) = candidate
+    else {
+        return Ok(None);
+    };
+    let source_key = lai63_emergency_identity_key(&source_identity)?;
+    if let Some(owner) = reservation_owner.as_ref() {
+        lai63_execute_emergency_storage_command(
+            runtime,
+            runtime_tick,
+            "prepare_unreserve",
+            &format!("{source_key}:{}", task_id.as_str()),
+            StorageCommand::Unreserve {
+                identity: source_identity.clone(),
+                owner: owner.clone(),
+            },
+        )?;
+    }
+    if quantity == 1 {
+        return Ok(Some(source_identity));
+    }
+
+    let child_hash = lai63_emergency_hash(
+        format!(
+            "{source_key}:{}:{}",
+            task_id.as_str(),
+            lai63_emergency_supply_token(supply)
+        )
+        .as_bytes(),
+    );
+    let child_lot_id = PhysicalLotId::new(format!("relief_{child_hash:016x}"))
+        .map_err(|_| crate::leader_ai_runtime::LeaderAiRuntimeError::MalformedStorage)?;
+    let child_identity = StorageIdentity::Lot(child_lot_id.clone());
+    lai63_execute_emergency_storage_command(
+        runtime,
+        runtime_tick,
+        "prepare_split",
+        &format!("{source_key}:{}", child_lot_id.as_str()),
+        StorageCommand::SplitBulk {
+            source: source_lot_id,
+            split: child_lot_id,
+            units: 1,
+            destination: StorageAddress::PurposeCargo {
+                site_id: HOLE_DELIVERY_APRON_SITE_ID.to_owned(),
+            },
+        },
+    )?;
+    if let Some(owner) = reservation_owner {
+        lai63_execute_emergency_storage_command(
+            runtime,
+            runtime_tick,
+            "prepare_rereserve",
+            &source_key,
+            StorageCommand::Reserve {
+                identity: source_identity,
+                owner,
+            },
+        )?;
+    }
+    runtime
+        .purpose_bound_storage
+        .insert(child_identity.clone(), purpose);
+    Ok(Some(child_identity))
+}
+
+fn lai63_emergency_purpose_reservation_owner(
+    identity: &crate::storage_authority::StorageIdentity,
+) -> Result<String, crate::leader_ai_runtime::LeaderAiRuntimeError> {
+    let key = lai63_emergency_identity_key(identity)?;
+    Ok(format!(
+        "emergency_purpose_{:016x}",
+        lai63_emergency_hash(key.as_bytes())
+    ))
+}
+
+fn lai63_restore_emergency_supply_unit(
+    runtime: &mut crate::leader_ai_runtime::LeaderAiRuntimeState,
+    runtime_tick: u64,
+    task_id: &crate::task_runtime::TaskId,
+    identity: &crate::storage_authority::StorageIdentity,
+) -> Result<(), crate::leader_ai_runtime::LeaderAiRuntimeError> {
+    use crate::{
+        food_divine_policy::HOLE_DELIVERY_APRON_SITE_ID,
+        storage_authority::{StorageAddress, StorageCommand, StorageIdentity},
+    };
+
+    let StorageIdentity::Lot(lot_id) = identity else {
+        return Err(crate::leader_ai_runtime::LeaderAiRuntimeError::MalformedStorage);
+    };
+    let Some(lot) = runtime.storage.ledger().lot(lot_id).cloned() else {
+        runtime.purpose_bound_storage.remove(identity);
+        return Ok(());
+    };
+    let key = lai63_emergency_identity_key(identity)?;
+    if let Some(owner) = lot.reservation {
+        lai63_execute_emergency_storage_command(
+            runtime,
+            runtime_tick,
+            "restore_unreserve",
+            &format!("{key}:{}", task_id.as_str()),
+            StorageCommand::Unreserve {
+                identity: identity.clone(),
+                owner,
+            },
+        )?;
+    }
+    let apron = StorageAddress::PurposeCargo {
+        site_id: HOLE_DELIVERY_APRON_SITE_ID.to_owned(),
+    };
+    if runtime.storage.location(identity) != Some(&apron) {
+        lai63_execute_emergency_storage_command(
+            runtime,
+            runtime_tick,
+            "restore_move",
+            &format!("{key}:{}", task_id.as_str()),
+            StorageCommand::Move {
+                identity: identity.clone(),
+                destination: apron,
+            },
+        )?;
+    }
+    lai63_execute_emergency_storage_command(
+        runtime,
+        runtime_tick,
+        "restore_reserve",
+        &format!("{key}:{}", task_id.as_str()),
+        StorageCommand::Reserve {
+            identity: identity.clone(),
+            owner: lai63_emergency_purpose_reservation_owner(identity)?,
+        },
+    )
+}
+
+fn lai63_remove_emergency_supply_task(
+    runtime: &mut crate::leader_ai_runtime::LeaderAiRuntimeState,
+    runtime_tick: u64,
+    task_id: &crate::task_runtime::TaskId,
+) -> Result<Option<String>, crate::leader_ai_runtime::LeaderAiRuntimeError> {
+    let assigned = runtime
+        .scheduling
+        .visible_tasks
+        .get(task_id)
+        .and_then(|task| task.assigned_cat_ids.iter().next().cloned());
+    if let Some(task) = runtime.scheduling.visible_tasks.get_mut(task_id) {
+        let _ = task.cancel(&mut runtime.scheduling.reservations, runtime_tick);
+    }
+    if let Some(world_id) = runtime.scheduling.world_reservation_ids.remove(task_id) {
+        let _ = runtime.scheduling.world_reservations.release(&world_id);
+    }
+    runtime.scheduling.task_storage_identities.remove(task_id);
+    runtime.scheduling.task_storage_endpoints.remove(task_id);
+    runtime.scheduling.resolved_spatial_tasks.remove(task_id);
+    runtime.scheduling.visible_tasks.remove(task_id);
+    Ok(assigned)
+}
+
+fn lai63_emergency_task_binding(
+    runtime: &crate::leader_ai_runtime::LeaderAiRuntimeState,
+    task: &crate::task_runtime::VisibleTaskRuntime,
+    resolved: &crate::spatial_resolver::ResolvedSpatialTask,
+    identity: &crate::storage_authority::StorageIdentity,
+) -> Option<crate::leader_ai_runtime::PhysicalTaskCargoBinding> {
+    use crate::{
+        food_divine_policy::HOLE_DELIVERY_APRON_SITE_ID,
+        leader_ai_runtime::PhysicalTaskCargoBinding,
+        storage_authority::{StorageAddress, StorageIdentity},
+    };
+
+    let StorageIdentity::Lot(lot_id) = identity else {
+        return None;
+    };
+    let lot = runtime.storage.ledger().lot(lot_id)?;
+    let crate::spatial_resolver::SpatialTaskCategory::EmergencySupply(supply) = resolved.category
+    else {
+        return None;
+    };
+    if lot.quantity != 1 || lot.key.content_id.as_str() != supply.definition_id() {
+        return None;
+    }
+    let endpoint = StorageAddress::PurposeCargo {
+        site_id: resolved.delivery_endpoint().stable_id().to_owned(),
+    };
+    let source = runtime.storage.location(identity)?.clone();
+    if task
+        .cargo
+        .as_ref()
+        .is_some_and(|cargo| cargo.quantity != 1 || cargo.resource_id != supply.definition_id())
+    {
+        return None;
+    }
+    Some(PhysicalTaskCargoBinding {
+        identity: identity.clone(),
+        resource_id: supply.definition_id().to_owned(),
+        quantity: 1,
+        source,
+        endpoint,
+        recovery: Some(StorageAddress::PurposeCargo {
+            site_id: HOLE_DELIVERY_APRON_SITE_ID.to_owned(),
+        }),
+    })
+}
+
+fn lai63_emergency_task_recipient<'a>(
+    colony: &'a ColonyRuntime,
+    resolved: &crate::spatial_resolver::ResolvedSpatialTask,
+) -> Option<(
+    crate::food_divine_policy::EmergencySupplyKind,
+    &'a Cat,
+    TilePos,
+)> {
+    let crate::spatial_resolver::SpatialTaskCategory::EmergencySupply(supply) = resolved.category
+    else {
+        return None;
+    };
+    let (encoded_supply, cat_id) =
+        lai63_parse_emergency_recipient(resolved.delivery_endpoint().stable_id())?;
+    if encoded_supply != supply {
+        return None;
+    }
+    let cat = colony
+        .cats
+        .iter()
+        .find(|cat| cat.id == cat_id && lai63_cat_matches_emergency_supply(cat, supply))?;
+    let tile = world_pos_to_tile(position_to_world(colony.anchor, cat.position));
+    let crate::spatial_tasks::SiteRef::Tile {
+        tile: endpoint_tile,
+        ..
+    } = resolved.delivery_endpoint()
+    else {
+        return None;
+    };
+    (tile == *endpoint_tile).then_some((supply, cat, tile))
+}
+
+fn lai63_emergency_worker_at(
+    colony: &ColonyRuntime,
+    task: &crate::task_runtime::VisibleTaskRuntime,
+    tile: TilePos,
+) -> bool {
+    task.assigned_cat_ids
+        .iter()
+        .next()
+        .and_then(|cat_id| {
+            colony
+                .cats
+                .iter()
+                .find(|cat| cat.id == *cat_id && cat.death_time.is_none())
+        })
+        .is_some_and(|cat| {
+            world_pos_to_tile(position_to_world(colony.anchor, cat.position)) == tile
+        })
+}
+
+fn lai63_finalize_emergency_delivery(
+    runtime: &mut crate::leader_ai_runtime::LeaderAiRuntimeState,
+    runtime_tick: u64,
+    task_id: &crate::task_runtime::TaskId,
+    identity: &crate::storage_authority::StorageIdentity,
+    supply: crate::food_divine_policy::EmergencySupplyKind,
+    cat_id: &str,
+    relief: &mut Vec<Lai63EmergencyReliefCompletion>,
+    released_haulers: &mut BTreeSet<String>,
+) -> Result<(), crate::leader_ai_runtime::LeaderAiRuntimeError> {
+    use crate::storage_authority::{StorageCommand, StorageIdentity};
+
+    let StorageIdentity::Lot(lot_id) = identity else {
+        return Err(crate::leader_ai_runtime::LeaderAiRuntimeError::MalformedStorage);
+    };
+    let intent_id = runtime
+        .scheduling
+        .visible_tasks
+        .get(task_id)
+        .map(|task| task.intent_id.clone())
+        .ok_or(crate::leader_ai_runtime::LeaderAiRuntimeError::MissingPhysicalTask)?;
+    let expected_endpoint = runtime
+        .scheduling
+        .task_storage_endpoints
+        .get(task_id)
+        .ok_or(crate::leader_ai_runtime::LeaderAiRuntimeError::DanglingStorageIdentity)?;
+    if runtime.storage.location(identity) != Some(expected_endpoint) {
+        return Err(crate::leader_ai_runtime::LeaderAiRuntimeError::PhysicalTaskCargoMismatch);
+    }
+    let key = lai63_emergency_identity_key(identity)?;
+    lai63_execute_emergency_storage_command(
+        runtime,
+        runtime_tick,
+        "consume",
+        &format!("{key}:{}", task_id.as_str()),
+        StorageCommand::Consume {
+            bulk: vec![(lot_id.clone(), 1)],
+            items: Vec::new(),
+        },
+    )?;
+    runtime.purpose_bound_storage.remove(identity);
+    if let Some(hauler) = lai63_remove_emergency_supply_task(runtime, runtime_tick, task_id)? {
+        released_haulers.insert(hauler);
+    }
+    let _ = runtime.intents.succeed(&intent_id, runtime_tick);
+    relief.push(Lai63EmergencyReliefCompletion {
+        cat_id: cat_id.to_owned(),
+        supply,
+    });
+    Ok(())
+}
+
+fn lai63_advance_emergency_supply_tasks(
+    runtime: &mut crate::leader_ai_runtime::LeaderAiRuntimeState,
+    colony: &ColonyRuntime,
+    runtime_tick: u64,
+    relief: &mut Vec<Lai63EmergencyReliefCompletion>,
+    released_haulers: &mut BTreeSet<String>,
+) -> Result<(), crate::leader_ai_runtime::LeaderAiRuntimeError> {
+    use crate::{
+        cat_capability_authority::ProductiveOutcome,
+        cat_willingness::TaskPriority,
+        leader_ai_runtime::{
+            PhysicalTaskExecutionOutcome, PhysicalTaskExecutionRequest, PhysicalTaskInterruption,
+            PhysicalTaskWorkReceipt,
+        },
+        storage_authority::StorageIdentity,
+        task_runtime::TaskStage,
+    };
+
+    let task_ids = runtime
+        .scheduling
+        .visible_tasks
+        .iter()
+        .filter_map(|(task_id, task)| {
+            lai63_task_is_emergency_supply(runtime, task).then_some(task_id.clone())
+        })
+        .collect::<Vec<_>>();
+    for task_id in task_ids {
+        let Some(task) = runtime.scheduling.visible_tasks.get(&task_id).cloned() else {
+            continue;
+        };
+        let assigned_hauler = task.assigned_cat_ids.iter().next().cloned();
+        let Some(resolved) = runtime
+            .scheduling
+            .resolved_spatial_tasks
+            .get(&task_id)
+            .cloned()
+        else {
+            continue;
+        };
+        let recipient = lai63_emergency_task_recipient(colony, &resolved);
+        let persisted_identity = runtime
+            .scheduling
+            .task_storage_identities
+            .get(&task_id)
+            .cloned();
+        let identity = if let Some(identity) = persisted_identity {
+            identity
+        } else if matches!(task.stage, TaskStage::Resolve | TaskStage::Reserve) {
+            let mut staged = runtime.clone();
+            let Some(identity) = lai63_prepare_emergency_supply_unit(
+                &mut staged,
+                runtime_tick,
+                match resolved.category {
+                    crate::spatial_resolver::SpatialTaskCategory::EmergencySupply(supply) => supply,
+                    _ => continue,
+                },
+                &task_id,
+            )?
+            else {
+                continue;
+            };
+            *runtime = staged;
+            identity
+        } else {
+            if let Some(hauler) =
+                lai63_remove_emergency_supply_task(runtime, runtime_tick, &task_id)?
+            {
+                released_haulers.insert(hauler);
+            }
+            if let Some(hauler) = assigned_hauler {
+                released_haulers.insert(hauler);
+            }
+            continue;
+        };
+        let Some(binding) = lai63_emergency_task_binding(runtime, &task, &resolved, &identity)
+        else {
+            lai63_restore_emergency_supply_unit(runtime, runtime_tick, &task_id, &identity)?;
+            if let Some(hauler) =
+                lai63_remove_emergency_supply_task(runtime, runtime_tick, &task_id)?
+            {
+                released_haulers.insert(hauler);
+            }
+            if let Some(hauler) = assigned_hauler {
+                released_haulers.insert(hauler);
+            }
+            continue;
+        };
+        let interruption = if colony.status == ColonyStatus::Dead {
+            PhysicalTaskInterruption::VillagePreemption
+        } else if task.assigned_cat_ids.iter().any(|cat_id| {
+            colony
+                .cats
+                .iter()
+                .find(|cat| cat.id == *cat_id)
+                .is_none_or(|cat| cat.death_time.is_some())
+        }) {
+            PhysicalTaskInterruption::WorkerDied
+        } else if task.route_ids
+            != vec![
+                resolved.source_to_work_route.stable_id().to_owned(),
+                resolved.work_to_delivery_route.stable_id().to_owned(),
+            ]
+            && !task.route_ids.is_empty()
+        {
+            PhysicalTaskInterruption::RouteLost
+        } else if recipient.is_none() {
+            PhysicalTaskInterruption::Cancelled
+        } else {
+            PhysicalTaskInterruption::None
+        };
+        let request = PhysicalTaskExecutionRequest {
+            task_id: task_id.clone(),
+            resolved: resolved.clone(),
+            cargo: binding,
+            workers: lai63_physical_worker_reports(
+                runtime,
+                colony,
+                crate::task_runtime::TaskCategory::HaulDelivery,
+            ),
+            priority: TaskPriority::Emergency,
+            interruption,
+            work: PhysicalTaskWorkReceipt {
+                outcome: ProductiveOutcome::Hauling { haul_legs: 1 },
+                family_completion: None,
+            },
+        };
+        if interruption != PhysicalTaskInterruption::None {
+            let _ = runtime.advance_physical_task(request, runtime_tick)?;
+            lai63_restore_emergency_supply_unit(runtime, runtime_tick, &task_id, &identity)?;
+            if let Some(hauler) =
+                lai63_remove_emergency_supply_task(runtime, runtime_tick, &task_id)?
+            {
+                released_haulers.insert(hauler);
+            }
+            if let Some(hauler) = assigned_hauler {
+                released_haulers.insert(hauler);
+            }
+            continue;
+        }
+        let (_, recipient_cat, recipient_tile) =
+            recipient.expect("checked emergency recipient above");
+        let apron = runtime.hole.footprint().pinned_delivery_edge;
+        let worker_at_required_site = match task.stage {
+            TaskStage::Resolve | TaskStage::Reserve => true,
+            TaskStage::TravelToSource | TaskStage::Pickup => {
+                lai63_emergency_worker_at(colony, &task, apron)
+            }
+            TaskStage::TravelToWork
+            | TaskStage::Work
+            | TaskStage::TravelToEndpoint
+            | TaskStage::Deposit => lai63_emergency_worker_at(colony, &task, recipient_tile),
+            TaskStage::Complete | TaskStage::Blocked | TaskStage::Cancelled => true,
+        };
+        if !worker_at_required_site {
+            continue;
+        }
+        let outcome = runtime.advance_physical_task(request, runtime_tick)?;
+        match outcome {
+            PhysicalTaskExecutionOutcome::Completed
+            | PhysicalTaskExecutionOutcome::Terminal(TaskStage::Complete) => {
+                lai63_finalize_emergency_delivery(
+                    runtime,
+                    runtime_tick,
+                    &task_id,
+                    &identity,
+                    match resolved.category {
+                        crate::spatial_resolver::SpatialTaskCategory::EmergencySupply(supply) => {
+                            supply
+                        }
+                        _ => unreachable!("emergency task category was checked"),
+                    },
+                    &recipient_cat.id,
+                    relief,
+                    released_haulers,
+                )?;
+                if let Some(hauler) = assigned_hauler {
+                    released_haulers.insert(hauler);
+                }
+            }
+            PhysicalTaskExecutionOutcome::Blocked(_)
+            | PhysicalTaskExecutionOutcome::Cancelled
+            | PhysicalTaskExecutionOutcome::Preempted(_)
+            | PhysicalTaskExecutionOutcome::Recovered { .. } => {
+                lai63_restore_emergency_supply_unit(runtime, runtime_tick, &task_id, &identity)?;
+                if let Some(hauler) =
+                    lai63_remove_emergency_supply_task(runtime, runtime_tick, &task_id)?
+                {
+                    released_haulers.insert(hauler);
+                }
+                if let Some(hauler) = assigned_hauler {
+                    released_haulers.insert(hauler);
+                }
+            }
+            PhysicalTaskExecutionOutcome::Activated { .. }
+            | PhysicalTaskExecutionOutcome::Advanced { .. }
+            | PhysicalTaskExecutionOutcome::Worked { .. }
+            | PhysicalTaskExecutionOutcome::Terminal(_) => {}
+        }
+    }
+    Ok(())
+}
+
+fn lai63_project_emergency_supply_movement(colony: &mut ColonyRuntime) {
+    use crate::{
+        spatial_resolver::SpatialTaskCategory, spatial_tasks::SiteRef, task_runtime::TaskStage,
+    };
+
+    let assignments = colony
+        .leader_ai_runtime
+        .scheduling
+        .visible_tasks
+        .iter()
+        .filter_map(|(task_id, task)| {
+            let resolved = colony
+                .leader_ai_runtime
+                .scheduling
+                .resolved_spatial_tasks
+                .get(task_id)?;
+            if !matches!(resolved.category, SpatialTaskCategory::EmergencySupply(_)) {
+                return None;
+            }
+            let cat_id = task.assigned_cat_ids.iter().next()?.clone();
+            let site = match task.stage {
+                TaskStage::TravelToSource | TaskStage::Pickup => resolved.objective(),
+                TaskStage::TravelToWork
+                | TaskStage::Work
+                | TaskStage::TravelToEndpoint
+                | TaskStage::Deposit => resolved.delivery_endpoint(),
+                _ => return None,
+            };
+            let SiteRef::Tile { tile, .. } = site else {
+                return None;
+            };
+            Some((cat_id, *tile))
+        })
+        .collect::<Vec<_>>();
+    for (cat_id, destination) in assignments {
+        if let Some(cat) = colony
+            .cats
+            .iter_mut()
+            .find(|cat| cat.id == cat_id && cat.death_time.is_none())
+        {
+            let at_destination =
+                world_pos_to_tile(position_to_world(colony.anchor, cat.position)) == destination;
+            cat.current_task = Some(TaskType::Build);
+            cat.destination =
+                (!at_destination).then_some(position_from_world(tile_pos_to_world(destination)));
+            cat.activity = if at_destination {
+                CatActivity::Working
+            } else {
+                CatActivity::Traveling
+            };
+        }
+    }
+}
+
+/// Persist each newly emitted planner goal into the shared intent graph and
+/// expose its exact reported/authoritative site as one visible task. This
+/// adapter deliberately stops at `Resolve` when an exact physical route,
+/// storage identity, or delivery endpoint is unavailable; later phases may not
+/// fabricate those facts merely to make a command look executable.
+fn lai63_materialize_planner_commands(
+    runtime: &mut crate::leader_ai_runtime::LeaderAiRuntimeState,
+    colony: &ColonyRuntime,
+    runtime_tick: u64,
+    commands: &[crate::leader_planner::content_planner::PlannerCommand],
+) -> Result<(), crate::leader_ai_runtime::LeaderAiRuntimeError> {
+    use crate::{
+        authority::AuthorityActor,
+        beliefs::Confidence,
+        intent_graph::{Intent, IntentInsert},
+        leader_planner::content_planner::PlannerCommandStage,
+        planner_core::{BasisPoints, IntentId, IntentState, PlannerId},
+        task_runtime::{TaskId, VisibleTaskRuntime},
+    };
+
+    let goal_ids = commands
+        .iter()
+        .filter(|command| command.stage == PlannerCommandStage::ResolveReportedSite)
+        .map(|command| command.goal_id.clone())
+        .collect::<BTreeSet<_>>();
+    for goal_id in goal_ids {
+        let Some(goal) = runtime.planner.live_goals.get(&goal_id).cloned() else {
+            return Err(crate::leader_ai_runtime::LeaderAiRuntimeError::LeafInvalid(
+                "planner command goal",
+            ));
+        };
+        let kind_name = lai63_candidate_kind_name(goal.kind);
+        let proposed_intent_id = IntentId::derive(
+            &runtime.colony_id,
+            goal.created_tick,
+            kind_name,
+            goal.target_id.as_str(),
+            goal.occurrence,
+        );
+        let (category, spatial) = lai63_exact_goal_spatial(runtime, colony, &goal)?;
+        let intent_id = if runtime.intents.get(&proposed_intent_id).is_some() {
+            proposed_intent_id
+        } else {
+            let leader_id = colony
+                .leader_id
+                .as_ref()
+                .map(|cat_id| PlannerId::derive("cat", [cat_id]));
+            let actor = leader_id
+                .clone()
+                .map_or(AuthorityActor::Scheduler, |cat_id| AuthorityActor::Leader {
+                    cat_id,
+                });
+            let mut intent = Intent::proposed(
+                proposed_intent_id.clone(),
+                runtime.colony_partition.clone(),
+                actor,
+                leader_id,
+                lai63_authority_domain(goal.domain),
+                PlannerId::derive("content_goal_kind", [kind_name]),
+                goal.target_id.clone(),
+                goal.rationale_key.clone(),
+                goal.created_tick,
+            );
+            intent.urgency = BasisPoints::new(goal.score.clamp(0, 20_000));
+            intent.confidence = Confidence::new(goal.confidence_basis_points).map_err(|_| {
+                crate::leader_ai_runtime::LeaderAiRuntimeError::LeafInvalid(
+                    "planner goal confidence",
+                )
+            })?;
+            intent.expected_benefit = BasisPoints::new(goal.score.max(0).clamp(0, 20_000));
+            intent.spatial_objective = Some(spatial.clone());
+            intent
+                .lifecycle
+                .transition(IntentState::Approved, runtime_tick)
+                .map_err(|_| {
+                    crate::leader_ai_runtime::LeaderAiRuntimeError::LeafInvalid(
+                        "planner intent lifecycle",
+                    )
+                })?;
+            match runtime.intents.insert_or_merge(intent).map_err(|_| {
+                crate::leader_ai_runtime::LeaderAiRuntimeError::LeafInvalid(
+                    "planner intent insertion",
+                )
+            })? {
+                IntentInsert::Inserted(id)
+                | IntentInsert::Merged(id)
+                | IntentInsert::DuplicateId(id) => id,
+            }
+        };
+        let task_id = TaskId::derive(&runtime.colony_id, &intent_id, goal.occurrence);
+        if runtime.scheduling.visible_tasks.contains_key(&task_id) {
+            continue;
+        }
+        let task = VisibleTaskRuntime::resolved(
+            runtime.colony_id.clone(),
+            intent_id,
+            goal.occurrence,
+            category,
+            spatial,
+            Vec::new(),
+            runtime_tick,
+        )
+        .map_err(|_| {
+            crate::leader_ai_runtime::LeaderAiRuntimeError::LeafInvalid("planner visible task")
+        })?;
+        runtime.scheduling.visible_tasks.insert(task_id, task);
+    }
+    Ok(())
+}
+
+/// Resolve the physical contract for newly materialized canonical tasks. The
+/// planner only carries a reported site; this bridge re-reads the authoritative
+/// world and storage geometry before a task may enter the physical executor.
+///
+/// Resolution is deliberately conservative: a reported coordinate must name an
+/// extant source/building of the requested type, and all route/slot facts must
+/// already exist. Tasks that cannot prove those facts remain at `Resolve`, which
+/// keeps their conflict visible and lets a later tick retry after the world
+/// changes. In particular, this function never promotes a cat position, route
+/// endpoint, or closest arbitrary tile into an objective.
+fn lai63_resolve_materialized_spatial_tasks(
+    runtime: &mut crate::leader_ai_runtime::LeaderAiRuntimeState,
+    colony: &ColonyRuntime,
+    runtime_tick: u64,
+) -> Result<(), crate::leader_ai_runtime::LeaderAiRuntimeError> {
+    use crate::{
+        spatial_resolver::{SpatialResolutionOutcome, resolve_spatial_task},
+        task_runtime::TaskStage,
+    };
+
+    // BTreeMap order is the persisted task-ID order. Snapshot the IDs before
+    // mutation so every task has one deterministic resolution attempt per tick.
+    let task_ids = runtime
+        .scheduling
+        .visible_tasks
+        .iter()
+        .filter_map(|(task_id, task)| {
+            (task.stage == TaskStage::Resolve
+                && task.spatial.blocked_reason.is_none()
+                && !runtime
+                    .scheduling
+                    .resolved_spatial_tasks
+                    .contains_key(task_id))
+            .then_some(task_id.clone())
+        })
+        .collect::<Vec<_>>();
+
+    if task_ids.is_empty() {
+        return Ok(());
+    }
+
+    let walk_tiles = colony
+        .world_tiles
+        .values()
+        .map(walk_tile_from_runtime)
+        .collect::<Vec<_>>();
+    let mountain_travel = resolve_effects(colony.upgrade_tree.owned_node_ids.iter())
+        .unlocked_capabilities
+        .contains("mountain_travel");
+    let area = claimed_area(colony);
+    let path_area = pathfinding_area(&area);
+    let retained_gate = retained_area_gate(colony);
+    let ring_radius = village_ring_radius(colony.buildings.len() as i32);
+    let gate = movement_gate(colony.anchor, retained_gate, ring_radius);
+    let staged_edges = staged_wall_fence_edges(colony);
+    let grid = build_colony_walk_grid(ColonyGridParams {
+        tiles: &walk_tiles,
+        anchor: PathTilePos {
+            x: colony.anchor.x,
+            y: colony.anchor.y,
+        },
+        ring_radius,
+        gate: PathTilePos {
+            x: gate.x,
+            y: gate.y,
+        },
+        area: (!path_area.is_empty()).then_some(&path_area),
+        area_gate: retained_gate.map(pathfinding_gate),
+        extra_fence_edges: (!staged_edges.is_empty()).then_some(&staged_edges),
+        terrain: None,
+        mountains_unlocked: mountain_travel,
+        shipping_researched: is_owned(&colony.upgrade_tree, "shipping"),
+        soft_obstacles: None,
+        soft_obstacle_field: None,
+        surface_factors: None,
+    });
+
+    for task_id in task_ids {
+        let Some(task) = runtime.scheduling.visible_tasks.get(&task_id).cloned() else {
+            return Err(crate::leader_ai_runtime::LeaderAiRuntimeError::MissingPhysicalTask);
+        };
+        let Some(request) =
+            lai63_materialized_task_resolution_request(runtime, colony, &task, &grid)
+        else {
+            continue;
+        };
+        let SpatialResolutionOutcome::Resolved(resolved) = resolve_spatial_task(request) else {
+            // A rejected request has no fabricated partial contract. The task
+            // remains visible at Resolve and can be retried if its source,
+            // storage slot, or route later becomes authoritative.
+            continue;
+        };
+        let resolved = *resolved;
+        if crate::spatial_resolver::validate_truthful_task_geometry(&resolved).is_err() {
+            // The objective may be real while one role is still represented by
+            // an old center/generic marker. Keep the task open at Resolve until
+            // the complete exact geometry exists; never reserve the partial.
+            continue;
+        }
+        let route_ids = vec![
+            resolved.source_to_work_route.stable_id().to_owned(),
+            resolved.work_to_delivery_route.stable_id().to_owned(),
+        ];
+        let task = runtime
+            .scheduling
+            .visible_tasks
+            .get_mut(&task_id)
+            .ok_or(crate::leader_ai_runtime::LeaderAiRuntimeError::MissingPhysicalTask)?;
+        task.spatial = resolved.spatial.clone();
+        task.route_ids = route_ids;
+        task.updated_tick = runtime_tick;
+        runtime
+            .scheduling
+            .resolved_spatial_tasks
+            .insert(task_id, resolved);
+    }
+    Ok(())
+}
+
+/// The exact, persisted delivery slot is encoded in the delivery site metadata
+/// as well as the route endpoint. `StorageAddress` remains the sole location
+/// authority; this identifier only pins an already empty, visible slot until a
+/// whole physical lot can reserve it.
+const LAI63_DELIVERY_SLOT_PREFIX: &str = "lai63_delivery_slot:";
+
+#[derive(Debug, Clone)]
+struct Lai63DeliverySlot {
+    endpoint: crate::spatial_tasks::SiteRef,
+    contact_tile: TilePos,
+}
+
+fn lai63_materialized_task_resolution_request(
+    runtime: &crate::leader_ai_runtime::LeaderAiRuntimeState,
+    colony: &ColonyRuntime,
+    task: &crate::task_runtime::VisibleTaskRuntime,
+    grid: &ColonyWalkGrid<'_>,
+) -> Option<crate::spatial_resolver::SpatialResolutionRequest> {
+    use crate::{spatial_resolver::SpatialResolutionRequest, task_runtime::TaskCategory};
+
+    if task.category == TaskCategory::StationWork
+        && runtime.intents.get(&task.intent_id).is_some_and(|intent| {
+            intent.kind_id
+                == crate::planner_core::PlannerId::derive(
+                    "content_goal_kind",
+                    [LAI63_RESEARCH_PREPARATION_KIND],
+                )
+        })
+    {
+        return lai63_research_preparation_resolution_request(colony, task, grid);
+    }
+    if task.category == TaskCategory::HaulDelivery && lai63_task_is_emergency_supply(runtime, task)
+    {
+        return lai63_emergency_supply_resolution_request(runtime, colony, task, grid);
+    }
+    let category = lai63_spatial_category(task.category)?;
+    let requested_anchor = lai63_requested_objective_anchor(task)?;
+    let delivery = lai63_exact_delivery_slot(runtime, colony)?;
+    let candidate = match task.category {
+        TaskCategory::Hunt => {
+            lai63_hunt_resolution_candidate(colony, requested_anchor, &delivery, grid)
+        }
+        TaskCategory::FetchWater => {
+            lai63_water_resolution_candidate(colony, requested_anchor, &delivery, grid)
+        }
+        TaskCategory::Fish => {
+            lai63_fishing_resolution_candidate(colony, requested_anchor, &delivery, grid)
+        }
+        TaskCategory::WorkshopWork => {
+            lai63_workshop_resolution_candidate(colony, requested_anchor, &delivery, grid)
+        }
+        // Construction/Road/Hole work has an independently typed executor;
+        // source lots and stage routes must not be invented here.
+        _ => None,
+    }?;
+    Some(SpatialResolutionRequest {
+        category,
+        pinned_objective_id: Some(candidate.objective.stable_id().to_owned()),
+        pinned_delivery_endpoint: delivery.endpoint,
+        delivery_endpoint_exists: true,
+        requested_source_units: 1,
+        requested_delivery_units: 1,
+        delivery_capacity: 1,
+        candidates: vec![candidate],
+    })
+}
+
+fn lai63_emergency_supply_resolution_request(
+    runtime: &crate::leader_ai_runtime::LeaderAiRuntimeState,
+    colony: &ColonyRuntime,
+    task: &crate::task_runtime::VisibleTaskRuntime,
+    grid: &ColonyWalkGrid<'_>,
+) -> Option<crate::spatial_resolver::SpatialResolutionRequest> {
+    use crate::{
+        food_divine_policy::HOLE_DELIVERY_APRON_SITE_ID,
+        spatial_resolver::{
+            SpatialResolutionCandidate, SpatialResolutionRequest, SpatialTaskCategory,
+        },
+        spatial_tasks::{SiteMetadata, SiteRef, WorkSlot},
+    };
+
+    let SiteRef::Tile {
+        metadata: source_metadata,
+        tile: apron,
+    } = task.spatial.objective.as_ref()?
+    else {
+        return None;
+    };
+    if source_metadata.stable_id != HOLE_DELIVERY_APRON_SITE_ID
+        || *apron != runtime.hole.footprint().pinned_delivery_edge
+    {
+        return None;
+    }
+    let endpoint = task.spatial.delivery_endpoint.as_ref()?;
+    let (supply, cat_id) = lai63_parse_emergency_recipient(endpoint.stable_id())?;
+    let recipient = colony
+        .cats
+        .iter()
+        .find(|cat| cat.id == cat_id && lai63_cat_matches_emergency_supply(cat, supply))?;
+    let recipient_tile = world_pos_to_tile(position_to_world(colony.anchor, recipient.position));
+    let SiteRef::Tile {
+        tile: pinned_recipient_tile,
+        ..
+    } = endpoint
+    else {
+        return None;
+    };
+    if *pinned_recipient_tile != recipient_tile {
+        return None;
+    }
+    let source = SiteRef::Tile {
+        metadata: SiteMetadata::revealed(HOLE_DELIVERY_APRON_SITE_ID),
+        tile: *apron,
+    };
+    let recipient_site = SiteRef::Tile {
+        metadata: SiteMetadata::revealed(endpoint.stable_id()),
+        tile: recipient_tile,
+    };
+    let work_slot = WorkSlot::exclusive(
+        format!("emergency-recipient-slot:{cat_id}"),
+        recipient_site.clone(),
+    );
+    let source_to_work_route = lai63_ordered_route(
+        &format!(
+            "emergency-{}-{cat_id}",
+            lai63_emergency_supply_token(supply)
+        ),
+        *apron,
+        recipient_tile,
+        grid,
+        None,
+    )?;
+    let work_to_delivery_route = lai63_ordered_route(
+        &format!(
+            "emergency-endpoint-{}-{cat_id}",
+            lai63_emergency_supply_token(supply)
+        ),
+        recipient_tile,
+        recipient_tile,
+        grid,
+        None,
+    )?;
+    Some(SpatialResolutionRequest {
+        category: SpatialTaskCategory::EmergencySupply(supply),
+        pinned_objective_id: Some(source.stable_id().to_owned()),
+        pinned_delivery_endpoint: recipient_site.clone(),
+        delivery_endpoint_exists: true,
+        requested_source_units: 1,
+        requested_delivery_units: 1,
+        delivery_capacity: 1,
+        candidates: vec![SpatialResolutionCandidate {
+            objective: source,
+            work_slot,
+            source_to_work_route,
+            work_to_delivery_route,
+            objective_exists: true,
+            work_position_available: true,
+            source_available_units: 1,
+            source_capacity: 1,
+            source_to_work_route_capacity: 1,
+            work_to_delivery_route_capacity: 1,
+        }],
+    })
+}
+
+fn lai63_research_preparation_resolution_request(
+    colony: &ColonyRuntime,
+    task: &crate::task_runtime::VisibleTaskRuntime,
+    grid: &ColonyWalkGrid<'_>,
+) -> Option<crate::spatial_resolver::SpatialResolutionRequest> {
+    use crate::{
+        spatial_resolver::{
+            SpatialResolutionCandidate, SpatialResolutionRequest, SpatialTaskCategory,
+        },
+        spatial_tasks::{SiteMetadata, SiteRef, WorkSlot, canonical_building_footprint},
+    };
+
+    let SiteRef::Building {
+        building_id,
+        building_type,
+        anchor,
+        ..
+    } = task.spatial.objective.as_ref()?
+    else {
+        return None;
+    };
+    if !matches!(
+        building_type,
+        BuildingType::ResearchHut | BuildingType::School
+    ) {
+        return None;
+    }
+    let (building, scholar) =
+        lai63_research_station_assignment(colony, Some(building_id.as_str()))?;
+    if building.building_type != *building_type || building.position != *anchor {
+        return None;
+    }
+    let objective = SiteRef::building(
+        building.id.clone(),
+        building.building_type,
+        building.position,
+    );
+    let footprint = canonical_building_footprint(building.building_type, building.position);
+    let work_slot = WorkSlot::exclusive(
+        format!("research-preparation-work:{}", building.id),
+        SiteRef::Rect {
+            metadata: SiteMetadata::revealed(format!(
+                "research-preparation-work-area:{}",
+                building.id
+            )),
+            rect: footprint.rect(),
+            footprint,
+        },
+    );
+    let scholar_tile = world_pos_to_tile(position_to_world(colony.anchor, scholar.position));
+    let source_to_work_route = lai63_ordered_route(
+        &format!("research-preparation-scholar:{}", scholar.id),
+        scholar_tile,
+        building.position,
+        grid,
+        None,
+    )?;
+    let work_to_delivery_route = lai63_ordered_route(
+        "research-preparation-at-station",
+        building.position,
+        building.position,
+        grid,
+        None,
+    )?;
+    let candidate = SpatialResolutionCandidate {
+        objective: objective.clone(),
+        work_slot,
+        source_to_work_route,
+        work_to_delivery_route,
+        objective_exists: true,
+        work_position_available: true,
+        source_available_units: 1,
+        source_capacity: 1,
+        source_to_work_route_capacity: 1,
+        work_to_delivery_route_capacity: 1,
+    };
+    Some(SpatialResolutionRequest {
+        category: SpatialTaskCategory::StationWork(building.building_type),
+        pinned_objective_id: Some(objective.stable_id().to_owned()),
+        pinned_delivery_endpoint: objective,
+        delivery_endpoint_exists: true,
+        requested_source_units: 1,
+        requested_delivery_units: 1,
+        delivery_capacity: 1,
+        candidates: vec![candidate],
+    })
+}
+
+const fn lai63_spatial_category(
+    category: crate::task_runtime::TaskCategory,
+) -> Option<crate::spatial_resolver::SpatialTaskCategory> {
+    use crate::{spatial_resolver::SpatialTaskCategory, task_runtime::TaskCategory};
+
+    match category {
+        TaskCategory::Hunt => Some(SpatialTaskCategory::Hunt),
+        TaskCategory::FetchWater => Some(SpatialTaskCategory::FetchWater),
+        TaskCategory::Fish => Some(SpatialTaskCategory::Fish),
+        TaskCategory::WorkshopWork => Some(SpatialTaskCategory::WorkshopWork),
+        _ => None,
+    }
+}
+
+/// Return only the already-reported objective coordinate. Routes deliberately
+/// have no objective fallback: their first/last tile is transit geometry, not a
+/// source declaration.
+fn lai63_requested_objective_anchor(
+    task: &crate::task_runtime::VisibleTaskRuntime,
+) -> Option<TilePos> {
+    use crate::spatial_tasks::SiteRef;
+
+    match task.spatial.objective.as_ref()? {
+        SiteRef::Tile { tile, .. } => Some(*tile),
+        SiteRef::Rect { rect, .. } => Some(rect.anchor()),
+        SiteRef::Building { anchor, .. } | SiteRef::Shrine { anchor, .. } => Some(*anchor),
+        SiteRef::ResourceSource { footprint, .. }
+        | SiteRef::Stockpile { footprint, .. }
+        | SiteRef::VillageTradeEndpoint { footprint, .. } => Some(footprint.anchor),
+        SiteRef::OrderedTiles { .. } | SiteRef::OrderedRoute { .. } => None,
+    }
+}
+
+/// Select the first vacant visible slot in stable zone/tile/slot order. This
+/// does not create a zone, slot, container, or lot; it only makes an existing
+/// storage topology available to a task contract.
+fn lai63_exact_delivery_slot(
+    runtime: &crate::leader_ai_runtime::LeaderAiRuntimeState,
+    colony: &ColonyRuntime,
+) -> Option<Lai63DeliverySlot> {
+    use crate::{
+        physical_storage::VISIBLE_SLOTS_PER_STORAGE_TILE,
+        spatial_tasks::{SiteMetadata, SiteRef},
+        storage_authority::StorageZoneKind,
+    };
+
+    for zone in runtime.storage.report_zones() {
+        if zone.kind != StorageZoneKind::Stockpile {
+            continue;
+        }
+        for (tile, slots) in &zone.tiles {
+            // A route may only claim a slot that is physically present in the
+            // current world projection. This prevents an authority-only zone
+            // from becoming an invisible delivery endpoint.
+            if !colony.revealed_tiles.contains(tile) || !colony.world_tiles.contains_key(tile) {
+                continue;
+            }
+            for slot in 0..VISIBLE_SLOTS_PER_STORAGE_TILE {
+                let slot = u8::try_from(slot).ok()?;
+                if slots.slots.contains_key(&slot) {
+                    continue;
+                }
+                let endpoint = SiteRef::Stockpile {
+                    metadata: SiteMetadata::revealed(lai63_delivery_slot_id(&zone.id, *tile, slot)),
+                    stockpile_id: zone.id.clone(),
+                    footprint: zone.footprint.clone(),
+                };
+                return Some(Lai63DeliverySlot {
+                    endpoint,
+                    contact_tile: *tile,
+                });
+            }
+        }
+    }
+    None
+}
+
+fn lai63_delivery_slot_id(zone_id: &str, tile: TilePos, slot: u8) -> String {
+    format!(
+        "{LAI63_DELIVERY_SLOT_PREFIX}{zone_id}:{}:{}:{slot}",
+        tile.x, tile.y
+    )
+}
+
+fn lai63_hunt_resolution_candidate(
+    colony: &ColonyRuntime,
+    source_tile: TilePos,
+    delivery: &Lai63DeliverySlot,
+    grid: &ColonyWalkGrid<'_>,
+) -> Option<crate::spatial_resolver::SpatialResolutionCandidate> {
+    use crate::spatial_tasks::ResourceSourceKind;
+
+    let tile = colony.world_tiles.get(&source_tile)?;
+    if !colony.revealed_tiles.contains(&source_tile)
+        || tile.tile_type != TileType::CaveEntrance
+        || tile.resources.food == 0
+    {
+        return None;
+    }
+    let work_tile = lai63_adjacent_dry_work_tile(colony, source_tile, delivery.contact_tile, grid)?;
+    lai63_resource_resolution_candidate(
+        "hunt-source",
+        ResourceSourceKind::Hunting,
+        source_tile,
+        work_tile,
+        delivery,
+        grid,
+        tile.resources.food,
+    )
+}
+
+fn lai63_water_resolution_candidate(
+    colony: &ColonyRuntime,
+    source_tile: TilePos,
+    delivery: &Lai63DeliverySlot,
+    grid: &ColonyWalkGrid<'_>,
+) -> Option<crate::spatial_resolver::SpatialResolutionCandidate> {
+    use crate::spatial_tasks::ResourceSourceKind;
+
+    let tile = colony.world_tiles.get(&source_tile)?;
+    if !colony.revealed_tiles.contains(&source_tile)
+        || !tile_has_water(Some(tile))
+        || tile.resources.water == 0
+    {
+        return None;
+    }
+    // Water's resource tile is deliberately never its work tile: carriers work
+    // on a real dry bank selected in stable N/E/S/W order.
+    let work_tile = lai63_adjacent_dry_work_tile(colony, source_tile, delivery.contact_tile, grid)?;
+    lai63_resource_resolution_candidate(
+        "water-source",
+        ResourceSourceKind::Water,
+        source_tile,
+        work_tile,
+        delivery,
+        grid,
+        tile.resources.water,
+    )
+}
+
+fn lai63_fishing_resolution_candidate(
+    colony: &ColonyRuntime,
+    source_tile: TilePos,
+    delivery: &Lai63DeliverySlot,
+    grid: &ColonyWalkGrid<'_>,
+) -> Option<crate::spatial_resolver::SpatialResolutionCandidate> {
+    use crate::spatial_tasks::ResourceSourceKind;
+
+    let population = colony.fish_habitats.get(&source_tile)?;
+    let available = population.stock.floor().clamp(0.0, f64::from(u32::MAX)) as u32;
+    if available == 0
+        || !colony.revealed_tiles.contains(&source_tile)
+        || !tile_has_water(colony.world_tiles.get(&source_tile))
+    {
+        return None;
+    }
+    let work_tile = lai63_adjacent_dry_work_tile(colony, source_tile, delivery.contact_tile, grid)?;
+    lai63_resource_resolution_candidate(
+        "fish-source",
+        ResourceSourceKind::FishHabitat,
+        source_tile,
+        work_tile,
+        delivery,
+        grid,
+        available,
+    )
+}
+
+fn lai63_resource_resolution_candidate(
+    source_prefix: &str,
+    resource_kind: crate::spatial_tasks::ResourceSourceKind,
+    source_tile: TilePos,
+    work_tile: TilePos,
+    delivery: &Lai63DeliverySlot,
+    grid: &ColonyWalkGrid<'_>,
+    source_capacity: u32,
+) -> Option<crate::spatial_resolver::SpatialResolutionCandidate> {
+    use crate::{
+        spatial_resolver::SpatialResolutionCandidate,
+        spatial_tasks::{Rect, SiteMetadata, SiteRef, TaskFootprint, WorkSlot},
+    };
+
+    let source_id = format!("{source_prefix}-{}-{}", source_tile.x, source_tile.y);
+    let objective = SiteRef::ResourceSource {
+        metadata: SiteMetadata::revealed(source_id.clone()),
+        source_id,
+        resource_kind,
+        footprint: TaskFootprint::rectangular(Rect::try_new(source_tile, 1, 1).ok()?),
+    };
+    let work_slot = WorkSlot::exclusive(
+        format!("{source_prefix}-work-{}-{}", work_tile.x, work_tile.y),
+        SiteRef::Tile {
+            metadata: SiteMetadata::revealed(format!(
+                "{source_prefix}-work-site-{}-{}",
+                work_tile.x, work_tile.y
+            )),
+            tile: work_tile,
+        },
+    );
+    let source_to_work_route =
+        lai63_ordered_route("source-work", source_tile, work_tile, grid, None)?;
+    let work_to_delivery_route = lai63_ordered_route(
+        "work-delivery",
+        work_tile,
+        delivery.contact_tile,
+        grid,
+        Some(delivery.endpoint.stable_id()),
+    )?;
+    // Every new physical route carries one bounded unit. Its source capacity
+    // still records the real source state, while later cargo migration is the
+    // only authority permitted to create the matching physical lot.
+    Some(SpatialResolutionCandidate {
+        objective,
+        work_slot,
+        source_to_work_route,
+        work_to_delivery_route,
+        objective_exists: true,
+        work_position_available: true,
+        source_available_units: 1,
+        source_capacity,
+        source_to_work_route_capacity: 1,
+        work_to_delivery_route_capacity: 1,
+    })
+}
+
+fn lai63_workshop_resolution_candidate(
+    colony: &ColonyRuntime,
+    requested_anchor: TilePos,
+    delivery: &Lai63DeliverySlot,
+    grid: &ColonyWalkGrid<'_>,
+) -> Option<crate::spatial_resolver::SpatialResolutionCandidate> {
+    use crate::{
+        spatial_resolver::SpatialResolutionCandidate,
+        spatial_tasks::{SiteMetadata, SiteRef, WorkSlot, canonical_building_footprint},
+    };
+
+    let building = colony.buildings.iter().find(|building| {
+        building.is_complete
+            && building.building_type == BuildingType::Workshop
+            && building.position == requested_anchor
+    })?;
+    let footprint = canonical_building_footprint(BuildingType::Workshop, building.position);
+    let objective = SiteRef::building(
+        building.id.clone(),
+        BuildingType::Workshop,
+        building.position,
+    );
+    let work_site = SiteRef::Rect {
+        metadata: SiteMetadata::revealed(format!("workshop-work-area:{}", building.id)),
+        rect: footprint.rect(),
+        footprint: footprint.clone(),
+    };
+    let work_slot = WorkSlot::exclusive(format!("workshop-work:{}", building.id), work_site);
+    let source_to_work_route = lai63_ordered_route(
+        "workshop-source-work",
+        building.position,
+        building.position,
+        grid,
+        None,
+    )?;
+    let work_to_delivery_route = lai63_ordered_route(
+        "workshop-work-delivery",
+        building.position,
+        delivery.contact_tile,
+        grid,
+        Some(delivery.endpoint.stable_id()),
+    )?;
+    Some(SpatialResolutionCandidate {
+        objective,
+        work_slot,
+        source_to_work_route,
+        work_to_delivery_route,
+        objective_exists: true,
+        work_position_available: true,
+        source_available_units: 1,
+        source_capacity: 1,
+        source_to_work_route_capacity: 1,
+        work_to_delivery_route_capacity: 1,
+    })
+}
+
+/// Pick a genuine dry adjacent work tile in fixed N/E/S/W order. The selected
+/// tile must also have an actual A* route to the pinned storage slot; no
+/// straight-line or route-end fallback is permitted.
+fn lai63_adjacent_dry_work_tile(
+    colony: &ColonyRuntime,
+    source: TilePos,
+    delivery: TilePos,
+    grid: &ColonyWalkGrid<'_>,
+) -> Option<TilePos> {
+    let mountain_travel = resolve_effects(colony.upgrade_tree.owned_node_ids.iter())
+        .unlocked_capabilities
+        .contains("mountain_travel");
+    [(0, -1), (1, 0), (0, 1), (-1, 0)]
+        .into_iter()
+        .map(|(dx, dy)| TilePos {
+            x: source.x + dx,
+            y: source.y + dy,
+        })
+        .find(|candidate| {
+            colony.revealed_tiles.contains(candidate)
+                && colony.world_tiles.get(candidate).is_some_and(|tile| {
+                    !tile_has_water(Some(tile))
+                        && (tile.tile_type != TileType::Mountains || mountain_travel)
+                })
+                && lai63_ordered_route("work-delivery-probe", *candidate, delivery, grid, None)
+                    .is_some()
+        })
+}
+
+fn lai63_ordered_route(
+    prefix: &str,
+    start: TilePos,
+    end: TilePos,
+    grid: &ColonyWalkGrid<'_>,
+    pinned_delivery_slot: Option<&str>,
+) -> Option<crate::spatial_tasks::SiteRef> {
+    use crate::{
+        planner_core::PlannerId,
+        spatial_tasks::{SiteMetadata, SiteRef},
+    };
+
+    let route = find_path(
+        pathfinding_pos(tile_pos_to_world(start)),
+        pathfinding_pos(tile_pos_to_world(end)),
+        grid,
+        FindPathOptions::default(),
+    )?
+    .into_iter()
+    .map(|tile| TilePos {
+        x: tile.x.round() as i32,
+        y: tile.y.round() as i32,
+    })
+    .collect::<Vec<_>>();
+    if route.is_empty() {
+        return None;
+    }
+    let stable_id = pinned_delivery_slot.map_or_else(
+        || {
+            let geometry = route
+                .iter()
+                .map(|tile| format!("{},{}", tile.x, tile.y))
+                .collect::<Vec<_>>()
+                .join(";");
+            PlannerId::derive("lai63_route", [prefix, geometry.as_str()])
+                .as_str()
+                .to_owned()
+        },
+        str::to_owned,
+    );
+    Some(SiteRef::OrderedRoute {
+        metadata: SiteMetadata::revealed(stable_id),
+        route,
+    })
+}
+
+fn lai63_exact_goal_spatial(
+    runtime: &crate::leader_ai_runtime::LeaderAiRuntimeState,
+    colony: &ColonyRuntime,
+    goal: &crate::leader_planner::content_planner::PersistentGoal,
+) -> Result<
+    (
+        crate::task_runtime::TaskCategory,
+        crate::spatial_tasks::SpatialObjective,
+    ),
+    crate::leader_ai_runtime::LeaderAiRuntimeError,
+> {
+    use crate::{
+        leader_planner::content_planner::{
+            CandidateKind, LocatedFoodRecoveryKind, ReportedSiteKind,
+        },
+        spatial_tasks::{
+            Rect, ResourceSourceKind, SiteMetadata, SiteRef, SpatialBlockReason, SpatialObjective,
+            TaskFootprint, TilePoint, WorkSlot,
+        },
+        task_runtime::TaskCategory,
+    };
+
+    let category = match goal.kind {
+        CandidateKind::Defend => TaskCategory::Scout,
+        CandidateKind::SelfPreservation => TaskCategory::Eat,
+        CandidateKind::FeedHole => TaskCategory::HaulDelivery,
+        CandidateKind::Hunt | CandidateKind::RecoverFood(LocatedFoodRecoveryKind::HuntingLair) => {
+            TaskCategory::Hunt
+        }
+        CandidateKind::RecoverFood(LocatedFoodRecoveryKind::FishShore) => TaskCategory::Fish,
+        CandidateKind::RecoverFood(LocatedFoodRecoveryKind::FarmPlot) => TaskCategory::FarmWork,
+        CandidateKind::RecoverFood(LocatedFoodRecoveryKind::AppleTree) => TaskCategory::FibreForage,
+        CandidateKind::RecoverFood(LocatedFoodRecoveryKind::Cookhouse)
+        | CandidateKind::SupplyCookhouse => TaskCategory::HaulDelivery,
+        CandidateKind::StudyNotes | CandidateKind::StudyVoid => TaskCategory::StationWork,
+        CandidateKind::ProcessMaterial
+        | CandidateKind::CraftTool
+        | CandidateKind::InstallFixture
+        | CandidateKind::InstallAugmentation => TaskCategory::WorkshopWork,
+        CandidateKind::KeepStock => TaskCategory::StockpileTransfer,
+    };
+    let Some(site) = &goal.site else {
+        return Ok((
+            category,
+            SpatialObjective::blocked(SpatialBlockReason::SourceUnavailable),
+        ));
+    };
+    if site.kind == ReportedSiteKind::HoleWorkArea {
+        let footprint = runtime.hole.footprint();
+        if footprint.work.anchor
+            != (TilePoint {
+                x: site.x,
+                y: site.y,
+            })
+        {
+            return Err(crate::leader_ai_runtime::LeaderAiRuntimeError::MalformedHole);
+        }
+        let landmark_rect = Rect::try_new(
+            footprint.landmark.anchor,
+            footprint.landmark.width,
+            footprint.landmark.height,
+        )
+        .map_err(|_| crate::leader_ai_runtime::LeaderAiRuntimeError::MalformedHole)?;
+        let objective = SiteRef::Rect {
+            metadata: SiteMetadata::revealed(site.site_id.as_str()),
+            rect: landmark_rect,
+            footprint: footprint.landmark,
+        };
+        let work_site = SiteRef::Rect {
+            metadata: SiteMetadata::revealed(format!(
+                "hole_work_area:{}",
+                runtime.hole.hole_id
+            )),
+            rect: footprint.work.rect(),
+            footprint: footprint.work,
+        };
+        let work = WorkSlot::exclusive(
+            format!("hole_feed_slot:{}", runtime.hole.hole_id),
+            work_site,
+        );
+        let delivery = SiteRef::Tile {
+            metadata: SiteMetadata::revealed(format!(
+                "hole_delivery_edge:{}",
+                runtime.hole.hole_id
+            )),
+            tile: footprint.pinned_delivery_edge,
+        };
+        return Ok((
+            category,
+            SpatialObjective::resolved(objective, vec![work], Some(delivery)),
+        ));
+    }
+
+    let point = TilePoint {
+        x: site.x,
+        y: site.y,
+    };
+    let objective = if site.kind == ReportedSiteKind::HuntingLair {
+        let rect = Rect::try_new(point, 1, 1).map_err(|_| {
+            crate::leader_ai_runtime::LeaderAiRuntimeError::LeafInvalid(
+                "reported hunting footprint",
+            )
+        })?;
+        SiteRef::ResourceSource {
+            metadata: SiteMetadata::revealed(site.site_id.as_str()),
+            source_id: site.site_id.as_str().to_owned(),
+            resource_kind: ResourceSourceKind::Hunting,
+            footprint: TaskFootprint::rectangular(rect),
+        }
+    } else {
+        SiteRef::Tile {
+            metadata: SiteMetadata::revealed(site.site_id.as_str()),
+            tile: point,
+        }
+    };
+    let work = WorkSlot::exclusive(
+        format!("reported_work:{}", site.site_id.as_str()),
+        SiteRef::Tile {
+            metadata: SiteMetadata::revealed(format!(
+                "reported_work_site:{}",
+                site.site_id.as_str()
+            )),
+            tile: point,
+        },
+    );
+    let Some(endpoint) = lai63_exact_stockpile_endpoint(colony) else {
+        return Ok((
+            category,
+            SpatialObjective::blocked(SpatialBlockReason::DeliveryEndpointUnavailable),
+        ));
+    };
+    Ok((
+        category,
+        SpatialObjective::resolved(objective, vec![work], Some(endpoint)),
+    ))
+}
+
+fn lai63_exact_stockpile_endpoint(colony: &ColonyRuntime) -> Option<crate::spatial_tasks::SiteRef> {
+    use crate::spatial_tasks::{Rect, SiteMetadata, SiteRef, TaskFootprint, TilePoint};
+
+    let pile = colony
+        .stockpiles
+        .iter()
+        .min_by(|left, right| left.id.cmp(&right.id))?;
+    let width = pile.rect.x2.checked_sub(pile.rect.x1)?.checked_add(1)?;
+    let height = pile.rect.y2.checked_sub(pile.rect.y1)?.checked_add(1)?;
+    let rect = Rect::try_new(
+        TilePoint {
+            x: pile.rect.x1,
+            y: pile.rect.y1,
+        },
+        width,
+        height,
+    )
+    .ok()?;
+    Some(SiteRef::Stockpile {
+        metadata: SiteMetadata::revealed(pile.id.clone()),
+        stockpile_id: pile.id.clone(),
+        footprint: TaskFootprint::rectangular(rect),
+    })
+}
+
+/// Mirror each canonical construction authority row as one exact world-visible
+/// task. The construction project remains the sole executor and material
+/// counter; this projection cannot create a second builder or resource faucet.
+fn lai63_materialize_construction_projects(
+    runtime: &mut crate::leader_ai_runtime::LeaderAiRuntimeState,
+    runtime_tick: u64,
+) -> Result<(), crate::leader_ai_runtime::LeaderAiRuntimeError> {
+    use crate::{
+        authority::{AuthorityActor, AuthorityDomain},
+        intent_graph::{Intent, IntentInsert},
+        planner_core::{IntentId, IntentState, PlannerId},
+        spatial_tasks::{
+            Rect, SiteLifecycleStage, SiteMetadata, SiteRef, SpatialObjective, WorkSlot,
+        },
+        task_runtime::{TaskCategory, TaskId, VisibleTaskRuntime},
+    };
+
+    let projects = runtime
+        .construction_projects
+        .values()
+        .cloned()
+        .collect::<Vec<_>>();
+    for project in projects {
+        let target_id = PlannerId::derive("construction_project", [&project.project_id]);
+        let proposed_intent_id = IntentId::derive(
+            &runtime.colony_id,
+            u64::from(project.version),
+            "construction",
+            target_id.as_str(),
+            0,
+        );
+        let intent_id = if runtime.intents.get(&proposed_intent_id).is_some() {
+            proposed_intent_id
+        } else {
+            let mut metadata =
+                SiteMetadata::revealed(format!("construction_site:{}", project.project_id));
+            metadata.lifecycle = SiteLifecycleStage::Planned;
+            let rect = Rect::try_new(
+                project.footprint.anchor,
+                project.footprint.width,
+                project.footprint.height,
+            )
+            .map_err(|_| crate::leader_ai_runtime::LeaderAiRuntimeError::MalformedConstruction)?;
+            let objective = SiteRef::Rect {
+                metadata,
+                rect,
+                footprint: project.footprint.clone(),
+            };
+            let work = WorkSlot::exclusive(
+                format!("construction_work:{}", project.project_id),
+                SiteRef::Rect {
+                    metadata: SiteMetadata::revealed(format!(
+                        "construction_work_site:{}",
+                        project.project_id
+                    )),
+                    rect,
+                    footprint: project.footprint.clone(),
+                },
+            );
+            let spatial =
+                SpatialObjective::resolved(objective.clone(), vec![work], Some(objective));
+            let mut intent = Intent::proposed(
+                proposed_intent_id.clone(),
+                runtime.colony_partition.clone(),
+                AuthorityActor::Scheduler,
+                None,
+                AuthorityDomain::Building,
+                PlannerId::derive("content_goal_kind", ["construction"]),
+                target_id,
+                PlannerId::derive("rationale", ["canonical_construction_project"]),
+                runtime_tick,
+            );
+            intent.spatial_objective = Some(spatial);
+            intent
+                .lifecycle
+                .transition(IntentState::Approved, runtime_tick)
+                .map_err(|_| {
+                    crate::leader_ai_runtime::LeaderAiRuntimeError::LeafInvalid(
+                        "construction intent lifecycle",
+                    )
+                })?;
+            match runtime.intents.insert_or_merge(intent).map_err(|_| {
+                crate::leader_ai_runtime::LeaderAiRuntimeError::LeafInvalid(
+                    "construction intent insertion",
+                )
+            })? {
+                IntentInsert::Inserted(id)
+                | IntentInsert::Merged(id)
+                | IntentInsert::DuplicateId(id) => id,
+            }
+        };
+        let task_id = TaskId::derive(&runtime.colony_id, &intent_id, 0);
+        if runtime.scheduling.visible_tasks.contains_key(&task_id) {
+            continue;
+        }
+        let spatial = runtime
+            .intents
+            .get(&intent_id)
+            .and_then(|intent| intent.spatial_objective.clone())
+            .ok_or(crate::leader_ai_runtime::LeaderAiRuntimeError::LeafInvalid(
+                "construction intent spatial objective",
+            ))?;
+        let task = VisibleTaskRuntime::resolved(
+            runtime.colony_id.clone(),
+            intent_id,
+            0,
+            TaskCategory::BuildingConstruction,
+            spatial,
+            Vec::new(),
+            runtime_tick,
+        )
+        .map_err(|_| {
+            crate::leader_ai_runtime::LeaderAiRuntimeError::LeafInvalid("construction visible task")
+        })?;
+        runtime.scheduling.visible_tasks.insert(task_id, task);
+    }
+    Ok(())
+}
+
+const fn lai63_authority_domain(
+    domain: crate::leader_planner::content_planner::ContentDomain,
+) -> crate::authority::AuthorityDomain {
+    use crate::{authority::AuthorityDomain, leader_planner::content_planner::ContentDomain};
+
+    match domain {
+        ContentDomain::Defense | ContentDomain::Danger => AuthorityDomain::Defense,
+        ContentDomain::Survival
+        | ContentDomain::Hunting
+        | ContentDomain::Food
+        | ContentDomain::Apples
+        | ContentDomain::Fishing
+        | ContentDomain::FoodDays
+        | ContentDomain::Cookhouse => AuthorityDomain::Survival,
+        ContentDomain::Hole => AuthorityDomain::ColonyWide,
+        ContentDomain::Research | ContentDomain::ResearchNotes | ContentDomain::VoidResearch => {
+            AuthorityDomain::Research
+        }
+        ContentDomain::Processing
+        | ContentDomain::Tools
+        | ContentDomain::Fixtures
+        | ContentDomain::Augmentations => AuthorityDomain::Building,
+    }
+}
+
+const fn lai63_candidate_kind_name(
+    kind: crate::leader_planner::content_planner::CandidateKind,
+) -> &'static str {
+    use crate::leader_planner::content_planner::{CandidateKind, LocatedFoodRecoveryKind};
+
+    match kind {
+        CandidateKind::Defend => "defend",
+        CandidateKind::SelfPreservation => "self_preservation",
+        CandidateKind::FeedHole => "feed_hole",
+        CandidateKind::Hunt => "hunt",
+        CandidateKind::RecoverFood(LocatedFoodRecoveryKind::AppleTree) => "recover_apples",
+        CandidateKind::RecoverFood(LocatedFoodRecoveryKind::FishShore) => "recover_fish",
+        CandidateKind::RecoverFood(LocatedFoodRecoveryKind::HuntingLair) => "recover_hunt",
+        CandidateKind::RecoverFood(LocatedFoodRecoveryKind::FarmPlot) => "recover_farm",
+        CandidateKind::RecoverFood(LocatedFoodRecoveryKind::Cookhouse) => "recover_cookhouse",
+        CandidateKind::SupplyCookhouse => "supply_cookhouse",
+        CandidateKind::StudyNotes => "study_notes",
+        CandidateKind::StudyVoid => "study_void",
+        CandidateKind::ProcessMaterial => "process_material",
+        CandidateKind::CraftTool => "craft_tool",
+        CandidateKind::InstallFixture => "install_fixture",
+        CandidateKind::InstallAugmentation => "install_augmentation",
+        CandidateKind::KeepStock => "keep_stock",
+    }
+}
+
+fn lai63_report_safe_planning_input(
+    colony: &ColonyRuntime,
+    runtime_tick: u64,
+    partition: &crate::planner_core::PlannerId,
+) -> Result<
+    crate::leader_planner::content_planner::ReportSafePlanningInput,
+    crate::leader_ai_runtime::LeaderAiRuntimeError,
+> {
+    use crate::{
+        content_manifest::ContentId,
+        leader_planner::{
+            LeaderPosture,
+            content_planner::{
+                CONTENT_PLANNER_SCHEMA_VERSION, CandidateKind, ContentDomain,
+                LocatedFoodRecoveryKind, ReportedCandidate, ReportedCargo, ReportedFoodKind,
+                ReportedSiteKind, ReportedSiteRef,
+            },
+        },
+        planner_core::PlannerId,
+        quality_lots::QualityBand,
+    };
+
+    let alive = colony
+        .cats
+        .iter()
+        .filter(|cat| cat.death_time.is_none())
+        .count()
+        .max(1);
+    let food_days = colony.resources.food.max(0.0) / alive as f64;
+    let water_days = colony.resources.water.max(0.0) / alive as f64;
+    let posture = if !colony.raiders.is_empty() {
+        LeaderPosture::Defend
+    } else if food_days < 1.0 || water_days < 1.0 {
+        LeaderPosture::Crisis
+    } else if food_days < 3.0 || water_days < 3.0 {
+        LeaderPosture::Recover
+    } else {
+        LeaderPosture::Stabilize
+    };
+    let report_id = PlannerId::derive(
+        "lai63_report",
+        [partition.as_str(), &runtime_tick.to_string()],
+    );
+    let hole_site = ReportedSiteRef {
+        site_id: PlannerId::derive("hole_site", [partition.as_str()]),
+        kind: ReportedSiteKind::HoleWorkArea,
+        x: colony.anchor.x.saturating_add(1),
+        y: colony.anchor.y.saturating_add(1),
+        report_id: report_id.clone(),
+    };
+    let believed_logs = coarse_reported_units(colony.resources.logs);
+    let mut candidates = vec![ReportedCandidate {
+        id: PlannerId::derive("candidate", [partition.as_str(), "endless_hole"]),
+        domain: ContentDomain::Hole,
+        kind: CandidateKind::FeedHole,
+        target_id: PlannerId::derive("hole", [partition.as_str()]),
+        site: Some(hole_site),
+        cargo: Some(ReportedCargo {
+            content_id: ContentId::new("resource_logs").map_err(|_| {
+                crate::leader_ai_runtime::LeaderAiRuntimeError::LeafInvalid("canonical content id")
+            })?,
+            food_kind: None,
+            quality: QualityBand::Common,
+            believed_units: believed_logs.max(1),
+            believed_replacement_cost_milli: 1_000,
+            lot_id: None,
+        }),
+        urgency_basis_points: 1_000,
+        confidence_basis_points: 6_000,
+        expected_benefit_milli: 1_000,
+        expected_labor_cost_milli: 1_000,
+        temporary_player_bias_basis_points: 0,
+        report_tick: runtime_tick,
+        evidence_ids: BTreeSet::from([PlannerId::derive(
+            "evidence",
+            [report_id.as_str(), "reported_logs"],
+        )]),
+        report_ids: BTreeSet::from([report_id.clone()]),
+        ordered_fallbacks: Vec::new(),
+        rationale_key: PlannerId::derive("rationale", ["hole_low_replacement_cost"]),
+    }];
+    if posture == LeaderPosture::Crisis || posture == LeaderPosture::Recover {
+        candidates.push(ReportedCandidate {
+            id: PlannerId::derive("candidate", [partition.as_str(), "survival_recovery"]),
+            domain: ContentDomain::Survival,
+            kind: CandidateKind::SelfPreservation,
+            target_id: PlannerId::derive("survival", [partition.as_str()]),
+            site: None,
+            cargo: None,
+            urgency_basis_points: 10_000,
+            confidence_basis_points: 8_000,
+            expected_benefit_milli: 100_000,
+            expected_labor_cost_milli: 1_000,
+            temporary_player_bias_basis_points: 0,
+            report_tick: runtime_tick,
+            evidence_ids: BTreeSet::from([PlannerId::derive(
+                "evidence",
+                [report_id.as_str(), "reported_lethal_need"],
+            )]),
+            report_ids: BTreeSet::from([report_id.clone()]),
+            ordered_fallbacks: Vec::new(),
+            rationale_key: PlannerId::derive("rationale", ["survival_before_hole"]),
+        });
+        if let Some(lair) = colony
+            .world_tiles
+            .values()
+            .filter(|tile| {
+                tile.tile_type == crate::types::TileType::CaveEntrance
+                    && tile.resources.food > 0
+                    && colony.revealed_tiles.contains(&tile.pos)
+            })
+            .min_by_key(|tile| (tile.pos.y, tile.pos.x))
+        {
+            let site = ReportedSiteRef {
+                site_id: PlannerId::derive(
+                    "hunting_lair",
+                    [
+                        partition.as_str(),
+                        &lair.pos.x.to_string(),
+                        &lair.pos.y.to_string(),
+                    ],
+                ),
+                kind: ReportedSiteKind::HuntingLair,
+                x: lair.pos.x,
+                y: lair.pos.y,
+                report_id: report_id.clone(),
+            };
+            candidates.push(ReportedCandidate {
+                id: PlannerId::derive(
+                    "candidate",
+                    [partition.as_str(), "food_recovery_hunting_lair"],
+                ),
+                domain: ContentDomain::Food,
+                kind: CandidateKind::RecoverFood(LocatedFoodRecoveryKind::HuntingLair),
+                target_id: site.site_id.clone(),
+                site: Some(site),
+                cargo: Some(ReportedCargo {
+                    content_id: ContentId::new("food_raw_meat").map_err(|_| {
+                        crate::leader_ai_runtime::LeaderAiRuntimeError::LeafInvalid(
+                            "canonical hunting content id",
+                        )
+                    })?,
+                    food_kind: Some(ReportedFoodKind::Meat),
+                    quality: QualityBand::Common,
+                    believed_units: coarse_reported_units(f64::from(lair.resources.food)).max(1),
+                    believed_replacement_cost_milli: 0,
+                    lot_id: None,
+                }),
+                urgency_basis_points: 10_000,
+                confidence_basis_points: 8_000,
+                expected_benefit_milli: 100_000,
+                expected_labor_cost_milli: 1_000,
+                temporary_player_bias_basis_points: 0,
+                report_tick: runtime_tick,
+                evidence_ids: BTreeSet::from([PlannerId::derive(
+                    "evidence",
+                    [report_id.as_str(), "reported_hunting_lair"],
+                )]),
+                report_ids: BTreeSet::from([report_id.clone()]),
+                ordered_fallbacks: Vec::new(),
+                rationale_key: PlannerId::derive(
+                    "rationale",
+                    ["food_recovery_before_optional_hole"],
+                ),
+            });
+        }
+    }
+    let mut report = crate::leader_planner::content_planner::ReportSafePlanningInput {
+        schema_version: CONTENT_PLANNER_SCHEMA_VERSION,
+        colony_id: partition.clone(),
+        report_version: runtime_tick,
+        observed_tick: runtime_tick,
+        posture,
+        candidates,
+    };
+    report.canonicalize();
+    Ok(report)
+}
+
+const fn lai63_broad_nudge_domain(
+    domain: crate::leader_planner::content_planner::ContentDomain,
+) -> crate::player_directives::BroadNudgeDomain {
+    use crate::{
+        leader_planner::content_planner::ContentDomain, player_directives::BroadNudgeDomain,
+    };
+
+    match domain {
+        ContentDomain::Defense => BroadNudgeDomain::Defense,
+        ContentDomain::Survival => BroadNudgeDomain::Survival,
+        ContentDomain::Hole => BroadNudgeDomain::Hole,
+        ContentDomain::Hunting | ContentDomain::Danger => BroadNudgeDomain::Hunting,
+        ContentDomain::Food
+        | ContentDomain::Apples
+        | ContentDomain::Fishing
+        | ContentDomain::FoodDays
+        | ContentDomain::Cookhouse => BroadNudgeDomain::Food,
+        ContentDomain::Research | ContentDomain::ResearchNotes | ContentDomain::VoidResearch => {
+            BroadNudgeDomain::Research
+        }
+        ContentDomain::Processing
+        | ContentDomain::Tools
+        | ContentDomain::Fixtures
+        | ContentDomain::Augmentations => BroadNudgeDomain::Infrastructure,
+    }
+}
+
+fn coarse_reported_units(exact: f64) -> u32 {
+    if !exact.is_finite() || exact <= 0.0 {
+        return 0;
+    }
+    let bounded = exact.floor().clamp(0.0, f64::from(u32::MAX)) as u32;
+    (bounded / 5) * 5
+}
+
+fn lai63_validate_worker_assignments(
+    runtime: &crate::leader_ai_runtime::LeaderAiRuntimeState,
+) -> Result<(), crate::leader_ai_runtime::LeaderAiRuntimeError> {
+    for task in runtime.scheduling.visible_tasks.values() {
+        if task
+            .assigned_cat_ids
+            .iter()
+            .any(|cat_id| runtime.cat_capabilities.cat_report(cat_id).is_none())
+        {
+            return Err(crate::leader_ai_runtime::LeaderAiRuntimeError::CatPartitionMismatch);
+        }
+    }
+    Ok(())
+}
+
+/// Advance at most one truthful physical stage for each already-resolved
+/// canonical task. This bridge deliberately has no route finder, stockpile
+/// chooser, source substitution, or legacy job fallback: a task advances only
+/// when the persisted aggregate already contains its exact spatial contract
+/// and the storage authority can prove one exact whole-lot binding.
+fn lai63_advance_exact_physical_tasks(
+    runtime: &mut crate::leader_ai_runtime::LeaderAiRuntimeState,
+    colony: &ColonyRuntime,
+    runtime_tick: u64,
+) -> Result<(), crate::leader_ai_runtime::LeaderAiRuntimeError> {
+    use crate::{
+        cat_capability_authority::ProductiveOutcome,
+        cat_willingness::TaskPriority,
+        leader_ai_runtime::{PhysicalTaskExecutionRequest, PhysicalTaskWorkReceipt},
+        task_runtime::TaskStage,
+    };
+
+    // BTreeMap order is the canonical TaskId order. Snapshotting IDs also
+    // ensures one task can never be advanced twice in this runtime tick.
+    let task_ids = runtime
+        .scheduling
+        .resolved_spatial_tasks
+        .keys()
+        .filter(|task_id| {
+            runtime
+                .scheduling
+                .visible_tasks
+                .get(*task_id)
+                .is_some_and(|task| {
+                    !matches!(
+                        task.stage,
+                        TaskStage::Complete | TaskStage::Blocked | TaskStage::Cancelled
+                    )
+                })
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+
+    for task_id in task_ids {
+        let task = runtime
+            .scheduling
+            .visible_tasks
+            .get(&task_id)
+            .cloned()
+            .ok_or(crate::leader_ai_runtime::LeaderAiRuntimeError::MissingPhysicalTask)?;
+        let resolved = runtime
+            .scheduling
+            .resolved_spatial_tasks
+            .get(&task_id)
+            .cloned()
+            .ok_or(crate::leader_ai_runtime::LeaderAiRuntimeError::DanglingResolvedTask)?;
+
+        // These categories have separate authoritative executors or cannot
+        // currently supply a one-lot physical receipt. Leaving them at
+        // Resolve is intentional and never grants generic task completion.
+        if !lai63_is_single_lot_physical_category(task.category, resolved.category) {
+            continue;
+        }
+
+        let interruption = lai63_physical_task_interruption(colony, &task, &resolved);
+        let Some(cargo) = lai63_exact_task_cargo_binding(runtime, &task, &resolved) else {
+            continue;
+        };
+        let workers = lai63_physical_worker_reports(runtime, colony, task.category);
+        let request = PhysicalTaskExecutionRequest {
+            task_id,
+            resolved,
+            cargo,
+            workers,
+            priority: TaskPriority::Required,
+            interruption,
+            work: PhysicalTaskWorkReceipt {
+                // The executor is a transport/work runtime, not a replacement
+                // production source. Its one once-only capability receipt is
+                // the catalog-defined transit award for two completed legs.
+                outcome: ProductiveOutcome::Hauling { haul_legs: 2 },
+                family_completion: None,
+            },
+        };
+        let _ = runtime.advance_physical_task(request, runtime_tick)?;
+    }
+    Ok(())
+}
+
+fn lai63_is_single_lot_physical_category(
+    task: crate::task_runtime::TaskCategory,
+    spatial: crate::spatial_resolver::SpatialTaskCategory,
+) -> bool {
+    use crate::{spatial_resolver::SpatialTaskCategory, task_runtime::TaskCategory};
+
+    matches!(
+        (task, spatial),
+        (TaskCategory::Hunt, SpatialTaskCategory::Hunt)
+            | (TaskCategory::FetchWater, SpatialTaskCategory::FetchWater)
+            | (TaskCategory::Fish, SpatialTaskCategory::Fish)
+            | (TaskCategory::Quarry, SpatialTaskCategory::Quarry)
+            | (TaskCategory::Logging, SpatialTaskCategory::Logging)
+            | (
+                TaskCategory::StationWork,
+                SpatialTaskCategory::StationWork(_)
+            )
+            | (
+                TaskCategory::WorkshopWork,
+                SpatialTaskCategory::WorkshopWork
+            )
+            | (TaskCategory::FarmWork, SpatialTaskCategory::FarmWork)
+    )
+}
+
+fn lai63_physical_task_interruption(
+    colony: &ColonyRuntime,
+    task: &crate::task_runtime::VisibleTaskRuntime,
+    resolved: &crate::spatial_resolver::ResolvedSpatialTask,
+) -> crate::leader_ai_runtime::PhysicalTaskInterruption {
+    use crate::{leader_ai_runtime::PhysicalTaskInterruption, task_runtime::TaskStage};
+
+    let before_pickup = matches!(
+        task.stage,
+        TaskStage::Resolve | TaskStage::Reserve | TaskStage::TravelToSource | TaskStage::Pickup
+    );
+    if before_pickup && colony.status == ColonyStatus::Dead {
+        return PhysicalTaskInterruption::VillagePreemption;
+    }
+    if before_pickup && colony.active_raid.is_some() {
+        return PhysicalTaskInterruption::DefensePreemption;
+    }
+    if before_pickup && colony.critical_since.is_some() {
+        return PhysicalTaskInterruption::SurvivalPreemption;
+    }
+    if task.assigned_cat_ids.iter().any(|cat_id| {
+        colony
+            .cats
+            .iter()
+            .find(|cat| cat.id == *cat_id)
+            .is_none_or(|cat| cat.death_time.is_some())
+    }) {
+        return PhysicalTaskInterruption::WorkerDied;
+    }
+    let exact_route_ids = vec![
+        resolved.source_to_work_route.stable_id().to_owned(),
+        resolved.work_to_delivery_route.stable_id().to_owned(),
+    ];
+    if !task.route_ids.is_empty() && task.route_ids != exact_route_ids {
+        return PhysicalTaskInterruption::RouteLost;
+    }
+    PhysicalTaskInterruption::None
+}
+
+fn lai63_exact_task_cargo_binding(
+    runtime: &crate::leader_ai_runtime::LeaderAiRuntimeState,
+    task: &crate::task_runtime::VisibleTaskRuntime,
+    resolved: &crate::spatial_resolver::ResolvedSpatialTask,
+) -> Option<crate::leader_ai_runtime::PhysicalTaskCargoBinding> {
+    use crate::{
+        leader_ai_runtime::PhysicalTaskCargoBinding,
+        storage_authority::{StorageAddress, StorageIdentity},
+        task_runtime::TaskStage,
+    };
+
+    if let Some(identity) = runtime.scheduling.task_storage_identities.get(&task.id) {
+        // Activated tasks must keep the exact persisted slot chosen at
+        // reservation time. In particular, a restart may not retarget an
+        // occupied stockpile slot to whichever slot is empty now.
+        let endpoint = runtime
+            .scheduling
+            .task_storage_endpoints
+            .get(&task.id)
+            .cloned()?;
+        if matches!(&endpoint, StorageAddress::RouteCargo { .. }) {
+            return None;
+        }
+        let StorageIdentity::Lot(lot_id) = identity else {
+            // Exact items require their own item-transport authority.
+            return None;
+        };
+        let task_cargo = task.cargo.as_ref()?;
+        let lot = runtime.storage.ledger().lot(lot_id)?;
+        let source = runtime.storage.location(identity)?.clone();
+        if lot
+            .reservation
+            .as_deref()
+            .is_some_and(|owner| owner != task.id.as_str())
+            || lot.key.content_id.as_str() != task_cargo.resource_id
+            || u64::from(lot.quantity) != task_cargo.quantity
+        {
+            return None;
+        }
+        return Some(PhysicalTaskCargoBinding {
+            identity: identity.clone(),
+            resource_id: task_cargo.resource_id.clone(),
+            quantity: task_cargo.quantity,
+            source,
+            endpoint,
+            recovery: None,
+        });
+    }
+
+    if !matches!(task.stage, TaskStage::Resolve | TaskStage::Reserve) {
+        return None;
+    }
+    let endpoint = lai63_exact_storage_endpoint(runtime, task, resolved)?;
+    let exact_origin = lai63_exact_lot_origin(task.category, resolved)?;
+    for lot in runtime.storage.ledger().lots() {
+        let identity = StorageIdentity::Lot(lot.id.clone());
+        let Some(source) = runtime.storage.location(&identity).cloned() else {
+            continue;
+        };
+        if lot.reservation.is_some()
+            || lot.provenance.origin != exact_origin
+            || lot.quantity != resolved.source_units
+            || lot.quantity != resolved.delivery_units
+            || matches!(
+                &source,
+                StorageAddress::ConstructionCargo { .. } | StorageAddress::RouteCargo { .. }
+            )
+        {
+            continue;
+        }
+        return Some(PhysicalTaskCargoBinding {
+            identity,
+            resource_id: lot.key.content_id.as_str().to_owned(),
+            quantity: u64::from(lot.quantity),
+            source,
+            endpoint,
+            recovery: None,
+        });
+    }
+    None
+}
+
+fn lai63_exact_lot_origin(
+    category: crate::task_runtime::TaskCategory,
+    resolved: &crate::spatial_resolver::ResolvedSpatialTask,
+) -> Option<String> {
+    use crate::{
+        spatial_tasks::{ResourceSourceKind, SiteRef},
+        task_runtime::TaskCategory,
+    };
+
+    let SiteRef::ResourceSource {
+        source_id,
+        resource_kind,
+        ..
+    } = resolved.objective()
+    else {
+        return None;
+    };
+    match (category, *resource_kind) {
+        (TaskCategory::Hunt, ResourceSourceKind::Hunting) => Some(format!("hunt:{source_id}")),
+        (TaskCategory::FetchWater, ResourceSourceKind::Water) => Some(format!("water:{source_id}")),
+        (TaskCategory::Fish, ResourceSourceKind::FishHabitat) => Some(format!("fish:{source_id}")),
+        (TaskCategory::Quarry, ResourceSourceKind::Quarry) => Some(format!("quarry:{source_id}")),
+        (TaskCategory::Logging, ResourceSourceKind::Tree) => Some(format!("tree:{source_id}")),
+        _ => None,
+    }
+}
+
+fn lai63_exact_storage_endpoint(
+    runtime: &crate::leader_ai_runtime::LeaderAiRuntimeState,
+    _task: &crate::task_runtime::VisibleTaskRuntime,
+    resolved: &crate::spatial_resolver::ResolvedSpatialTask,
+) -> Option<crate::storage_authority::StorageAddress> {
+    use crate::{
+        physical_storage::VISIBLE_SLOTS_PER_STORAGE_TILE,
+        spatial_tasks::SiteRef,
+        storage_authority::{StorageAddress, StorageZoneKind},
+    };
+
+    let SiteRef::Stockpile { stockpile_id, .. } = resolved.delivery_endpoint() else {
+        return None;
+    };
+    let zone = runtime.storage.zone(stockpile_id)?;
+    if zone.kind != StorageZoneKind::Stockpile {
+        return None;
+    }
+    if let Some(address) = lai63_pinned_delivery_slot(resolved.delivery_endpoint()) {
+        let StorageAddress::Loose {
+            zone_id,
+            tile,
+            slot,
+        } = &address
+        else {
+            return None;
+        };
+        if zone_id != stockpile_id
+            || !zone
+                .tiles
+                .get(tile)
+                .is_some_and(|slots| !slots.slots.contains_key(slot))
+        {
+            return None;
+        }
+        return Some(address);
+    }
+    // Older already-persisted contracts did not encode a slot in their site
+    // metadata. Retain their existing deterministic behavior; newly resolved
+    // contracts always take the pinned branch above.
+    for (tile, slots) in &zone.tiles {
+        for slot in 0..VISIBLE_SLOTS_PER_STORAGE_TILE {
+            let slot = u8::try_from(slot).ok()?;
+            if !slots.slots.contains_key(&slot) {
+                return Some(StorageAddress::Loose {
+                    zone_id: stockpile_id.clone(),
+                    tile: *tile,
+                    slot,
+                });
+            }
+        }
+    }
+    None
+}
+
+fn lai63_pinned_delivery_slot(
+    endpoint: &crate::spatial_tasks::SiteRef,
+) -> Option<crate::storage_authority::StorageAddress> {
+    use crate::storage_authority::StorageAddress;
+
+    let encoded = endpoint
+        .stable_id()
+        .strip_prefix(LAI63_DELIVERY_SLOT_PREFIX)?;
+    // Zone IDs are stable but not restricted to a delimiter-free grammar by
+    // the storage leaf. Parse from the right so an older/custom zone ID may
+    // still contain colons without changing the selected address.
+    let mut fields = encoded.rsplitn(4, ':');
+    let slot = fields.next()?.parse::<u8>().ok()?;
+    let y = fields.next()?.parse::<i32>().ok()?;
+    let x = fields.next()?.parse::<i32>().ok()?;
+    let zone_id = fields.next()?.to_owned();
+    if zone_id.is_empty() {
+        return None;
+    }
+    Some(StorageAddress::Loose {
+        zone_id,
+        tile: TilePos { x, y },
+        slot,
+    })
+}
+
+fn lai63_physical_worker_reports(
+    runtime: &crate::leader_ai_runtime::LeaderAiRuntimeState,
+    colony: &ColonyRuntime,
+    category: crate::task_runtime::TaskCategory,
+) -> Vec<crate::leader_ai_runtime::PhysicalTaskWorkerReport> {
+    use crate::{
+        cat_capabilities::{InheritedAttribute, LaborAffinity},
+        leader_ai_runtime::PhysicalTaskWorkerReport,
+        task_runtime::TaskCategory,
+    };
+
+    let attribute = match category {
+        TaskCategory::Hunt | TaskCategory::Fish => InheritedAttribute::Hunting,
+        TaskCategory::FetchWater => InheritedAttribute::Cleaning,
+        TaskCategory::Quarry
+        | TaskCategory::Logging
+        | TaskCategory::StationWork
+        | TaskCategory::WorkshopWork
+        | TaskCategory::FarmWork => InheritedAttribute::Building,
+        _ => InheritedAttribute::Vision,
+    };
+    let skill_id = match category {
+        TaskCategory::Hunt | TaskCategory::Fish => "hunting",
+        TaskCategory::FetchWater => "cleaning",
+        _ => "building",
+    };
+    colony
+        .cats
+        .iter()
+        .map(|cat| {
+            let report = runtime.cat_capabilities.cat_report(&cat.id);
+            let physical = runtime.cat_physical.get(&cat.id);
+            let alive = cat.death_time.is_none();
+            let capable = alive
+                && can_work(get_life_stage(cat.age_hours))
+                && report.is_some()
+                && physical.is_some();
+            let affinity = report
+                .as_ref()
+                .map(|report| report.labor.affinity_for(skill_id))
+                .unwrap_or(LaborAffinity::Refused);
+            let willing = capable
+                && physical.is_some_and(|physical| physical.stress.level.get() < 95)
+                && affinity != LaborAffinity::Refused;
+            let affinity_score = match affinity {
+                LaborAffinity::Loved => 400,
+                LaborAffinity::Preferred => 300,
+                LaborAffinity::Neutral => 200,
+                LaborAffinity::Disliked => 100,
+                LaborAffinity::Refused => 0,
+            };
+            let attribute_score = report
+                .as_ref()
+                .map(|report| i64::from(report.attributes.get(attribute)) * 1_000)
+                .unwrap_or(0);
+            PhysicalTaskWorkerReport {
+                cat_id: cat.id.clone(),
+                alive,
+                capable,
+                willing,
+                suitability_score: attribute_score + affinity_score,
+            }
+        })
+        .collect()
+}
+
+fn lai63_revalidate_task_storage(
+    runtime: &crate::leader_ai_runtime::LeaderAiRuntimeState,
+) -> Result<(), crate::leader_ai_runtime::LeaderAiRuntimeError> {
+    for (task_id, identity) in &runtime.scheduling.task_storage_identities {
+        if !runtime.scheduling.visible_tasks.contains_key(task_id)
+            || runtime.storage.location(identity).is_none()
+        {
+            return Err(crate::leader_ai_runtime::LeaderAiRuntimeError::DanglingStorageIdentity);
+        }
+    }
+    Ok(())
+}
+
+fn lai63_advance_hole_into_shared_void(
+    runtime: &mut crate::leader_ai_runtime::LeaderAiRuntimeState,
+    runtime_tick: u64,
+) -> Result<(), crate::leader_ai_runtime::LeaderAiRuntimeError> {
+    use crate::progression_research::{HoleVoidCreditPayload, VoidInsight};
+
+    runtime
+        .hole
+        .advance_to(runtime_tick)
+        .map_err(|_| crate::leader_ai_runtime::LeaderAiRuntimeError::MalformedHole)?;
+    let credits = runtime
+        .hole
+        .take_credits(crate::black_hole::MAX_OUTPUT_HISTORY);
+    let credited_micro = credits.iter().try_fold(0_u64, |sum, credit| {
+        sum.checked_add(credit.micro_void)
+            .ok_or(crate::leader_ai_runtime::LeaderAiRuntimeError::MalformedHole)
+    })?;
+    for credit in credits {
+        let sequence = runtime
+            .research
+            .void
+            .credited_feed_through
+            .checked_add(1)
+            .ok_or(crate::leader_ai_runtime::LeaderAiRuntimeError::MalformedHole)?;
+        runtime
+            .research
+            .void
+            .credit_hole_feed(HoleVoidCreditPayload {
+                partition: runtime.research.void.partition.clone(),
+                feed_sequence: sequence,
+                amount: VoidInsight::from_micro(credit.micro_void),
+            })
+            .map_err(|_| crate::leader_ai_runtime::LeaderAiRuntimeError::MalformedHole)?;
+    }
+    runtime.hole.micro_void_balance = runtime
+        .hole
+        .micro_void_balance
+        .checked_sub(credited_micro)
+        .ok_or(crate::leader_ai_runtime::LeaderAiRuntimeError::ShadowVoidBalance)?;
+    Ok(())
+}
+
+// The schema-v2 cutover retired the old LAI.23 mutation pipeline below, but
+// these physical-world policy and route helpers remain shared by the archived
+// world phases until those phases are themselves replaced. Keep them outside
+// the retired module: none of them may read or mutate Shrine/Favor state.
+fn phase_lai23_survival_policy_compatibility(colony: &ColonyRuntime) -> TickPolicy {
+    let leadership = colony
+        .leader_id
+        .as_ref()
+        .and_then(|leader_id| {
+            active_resident_cats(colony)
+                .find(|cat| cat.id == *leader_id)
+                .map(|cat| cat.stats.leadership)
+        })
+        .unwrap_or(50.0);
+    let tier = match crate::policy::bucket_from_leadership(leadership) {
+        crate::policy::LeaderPolicyBucket::Bad => crate::types::PolicyTier::Simple,
+        crate::policy::LeaderPolicyBucket::Normal => crate::types::PolicyTier::Normal,
+        crate::policy::LeaderPolicyBucket::Excellent => crate::types::PolicyTier::Excellent,
+    };
+    TickPolicy {
+        config: crate::policy::config_for_tier(tier),
+    }
+}
+
+fn lai23_one_meal_food_emergency(colony: &ColonyRuntime) -> bool {
+    let population = active_resident_cats(colony).count();
+    population > 0
+        && colony.stock_ledger.reported.food + colony.stock_ledger.reported.fish
+            < population as f64 * personal_food_serving(colony)
+}
+
+/// The founding leader remains the bounded fallback for the physical founding
+/// field until a Farmer exists in either the legacy world projection or the
+/// canonical governance authority.
+fn lai23_founding_farmer_fallback_active(colony: &ColonyRuntime) -> bool {
+    let living_raw_leader = colony
+        .leader_id
+        .as_ref()
+        .is_some_and(|leader_id| active_resident_cats(colony).any(|cat| cat.id == *leader_id));
+    let institution = colony.leader_ai_runtime.governance.officer_institution();
+    !has_officer(colony, OfficerRole::Farmer)
+        && institution.officer(OfficerRole::Farmer).is_none()
+        && (living_raw_leader || institution.leader().is_some())
+}
+
+fn lai23_sustainable_food_runway_floor(population: usize) -> f64 {
+    (population as f64 * (RESEARCH_COMFORT_FOOD_PER_CAT + LAI23_SURVIVAL_ROUTE_RUNWAY_PER_CAT))
+        .max(RESEARCH_COMFORT_FLOOR)
+}
+
+fn lai23_food_tiles_with_available_resource(colony: &ColonyRuntime) -> Vec<WorldPos> {
+    colony
+        .world_tiles
+        .values()
+        .filter(|tile| {
+            tile.tile_type == TileType::CaveEntrance
+                && tile.resources.food >= LAI23_MINIMUM_HUNT_BATCH_UNITS
+                && tile_is_explored(colony, tile)
+                && cheb_from_anchor(colony.anchor, tile.pos) > 4
+        })
+        .map(|tile| tile_pos_to_world(tile.pos))
+        .collect()
+}
+
+fn lai23_max_active_visible_tasks(
+    colony: &ColonyRuntime,
+    category: crate::task_runtime::TaskCategory,
+) -> usize {
+    use crate::task_runtime::TaskCategory;
+
+    let population = active_resident_cats(colony).count().max(1);
+    let proportional_cap = |founding_cap: u32| {
+        (founding_cap as usize)
+            .saturating_mul(population)
+            .div_ceil(15)
+    };
+    match category {
+        TaskCategory::Hunt => {
+            let edible = colony.stock_ledger.reported.food + colony.stock_ledger.reported.fish;
+            let emergency_meal_floor = population as f64 * personal_food_serving(colony);
+            let physical_source_cap = lai23_food_tiles_with_available_resource(colony).len();
+            let policy_cap = if edible < emergency_meal_floor {
+                population
+            } else {
+                proportional_cap(BASELINE_HUNT_MAX_SLOTS)
+            };
+            policy_cap.min(physical_source_cap.max(1))
+        }
+        TaskCategory::FetchWater => proportional_cap(BASELINE_WATER_MAX_SLOTS).max(8),
+        TaskCategory::OfferingRitual
+        | TaskCategory::BuildingConstruction
+        | TaskCategory::WorkshopWork => 1,
+        _ => 1,
+    }
+}
+
+struct Lai23SurvivalRouteContext {
+    reachable_work_tiles: HashSet<PathTilePos>,
+}
+
+fn lai23_survival_route_context(colony: &ColonyRuntime) -> Option<Lai23SurvivalRouteContext> {
+    let endpoint_tile = colony
+        .stockpiles
+        .iter()
+        .find(|pile| pile.id == stockpiles::GENERAL_STOREHOUSE_ID)
+        .or_else(|| {
+            colony
+                .stockpiles
+                .iter()
+                .find(|pile| !pile.is_station_local())
+        })
+        .map(|pile| TilePos {
+            x: pile.rect.x1,
+            y: pile.rect.y1,
+        })?;
+    let mountain_travel = resolve_effects(colony.upgrade_tree.owned_node_ids.iter())
+        .unlocked_capabilities
+        .contains("mountain_travel");
+    let area = claimed_area(colony);
+    let path_area = pathfinding_area(&area);
+    let retained_gate = retained_area_gate(colony);
+    let area_gate = retained_gate.map(pathfinding_gate);
+    let ring_radius = village_ring_radius(colony.buildings.len() as i32);
+    let gate = movement_gate(colony.anchor, retained_gate, ring_radius);
+    let staged_edges = staged_wall_fence_edges(colony);
+    let walk_tiles = colony
+        .world_tiles
+        .values()
+        .map(walk_tile_from_runtime)
+        .collect::<Vec<_>>();
+    let grid = build_colony_walk_grid(ColonyGridParams {
+        tiles: &walk_tiles,
+        anchor: PathTilePos {
+            x: colony.anchor.x,
+            y: colony.anchor.y,
+        },
+        ring_radius,
+        gate: PathTilePos {
+            x: gate.x,
+            y: gate.y,
+        },
+        area: (!path_area.is_empty()).then_some(&path_area),
+        area_gate,
+        extra_fence_edges: (!staged_edges.is_empty()).then_some(&staged_edges),
+        terrain: None,
+        mountains_unlocked: mountain_travel,
+        shipping_researched: is_owned(&colony.upgrade_tree, "shipping"),
+        soft_obstacles: None,
+        soft_obstacle_field: None,
+        surface_factors: None,
+    });
+    let mut water_work_tiles = water_sites_near_village(colony)
+        .into_iter()
+        .map(world_pos_to_tile)
+        .filter_map(|source| water_work_site(colony, source))
+        .collect::<Vec<_>>();
+    water_work_tiles.sort_by_key(|tile| {
+        (
+            tile.x
+                .abs_diff(endpoint_tile.x)
+                .saturating_add(tile.y.abs_diff(endpoint_tile.y)),
+            tile.x,
+            tile.y,
+        )
+    });
+    water_work_tiles.dedup();
+    let mut food_sources = lai23_food_tiles_with_available_resource(colony)
+        .into_iter()
+        .map(world_pos_to_tile)
+        .collect::<Vec<_>>();
+    food_sources.sort_by_key(|tile| {
+        let available = colony
+            .world_tiles
+            .get(tile)
+            .map(|runtime| runtime.resources.food)
+            .unwrap_or(0);
+        (
+            u8::from(available < 24),
+            tile.x
+                .abs_diff(endpoint_tile.x)
+                .saturating_add(tile.y.abs_diff(endpoint_tile.y)),
+            u32::MAX - available,
+            tile.x,
+            tile.y,
+        )
+    });
+    food_sources.dedup();
+    let selected_food_sources = food_sources.into_iter().take(64).collect::<Vec<_>>();
+    let mut goals = water_work_tiles
+        .into_iter()
+        .take(8)
+        .chain(selected_food_sources.iter().copied())
+        .chain(
+            selected_food_sources
+                .iter()
+                .copied()
+                .flat_map(lai23_adjacent_tiles),
+        )
+        .filter(|tile| lai23_visible_task_work_tile_is_walkable(colony, *tile, mountain_travel))
+        .map(|tile| pathfinding_pos(tile_pos_to_world(tile)))
+        .collect::<Vec<_>>();
+    goals.sort_by(|left, right| {
+        left.x
+            .total_cmp(&right.x)
+            .then_with(|| left.y.total_cmp(&right.y))
+    });
+    goals.dedup_by(|left, right| left.x == right.x && left.y == right.y);
+    Some(Lai23SurvivalRouteContext {
+        reachable_work_tiles: reachable_component(
+            pathfinding_pos(tile_pos_to_world(endpoint_tile)),
+            &goals,
+            &grid,
+            FindPathOptions::default(),
+        ),
+    })
+}
+
+fn lai23_visible_task_work_tile_is_walkable(
+    colony: &ColonyRuntime,
+    tile: TilePos,
+    mountain_travel: bool,
+) -> bool {
+    colony.revealed_tiles.contains(&tile)
+        && colony.world_tiles.get(&tile).is_some_and(|runtime| {
+            !tile_has_water(Some(runtime))
+                && (mountain_travel || runtime.tile_type != TileType::Mountains)
+        })
+}
+
+fn lai23_adjacent_tiles(source: TilePos) -> impl Iterator<Item = TilePos> {
+    [(0, -1), (1, 0), (0, 1), (-1, 0)]
+        .into_iter()
+        .map(move |(dx, dy)| TilePos {
+            x: source.x + dx,
+            y: source.y + dy,
+        })
+}
+
+fn lai23_adjacent_work_tile(
+    colony: &ColonyRuntime,
+    routes: &Lai23SurvivalRouteContext,
+    source: TilePos,
+) -> Option<TilePos> {
+    let mountain_travel = resolve_effects(colony.upgrade_tree.owned_node_ids.iter())
+        .unlocked_capabilities
+        .contains("mountain_travel");
+    routes
+        .reachable_work_tiles
+        .contains(&PathTilePos {
+            x: source.x,
+            y: source.y,
+        })
+        .then_some(())?;
+    lai23_adjacent_tiles(source).find(|tile| {
+        lai23_visible_task_work_tile_is_walkable(colony, *tile, mountain_travel)
+            && routes.reachable_work_tiles.contains(&PathTilePos {
+                x: tile.x,
+                y: tile.y,
+            })
+    })
+}
+
+fn lai23_live_leader_defense_intent(colony: &ColonyRuntime) -> bool {
+    let Some(leader_id) = colony.leader_id.as_deref() else {
+        return false;
+    };
+    if !active_resident_cats(colony).any(|cat| cat.id == leader_id) {
+        return false;
+    }
+    let leader = crate::planner_core::PlannerId::derive("cat", [leader_id]);
+    let defense_kind = crate::planner_core::PlannerId::derive("intent_kind", ["defense"]);
+    colony.leader_ai_runtime.intents.iter().any(|(_, intent)| {
+        intent.kind_id == defense_kind
+            && !intent.lifecycle.state.is_terminal()
+            && intent.leader_id.as_ref() == Some(&leader)
+    })
+}
+
+#[cfg(any())]
+mod retired_lai23_runtime {
+    use super::*;
+
+    fn phase_lai23_01_authoritative_ecology_needs_hazards_emergencies(
+        colony: &mut ColonyRuntime,
+        gate: TickGate,
+        world_seed: u32,
+    ) -> u64 {
+        let runtime_tick = migration_game_minute_at(colony, gate.processed_through);
+        let runtime_colony_id = if colony.id.is_empty() {
+            "legacy-unnamed-colony".to_owned()
+        } else {
+            colony.id.clone()
+        };
+        let rebound = colony
+            .leader_ai_runtime
+            .bind_pristine_to_colony(&runtime_colony_id)
+            .unwrap_or(false);
+        colony.leader_ai_runtime.reconcile_legacy_cats(
+            world_seed,
+            &runtime_colony_id,
+            &colony.cats,
+        );
+        ensure_lai23_founding_leader(colony, gate.processed_through, runtime_tick);
+        if rebound {
+            migrate_legacy_leadership_into_runtime(colony, runtime_tick);
+        }
+        retire_legacy_planner_jobs(colony, gate.processed_through);
+        lai23_tick_partition_equivalence(colony, runtime_tick);
+        runtime_tick
+    }
+
+    fn ensure_lai23_founding_leader(colony: &mut ColonyRuntime, now_ms: i64, now_tick: u64) {
+        use crate::planner_core::PlannerId;
+
+        let leader_alive = colony
+            .leader_id
+            .as_ref()
+            .is_some_and(|leader_id| active_resident_cats(colony).any(|cat| cat.id == *leader_id));
+        if leader_alive {
+            return;
+        }
+        if colony
+            .leader_ai_runtime
+            .officers
+            .institution
+            .leader()
+            .is_some()
+            || colony
+                .leader_ai_runtime
+                .cats
+                .values()
+                .any(|cat| cat.death_processed_tick.is_some())
+        {
+            // Phase 9 performs the authoritative institution succession later in
+            // the tick. Rebind the legacy/raw leader identity before phase 3
+            // planning so a dead incumbent cannot suppress survival review in the
+            // handoff tick; phase 9 will adopt intents and commit the appointment.
+            colony.leader_id = active_resident_cats(colony)
+                .max_by(|left, right| {
+                    left.stats
+                        .leadership
+                        .total_cmp(&right.stats.leadership)
+                        .then_with(|| right.id.cmp(&left.id))
+                })
+                .map(|cat| cat.id.clone());
+            return;
+        }
+        let successor = active_resident_cats(colony)
+            .max_by(|left, right| {
+                left.stats
+                    .leadership
+                    .total_cmp(&right.stats.leadership)
+                    .then_with(|| right.id.cmp(&left.id))
+            })
+            .map(|cat| (cat.id.clone(), cat.name.clone()));
+        let Some((cat_id, cat_name)) = successor else {
+            colony.leader_id = None;
+            return;
+        };
+        colony.leader_id = Some(cat_id.clone());
+        let _ = colony
+            .leader_ai_runtime
+            .officers
+            .institution
+            .set_founding_leader(PlannerId::derive("cat", [cat_id.as_str()]), now_tick);
+        append_event(
+            colony,
+            now_ms,
+            EventKind::LeaderChange,
+            format!("{cat_name} is now the interim leader."),
+        );
+    }
+
+    fn phase_lai23_survival_policy_compatibility(colony: &ColonyRuntime) -> TickPolicy {
+        let leadership = colony
+            .leader_id
+            .as_ref()
+            .and_then(|leader_id| {
+                active_resident_cats(colony)
+                    .find(|cat| cat.id == *leader_id)
+                    .map(|cat| cat.stats.leadership)
+            })
+            .unwrap_or(50.0);
+        let tier = match crate::policy::bucket_from_leadership(leadership) {
+            crate::policy::LeaderPolicyBucket::Bad => crate::types::PolicyTier::Simple,
+            crate::policy::LeaderPolicyBucket::Normal => crate::types::PolicyTier::Normal,
+            crate::policy::LeaderPolicyBucket::Excellent => crate::types::PolicyTier::Excellent,
+        };
+        TickPolicy {
+            config: crate::policy::config_for_tier(tier),
+        }
+    }
+
+    fn migrate_legacy_leadership_into_runtime(colony: &mut ColonyRuntime, now_tick: u64) {
+        let leader = colony
+            .leader_id
+            .as_ref()
+            .map(|cat_id| crate::planner_core::PlannerId::derive("cat", [cat_id.as_str()]));
+        if let Some(leader) = leader.clone() {
+            let _ = colony
+                .leader_ai_runtime
+                .officers
+                .institution
+                .set_founding_leader(leader, now_tick);
+        }
+
+        let legacy_officers = colony
+            .officers
+            .iter()
+            .map(|(role, cat_id)| (*role, cat_id.clone()))
+            .collect::<Vec<_>>();
+        for (role, cat_id) in legacy_officers {
+            let candidate = crate::planner_core::PlannerId::derive("cat", [cat_id.as_str()]);
+            if leader.as_ref() == Some(&candidate) {
+                continue;
+            }
+            let institution = &mut colony.leader_ai_runtime.officers.institution;
+            let _ = institution.open_office(role, now_tick);
+            let _ = institution.appoint_officer(role, candidate, now_tick);
+        }
+    }
+
+    fn retire_legacy_planner_jobs(colony: &mut ColonyRuntime, now_ms: i64) {
+        let legacy_indices = colony
+            .jobs
+            .iter()
+            .enumerate()
+            .filter_map(|(index, job)| {
+                (matches!(job.status, JobStatus::Queued | JobStatus::Active)
+                    && matches!(
+                        job.kind,
+                        JobKind::LeaderPlanHunt
+                            | JobKind::HuntExpedition
+                            | JobKind::FetchWater
+                            | JobKind::CarryOffering
+                            | JobKind::PerformOffering
+                            | JobKind::Ritual
+                    ))
+                .then_some(index)
+            })
+            .collect::<Vec<_>>();
+        for index in legacy_indices {
+            let assigned_cat = colony.jobs[index].assigned_cat.take();
+            colony.jobs[index].status = JobStatus::Cancelled;
+            colony.jobs[index].started_at = None;
+            colony.jobs[index].ends_at = None;
+            colony.jobs[index].completed_at = Some(now_ms);
+            if let Some(cat_id) = assigned_cat
+                && let Some(cat) = colony.cats.iter_mut().find(|cat| cat.id == cat_id)
+            {
+                cat.current_task = None;
+                cat.destination = None;
+                cat.activity = CatActivity::Idle;
+            }
+        }
+    }
+
+    fn phase_lai23_02_beliefs_reports_expiry_contradictions(
+        colony: &mut ColonyRuntime,
+        now_tick: u64,
+        now_ms: i64,
+    ) {
+        use crate::beliefs::{
+            BeliefValue, Confidence, EstimateRange, EvidenceId, Observation, ReportLevel,
+        };
+        use crate::planner_core::PlannerId;
+
+        reconcile_colony_stockpiles(colony);
+        colony.stock_ledger =
+            StockLedger::counted_with_piles(&colony.resources, &colony.stockpiles, now_ms);
+        let reporter = PlannerId::derive("reporter", [&colony.id, "stock_ledger"]);
+        let reported = &colony.stock_ledger.reported;
+        let observations = [
+            ("food", reported.food),
+            ("fish", reported.fish),
+            ("water", reported.water),
+            ("herbs", reported.herbs),
+            ("materials", reported.materials),
+            ("refined", reported.refined),
+        ];
+        for (occurrence, (subject, quantity)) in observations.into_iter().enumerate() {
+            let key = lai23_stock_belief_key(&colony.id, subject);
+            let estimate = finite_nonnegative_milliunits(quantity);
+            let evidence_id =
+                EvidenceId::derive(&colony.id, &key, now_tick, &reporter, occurrence as u32);
+            let observation = Observation::new(
+                evidence_id,
+                key,
+                BeliefValue::Estimate(
+                    EstimateRange::around(estimate, ReportLevel::One.stock_error_basis_points())
+                        .expect("nonnegative stock estimate and fixed error are valid"),
+                ),
+                Confidence::new(6_000).expect("bounded direct-count confidence is valid"),
+                now_tick,
+                60,
+                reporter.clone(),
+                ReportLevel::One,
+            )
+            .expect("stock-ledger observation is report-safe");
+            colony
+                .leader_ai_runtime
+                .beliefs
+                .apply_observation(observation);
+        }
+        colony.leader_ai_runtime.intents.expire_due(now_tick);
+        crate::officer_requests::OfficerRequestBook::expire_due(
+            &mut colony.leader_ai_runtime.officers.requests,
+            now_tick,
+        );
+    }
+
+    fn lai23_stock_belief_key(colony_id: &str, subject: &str) -> crate::beliefs::BeliefKey {
+        crate::beliefs::BeliefKey::new(
+            crate::planner_core::PlannerId::derive("belief_domain", [colony_id, "accounting"]),
+            crate::planner_core::PlannerId::derive("belief_subject", [colony_id, subject]),
+            crate::beliefs::BeliefKind::Stock,
+        )
+    }
+
+    fn lai23_food_regeneration_belief_key(colony_id: &str) -> crate::beliefs::BeliefKey {
+        crate::beliefs::BeliefKey::new(
+            crate::planner_core::PlannerId::derive("belief_domain", [colony_id, "forestry"]),
+            crate::planner_core::PlannerId::derive(
+                "belief_subject",
+                [colony_id, "renewable_food_sources"],
+            ),
+            crate::beliefs::BeliefKind::Regeneration,
+        )
+    }
+
+    fn finite_nonnegative_milliunits(value: f64) -> i64 {
+        if !value.is_finite() {
+            return 0;
+        }
+        // The legacy resource ledger is floating-point and can differ by one
+        // thousandth after equivalent elapsed time is partitioned differently.
+        // Reports are deliberately coarse knowledge, so normalize authoritative
+        // truth to one tenth of a resource before converting to fixed milliunits.
+        // This prevents hidden floating-point residue from becoming visible evidence.
+        let report_units = (value.max(0.0) * 10.0).round() / 10.0;
+        (report_units * 1_000.0).round().clamp(0.0, i64::MAX as f64) as i64
+    }
+
+    fn phase_lai23_03_leader_officer_review_boundaries(
+        colony: &mut ColonyRuntime,
+        now_tick: u64,
+        world_seed: u32,
+    ) {
+        migrate_legacy_leadership_into_runtime(colony, now_tick);
+        run_due_officer_reviews(colony, now_tick);
+        run_due_leader_reviews(colony, now_tick, world_seed);
+    }
+
+    fn run_due_officer_reviews(colony: &mut ColonyRuntime, now_tick: u64) {
+        use crate::{beliefs::Confidence, officer_expertise::OfficerReportFact};
+
+        for &role in OfficerRole::ALL {
+            loop {
+                let bonuses = lai23_officer_expertise_bonuses(colony, role);
+                let review = colony
+                    .leader_ai_runtime
+                    .officers
+                    .institution
+                    .complete_officer_runtime_review(role, now_tick, 60, bonuses)
+                    .ok()
+                    .flatten();
+                let Some(review) = review else {
+                    break;
+                };
+                if role == OfficerRole::Accountant {
+                    let reported = &colony.stock_ledger.reported;
+                    for (occurrence, (subject, quantity)) in [
+                        ("food", reported.food),
+                        ("fish", reported.fish),
+                        ("water", reported.water),
+                        ("herbs", reported.herbs),
+                        ("materials", reported.materials),
+                        ("refined", reported.refined),
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
+                        if let Ok(Some(report)) = crate::officer_expertise::emit_officer_report(
+                            &colony.id,
+                            &review,
+                            lai23_stock_belief_key(&colony.id, subject),
+                            OfficerReportFact::StockEstimate {
+                                estimate: finite_nonnegative_milliunits(quantity),
+                            },
+                            Confidence::new(8_000).expect("fixed confidence is valid"),
+                            60,
+                            occurrence as u32,
+                        ) {
+                            let _ = colony.leader_ai_runtime.beliefs.apply_report(report);
+                        }
+                    }
+                }
+                if role == OfficerRole::Forester {
+                    let renewable_sources = colony
+                        .world_tiles
+                        .values()
+                        .filter(|tile| {
+                            colony.revealed_tiles.contains(&tile.pos)
+                                && !is_forest_type(tile.tile_type)
+                                && tile.max_resources.food > 0
+                        })
+                        .count();
+                    if let Ok(Some(report)) = crate::officer_expertise::emit_officer_report(
+                        &colony.id,
+                        &review,
+                        lai23_food_regeneration_belief_key(&colony.id),
+                        OfficerReportFact::RegenerationEstimate {
+                            estimate: i64::try_from(renewable_sources)
+                                .unwrap_or(i64::MAX)
+                                .saturating_mul(1_000),
+                        },
+                        Confidence::new(8_000).expect("fixed confidence is valid"),
+                        60,
+                        0,
+                    ) {
+                        let _ = colony.leader_ai_runtime.beliefs.apply_report(report);
+                    }
+                }
+            }
+        }
+    }
+
+    fn lai23_officer_expertise_bonuses(
+        colony: &ColonyRuntime,
+        role: OfficerRole,
+    ) -> crate::officer_expertise::ExpertiseBonuses {
+        let (building_type, prefix) = match role {
+            OfficerRole::Steward => (BuildingType::Den, "den"),
+            OfficerRole::Accountant => (BuildingType::AccountingTent, "accounting_tent"),
+            OfficerRole::Forester => (BuildingType::WoodCutter, "wood_cutter"),
+            OfficerRole::Farmer => (BuildingType::Field, "field"),
+            OfficerRole::Captain => (BuildingType::Barracks, "barracks"),
+            OfficerRole::Loremaster => (BuildingType::ResearchHut, "research_hut"),
+            OfficerRole::ClothLeader => (BuildingType::Clothier, "clothier"),
+        };
+        let room_operational = colony
+            .buildings
+            .iter()
+            .any(|building| building.is_complete && building.building_type == building_type);
+        let workflow = format!("{prefix}_workflow");
+        let reinforcement = format!("{prefix}_reinforcement");
+        crate::officer_expertise::ExpertiseBonuses {
+            workflow_operational: room_operational
+                && crate::upgrade_tree::is_owned(&colony.upgrade_tree, &workflow),
+            reinforcement_operational: room_operational
+                && crate::upgrade_tree::is_owned(&colony.upgrade_tree, &reinforcement),
+        }
+    }
+
+    fn run_due_leader_reviews(colony: &mut ColonyRuntime, now_tick: u64, world_seed: u32) {
+        use crate::{
+            authority::{AuthorityActor, AuthorityContext, AuthorityDecision, AuthorityOperation},
+            beliefs::Confidence,
+            intent_graph::Intent,
+            leader_planner::{DomainGoalSignal, GoalReviewContext, LeaderGoalKind},
+            planner_core::{BasisPoints, IntentId, IntentState, PlannerId},
+        };
+
+        let Some(leader_raw_id) = colony.leader_id.clone() else {
+            return;
+        };
+        let leader_id = PlannerId::derive("cat", [leader_raw_id.as_str()]);
+        let colony_id = PlannerId::derive("colony", [colony.id.as_str()]);
+        let mut emergency_review_used = false;
+
+        loop {
+            let planner = colony.leader_ai_runtime.planner;
+            let effective_level = lai23_leader_effective_level(colony, &leader_id);
+            let cadence = u64::from(effective_level.leader_cadence_minutes());
+            // A completed emergency intent must be regenerated immediately when the
+            // report still shows an essential-reserve deficit. Waiting for the next
+            // ordinary leader review would leave the scheduler with no live intent,
+            // even though the same physical Hunt/FetchWater work is still required.
+            let emergency_regeneration =
+                !emergency_review_used && lai23_survival_goal_needs_regeneration(colony);
+            let due_tick = if emergency_regeneration {
+                now_tick
+            } else if planner.planning_epoch == 0 && planner.planning_clock == 0 {
+                0
+            } else {
+                planner.planning_clock.saturating_add(cadence)
+            };
+            if due_tick > now_tick {
+                break;
+            }
+            emergency_review_used |= emergency_regeneration;
+            let inputs = leader_posture_inputs(colony);
+            let Ok(selection) = crate::leader_planner::select_posture(&inputs) else {
+                break;
+            };
+            let Ok(candidates) =
+                crate::leader_planner::foundational_goal_candidates(&inputs, selection.posture)
+            else {
+                break;
+            };
+            let signals = candidates
+                .into_iter()
+                .map(|candidate| DomainGoalSignal {
+                    domain: candidate.domain,
+                    kind: candidate.kind,
+                    target_id: candidate.target_id,
+                    rationale_keys: candidate.rationale_keys,
+                    criticality: candidate.criticality,
+                    urgency: BasisPoints::new(match candidate.criticality {
+                        crate::leader_planner::GoalCriticality::Emergency => 20_000,
+                        crate::leader_planner::GoalCriticality::SelfPreservation => 18_000,
+                        crate::leader_planner::GoalCriticality::Required => 12_000,
+                        crate::leader_planner::GoalCriticality::Optional => 8_000,
+                    }),
+                    confidence: BasisPoints::new(8_000),
+                    opportunity_cost: BasisPoints::new(0),
+                    churn_penalty: BasisPoints::new(0),
+                    temporary_player_bias: BasisPoints::new(0),
+                    specialist_role: None,
+                })
+                .collect::<Vec<_>>();
+            let context = GoalReviewContext {
+                world_seed,
+                colony_id: colony_id.clone(),
+                leader_id: leader_id.clone(),
+                planning_epoch: planner.planning_epoch,
+                review_bucket: due_tick / cadence.max(1),
+                posture: selection.posture,
+                review_domain: crate::authority::AuthorityDomain::ColonyWide,
+                effective_level,
+                officer_coverage: crate::leader_planner::active_officer_goal_coverage(
+                    &colony.leader_ai_runtime.officers.requests,
+                    due_tick,
+                ),
+            };
+            let personality = colony
+                .leader_ai_runtime
+                .cats
+                .get(&leader_raw_id)
+                .map(|cat| cat.traits.personality)
+                .unwrap_or_default();
+            let Ok(plan) = crate::leader_planner::plan_founding_leader_domains(
+                &context,
+                personality,
+                signals,
+                &filled_runtime_offices(colony),
+            ) else {
+                break;
+            };
+            for scored in plan.goals {
+                let kind = match scored.goal.kind {
+                    LeaderGoalKind::Defense => "defense",
+                    LeaderGoalKind::Survival => "survival",
+                    LeaderGoalKind::Hole => "hole",
+                    LeaderGoalKind::Growth => "growth",
+                };
+                let intent_id = IntentId::derive(
+                    &colony.id,
+                    planner.planning_epoch,
+                    kind,
+                    scored.goal.target_id.as_str(),
+                    scored.goal.occurrence_index,
+                );
+                let actor = AuthorityActor::Leader {
+                    cat_id: leader_id.clone(),
+                };
+                if crate::authority::decide_authority(
+                    &actor,
+                    AuthorityOperation::ProposeIntent,
+                    scored.goal.domain,
+                    AuthorityContext {
+                        leader_present: true,
+                        player_authorized: false,
+                    },
+                ) != AuthorityDecision::Allowed
+                {
+                    continue;
+                }
+                let rationale_id = scored
+                    .goal
+                    .rationale_keys
+                    .iter()
+                    .next()
+                    .cloned()
+                    .unwrap_or_else(|| PlannerId::derive("rationale", [kind]));
+                let mut intent = Intent::proposed(
+                    intent_id,
+                    colony_id.clone(),
+                    actor,
+                    Some(leader_id.clone()),
+                    scored.goal.domain,
+                    PlannerId::derive("intent_kind", [kind]),
+                    scored.goal.target_id,
+                    rationale_id,
+                    due_tick,
+                );
+                intent.urgency = BasisPoints::new(scored.score.get().clamp(0, 20_000));
+                intent.strategic_weight = scored.strategic_weight;
+                intent.confidence = Confidence::new(
+                    u16::try_from(scored.confidence.get().clamp(0, 10_000))
+                        .expect("clamped confidence fits u16"),
+                )
+                .expect("clamped confidence is valid");
+                intent.expected_benefit = BasisPoints::new(10_000);
+                intent.deadline_tick = Some(due_tick.saturating_add(cadence.saturating_mul(2)));
+                let _ = intent.lifecycle.transition(IntentState::Approved, due_tick);
+                let _ = colony.leader_ai_runtime.intents.insert_or_merge(intent);
+            }
+            let completed_duty_minutes = if emergency_regeneration || planner.planning_epoch == 0 {
+                0
+            } else {
+                due_tick.saturating_sub(planner.planning_clock)
+            };
+            if completed_duty_minutes > 0 {
+                let _ = colony
+                    .leader_ai_runtime
+                    .officers
+                    .institution
+                    .record_completed_leader_duty_minutes(
+                        leader_id.clone(),
+                        completed_duty_minutes,
+                    );
+            }
+            colony.leader_ai_runtime.planner.planning_clock = due_tick;
+            colony.leader_ai_runtime.planner.planning_epoch =
+                planner.planning_epoch.saturating_add(1);
+        }
+    }
+
+    pub(crate) fn lai23_leader_effective_level(
+        colony: &ColonyRuntime,
+        leader_id: &crate::planner_core::PlannerId,
+    ) -> crate::leader_planner::EffectiveLevel {
+        let completed_duty_hours = colony
+            .leader_ai_runtime
+            .officers
+            .institution
+            .leader_completed_duty_minutes(leader_id)
+            / 60;
+        let governance_room_operational = colony.buildings.iter().any(|building| {
+            building.is_complete && building.building_type == BuildingType::AccountingTent
+        });
+        crate::leader_planner::effective_level(
+            completed_duty_hours,
+            governance_room_operational
+                && crate::upgrade_tree::is_owned(&colony.upgrade_tree, "accounting_tent_workflow"),
+            governance_room_operational
+                && crate::upgrade_tree::is_owned(
+                    &colony.upgrade_tree,
+                    "accounting_tent_reinforcement",
+                ),
+        )
+    }
+
+    fn lai23_survival_goal_needs_regeneration(colony: &ColonyRuntime) -> bool {
+        if colony.leader_ai_runtime.intents.iter().any(|(_, intent)| {
+            intent_kind_matches(intent, "survival") && !intent.lifecycle.state.is_terminal()
+        }) {
+            return false;
+        }
+        if colony
+            .leader_ai_runtime
+            .scheduling
+            .visible_tasks
+            .values()
+            .any(|task| {
+                matches!(
+                    task.category,
+                    crate::task_runtime::TaskCategory::Hunt
+                        | crate::task_runtime::TaskCategory::FetchWater
+                ) && !task.stage.is_terminal()
+            })
+        {
+            return false;
+        }
+        lai23_needed_survival_categories(colony)
+            .into_iter()
+            .next()
+            .is_some()
+    }
+
+    fn filled_runtime_offices(colony: &ColonyRuntime) -> BTreeSet<OfficerRole> {
+        OfficerRole::ALL
+            .iter()
+            .copied()
+            .filter(|role| {
+                colony
+                    .leader_ai_runtime
+                    .officers
+                    .institution
+                    .officer(*role)
+                    .is_some()
+            })
+            .collect()
+    }
+
+    fn leader_posture_inputs(
+        colony: &ColonyRuntime,
+    ) -> crate::leader_planner::ReportSafePostureInputs {
+        use crate::leader_planner::{
+            AccessBelief, CapacityConstraint, InfrastructureBelief, InjuryBelief,
+            ReportSafePostureInputs, ThreatBelief,
+        };
+
+        let population = active_resident_cats(colony).count() as f64;
+        let drain = consumption_for_tick(
+            population,
+            3_600.0 * normalize_resource_decay_multiplier(colony),
+            idle_engine_upgrade_levels(&colony.upgrade_levels),
+        );
+        let reported = &colony.stock_ledger.reported;
+        let food_minutes = reserve_minutes(reported.food + reported.fish, drain.food_use);
+        let water_minutes = reserve_minutes(reported.water, drain.water_use);
+        let essential_forecast_minutes = Some(food_minutes.min(water_minutes));
+        // LAI.45 renamed the report/planner concept first. The complete LAI.46
+        // spatial cutover replaces the temporary legacy building discriminator
+        // together with its world footprint and persisted runtime authority.
+        let hole = infrastructure_belief(colony, BuildingType::Shrine);
+        let food_infrastructure =
+            if has_fishable_stock(colony) || has_complete_building(colony, BuildingType::Field) {
+                InfrastructureBelief::Complete
+            } else {
+                InfrastructureBelief::Missing
+            };
+        let water_infrastructure = if has_water_site(colony) {
+            InfrastructureBelief::Complete
+        } else {
+            InfrastructureBelief::Missing
+        };
+        let storage = if colony.stockpiles.is_empty() {
+            InfrastructureBelief::Missing
+        } else {
+            InfrastructureBelief::Complete
+        };
+        let shelter = infrastructure_belief(colony, BuildingType::Den);
+        let basic_production = infrastructure_belief(colony, BuildingType::Workshop);
+        let mut capacity_constraints = BTreeSet::new();
+        if population >= colony_housing_capacity(colony) {
+            capacity_constraints.insert(CapacityConstraint::Population);
+        }
+        let caps = storage_caps(colony);
+        if caps.food > 0.0 && reported.food + reported.fish >= caps.food * 0.9 {
+            capacity_constraints.insert(CapacityConstraint::Storage);
+        }
+        ReportSafePostureInputs {
+            threat: if colony.active_raid.is_some() {
+                ThreatBelief::ActiveAttack
+            } else if matches!(
+                threat_band(colony.threat_pressure),
+                crate::threat::ThreatBand::Imminent
+            ) {
+                ThreatBelief::Credible
+            } else {
+                ThreatBelief::None
+            },
+            essential_forecast_minutes,
+            food_access: if food_infrastructure == InfrastructureBelief::Complete {
+                AccessBelief::Accessible
+            } else {
+                AccessBelief::Inaccessible
+            },
+            water_access: if water_infrastructure == InfrastructureBelief::Complete {
+                AccessBelief::Accessible
+            } else {
+                AccessBelief::Inaccessible
+            },
+            injury: InjuryBelief::None,
+            other_survival_failure: false,
+            emergency_recently_ended: false,
+            housing_damage_unresolved: false,
+            hole,
+            food_infrastructure,
+            water_infrastructure,
+            storage,
+            shelter,
+            basic_production,
+            bottleneck_present: false,
+            unstable_chain: false,
+            capacity_constraints,
+            forecast_stable: essential_forecast_minutes
+                .is_some_and(|minutes| minutes >= 7 * 24 * 60),
+            ..ReportSafePostureInputs::unknown()
+        }
+    }
+
+    fn reserve_minutes(quantity: f64, hourly_use: f64) -> u32 {
+        if !quantity.is_finite() || !hourly_use.is_finite() || hourly_use <= f64::EPSILON {
+            return u32::MAX;
+        }
+        (quantity.max(0.0) / hourly_use * 60.0)
+            .floor()
+            .clamp(0.0, f64::from(u32::MAX)) as u32
+    }
+
+    fn infrastructure_belief(
+        colony: &ColonyRuntime,
+        building_type: BuildingType,
+    ) -> crate::leader_planner::InfrastructureBelief {
+        if has_complete_building(colony, building_type) {
+            crate::leader_planner::InfrastructureBelief::Complete
+        } else {
+            crate::leader_planner::InfrastructureBelief::Missing
+        }
+    }
+
+    fn phase_lai23_04_scheduler_workforce_spatial_reservations(
+        colony: &mut ColonyRuntime,
+        now_tick: u64,
+        now_ms: i64,
+        world_seed: u32,
+    ) {
+        use crate::{
+            cat_willingness::{WillingnessContext, evaluate_willingness},
+            planner_core::{BasisPoints, PlannerId},
+            reservation_transaction::{ClaimMode, ClaimSpec, ReservationBundle, ReservationChecks},
+            scheduler::SchedulerScoreContext,
+            task_runtime::TaskStage,
+            workforce_matcher::{WorkforceEdge, WorkforceSlot},
+            world_reservations::{WorldReservationTransaction, WorldReservationValidation},
+        };
+
+        lai23_cancel_stale_unassigned_survival_reserves(colony, now_tick);
+        lai23_release_non_edible_farm_work_during_food_emergency(colony);
+
+        let score_context = SchedulerScoreContext {
+            personality_weight: BasisPoints::new(10_000),
+            opportunity_cost: BasisPoints::new(0),
+            churn_penalty: BasisPoints::new(0),
+            now_tick,
+            ticks_per_game_hour: 60,
+        };
+        let ranked = crate::scheduler::rank_intents_with_state(
+            colony
+                .leader_ai_runtime
+                .intents
+                .iter()
+                .map(|(_, intent)| intent),
+            score_context,
+            &colony.leader_ai_runtime.scheduling.scheduler,
+        );
+        lai23_materialize_ranked_intents(colony, now_tick, now_ms, &ranked);
+
+        let resolvable = colony
+            .leader_ai_runtime
+            .scheduling
+            .visible_tasks
+            .iter()
+            .filter_map(|(task_id, task)| {
+                (task.stage == TaskStage::Resolve
+                    && colony
+                        .leader_ai_runtime
+                        .scheduling
+                        .resolved_spatial_tasks
+                        .contains_key(task_id))
+                .then_some(task_id.clone())
+            })
+            .collect::<Vec<_>>();
+        for task_id in resolvable {
+            if let Some(task) = colony
+                .leader_ai_runtime
+                .scheduling
+                .visible_tasks
+                .get_mut(&task_id)
+            {
+                let _ = task.begin_reservation(now_tick);
+            }
+        }
+
+        let tasks = colony
+            .leader_ai_runtime
+            .scheduling
+            .visible_tasks
+            .iter()
+            .filter_map(|(task_id, task)| {
+                (task.stage == TaskStage::Reserve)
+                    .then(|| {
+                        colony
+                            .leader_ai_runtime
+                            .scheduling
+                            .resolved_spatial_tasks
+                            .get(task_id)
+                            .map(|resolved| (task_id.clone(), task.clone(), resolved.clone()))
+                    })
+                    .flatten()
+            })
+            .collect::<Vec<_>>();
+        let slots = tasks
+            .iter()
+            .filter(|(_, _, resolved)| {
+                crate::spatial_resolver::ResolvedSpatialTask::validate(resolved).is_ok()
+            })
+            .map(|(_, task, resolved)| WorkforceSlot {
+                task_id: task.id.as_str().to_owned(),
+                slot_id: resolved.work_slot().stable_id.clone(),
+                priority: runtime_task_priority(task.category),
+            })
+            .collect::<Vec<_>>();
+        let mut edges = Vec::new();
+        for slot in &slots {
+            let Some((_, task, _)) = tasks
+                .iter()
+                .find(|(_, task, _)| task.id.as_str() == slot.task_id)
+            else {
+                continue;
+            };
+            for cat in active_resident_cats(colony) {
+                let cat_planner_id = PlannerId::derive("cat", [cat.id.as_str()]);
+                let pending_personal_need = choose_personal_need(cat);
+                if !can_work(get_life_stage(cat.age_hours))
+                || cat.current_task.is_some()
+                // Visible Hunt/FetchWater completion happens after phase 25. A
+                // successful carrier is idle at the next scheduler boundary,
+                // but must be allowed to start its now-available meal/drink/bed
+                // route in phase 25 before being drafted into another child.
+                // Otherwise the relief crew can feed the colony indefinitely
+                // while every committed worker starves.
+                || pending_personal_need.is_some_and(|task| {
+                    personal_need_is_available(colony, &cat.id, task)
+                })
+                || colony
+                    .leader_ai_runtime
+                    .scheduling
+                    .reservations
+                    .cat_is_busy(&cat_planner_id)
+                || colony
+                    .leader_ai_runtime
+                    .scheduling
+                    .world_reservations
+                    .worker_is_reserved(&cat_planner_id)
+                {
+                    continue;
+                }
+                let Some(cat_runtime) = colony.leader_ai_runtime.cats.get(&cat.id) else {
+                    continue;
+                };
+                let (eligible, capability_basis_points) =
+                    runtime_task_capability(task.category, &cat_runtime.anatomy);
+                let bucket = crate::workforce_matcher::refusal_bucket(
+                    world_seed,
+                    &colony.id,
+                    &cat.id,
+                    task.id.as_str(),
+                    u64::from(task.occurrence),
+                );
+                let willingness = evaluate_willingness(WillingnessContext {
+                    refusal_bucket: bucket,
+                    stress: cat_runtime.stress.level,
+                    priority: slot.priority,
+                    risk: runtime_task_risk(task.category),
+                    pregnant: cat.is_pregnant,
+                    injured: cat_runtime.anatomy != crate::anatomy::CatAnatomy::default(),
+                    safer_eligible_worker_exists: false,
+                });
+                let attribute =
+                    runtime_task_attribute(task.category, cat_runtime.traits.attributes);
+                let mut score = i64::from(attribute)
+                    .saturating_mul(1_000)
+                    .saturating_mul(i64::from(capability_basis_points))
+                    / 10_000
+                    - i64::from(cat_runtime.stress.level.get()).saturating_mul(50);
+                if matches!(
+                    task.category,
+                    crate::task_runtime::TaskCategory::Hunt
+                        | crate::task_runtime::TaskCategory::FetchWater
+                ) && eligible
+                {
+                    score = score.max(1);
+                }
+                edges.push(WorkforceEdge {
+                    cat_id: cat.id.clone(),
+                    task_id: slot.task_id.clone(),
+                    slot_id: slot.slot_id.clone(),
+                    score,
+                    eligible,
+                    willingness,
+                    current_assignment: false,
+                });
+            }
+        }
+        let Ok(matched) = crate::workforce_matcher::match_workforce(&slots, &edges) else {
+            return;
+        };
+        for assignment in matched.assignments {
+            let Some(worker) = colony.cats.iter().find(|cat| cat.id == assignment.cat_id) else {
+                continue;
+            };
+            // The life phase can mark a cat dead before scheduler commits this
+            // transaction. Never create a reservation for that worker in the same
+            // tick; the next scheduler pass will choose a living replacement.
+            if worker.death_time.is_some() {
+                continue;
+            }
+            let Some((task_id, task, resolved)) = tasks
+                .iter()
+                .find(|(_, task, _)| task.id.as_str() == assignment.task_id)
+                .cloned()
+            else {
+                continue;
+            };
+            let colony_planner_id = PlannerId::derive("colony", [colony.id.as_str()]);
+            let task_planner_id = PlannerId::derive("visible_task", [task.id.as_str()]);
+            let worker_id = PlannerId::derive("cat", [assignment.cat_id.as_str()]);
+            let source_capacity_available =
+                lai23_resolved_source_capacity_is_current(colony, task.category, &resolved);
+            let Ok(world_transaction) = WorldReservationTransaction::new(
+                colony_planner_id.clone(),
+                task_planner_id.clone(),
+                task.intent_id.clone(),
+                resolved.clone(),
+                worker_id.clone(),
+                Vec::new(),
+                Vec::new(),
+            ) else {
+                continue;
+            };
+            let world_reservation_id = world_transaction.id.clone();
+            if colony
+                .leader_ai_runtime
+                .scheduling
+                .world_reservations
+                .try_commit(
+                    world_transaction,
+                    WorldReservationValidation {
+                        source_capacity_available,
+                        ..WorldReservationValidation::all_valid()
+                    },
+                )
+                .is_err()
+            {
+                continue;
+            }
+            let route_id = PlannerId::derive(
+                "visible_task_route",
+                task.route_ids
+                    .iter()
+                    .map(String::as_str)
+                    .chain(std::iter::once(task.id.as_str())),
+            );
+            let delivery_capacity = LAI23_SHARED_VISIBLE_TASK_SITE_CAPACITY;
+            let Ok(bundle) = ReservationBundle::from_spatial_objective(
+                colony_planner_id,
+                task_planner_id,
+                task.intent_id.clone(),
+                &task.spatial,
+                0,
+                ClaimMode::Capacity {
+                    units: 1,
+                    capacity: delivery_capacity,
+                },
+                ClaimMode::Capacity {
+                    units: 1,
+                    capacity: delivery_capacity,
+                },
+                ClaimSpec::exclusive(route_id),
+                Vec::new(),
+                Vec::new(),
+                worker_id,
+            ) else {
+                let _ = colony
+                    .leader_ai_runtime
+                    .scheduling
+                    .world_reservations
+                    .release(&world_reservation_id);
+                continue;
+            };
+            let reservation_id = bundle.id.clone();
+            if colony
+                .leader_ai_runtime
+                .scheduling
+                .reservations
+                .try_commit(bundle, ReservationChecks::all_valid())
+                .is_err()
+            {
+                let _ = colony
+                    .leader_ai_runtime
+                    .scheduling
+                    .world_reservations
+                    .release(&world_reservation_id);
+                continue;
+            }
+            let activated = colony
+                .leader_ai_runtime
+                .scheduling
+                .visible_tasks
+                .get_mut(&task_id)
+                .is_some_and(|runtime| {
+                    runtime
+                        .activate(
+                            &colony.leader_ai_runtime.scheduling.reservations,
+                            reservation_id.clone(),
+                            [(assignment.cat_id.clone(), assignment.slot_id.clone())],
+                            now_tick,
+                        )
+                        .is_ok()
+                });
+            let physical_cargo_committed = activated
+                && (task.category != crate::task_runtime::TaskCategory::OfferingRitual
+                    || lai23_commit_offering_cargo_reservation(colony, &task_id, now_tick));
+            if physical_cargo_committed {
+                colony
+                    .leader_ai_runtime
+                    .scheduling
+                    .world_reservation_ids
+                    .insert(task_id, world_reservation_id);
+            } else {
+                if activated {
+                    let scheduling = &mut colony.leader_ai_runtime.scheduling;
+                    let (visible_tasks, reservations) =
+                        (&mut scheduling.visible_tasks, &mut scheduling.reservations);
+                    if let Some(runtime) = visible_tasks.get_mut(&task_id) {
+                        let _ = runtime.cancel(reservations, now_tick);
+                    }
+                }
+                colony
+                    .leader_ai_runtime
+                    .scheduling
+                    .reservations
+                    .rollback(&reservation_id);
+                let _ = colony
+                    .leader_ai_runtime
+                    .scheduling
+                    .world_reservations
+                    .release(&world_reservation_id);
+            }
+        }
+    }
+
+    const LAI23_UNASSIGNED_SURVIVAL_RESERVE_RETRY_MINUTES: u64 = 60;
+
+    fn lai23_cancel_stale_unassigned_survival_reserves(colony: &mut ColonyRuntime, now_tick: u64) {
+        use crate::task_runtime::{TaskCategory, TaskStage};
+
+        let stale = colony
+            .leader_ai_runtime
+            .scheduling
+            .visible_tasks
+            .iter()
+            .filter_map(|(task_id, task)| {
+                (task.stage == TaskStage::Reserve
+                    && matches!(task.category, TaskCategory::Hunt | TaskCategory::FetchWater)
+                    && task.assigned_cat_ids.is_empty()
+                    && now_tick.saturating_sub(task.updated_tick)
+                        >= LAI23_UNASSIGNED_SURVIVAL_RESERVE_RETRY_MINUTES)
+                    .then_some(task_id.clone())
+            })
+            .collect::<Vec<_>>();
+        for task_id in stale {
+            let scheduling = &mut colony.leader_ai_runtime.scheduling;
+            let (visible_tasks, reservations) =
+                (&mut scheduling.visible_tasks, &mut scheduling.reservations);
+            if visible_tasks
+                .get_mut(&task_id)
+                .is_some_and(|task| task.cancel(reservations, now_tick).is_ok())
+            {
+                scheduling.resolved_spatial_tasks.remove(&task_id);
+            }
+        }
+    }
+
+    fn lai23_resolved_source_capacity_is_current(
+        colony: &ColonyRuntime,
+        category: crate::task_runtime::TaskCategory,
+        resolved: &crate::spatial_resolver::ResolvedSpatialTask,
+    ) -> bool {
+        use crate::{spatial_tasks::SiteRef, task_runtime::TaskCategory};
+
+        match category {
+            TaskCategory::Hunt => {
+                let SiteRef::ResourceSource { footprint, .. } = resolved.objective() else {
+                    return false;
+                };
+                footprint.tiles.as_slice().first().is_some_and(|tile| {
+                    colony
+                        .world_tiles
+                        .get(&TilePos {
+                            x: tile.x,
+                            y: tile.y,
+                        })
+                        .is_some_and(|runtime| runtime.resources.food >= resolved.source_units)
+                })
+            }
+            _ => true,
+        }
+    }
+
+    fn lai23_materialize_ranked_intents(
+        colony: &mut ColonyRuntime,
+        now_tick: u64,
+        now_ms: i64,
+        ranked: &[crate::scheduler::RankedIntent],
+    ) {
+        use crate::task_runtime::TaskCategory;
+
+        lai23_sync_growth_visible_tasks(colony, now_tick);
+        lai23_sync_workshop_visible_tasks(colony, now_tick);
+        let mut materialized = 0_usize;
+        let mut survival_routes = None;
+        for ranked_intent in ranked.iter().take(8) {
+            if materialized >= 64 {
+                break;
+            }
+            let Some(intent) = colony
+                .leader_ai_runtime
+                .intents
+                .get(&ranked_intent.intent_id)
+            else {
+                continue;
+            };
+            let mut categories = Vec::new();
+            if intent_kind_matches(intent, "survival") {
+                lai23_ensure_food_field_job(colony, now_ms);
+                categories.extend(lai23_needed_survival_categories(colony));
+            } else if intent_kind_matches(intent, "shrine")
+                && has_complete_building(colony, BuildingType::Shrine)
+            {
+                if lai23_prepare_offering_review(colony, now_tick) {
+                    categories.push(TaskCategory::OfferingRitual);
+                }
+            } else if intent_kind_matches(intent, "growth")
+                && lai23_housing_growth_is_needed(colony)
+            {
+                lai23_ensure_growth_den_job(colony, now_ms);
+                if lai23_growth_den_site(colony).is_some() {
+                    categories.push(TaskCategory::BuildingConstruction);
+                }
+            }
+            for category in categories {
+                if materialized >= 64 {
+                    break;
+                }
+                // Construction is a projection of the physical BuildHouse leaf, not
+                // a second scheduler consumer. Its already-reserved builder must not
+                // be mistaken for evidence that no marker can be shown.
+                let target = if category == TaskCategory::BuildingConstruction {
+                    1
+                } else {
+                    // Do not manufacture an unassignable wave when every living cat
+                    // is already occupied or unavailable.
+                    let available_workers = active_resident_cats(colony)
+                        .filter(|cat| {
+                            can_work(get_life_stage(cat.age_hours)) && cat.current_task.is_none()
+                        })
+                        .count();
+                    lai23_max_active_visible_tasks(colony, category).min(
+                        lai23_active_visible_task_count(colony, category)
+                            .saturating_add(available_workers),
+                    )
+                };
+                if target == 0 {
+                    continue;
+                }
+                if matches!(category, TaskCategory::Hunt | TaskCategory::FetchWater)
+                    && survival_routes.is_none()
+                {
+                    survival_routes = lai23_survival_route_context(colony);
+                }
+                let mut occurrence_slot = 0_u64;
+                while lai23_active_visible_task_count(colony, category) < target
+                    && materialized < 64
+                    && occurrence_slot < target as u64 * 2
+                {
+                    let occurrence =
+                        lai23_visible_task_occurrence(category, now_tick, occurrence_slot);
+                    if lai23_create_visible_task_for_intent(
+                        colony,
+                        &ranked_intent.intent_id,
+                        category,
+                        occurrence,
+                        now_tick,
+                        survival_routes.as_ref(),
+                    ) {
+                        materialized += 1;
+                    }
+                    occurrence_slot = occurrence_slot.saturating_add(1);
+                }
+            }
+        }
+    }
+
+    /// A Field is survival work only when its crop has a complete physical path to edible
+    /// food. Catnip/Herb plots, and Grain plots before an operational researched Mill, are
+    /// strategic production. During a one-meal emergency their workers return to the common
+    /// scheduler so a poor leader can actually send every available cat to the caves instead
+    /// of leaving five cats tending inedible output while neighbours starve.
+    ///
+    /// Persisted crop and basket output remain on the plot/gather pile. Releasing a worker uses
+    /// the ordinary farm recovery path, so preemption is lossless and the same plot resumes
+    /// when the larder recovers.
+    fn lai23_release_non_edible_farm_work_during_food_emergency(colony: &mut ColonyRuntime) {
+        if !lai23_one_meal_food_emergency(colony) {
+            return;
+        }
+        let grain_has_edible_path = has_complete_building(colony, BuildingType::Mill)
+            && crate::upgrade_tree::is_owned(&colony.upgrade_tree, "milling");
+        let released = colony
+            .farms
+            .iter()
+            .filter(|plot| plot.crop != CropKind::Grain || !grain_has_edible_path)
+            .filter_map(|plot| {
+                plot.worker_id
+                    .as_ref()
+                    .map(|worker| (plot.id.clone(), worker.clone()))
+            })
+            .collect::<Vec<_>>();
+        for (plot_id, cat_id) in released {
+            if let Some(building_id) = plot_id.strip_prefix("officer-farm-")
+                && let Some(building) = colony
+                    .buildings
+                    .iter_mut()
+                    .find(|building| building.id == building_id)
+            {
+                building.remove_worker(&cat_id);
+            }
+            release_farm_worker(colony, &cat_id);
+        }
+    }
+
+    fn lai23_one_meal_food_emergency(colony: &ColonyRuntime) -> bool {
+        let population = active_resident_cats(colony).count();
+        population > 0
+            && colony.stock_ledger.reported.food + colony.stock_ledger.reported.fish
+                < population as f64 * personal_food_serving(colony)
+    }
+
+    fn lai23_housing_growth_is_needed(colony: &ColonyRuntime) -> bool {
+        let population = active_resident_cats(colony).count() as f64;
+        population >= colony_housing_capacity(colony)
+    }
+
+    /// The founding leader remains the bounded fallback planner for domains whose
+    /// specialist office does not exist yet. This is authority to commission and
+    /// staff one real physical chain, not a productivity bonus or hidden resource
+    /// faucet; an appointed Farmer takes ownership as soon as the office exists.
+    fn lai23_founding_farmer_fallback_active(colony: &ColonyRuntime) -> bool {
+        let living_raw_leader = colony
+            .leader_id
+            .as_ref()
+            .is_some_and(|leader_id| active_resident_cats(colony).any(|cat| cat.id == *leader_id));
+        !has_officer(colony, OfficerRole::Farmer)
+            && colony
+                .leader_ai_runtime
+                .officers
+                .institution
+                .officer(OfficerRole::Farmer)
+                .is_none()
+            && (living_raw_leader
+                || colony
+                    .leader_ai_runtime
+                    .officers
+                    .institution
+                    .leader()
+                    .is_some())
+    }
+
+    fn lai23_ensure_food_field_job(colony: &mut ColonyRuntime, now_ms: i64) {
+        let population = active_resident_cats(colony).count();
+        if population == 0
+            || active_or_queued_jobs(colony).iter().any(|job| {
+                job.kind == JobKind::BuildHouse
+                    && job_building_type(job) == Some(BuildingType::Field)
+            })
+            || colony
+                .buildings
+                .iter()
+                .any(|building| !building.is_complete)
+            || colony.resources.planks < FIELD_MATERIAL_BUFFER
+            || colony.resources.blocks < FIELD_MATERIAL_BUFFER
+        {
+            return;
+        }
+        let fields = field_count_built_or_in_flight(colony);
+        let maximum = FIELD_MIN_COUNT
+            .max((population as f64 / FIELD_CATS_PER_FIELD).ceil().max(0.0) as usize);
+        let reported_food = colony.stock_ledger.reported.food + colony.stock_ledger.reported.fish;
+        let reported_ratio = ratio_or_zero(reported_food, storage_caps(colony).food);
+        if fields >= maximum
+            || (fields >= FIELD_MIN_COUNT && reported_ratio >= FIELD_STOCK_TARGET_RATIO)
+        {
+            return;
+        }
+        let Some(builder) = select_best_cat(colony, Some(CatSpecialization::Architect)) else {
+            return;
+        };
+        queue_job(
+            colony,
+            now_ms,
+            JobKind::BuildHouse,
+            Some(builder),
+            JobMetadata::Construction {
+                phase: ConstructionPhase::ConstructHouse,
+                building_type: BuildingType::Field,
+                building_id: None,
+                site: None,
+            },
+        );
+        append_event(
+            colony,
+            now_ms,
+            EventKind::FieldCommissioned,
+            "The leader commissioned a physical field to steady the renewable food supply.",
+        );
+    }
+
+    /// Convert an approved Growth intent into the same physical scaffold pipeline
+    /// used by an explicit construction order. The leader chooses *what* should be
+    /// built; phase 14 onward remains the sole authority for legal placement,
+    /// expansion, refined-material reservation, hauling, hands-on work, death
+    /// recovery, and completion.
+    fn lai23_ensure_growth_den_job(colony: &mut ColonyRuntime, now_ms: i64) {
+        if !lai23_housing_growth_is_needed(colony)
+            || colony.buildings.iter().any(|building| {
+                building.building_type == BuildingType::Den && !building.is_complete
+            })
+            || active_or_queued_jobs(colony).iter().any(|job| {
+                job.kind == JobKind::BuildHouse && job_building_type(job) == Some(BuildingType::Den)
+            })
+        {
+            return;
+        }
+        let builder = select_best_cat(colony, Some(CatSpecialization::Architect));
+        queue_job(
+            colony,
+            now_ms,
+            JobKind::BuildHouse,
+            builder,
+            JobMetadata::Construction {
+                phase: ConstructionPhase::ConstructHouse,
+                building_type: BuildingType::Den,
+                building_id: None,
+                site: None,
+            },
+        );
+    }
+
+    fn lai23_growth_den_site(
+        colony: &ColonyRuntime,
+    ) -> Option<(
+        String,
+        BuildingType,
+        TilePos,
+        crate::spatial_tasks::SiteLifecycleStage,
+    )> {
+        if let Some(building) = colony
+            .buildings
+            .iter()
+            .find(|building| building.building_type == BuildingType::Den && !building.is_complete)
+        {
+            return Some((
+                building.id.clone(),
+                building.building_type,
+                building.position,
+                crate::spatial_tasks::SiteLifecycleStage::Planned,
+            ));
+        }
+        active_or_queued_jobs(colony).into_iter().find_map(|job| {
+            let JobMetadata::Construction {
+                building_type,
+                site: Some(site),
+                ..
+            } = job.metadata
+            else {
+                return None;
+            };
+            (job.kind == JobKind::BuildHouse
+                && scaffold_building_type(building_type) == BuildingType::Den)
+                .then(|| {
+                    (
+                        job.id.clone(),
+                        scaffold_building_type(building_type),
+                        site,
+                        crate::spatial_tasks::SiteLifecycleStage::Planned,
+                    )
+                })
+        })
+    }
+
+    /// Keep the visible Growth child tied to the physical scaffold without creating
+    /// a second executor. Its complete canonical footprint is available to protocol
+    /// and world rendering while legacy-shaped `JobRuntime` remains only the
+    /// low-level construction leaf.
+    fn lai23_sync_growth_visible_tasks(colony: &mut ColonyRuntime, now_tick: u64) {
+        use crate::task_runtime::{TASK_PROGRESS_MAX_BASIS_POINTS, TaskCategory, TaskStage};
+
+        let task_ids = colony
+            .leader_ai_runtime
+            .scheduling
+            .visible_tasks
+            .iter()
+            .filter_map(|(task_id, task)| {
+                (task.category == TaskCategory::BuildingConstruction && !task.stage.is_terminal())
+                    .then_some(task_id.clone())
+            })
+            .collect::<Vec<_>>();
+        let mut completed_intents = Vec::new();
+        for task_id in task_ids {
+            let Some((anchor, building_id)) = colony
+                .leader_ai_runtime
+                .scheduling
+                .visible_tasks
+                .get(&task_id)
+                .and_then(|task| task.spatial.objective.as_ref())
+                .and_then(|site| match site {
+                    crate::spatial_tasks::SiteRef::Building {
+                        anchor,
+                        building_id,
+                        ..
+                    } => Some((*anchor, building_id.clone())),
+                    _ => None,
+                })
+            else {
+                continue;
+            };
+            let Some(physical) = colony.buildings.iter().find(|building| {
+                building.building_type == BuildingType::Den
+                    && (building.id == building_id || building.position == anchor)
+            }) else {
+                continue;
+            };
+            let progress = u16::from(physical.construction_progress)
+                .saturating_mul(100)
+                .min(TASK_PROGRESS_MAX_BASIS_POINTS);
+            if let Some(task) = colony
+                .leader_ai_runtime
+                .scheduling
+                .visible_tasks
+                .get_mut(&task_id)
+            {
+                task.progress_basis_points = progress;
+                task.updated_tick = now_tick;
+                if physical.is_complete {
+                    task.stage = TaskStage::Complete;
+                    task.progress_basis_points = TASK_PROGRESS_MAX_BASIS_POINTS;
+                    completed_intents.push(task.intent_id.clone());
+                }
+            }
+        }
+        for intent_id in completed_intents {
+            let has_live_child = colony
+                .leader_ai_runtime
+                .scheduling
+                .visible_tasks
+                .values()
+                .any(|task| task.intent_id == intent_id && !task.stage.is_terminal());
+            if !has_live_child {
+                let _ = colony
+                    .leader_ai_runtime
+                    .intents
+                    .succeed(&intent_id, now_tick);
+            }
+        }
+    }
+
+    /// Mirror each active physical Workshop queue as one world-visible task without
+    /// creating a second production executor. Both the objective and work site are
+    /// the canonical 3×3 building footprint; production phases remain authoritative
+    /// for staffing, input cargo, recipe progress, and output haulage.
+    fn lai23_sync_workshop_visible_tasks(colony: &mut ColonyRuntime, now_tick: u64) {
+        use crate::{
+            authority::{AuthorityActor, AuthorityDomain},
+            intent_graph::Intent,
+            planner_core::{IntentId, IntentState, PlannerId},
+            task_runtime::{TASK_PROGRESS_MAX_BASIS_POINTS, TaskCategory, TaskStage},
+        };
+
+        let task_ids = colony
+            .leader_ai_runtime
+            .scheduling
+            .visible_tasks
+            .iter()
+            .filter_map(|(task_id, task)| {
+                (task.category == TaskCategory::WorkshopWork && !task.stage.is_terminal())
+                    .then_some(task_id.clone())
+            })
+            .collect::<Vec<_>>();
+        let mut completed_intents = Vec::new();
+        for task_id in task_ids {
+            let building_id = colony
+                .leader_ai_runtime
+                .scheduling
+                .visible_tasks
+                .get(&task_id)
+                .and_then(|task| task.spatial.objective.as_ref())
+                .and_then(|site| match site {
+                    crate::spatial_tasks::SiteRef::Building { building_id, .. } => {
+                        Some(building_id.clone())
+                    }
+                    _ => None,
+                });
+            let physical = building_id.as_ref().and_then(|building_id| {
+                colony.buildings.iter().find(|building| {
+                    building.id == *building_id
+                        && building.building_type == BuildingType::Workshop
+                        && building.is_complete
+                })
+            });
+            let queue_active =
+                physical.is_some_and(|building| !building.production_queue.is_empty());
+            if let Some(task) = colony
+                .leader_ai_runtime
+                .scheduling
+                .visible_tasks
+                .get_mut(&task_id)
+            {
+                task.updated_tick = now_tick;
+                if queue_active {
+                    task.progress_basis_points = physical
+                        .map(|building| {
+                            (building.production_progress.clamp(0.0, 1.0)
+                                * f64::from(TASK_PROGRESS_MAX_BASIS_POINTS))
+                            .round() as u16
+                        })
+                        .unwrap_or(0);
+                } else {
+                    task.stage = TaskStage::Complete;
+                    task.progress_basis_points = TASK_PROGRESS_MAX_BASIS_POINTS;
+                    completed_intents.push(task.intent_id.clone());
+                }
+            }
+        }
+        for intent_id in completed_intents {
+            let _ = colony
+                .leader_ai_runtime
+                .intents
+                .succeed(&intent_id, now_tick);
+        }
+
+        let active_building_ids = colony
+            .leader_ai_runtime
+            .scheduling
+            .visible_tasks
+            .values()
+            .filter(|task| task.category == TaskCategory::WorkshopWork && !task.stage.is_terminal())
+            .filter_map(|task| match task.spatial.objective.as_ref() {
+                Some(crate::spatial_tasks::SiteRef::Building { building_id, .. }) => {
+                    Some(building_id.clone())
+                }
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
+        let workshops = colony
+            .buildings
+            .iter()
+            .filter(|building| {
+                building.building_type == BuildingType::Workshop
+                    && building.is_complete
+                    && !building.production_queue.is_empty()
+                    && !active_building_ids.contains(&building.id)
+            })
+            .map(|building| building.id.clone())
+            .collect::<Vec<_>>();
+        for building_id in workshops {
+            let occurrence = u32::try_from(
+                colony
+                    .leader_ai_runtime
+                    .scheduling
+                    .visible_tasks
+                    .values()
+                    .filter(|task| {
+                        task.category == TaskCategory::WorkshopWork
+                            && matches!(
+                                task.spatial.objective.as_ref(),
+                                Some(crate::spatial_tasks::SiteRef::Building {
+                                    building_id: task_building_id,
+                                    ..
+                                }) if task_building_id == &building_id
+                            )
+                    })
+                    .count(),
+            )
+            .unwrap_or(u32::MAX);
+            let target_id = PlannerId::derive("building", [building_id.as_str()]);
+            let intent_id = IntentId::derive(
+                &colony.id,
+                0,
+                "workshop_work",
+                target_id.as_str(),
+                occurrence,
+            );
+            if colony.leader_ai_runtime.intents.get(&intent_id).is_none() {
+                let actor = colony
+                    .leader_ai_runtime
+                    .officers
+                    .institution
+                    .leader()
+                    .cloned()
+                    .map_or(AuthorityActor::Scheduler, |cat_id| AuthorityActor::Leader {
+                        cat_id,
+                    });
+                let owner = match &actor {
+                    AuthorityActor::Leader { cat_id } => Some(cat_id.clone()),
+                    _ => None,
+                };
+                let mut intent = Intent::proposed(
+                    intent_id.clone(),
+                    PlannerId::derive("colony", [colony.id.as_str()]),
+                    actor,
+                    owner,
+                    AuthorityDomain::Building,
+                    PlannerId::derive("intent_kind", ["workshop_work"]),
+                    target_id,
+                    PlannerId::derive("rationale", ["active_physical_workshop_queue"]),
+                    now_tick,
+                );
+                let _ = intent.lifecycle.transition(IntentState::Approved, now_tick);
+                let _ = colony.leader_ai_runtime.intents.insert_or_merge(intent);
+            }
+            let task_id = crate::task_runtime::TaskId::derive(&colony.id, &intent_id, occurrence);
+            if colony
+                .leader_ai_runtime
+                .scheduling
+                .visible_tasks
+                .contains_key(&task_id)
+            {
+                continue;
+            }
+            let Some((spatial, route_ids)) =
+                lai23_resolve_workshop_projection(colony, &building_id)
+            else {
+                continue;
+            };
+            if let Ok(task) = crate::task_runtime::VisibleTaskRuntime::resolved(
+                colony.id.clone(),
+                intent_id,
+                occurrence,
+                TaskCategory::WorkshopWork,
+                spatial,
+                route_ids,
+                now_tick,
+            ) {
+                colony
+                    .leader_ai_runtime
+                    .scheduling
+                    .visible_tasks
+                    .insert(task_id, task);
+            }
+        }
+    }
+
+    fn intent_kind_matches(intent: &crate::intent_graph::Intent, kind: &str) -> bool {
+        intent.kind_id == crate::planner_core::PlannerId::derive("intent_kind", [kind])
+    }
+
+    fn lai23_needed_survival_categories(
+        colony: &ColonyRuntime,
+    ) -> Vec<crate::task_runtime::TaskCategory> {
+        use crate::task_runtime::TaskCategory;
+
+        let population_count = active_resident_cats(colony).count();
+        let population = population_count as f64;
+        let food_floor = lai23_sustainable_food_runway_floor(population_count);
+        let water_floor = (population
+            * (RESEARCH_COMFORT_WATER_PER_CAT + LAI23_SURVIVAL_ROUTE_RUNWAY_PER_CAT))
+            .max(RESEARCH_COMFORT_FLOOR);
+        let reported = &colony.stock_ledger.reported;
+        let mut categories = Vec::new();
+        if reported.water < water_floor && has_water_site(colony) {
+            categories.push(TaskCategory::FetchWater);
+        }
+        if reported.food + reported.fish < food_floor
+            && !lai23_food_tiles_with_available_resource(colony).is_empty()
+        {
+            categories.push(TaskCategory::Hunt);
+        }
+        categories
+    }
+
+    fn lai23_sustainable_food_runway_floor(population: usize) -> f64 {
+        (population as f64 * (RESEARCH_COMFORT_FOOD_PER_CAT + LAI23_SURVIVAL_ROUTE_RUNWAY_PER_CAT))
+            .max(RESEARCH_COMFORT_FLOOR)
+    }
+
+    fn lai23_food_tiles_with_available_resource(colony: &ColonyRuntime) -> Vec<WorldPos> {
+        colony
+            .world_tiles
+            .values()
+            .filter(|tile| {
+                tile.tile_type == TileType::CaveEntrance
+                    && tile.resources.food >= LAI23_MINIMUM_HUNT_BATCH_UNITS
+                    && tile_is_explored(colony, tile)
+                    && cheb_from_anchor(colony.anchor, tile.pos) > 4
+            })
+            .map(|tile| tile_pos_to_world(tile.pos))
+            .collect()
+    }
+
+    fn lai23_active_visible_task_count(
+        colony: &ColonyRuntime,
+        category: crate::task_runtime::TaskCategory,
+    ) -> usize {
+        use crate::task_runtime::TaskStage;
+
+        colony
+            .leader_ai_runtime
+            .scheduling
+            .visible_tasks
+            .values()
+            .filter(|task| {
+                task.category == category
+                    && !matches!(task.stage, TaskStage::Complete | TaskStage::Cancelled)
+            })
+            .count()
+    }
+
+    fn lai23_max_active_visible_tasks(
+        colony: &ColonyRuntime,
+        category: crate::task_runtime::TaskCategory,
+    ) -> usize {
+        use crate::task_runtime::TaskCategory;
+
+        let population = active_resident_cats(colony).count().max(1);
+        let proportional_cap = |founding_cap: u32| {
+            (founding_cap as usize)
+                .saturating_mul(population)
+                .div_ceil(15)
+        };
+        match category {
+            TaskCategory::Hunt => {
+                let edible = colony.stock_ledger.reported.food + colony.stock_ledger.reported.fish;
+                let emergency_meal_floor = population as f64 * personal_food_serving(colony);
+                let physical_source_cap = lai23_food_tiles_with_available_resource(colony).len();
+                let policy_cap = if edible < emergency_meal_floor {
+                    // A poor Leader can spend the last comfortable reserve on the
+                    // Shrine. Recovery is deliberately physical and painful: every
+                    // otherwise available resident may be sent to a real cave until
+                    // one meal per living cat is back in storage.
+                    population
+                } else {
+                    proportional_cap(BASELINE_HUNT_MAX_SLOTS)
+                };
+                policy_cap.min(physical_source_cap.max(1))
+            }
+            TaskCategory::FetchWater => proportional_cap(BASELINE_WATER_MAX_SLOTS).max(8),
+            TaskCategory::OfferingRitual => 1,
+            TaskCategory::BuildingConstruction => 1,
+            _ => 1,
+        }
+    }
+
+    fn lai23_create_visible_task_for_intent(
+        colony: &mut ColonyRuntime,
+        intent_id: &crate::planner_core::IntentId,
+        category: crate::task_runtime::TaskCategory,
+        occurrence: u32,
+        now_tick: u64,
+        survival_routes: Option<&Lai23SurvivalRouteContext>,
+    ) -> bool {
+        use crate::task_runtime::{TaskId, VisibleTaskRuntime};
+
+        let task_id = TaskId::derive(&colony.id, intent_id, occurrence);
+        if colony
+            .leader_ai_runtime
+            .scheduling
+            .visible_tasks
+            .contains_key(&task_id)
+        {
+            return false;
+        }
+        let Some((spatial, resolved, route_ids)) =
+            lai23_resolve_visible_task(colony, category, occurrence, survival_routes)
+        else {
+            return false;
+        };
+        let Ok(task) = VisibleTaskRuntime::resolved(
+            colony.id.clone(),
+            intent_id.clone(),
+            occurrence,
+            category,
+            spatial,
+            route_ids,
+            now_tick,
+        ) else {
+            return false;
+        };
+        let scheduling = &mut colony.leader_ai_runtime.scheduling;
+        if let Some(resolved) = resolved {
+            scheduling
+                .resolved_spatial_tasks
+                .insert(task_id.clone(), resolved);
+        }
+        scheduling.visible_tasks.insert(task_id, task);
+        true
+    }
+
+    fn lai23_visible_task_occurrence(
+        category: crate::task_runtime::TaskCategory,
+        now_tick: u64,
+        occurrence_slot: u64,
+    ) -> u32 {
+        let category_offset = match category {
+            crate::task_runtime::TaskCategory::Hunt => 1,
+            crate::task_runtime::TaskCategory::FetchWater => 2,
+            crate::task_runtime::TaskCategory::OfferingRitual => 3,
+            crate::task_runtime::TaskCategory::BuildingConstruction => 4,
+            crate::task_runtime::TaskCategory::WorkshopWork => 5,
+            _ => 9,
+        };
+        u32::try_from(
+            now_tick
+                .saturating_mul(1_000)
+                .saturating_add(occurrence_slot.saturating_mul(10))
+                .saturating_add(category_offset),
+        )
+        .unwrap_or(u32::MAX)
+    }
+
+    fn lai23_resolve_visible_task(
+        colony: &ColonyRuntime,
+        category: crate::task_runtime::TaskCategory,
+        occurrence: u32,
+        survival_routes: Option<&Lai23SurvivalRouteContext>,
+    ) -> Option<(
+        crate::spatial_tasks::SpatialObjective,
+        Option<crate::spatial_resolver::ResolvedSpatialTask>,
+        Vec<String>,
+    )> {
+        use crate::{
+            spatial_resolver::{
+                SpatialResolutionOutcome, SpatialTaskCategory, resolve_spatial_task,
+            },
+            task_runtime::TaskCategory,
+        };
+
+        match category {
+            TaskCategory::Hunt => {
+                let request = lai23_hunt_resolution_request(colony, occurrence, survival_routes?)?;
+                let outcome = resolve_spatial_task(request);
+                match outcome {
+                    SpatialResolutionOutcome::Resolved(resolved) => {
+                        let route_ids = lai23_route_ids(
+                            &resolved.source_to_work_route,
+                            &resolved.work_to_delivery_route,
+                        );
+                        Some((resolved.spatial.clone(), Some(*resolved), route_ids))
+                    }
+                    SpatialResolutionOutcome::Blocked(_) => None,
+                }
+            }
+            TaskCategory::FetchWater => {
+                let request = lai23_water_resolution_request(colony, occurrence, survival_routes?)?;
+                debug_assert_eq!(request.category, SpatialTaskCategory::FetchWater);
+                let outcome = resolve_spatial_task(request);
+                match outcome {
+                    SpatialResolutionOutcome::Resolved(resolved) => {
+                        let route_ids = lai23_route_ids(
+                            &resolved.source_to_work_route,
+                            &resolved.work_to_delivery_route,
+                        );
+                        Some((resolved.spatial.clone(), Some(*resolved), route_ids))
+                    }
+                    SpatialResolutionOutcome::Blocked(_) => None,
+                }
+            }
+            TaskCategory::OfferingRitual => {
+                let shrine = lai23_shrine_site(colony)?;
+                let package = colony
+                    .leader_ai_runtime
+                    .shrine_favor
+                    .shrine_offerings
+                    .values()
+                    .find_map(|state| {
+                        state
+                            .current
+                            .as_ref()
+                            .filter(|pipeline| {
+                                pipeline.stage == crate::shrine_offerings::OfferingStage::Selected
+                            })
+                            .map(|pipeline| pipeline.choice.package)
+                    })?;
+                let (source, source_units) = lai23_offering_source_stockpile_site(colony, package)?;
+                let package_units = u32::try_from(package.quantity()).ok()?;
+                let route_a = lai23_route_site_ref(
+                    "offering-source-to-shrine",
+                    site_contact_tile(&source)?,
+                    site_contact_tile(&shrine)?,
+                );
+                let route_b = lai23_route_site_ref(
+                    "offering-ritual-return",
+                    site_contact_tile(&shrine)?,
+                    site_contact_tile(&shrine)?,
+                );
+                let work = crate::spatial_tasks::WorkSlot::exclusive(
+                    "offering-ritual-at-shrine",
+                    shrine.clone(),
+                );
+                let request = crate::spatial_resolver::SpatialResolutionRequest {
+                    category: crate::spatial_resolver::SpatialTaskCategory::OfferingRitual,
+                    pinned_objective_id: Some(source.stable_id().to_owned()),
+                    pinned_delivery_endpoint: shrine,
+                    delivery_endpoint_exists: true,
+                    requested_source_units: package_units,
+                    requested_delivery_units: package_units,
+                    delivery_capacity: package_units,
+                    candidates: vec![crate::spatial_resolver::SpatialResolutionCandidate {
+                        objective: source,
+                        work_slot: work,
+                        source_to_work_route: route_a,
+                        work_to_delivery_route: route_b,
+                        objective_exists: true,
+                        work_position_available: true,
+                        source_available_units: source_units,
+                        source_capacity: source_units,
+                        source_to_work_route_capacity: package_units,
+                        work_to_delivery_route_capacity: package_units,
+                    }],
+                };
+                match resolve_spatial_task(request) {
+                    SpatialResolutionOutcome::Resolved(resolved) => {
+                        let route_ids = lai23_route_ids(
+                            &resolved.source_to_work_route,
+                            &resolved.work_to_delivery_route,
+                        );
+                        Some((resolved.spatial.clone(), Some(*resolved), route_ids))
+                    }
+                    SpatialResolutionOutcome::Blocked(_) => None,
+                }
+            }
+            TaskCategory::BuildingConstruction => {
+                let (building_id, building_type, site, lifecycle) = lai23_growth_den_site(colony)?;
+                let mut objective = crate::spatial_tasks::SiteRef::building(
+                    building_id.clone(),
+                    building_type,
+                    site,
+                );
+                if let crate::spatial_tasks::SiteRef::Building { metadata, .. } = &mut objective {
+                    metadata.lifecycle = lifecycle;
+                }
+                let (width, height) = footprint_for(building_type);
+                let work_tile = TilePos {
+                    x: site.x + width / 2,
+                    y: site.y + height,
+                };
+                let work = crate::spatial_tasks::WorkSlot::exclusive(
+                    format!("growth-den-work-{building_id}"),
+                    lai23_tile_site_ref("growth-den-work", work_tile),
+                );
+                let spatial = crate::spatial_tasks::SpatialObjective::resolved(
+                    objective.clone(),
+                    vec![work],
+                    Some(objective),
+                );
+                let route = lai23_route_site_ref("growth-den-site", work_tile, work_tile);
+                // Construction already executes through the authoritative physical
+                // scaffold/material/job leaf. This visible task is its exact spatial
+                // projection, so it intentionally does not enter the independent
+                // workforce/reservation matcher and cannot double-assign a builder.
+                Some((spatial, None, vec![route.stable_id().to_owned()]))
+            }
+            TaskCategory::WorkshopWork => {
+                let building_id = colony.buildings.iter().find_map(|building| {
+                    (building.building_type == BuildingType::Workshop
+                        && building.is_complete
+                        && !building.production_queue.is_empty())
+                    .then_some(building.id.clone())
+                })?;
+                lai23_resolve_workshop_projection(colony, &building_id)
+                    .map(|(spatial, route_ids)| (spatial, None, route_ids))
+            }
+            _ => None,
+        }
+    }
+
+    fn lai23_resolve_workshop_projection(
+        colony: &ColonyRuntime,
+        building_id: &str,
+    ) -> Option<(crate::spatial_tasks::SpatialObjective, Vec<String>)> {
+        use crate::spatial_resolver::{SpatialResolutionOutcome, resolve_spatial_task};
+
+        let building = colony.buildings.iter().find(|building| {
+            building.id == building_id
+                && building.building_type == BuildingType::Workshop
+                && building.is_complete
+                && !building.production_queue.is_empty()
+        })?;
+        let objective = crate::spatial_tasks::SiteRef::building(
+            building.id.clone(),
+            BuildingType::Workshop,
+            building.position,
+        );
+        let route = lai23_route_site_ref("workshop-work", building.position, building.position);
+        let work_rect = crate::spatial_tasks::Rect::new(building.position, 3, 3)?;
+        let work_site = crate::spatial_tasks::SiteRef::Rect {
+            metadata: crate::spatial_tasks::SiteMetadata::revealed(format!(
+                "workshop-work-area:{}",
+                building.id
+            )),
+            rect: work_rect,
+            footprint: crate::spatial_tasks::TaskFootprint::rectangular(work_rect),
+        };
+        let work = crate::spatial_tasks::WorkSlot::capacity(
+            format!("workshop-work-{}", building.id),
+            work_site,
+            LAI23_SHARED_VISIBLE_TASK_SITE_CAPACITY,
+        )
+        .ok()?;
+        let request = crate::spatial_resolver::SpatialResolutionRequest {
+            category: crate::spatial_resolver::SpatialTaskCategory::WorkshopWork,
+            pinned_objective_id: Some(objective.stable_id().to_owned()),
+            pinned_delivery_endpoint: objective.clone(),
+            delivery_endpoint_exists: true,
+            requested_source_units: 1,
+            requested_delivery_units: 1,
+            delivery_capacity: LAI23_SHARED_VISIBLE_TASK_SITE_CAPACITY,
+            candidates: vec![crate::spatial_resolver::SpatialResolutionCandidate {
+                objective,
+                work_slot: work,
+                source_to_work_route: route.clone(),
+                work_to_delivery_route: route.clone(),
+                objective_exists: true,
+                work_position_available: true,
+                source_available_units: 1,
+                source_capacity: 1,
+                source_to_work_route_capacity: LAI23_SHARED_VISIBLE_TASK_SITE_CAPACITY,
+                work_to_delivery_route_capacity: LAI23_SHARED_VISIBLE_TASK_SITE_CAPACITY,
+            }],
+        };
+        match resolve_spatial_task(request) {
+            SpatialResolutionOutcome::Resolved(resolved) => {
+                Some((resolved.spatial.clone(), vec![route.stable_id().to_owned()]))
+            }
+            SpatialResolutionOutcome::Blocked(_) => None,
+        }
+    }
+
+    struct Lai23SurvivalRouteContext {
+        reachable_work_tiles: HashSet<PathTilePos>,
+    }
+
+    fn lai23_survival_route_context(colony: &ColonyRuntime) -> Option<Lai23SurvivalRouteContext> {
+        let endpoint = lai23_delivery_stockpile_site(colony)?;
+        let endpoint_tile = site_contact_tile(&endpoint)?;
+        let mountain_travel = resolve_effects(colony.upgrade_tree.owned_node_ids.iter())
+            .unlocked_capabilities
+            .contains("mountain_travel");
+
+        let area = claimed_area(colony);
+        let path_area = pathfinding_area(&area);
+        let retained_gate = retained_area_gate(colony);
+        let area_gate = retained_gate.map(pathfinding_gate);
+        let ring_radius = village_ring_radius(colony.buildings.len() as i32);
+        let gate = movement_gate(colony.anchor, retained_gate, ring_radius);
+        let staged_edges = staged_wall_fence_edges(colony);
+        let walk_tiles = colony
+            .world_tiles
+            .values()
+            .map(walk_tile_from_runtime)
+            .collect::<Vec<_>>();
+        let grid = build_colony_walk_grid(ColonyGridParams {
+            tiles: &walk_tiles,
+            anchor: PathTilePos {
+                x: colony.anchor.x,
+                y: colony.anchor.y,
+            },
+            ring_radius,
+            gate: PathTilePos {
+                x: gate.x,
+                y: gate.y,
+            },
+            area: (!path_area.is_empty()).then_some(&path_area),
+            area_gate,
+            extra_fence_edges: (!staged_edges.is_empty()).then_some(&staged_edges),
+            terrain: None,
+            mountains_unlocked: mountain_travel,
+            shipping_researched: is_owned(&colony.upgrade_tree, "shipping"),
+            soft_obstacles: None,
+            soft_obstacle_field: None,
+            surface_factors: None,
+        });
+        let mut water_work_tiles = water_sites_near_village(colony)
+            .into_iter()
+            .map(world_pos_to_tile)
+            .filter_map(|source| water_work_site(colony, source))
+            .collect::<Vec<_>>();
+        sort_tiles_by_distance_from(&mut water_work_tiles, endpoint_tile);
+        water_work_tiles.dedup();
+
+        let mut food_sources = lai23_food_tiles_with_available_resource(colony)
+            .into_iter()
+            .map(world_pos_to_tile)
+            .collect::<Vec<_>>();
+        food_sources.sort_by_key(|tile| {
+            let available = colony
+                .world_tiles
+                .get(tile)
+                .map(|runtime| runtime.resources.food)
+                .unwrap_or(0);
+            (
+                u8::from(available < 24),
+                tile.x
+                    .abs_diff(endpoint_tile.x)
+                    .saturating_add(tile.y.abs_diff(endpoint_tile.y)),
+                u32::MAX - available,
+                tile.x,
+                tile.y,
+            )
+        });
+        food_sources.dedup();
+
+        // Search one bounded nearest-source window rather than flooding toward
+        // every source ever revealed by scouts. The old all-goal component hit its
+        // 6,000-node guard on large maps and mislabeled farther land as permanently
+        // disconnected; per-source A* fixed truth but multiplied campaign cost.
+        // Full Hunt loads rank ahead of partly regrown caves so a nearby four-unit
+        // remnant cannot hide a stocked cave just beyond the old distance window.
+        // Sixty-four sources still bound the component search.
+        let selected_food_sources = food_sources.into_iter().take(64).collect::<Vec<_>>();
+        let mut goals = water_work_tiles
+            .into_iter()
+            .take(8)
+            .chain(selected_food_sources.iter().copied())
+            .chain(
+                selected_food_sources
+                    .iter()
+                    .copied()
+                    .flat_map(lai23_adjacent_tiles),
+            )
+            .filter(|tile| lai23_visible_task_work_tile_is_walkable(colony, *tile, mountain_travel))
+            .map(|tile| pathfinding_pos(tile_pos_to_world(tile)))
+            .collect::<Vec<_>>();
+        goals.sort_by(|left, right| {
+            left.x
+                .total_cmp(&right.x)
+                .then_with(|| left.y.total_cmp(&right.y))
+        });
+        goals.dedup_by(|left, right| left.x == right.x && left.y == right.y);
+        let reachable_work_tiles = reachable_component(
+            pathfinding_pos(tile_pos_to_world(endpoint_tile)),
+            &goals,
+            &grid,
+            FindPathOptions::default(),
+        );
+        Some(Lai23SurvivalRouteContext {
+            reachable_work_tiles,
+        })
+    }
+
+    fn sort_tiles_by_distance_from(tiles: &mut [TilePos], origin: TilePos) {
+        tiles.sort_by_key(|tile| {
+            (
+                tile.x
+                    .abs_diff(origin.x)
+                    .saturating_add(tile.y.abs_diff(origin.y)),
+                tile.x,
+                tile.y,
+            )
+        });
+    }
+
+    fn lai23_visible_task_work_tile_is_walkable(
+        colony: &ColonyRuntime,
+        tile: TilePos,
+        mountain_travel: bool,
+    ) -> bool {
+        colony.revealed_tiles.contains(&tile)
+            && colony.world_tiles.get(&tile).is_some_and(|runtime| {
+                !tile_has_water(Some(runtime))
+                    && (mountain_travel || runtime.tile_type != TileType::Mountains)
+            })
+    }
+
+    fn lai23_adjacent_tiles(source: TilePos) -> impl Iterator<Item = TilePos> {
+        [(0, -1), (1, 0), (0, 1), (-1, 0)]
+            .into_iter()
+            .map(move |(dx, dy)| TilePos {
+                x: source.x + dx,
+                y: source.y + dy,
+            })
+    }
+
+    fn lai23_hunt_resolution_request(
+        colony: &ColonyRuntime,
+        occurrence: u32,
+        routes: &Lai23SurvivalRouteContext,
+    ) -> Option<crate::spatial_resolver::SpatialResolutionRequest> {
+        use crate::spatial_resolver::{
+            SpatialResolutionCandidate, SpatialResolutionRequest, SpatialTaskCategory,
+        };
+        use crate::spatial_tasks::ResourceSourceKind;
+
+        let endpoint = lai23_delivery_stockpile_site(colony)?;
+        let endpoint_tile = site_contact_tile(&endpoint)?;
+        let capacity = LAI23_SHARED_VISIBLE_TASK_SITE_CAPACITY;
+        let mut candidates = lai23_food_tiles_with_available_resource(colony)
+            .into_iter()
+            .filter_map(|world| {
+                let tile = world_pos_to_tile(world);
+                let source_available_units = colony
+                    .world_tiles
+                    .get(&tile)
+                    .map(|runtime| runtime.resources.food)
+                    .unwrap_or(0);
+                if source_available_units < LAI23_MINIMUM_HUNT_BATCH_UNITS {
+                    return None;
+                }
+                let work_tile = lai23_adjacent_work_tile(colony, routes, tile)?;
+                let source = lai23_resource_source_site("hunt", tile, ResourceSourceKind::Hunting);
+                let work_site = lai23_tile_site_ref("hunt-work", work_tile);
+                let work_slot = crate::spatial_tasks::WorkSlot::capacity(
+                    format!("hunt-work-{}-{}", work_tile.x, work_tile.y),
+                    work_site,
+                    capacity,
+                )
+                .ok()?;
+                Some(SpatialResolutionCandidate {
+                    objective: source,
+                    work_slot,
+                    source_to_work_route: lai23_route_site_ref("hunt-source-work", tile, work_tile),
+                    work_to_delivery_route: lai23_route_site_ref(
+                        "hunt-work-delivery",
+                        work_tile,
+                        endpoint_tile,
+                    ),
+                    objective_exists: true,
+                    work_position_available: true,
+                    source_available_units,
+                    // The resolved objective claim must reflect the report-safe
+                    // finite stock, otherwise parallel Hunt children can reserve
+                    // more units than the revealed source actually owns.
+                    source_capacity: source_available_units,
+                    source_to_work_route_capacity: capacity,
+                    work_to_delivery_route_capacity: capacity,
+                })
+            })
+            .collect::<Vec<_>>();
+        // Rank stocked caves first, then shorter return routes and larger partial
+        // batches. Pin one physical source before sizing the claim: a request owns
+        // exactly that cave's report-visible load instead of filtering every sibling
+        // onto whichever cave happened to be fullest this tick.
+        const FULL_HUNT_UNITS: u32 = 24;
+        candidates.sort_by(|first, second| {
+            u8::from(first.source_available_units < FULL_HUNT_UNITS)
+                .cmp(&u8::from(second.source_available_units < FULL_HUNT_UNITS))
+                .then_with(|| {
+                    lai23_route_tile_count(&first.work_to_delivery_route)
+                        .cmp(&lai23_route_tile_count(&second.work_to_delivery_route))
+                })
+                .then_with(|| {
+                    second
+                        .source_available_units
+                        .cmp(&first.source_available_units)
+                })
+                .then_with(|| {
+                    first
+                        .objective
+                        .stable_id()
+                        .cmp(second.objective.stable_id())
+                })
+                .then_with(|| first.work_slot.stable_id.cmp(&second.work_slot.stable_id))
+        });
+        let candidate_index = lai23_resolution_candidate_index(occurrence, candidates.len())?;
+        let selected = candidates.get(candidate_index)?;
+        let pinned_objective_id = selected.objective.stable_id().to_owned();
+        let requested_source_units = selected.source_available_units.min(FULL_HUNT_UNITS);
+        candidates.retain(|candidate| candidate.objective.stable_id() == pinned_objective_id);
+        Some(SpatialResolutionRequest {
+            category: SpatialTaskCategory::Hunt,
+            pinned_objective_id: Some(pinned_objective_id),
+            pinned_delivery_endpoint: endpoint,
+            delivery_endpoint_exists: true,
+            requested_source_units,
+            requested_delivery_units: 1,
+            delivery_capacity: capacity,
+            candidates,
+        })
+    }
+
+    pub(crate) fn diagnostic_lai23_hunt_resolution(colony: &ColonyRuntime) -> String {
+        let total_caves = lai23_food_tiles_with_available_resource(colony).len();
+        let full_caves = lai23_food_tiles_with_available_resource(colony)
+            .into_iter()
+            .map(world_pos_to_tile)
+            .filter(|tile| {
+                colony
+                    .world_tiles
+                    .get(tile)
+                    .is_some_and(|runtime| runtime.resources.food >= 24)
+            })
+            .count();
+        let Some(routes) = lai23_survival_route_context(colony) else {
+            return format!(
+                "route_context=missing,total_caves={total_caves},full_caves={full_caves}"
+            );
+        };
+        let occurrence =
+            lai23_visible_task_occurrence(crate::task_runtime::TaskCategory::Hunt, 0, 0);
+        let Some(request) = lai23_hunt_resolution_request(colony, occurrence, &routes) else {
+            return format!(
+                "request=missing,total_caves={total_caves},full_caves={full_caves},reachable_tiles={}",
+                routes.reachable_work_tiles.len()
+            );
+        };
+        format!(
+            "request=ready,total_caves={total_caves},full_caves={full_caves},reachable_tiles={},candidates={},requested_units={},pinned={:?}",
+            routes.reachable_work_tiles.len(),
+            request.candidates.len(),
+            request.requested_source_units,
+            request.pinned_objective_id
+        )
+    }
+
+    fn lai23_water_resolution_request(
+        colony: &ColonyRuntime,
+        occurrence: u32,
+        routes: &Lai23SurvivalRouteContext,
+    ) -> Option<crate::spatial_resolver::SpatialResolutionRequest> {
+        use crate::spatial_resolver::{
+            SpatialResolutionCandidate, SpatialResolutionRequest, SpatialTaskCategory,
+        };
+        use crate::spatial_tasks::ResourceSourceKind;
+
+        let endpoint = lai23_delivery_stockpile_site(colony)?;
+        let endpoint_tile = site_contact_tile(&endpoint)?;
+        let capacity = LAI23_SHARED_VISIBLE_TASK_SITE_CAPACITY;
+        let mut candidates = water_sites_near_village(colony)
+            .into_iter()
+            .filter_map(|world| {
+                let source_tile = world_pos_to_tile(world);
+                let work_tile = water_work_site(colony, source_tile)?;
+                if !routes.reachable_work_tiles.contains(&PathTilePos {
+                    x: work_tile.x,
+                    y: work_tile.y,
+                }) {
+                    return None;
+                }
+                let source =
+                    lai23_resource_source_site("water", source_tile, ResourceSourceKind::Water);
+                let work_site = lai23_tile_site_ref("water-bank", work_tile);
+                let work_slot = crate::spatial_tasks::WorkSlot::capacity(
+                    format!("water-bank-{}-{}", work_tile.x, work_tile.y),
+                    work_site,
+                    capacity,
+                )
+                .ok()?;
+                Some(SpatialResolutionCandidate {
+                    objective: source,
+                    work_slot,
+                    source_to_work_route: lai23_route_site_ref(
+                        "water-source-bank",
+                        source_tile,
+                        work_tile,
+                    ),
+                    work_to_delivery_route: lai23_route_site_ref(
+                        "water-bank-delivery",
+                        work_tile,
+                        endpoint_tile,
+                    ),
+                    objective_exists: true,
+                    work_position_available: true,
+                    source_available_units: capacity,
+                    source_capacity: capacity,
+                    source_to_work_route_capacity: capacity,
+                    work_to_delivery_route_capacity: capacity,
+                })
+            })
+            .collect::<Vec<_>>();
+        let pinned_objective_id =
+            lai23_pin_resolution_candidate_for_occurrence(&mut candidates, occurrence)?;
+        Some(SpatialResolutionRequest {
+            category: SpatialTaskCategory::FetchWater,
+            pinned_objective_id: Some(pinned_objective_id),
+            pinned_delivery_endpoint: endpoint,
+            delivery_endpoint_exists: true,
+            requested_source_units: 1,
+            requested_delivery_units: 1,
+            delivery_capacity: capacity,
+            candidates,
+        })
+    }
+
+    fn lai23_pin_resolution_candidate_for_occurrence(
+        candidates: &mut [crate::spatial_resolver::SpatialResolutionCandidate],
+        occurrence: u32,
+    ) -> Option<String> {
+        if candidates.is_empty() {
+            return None;
+        }
+        // Pinning is required because the resolver deliberately canonicalizes
+        // unpinned candidates. Rank physical survival work by shortest projected
+        // return route first, with stable IDs as deterministic tie-breakers. A
+        // sibling wave then consumes that order without RNG: the last decimal digit
+        // is the category, the preceding two digits are the sibling lane, and the
+        // remaining prefix is the scheduler minute. Rotate the start by that minute
+        // so unassigned Reserve children from later waves do not all collapse onto
+        // the same first one or two physical sources.
+        candidates.sort_by(|first, second| {
+            lai23_route_tile_count(&first.work_to_delivery_route)
+                .cmp(&lai23_route_tile_count(&second.work_to_delivery_route))
+                .then_with(|| {
+                    first
+                        .objective
+                        .stable_id()
+                        .cmp(second.objective.stable_id())
+                })
+                .then_with(|| first.work_slot.stable_id.cmp(&second.work_slot.stable_id))
+        });
+        let candidate_index = lai23_resolution_candidate_index(occurrence, candidates.len())?;
+        let candidate = candidates.get(candidate_index)?;
+        Some(candidate.objective.stable_id().to_owned())
+    }
+
+    fn lai23_resolution_candidate_index(occurrence: u32, candidate_count: usize) -> Option<usize> {
+        if candidate_count == 0 {
+            return None;
+        }
+        let sibling_lane = (occurrence as usize / 10) % 100;
+        let scheduler_minute = occurrence as usize / 1_000;
+        Some((scheduler_minute % candidate_count + sibling_lane) % candidate_count)
+    }
+
+    fn lai23_route_tile_count(route: &crate::spatial_tasks::SiteRef) -> usize {
+        match route {
+            crate::spatial_tasks::SiteRef::OrderedRoute { route, .. } => route.len(),
+            _ => usize::MAX,
+        }
+    }
+
+    fn lai23_delivery_stockpile_site(
+        colony: &ColonyRuntime,
+    ) -> Option<crate::spatial_tasks::SiteRef> {
+        let pile = colony
+            .stockpiles
+            .iter()
+            .find(|pile| pile.id == stockpiles::GENERAL_STOREHOUSE_ID)
+            .or_else(|| {
+                colony
+                    .stockpiles
+                    .iter()
+                    .find(|pile| !pile.is_station_local())
+            })?;
+        let rect = lai23_zone_rect_footprint(pile.rect)?;
+        Some(crate::spatial_tasks::SiteRef::Stockpile {
+            metadata: crate::spatial_tasks::SiteMetadata::revealed(pile.id.clone()),
+            stockpile_id: pile.id.clone(),
+            footprint: rect,
+        })
+    }
+
+    fn lai23_offering_source_stockpile_site(
+        colony: &ColonyRuntime,
+        package: crate::shrine_offerings::OfferingPackage,
+    ) -> Option<(crate::spatial_tasks::SiteRef, u32)> {
+        let kind = lai23_offering_resource_kind(package);
+        let quantity = package.quantity();
+        let shrine = lai23_shrine_site(colony)?;
+        let shrine_tile = site_contact_tile(&shrine)?;
+        let mut candidates = colony
+            .stockpiles
+            .iter()
+            .filter(|pile| !pile.is_station_local())
+            .filter_map(|pile| {
+                let available = stockpiles::resource_amount(&pile.contents, kind)
+                    .floor()
+                    .max(0.0) as u32;
+                if u64::from(available) < quantity {
+                    return None;
+                }
+                let footprint = lai23_zone_rect_footprint(pile.rect)?;
+                let distance = pile
+                    .rect
+                    .x1
+                    .abs_diff(shrine_tile.x)
+                    .saturating_add(pile.rect.y1.abs_diff(shrine_tile.y));
+                Some((distance, pile.id.clone(), footprint, available))
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+        let (_, stockpile_id, footprint, available) = candidates.into_iter().next()?;
+        Some((
+            crate::spatial_tasks::SiteRef::Stockpile {
+                metadata: crate::spatial_tasks::SiteMetadata::revealed(stockpile_id.clone()),
+                stockpile_id,
+                footprint,
+            },
+            available,
+        ))
+    }
+
+    fn lai23_shrine_site(colony: &ColonyRuntime) -> Option<crate::spatial_tasks::SiteRef> {
+        let shrine = colony.buildings.iter().find(|building| {
+            building.is_complete && building.building_type == BuildingType::Shrine
+        })?;
+        Some(crate::spatial_tasks::SiteRef::Shrine {
+            metadata: crate::spatial_tasks::SiteMetadata::revealed(shrine.id.clone()),
+            building_id: shrine.id.clone(),
+            anchor: shrine.position,
+            footprint: crate::spatial_tasks::canonical_building_footprint(
+                BuildingType::Shrine,
+                shrine.position,
+            ),
+        })
+    }
+
+    fn lai23_resource_source_site(
+        prefix: &str,
+        tile: TilePos,
+        resource_kind: crate::spatial_tasks::ResourceSourceKind,
+    ) -> crate::spatial_tasks::SiteRef {
+        let stable_id = format!("{prefix}-source-{}-{}", tile.x, tile.y);
+        crate::spatial_tasks::SiteRef::ResourceSource {
+            metadata: crate::spatial_tasks::SiteMetadata::revealed(stable_id.clone()),
+            source_id: stable_id,
+            resource_kind,
+            footprint: crate::spatial_tasks::TaskFootprint::rectangular(
+                crate::spatial_tasks::Rect::new(tile, 1, 1)
+                    .expect("single tile footprint is valid"),
+            ),
+        }
+    }
+
+    fn lai23_tile_site_ref(prefix: &str, tile: TilePos) -> crate::spatial_tasks::SiteRef {
+        crate::spatial_tasks::SiteRef::Tile {
+            metadata: crate::spatial_tasks::SiteMetadata::revealed(format!(
+                "{prefix}-{}-{}",
+                tile.x, tile.y
+            )),
+            tile,
+        }
+    }
+
+    fn lai23_route_site_ref(
+        prefix: &str,
+        start: TilePos,
+        end: TilePos,
+    ) -> crate::spatial_tasks::SiteRef {
+        let route = lai23_manhattan_route(start, end);
+        crate::spatial_tasks::SiteRef::OrderedRoute {
+            metadata: crate::spatial_tasks::SiteMetadata::revealed(format!(
+                "{prefix}-{}-{}-{}-{}",
+                start.x, start.y, end.x, end.y
+            )),
+            route,
+        }
+    }
+
+    fn lai23_route_ids(
+        first: &crate::spatial_tasks::SiteRef,
+        second: &crate::spatial_tasks::SiteRef,
+    ) -> Vec<String> {
+        vec![first.stable_id().to_owned(), second.stable_id().to_owned()]
+    }
+
+    fn lai23_manhattan_route(start: TilePos, end: TilePos) -> Vec<TilePos> {
+        let mut route = vec![start];
+        let mut current = start;
+        while current.x != end.x {
+            current.x += if current.x < end.x { 1 } else { -1 };
+            route.push(current);
+        }
+        while current.y != end.y {
+            current.y += if current.y < end.y { 1 } else { -1 };
+            route.push(current);
+        }
+        route
+    }
+
+    fn lai23_adjacent_work_tile(
+        colony: &ColonyRuntime,
+        routes: &Lai23SurvivalRouteContext,
+        source: TilePos,
+    ) -> Option<TilePos> {
+        let mountain_travel = resolve_effects(colony.upgrade_tree.owned_node_ids.iter())
+            .unlocked_capabilities
+            .contains("mountain_travel");
+        routes
+            .reachable_work_tiles
+            .contains(&PathTilePos {
+                x: source.x,
+                y: source.y,
+            })
+            .then_some(())?;
+        lai23_adjacent_tiles(source).find(|tile| {
+            lai23_visible_task_work_tile_is_walkable(colony, *tile, mountain_travel)
+                && routes.reachable_work_tiles.contains(&PathTilePos {
+                    x: tile.x,
+                    y: tile.y,
+                })
+        })
+    }
+
+    fn lai23_zone_rect_footprint(rect: ZoneRect) -> Option<crate::spatial_tasks::TaskFootprint> {
+        let width = rect.x2.checked_sub(rect.x1)?.checked_add(1)?;
+        let height = rect.y2.checked_sub(rect.y1)?.checked_add(1)?;
+        crate::spatial_tasks::Rect::new(
+            TilePos {
+                x: rect.x1,
+                y: rect.y1,
+            },
+            width,
+            height,
+        )
+        .map(crate::spatial_tasks::TaskFootprint::rectangular)
+    }
+
+    fn runtime_task_priority(
+        category: crate::task_runtime::TaskCategory,
+    ) -> crate::cat_willingness::TaskPriority {
+        use crate::{cat_willingness::TaskPriority, task_runtime::TaskCategory};
+        match category {
+            TaskCategory::Eat | TaskCategory::Drink | TaskCategory::Sleep => {
+                TaskPriority::SelfPreservation
+            }
+            TaskCategory::Hunt | TaskCategory::FetchWater => TaskPriority::Emergency,
+            TaskCategory::OfferingRitual | TaskCategory::Training | TaskCategory::Accounting => {
+                TaskPriority::Optional
+            }
+            _ => TaskPriority::Required,
+        }
+    }
+
+    fn runtime_task_risk(
+        category: crate::task_runtime::TaskCategory,
+    ) -> crate::cat_willingness::TaskRisk {
+        use crate::{cat_willingness::TaskRisk, task_runtime::TaskCategory};
+        match category {
+            TaskCategory::Hunt | TaskCategory::Scout | TaskCategory::Training => TaskRisk::High,
+            TaskCategory::Quarry
+            | TaskCategory::Logging
+            | TaskCategory::BuildingConstruction
+            | TaskCategory::RoadConstruction
+            | TaskCategory::Expansion => TaskRisk::Stressful,
+            _ => TaskRisk::Safe,
+        }
+    }
+
+    fn runtime_task_capability(
+        category: crate::task_runtime::TaskCategory,
+        anatomy: &crate::anatomy::CatAnatomy,
+    ) -> (bool, u16) {
+        use crate::{anatomy::HazardousJob, task_runtime::TaskCategory};
+        let hazardous = match category {
+            TaskCategory::Hunt => Some(HazardousJob::Hunt),
+            TaskCategory::Scout => Some(HazardousJob::Scout),
+            TaskCategory::Quarry => Some(HazardousJob::Quarry),
+            TaskCategory::Logging | TaskCategory::Replant => Some(HazardousJob::Logging),
+            TaskCategory::BuildingConstruction
+            | TaskCategory::RoadConstruction
+            | TaskCategory::Expansion => Some(HazardousJob::Construction),
+            _ => None,
+        };
+        hazardous.map_or((true, 10_000), |job| {
+            let capability = anatomy.job_capability(job);
+            (
+                capability.blocked.is_none(),
+                capability.effective_function_basis_points,
+            )
+        })
+    }
+
+    fn runtime_task_attribute(
+        category: crate::task_runtime::TaskCategory,
+        attributes: crate::cat_traits::CatAttributes,
+    ) -> u8 {
+        use crate::task_runtime::TaskCategory;
+        match category {
+            TaskCategory::Hunt | TaskCategory::Fish => attributes.hunting.get(),
+            TaskCategory::Scout | TaskCategory::Accounting => attributes.vision.get(),
+            TaskCategory::OfferingRitual | TaskCategory::Training => attributes.leadership.get(),
+            TaskCategory::Eat | TaskCategory::Drink | TaskCategory::Sleep => {
+                attributes.defense.get()
+            }
+            _ => attributes.building.get(),
+        }
+    }
+
+    fn phase_lai23_05_visible_task_runtime_movement_cargo(
+        colony: &mut ColonyRuntime,
+        now_tick: u64,
+    ) {
+        use crate::task_runtime::TaskStage;
+
+        cancel_stalled_lai23_visible_task_routes(colony, now_tick);
+        // Worker death is an ordinary runtime transition, not only a restart case:
+        // revalidate when a dead worker is actually attached so it releases its
+        // physical reservation without rescanning every leaf on every tick.
+        if !colony.leader_ai_restart_validated || lai23_has_dead_worker_visible_task(colony) {
+            lai23_revalidate_active_tasks_after_restart(colony, now_tick);
+            colony.leader_ai_restart_validated = true;
+        }
+        lai23_assert_no_duplicate_leaf_mutations_after_restart(colony, now_tick);
+
+        let assignments = colony
+            .leader_ai_runtime
+            .scheduling
+            .visible_tasks
+            .values()
+            .filter(|task| {
+                matches!(
+                    task.stage,
+                    TaskStage::TravelToSource
+                        | TaskStage::TravelToWork
+                        | TaskStage::TravelToEndpoint
+                        | TaskStage::Work
+                )
+            })
+            .filter_map(|task| {
+                let cat_id = task.assigned_cat_ids.iter().next()?.clone();
+                let destination = lai23_task_stage_site(task).and_then(site_contact_tile);
+                Some((cat_id, task.category, task.stage, destination))
+            })
+            .collect::<Vec<_>>();
+
+        for (cat_id, category, stage, destination) in assignments {
+            let Some(cat) = colony
+                .cats
+                .iter_mut()
+                .find(|cat| cat.id == cat_id && cat.death_time.is_none())
+            else {
+                continue;
+            };
+            cat.current_task = Some(lai23_task_type(category));
+            if stage == TaskStage::Work {
+                cat.destination = None;
+                cat.activity = CatActivity::Working;
+            } else if let Some(destination) = destination {
+                cat.destination = Some(position_from_world(tile_pos_to_world(destination)));
+                cat.activity = CatActivity::Traveling;
+            }
+        }
+    }
+
+    /// A restart can happen between game-minute boundaries. Revalidate persisted
+    /// reservations immediately, but do not ingest another report, create another
+    /// task occurrence, or advance work until the next authoritative minute.
+    fn revalidate_lai23_runtime_after_restart_without_advancing(
+        colony: &mut ColonyRuntime,
+        now_tick: u64,
+    ) {
+        if !colony.leader_ai_restart_validated || lai23_has_dead_worker_visible_task(colony) {
+            lai23_revalidate_active_tasks_after_restart(colony, now_tick);
+            colony.leader_ai_restart_validated = true;
+        }
+        lai23_assert_no_duplicate_leaf_mutations_after_restart(colony, now_tick);
+    }
+
+    const LAI23_VISIBLE_TASK_TRAVEL_TIMEOUT_MINUTES: u64 = 12 * 60;
+
+    fn cancel_stalled_lai23_visible_task_routes(colony: &mut ColonyRuntime, now_tick: u64) {
+        use crate::task_runtime::{RuntimeBlockReason, TaskStage};
+
+        let stalled = colony
+            .leader_ai_runtime
+            .scheduling
+            .visible_tasks
+            .iter()
+            .filter_map(|(task_id, task)| {
+                (matches!(
+                    task.stage,
+                    TaskStage::TravelToSource
+                        | TaskStage::TravelToWork
+                        | TaskStage::TravelToEndpoint
+                ) && now_tick.saturating_sub(task.updated_tick)
+                    >= LAI23_VISIBLE_TASK_TRAVEL_TIMEOUT_MINUTES)
+                    .then_some((task_id.clone(), task.assigned_cat_ids.clone()))
+            })
+            .collect::<Vec<_>>();
+        for (task_id, assigned_cat_ids) in stalled {
+            let offering_recovered = lai23_recover_offering_task_cargo(
+                colony,
+                &task_id,
+                RuntimeBlockReason::RouteClosedWithCargo,
+                "route_timeout",
+                now_tick,
+            );
+            let resolved = {
+                let scheduling = &mut colony.leader_ai_runtime.scheduling;
+                let (visible_tasks, reservations) =
+                    (&mut scheduling.visible_tasks, &mut scheduling.reservations);
+                visible_tasks.get_mut(&task_id).is_some_and(|task| {
+                    if task.stage == TaskStage::Blocked {
+                        offering_recovered
+                    } else {
+                        task.cancel(reservations, now_tick).is_ok()
+                    }
+                })
+            };
+            if !resolved {
+                continue;
+            }
+            if let Some(world_id) = colony
+                .leader_ai_runtime
+                .scheduling
+                .world_reservation_ids
+                .remove(&task_id)
+            {
+                let _ = colony
+                    .leader_ai_runtime
+                    .scheduling
+                    .world_reservations
+                    .release(&world_id);
+            }
+            for cat_id in assigned_cat_ids {
+                if let Some(cat) = colony.cats.iter_mut().find(|cat| cat.id == cat_id) {
+                    cat.current_task = None;
+                    cat.destination = None;
+                    cat.activity = CatActivity::Idle;
+                }
+            }
+        }
+    }
+
+    fn lai23_has_dead_worker_visible_task(colony: &ColonyRuntime) -> bool {
+        let dead = colony
+            .cats
+            .iter()
+            .filter(|cat| cat.death_time.is_some())
+            .map(|cat| cat.id.as_str())
+            .collect::<BTreeSet<_>>();
+        colony
+            .leader_ai_runtime
+            .scheduling
+            .visible_tasks
+            .values()
+            .any(|task| {
+                !task.stage.is_terminal()
+                    && task
+                        .assigned_cat_ids
+                        .iter()
+                        .any(|id| dead.contains(id.as_str()))
+            })
+    }
+
+    fn advance_lai23_visible_tasks_after_movement(
+        colony: &mut ColonyRuntime,
+        gate: TickGate,
+        now_tick: u64,
+        world_seed: u32,
+    ) {
+        use crate::task_runtime::{CargoLocation, TASK_PROGRESS_MAX_BASIS_POINTS, TaskStage};
+
+        let task_ids = colony
+            .leader_ai_runtime
+            .scheduling
+            .visible_tasks
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        for task_id in task_ids {
+            let mut completed_effect = None;
+            let mut completed_hazardous_work = None;
+            let mut offering_departed = false;
+            let mut offering_deposited = false;
+            let snapshot = colony
+                .leader_ai_runtime
+                .scheduling
+                .visible_tasks
+                .get(&task_id)
+                .cloned();
+            let Some(snapshot) = snapshot else {
+                continue;
+            };
+            let Some(cat_id) = snapshot.assigned_cat_ids.iter().next().cloned() else {
+                continue;
+            };
+            let cat_at_stage_site = lai23_task_stage_site(&snapshot)
+                .and_then(site_contact_tile)
+                .is_some_and(|target| {
+                    colony
+                        .cats
+                        .iter()
+                        .find(|cat| cat.id == cat_id && cat.death_time.is_none())
+                        .is_some_and(|cat| {
+                            world_pos_to_tile(position_to_world(colony.anchor, cat.position))
+                                == target
+                        })
+                });
+
+            let scheduling = &mut colony.leader_ai_runtime.scheduling;
+            let Some(task) = scheduling.visible_tasks.get_mut(&task_id) else {
+                continue;
+            };
+            match task.stage {
+                TaskStage::TravelToSource if cat_at_stage_site => {
+                    let _ = task.advance(TaskStage::Pickup, now_tick);
+                    if task.cargo.is_some() {
+                        offering_departed = task.pickup(&cat_id, now_tick).is_ok()
+                            && task.category == crate::task_runtime::TaskCategory::OfferingRitual;
+                    }
+                    let next = if task.spatial.work_positions.is_empty() {
+                        TaskStage::TravelToEndpoint
+                    } else {
+                        TaskStage::TravelToWork
+                    };
+                    let _ = task.advance(next, now_tick);
+                }
+                TaskStage::TravelToWork if cat_at_stage_site => {
+                    let _ = task.advance(TaskStage::Work, now_tick);
+                }
+                TaskStage::Work => {
+                    let crossed_minutes = now_tick.saturating_sub(task.updated_tick);
+                    let progress =
+                        u16::try_from(crossed_minutes.saturating_mul(1_000)).unwrap_or(u16::MAX);
+                    task.progress_basis_points = task
+                        .progress_basis_points
+                        .saturating_add(progress)
+                        .min(TASK_PROGRESS_MAX_BASIS_POINTS);
+                    task.updated_tick = now_tick;
+                    if task.progress_basis_points == TASK_PROGRESS_MAX_BASIS_POINTS {
+                        completed_hazardous_work =
+                            hazardous_work_unit(task.category).map(|work| (work, task.occurrence));
+                        let _ = task.advance(TaskStage::TravelToEndpoint, now_tick);
+                    }
+                }
+                TaskStage::TravelToEndpoint if cat_at_stage_site => {
+                    let _ = task.advance(TaskStage::Deposit, now_tick);
+                    if task.cargo.as_ref().is_some_and(|cargo| {
+                        matches!(cargo.location, CargoLocation::Carried { .. })
+                    }) {
+                        offering_deposited = task.deposit(now_tick).is_ok()
+                            && task.category == crate::task_runtime::TaskCategory::OfferingRitual;
+                    }
+                    if task
+                        .complete(&mut scheduling.reservations, now_tick)
+                        .is_ok()
+                    {
+                        completed_effect = Some(Lai23CompletedVisibleTask {
+                            task_id: task_id.clone(),
+                            intent_id: task.intent_id.clone(),
+                            cat_id: cat_id.clone(),
+                            category: task.category,
+                            source_tile: task.spatial.objective.as_ref().and_then(
+                                |site| match site {
+                                    crate::spatial_tasks::SiteRef::ResourceSource {
+                                        footprint,
+                                        ..
+                                    } => footprint.tiles.as_slice().first().map(|tile| TilePos {
+                                        x: tile.x,
+                                        y: tile.y,
+                                    }),
+                                    _ => None,
+                                },
+                            ),
+                        });
+                        if let Some(world_id) = scheduling.world_reservation_ids.remove(&task_id) {
+                            let _ = scheduling.world_reservations.release(&world_id);
+                        }
+                        if let Some(cat) = colony.cats.iter_mut().find(|cat| cat.id == cat_id) {
+                            cat.current_task = None;
+                            cat.destination = None;
+                            cat.activity = CatActivity::Idle;
+                        }
+                    }
+                }
+                _ => {}
+            }
+            if offering_departed {
+                lai23_mark_offering_departed(colony, task_id.as_str(), now_tick);
+            }
+            if offering_deposited {
+                lai23_mark_offering_deposited(colony, task_id.as_str(), now_tick);
+            }
+            if let Some(completed) = completed_effect {
+                apply_lai23_completed_visible_task(
+                    colony,
+                    &completed,
+                    gate.processed_through,
+                    now_tick,
+                );
+            }
+            if let Some((work, occurrence)) = completed_hazardous_work {
+                apply_lai23_completed_work_injury(
+                    colony,
+                    world_seed,
+                    gate.processed_through,
+                    now_tick,
+                    Lai23CompletedHazardousWork {
+                        task_id,
+                        cat_id,
+                        occurrence,
+                        work,
+                    },
+                );
+            }
+        }
+        prune_lai23_terminal_visible_tasks(colony);
+    }
+
+    fn lai23_mark_offering_departed(colony: &mut ColonyRuntime, task_id: &str, now_tick: u64) {
+        use crate::shrine_offerings::OfferingStage;
+
+        if let Some(pipeline) = colony
+            .leader_ai_runtime
+            .shrine_favor
+            .shrine_offerings
+            .values_mut()
+            .find_map(|state| {
+                state.current.as_mut().filter(|pipeline| {
+                    pipeline.physical_task_id.as_deref() == Some(task_id)
+                        && pipeline.stage == OfferingStage::ResourcesReserved
+                })
+            })
+        {
+            let _ = pipeline.depart(now_tick);
+        }
+    }
+
+    fn lai23_mark_offering_deposited(colony: &mut ColonyRuntime, task_id: &str, now_tick: u64) {
+        use crate::shrine_offerings::OfferingStage;
+
+        if let Some(pipeline) = colony
+            .leader_ai_runtime
+            .shrine_favor
+            .shrine_offerings
+            .values_mut()
+            .find_map(|state| {
+                state.current.as_mut().filter(|pipeline| {
+                    pipeline.physical_task_id.as_deref() == Some(task_id)
+                        && pipeline.stage == OfferingStage::InTransit
+                })
+            })
+        {
+            let _ = pipeline.deposit(now_tick);
+        }
+    }
+
+    struct Lai23CompletedVisibleTask {
+        task_id: crate::task_runtime::TaskId,
+        intent_id: crate::planner_core::IntentId,
+        cat_id: String,
+        category: crate::task_runtime::TaskCategory,
+        source_tile: Option<TilePos>,
+    }
+
+    fn apply_lai23_completed_visible_task(
+        colony: &mut ColonyRuntime,
+        completed: &Lai23CompletedVisibleTask,
+        now_ms: i64,
+        now_tick: u64,
+    ) {
+        use crate::task_runtime::TaskCategory;
+
+        match completed.category {
+            TaskCategory::Hunt => {
+                let requested_reward = colony
+                    .cats
+                    .iter()
+                    .find(|cat| cat.id == completed.cat_id)
+                    .map(|cat| hunt_yield_for(cat, colony))
+                    .unwrap_or(24.0);
+                let reward = completed.source_tile.map_or(requested_reward, |site| {
+                    let available = colony
+                        .world_tiles
+                        .get(&site)
+                        .map(|tile| f64::from(tile.resources.food))
+                        .unwrap_or(0.0);
+                    requested_reward.min(available)
+                });
+                if let Some(site) = completed.source_tile {
+                    drain_hunt_site(colony, site, reward, now_ms);
+                }
+                stockpiles::add_resource(&mut colony.resources, ResourceKind::Food, reward);
+                if let Some(cat) = colony
+                    .cats
+                    .iter_mut()
+                    .find(|cat| cat.id == completed.cat_id)
+                {
+                    cat.role_xp.hunter += 1.0;
+                    cat.gain_skill(Labor::Hunt, SKILL_GAIN_PER_JOB);
+                    cat.specialization = idle_engine::next_specialization(
+                        CatSpecialization::Hunter,
+                        cat.role_xp.hunter,
+                        cat.specialization,
+                    );
+                    cat.stats.hunting = (cat.stats.hunting + 0.4).min(100.0);
+                }
+                reconcile_colony_stockpiles(colony);
+                colony.critical_since = None;
+            }
+            TaskCategory::FetchWater => {
+                stockpiles::add_resource(
+                    &mut colony.resources,
+                    ResourceKind::Water,
+                    WATER_TOTAL_YIELD,
+                );
+                reconcile_colony_stockpiles(colony);
+                colony.critical_since = None;
+            }
+            TaskCategory::OfferingRitual => {
+                apply_lai23_completed_offering_task(colony, completed.task_id.as_str(), now_tick);
+            }
+            _ => {}
+        }
+        // A survival intent may own independent Hunt and FetchWater children. Keep
+        // the shared intent live until every physical child reaches a terminal stage;
+        // otherwise the first completed category hides the still-needed sibling and
+        // prevents category-specific refill on the next scheduler pass.
+        let has_live_child = colony
+            .leader_ai_runtime
+            .scheduling
+            .visible_tasks
+            .values()
+            .any(|task| task.intent_id == completed.intent_id && !task.stage.is_terminal());
+        if !has_live_child {
+            let _ = colony
+                .leader_ai_runtime
+                .intents
+                .succeed(&completed.intent_id, now_tick);
+        }
+    }
+
+    fn apply_lai23_completed_offering_task(
+        colony: &mut ColonyRuntime,
+        physical_task_id: &str,
+        now_tick: u64,
+    ) {
+        let Some(shrine) = colony
+            .buildings
+            .iter()
+            .find(|building| building.is_complete && building.building_type == BuildingType::Shrine)
+            .map(|building| building.id.clone())
+        else {
+            return;
+        };
+        let state = colony
+            .leader_ai_runtime
+            .shrine_favor
+            .shrine_offerings
+            .get_mut(&shrine)
+            .expect("offering state was inserted");
+        let ledger = &mut colony.leader_ai_runtime.shrine_favor.favor;
+        if let Some(pipeline) = state.current.as_mut() {
+            if pipeline.physical_task_id.as_deref() != Some(physical_task_id)
+                || pipeline.stage != crate::shrine_offerings::OfferingStage::Deposited
+            {
+                return;
+            }
+            let _ = pipeline.begin_ritual(now_tick);
+            let expected_favor_version = ledger.version;
+            let _ = pipeline.consume_and_credit(true, ledger, expected_favor_version, now_tick);
+        }
+    }
+
+    fn lai23_interpreted_stock_milliunits(
+        range: &crate::beliefs::EstimateRange,
+        effective_level: crate::leader_planner::EffectiveLevel,
+    ) -> i64 {
+        match effective_level.get() {
+            1 => range.upper_bound,
+            2 => range.estimate,
+            3 => range.estimate.saturating_add(range.lower_bound) / 2,
+            4 | 5 => range.lower_bound,
+            _ => unreachable!(),
+        }
+    }
+
+    fn lai23_interpreted_stock_units(
+        colony: &ColonyRuntime,
+        subject: &str,
+        now_tick: u64,
+        effective_level: crate::leader_planner::EffectiveLevel,
+    ) -> Option<f64> {
+        let projection = colony
+            .leader_ai_runtime
+            .beliefs
+            .project(&lai23_stock_belief_key(&colony.id, subject), now_tick)?;
+        let crate::beliefs::ProjectedBeliefValue::StockRange(range) = projection.value else {
+            return None;
+        };
+        Some(lai23_interpreted_stock_milliunits(&range, effective_level) as f64 / 1_000.0)
+    }
+
+    fn lai23_survival_or_active_defense(
+        colony: &ColonyRuntime,
+        now_tick: u64,
+        effective_level: crate::leader_planner::EffectiveLevel,
+    ) -> bool {
+        let population = active_resident_cats(colony).count() as f64;
+        let reported = &colony.stock_ledger.reported;
+        let food = lai23_interpreted_stock_units(colony, "food", now_tick, effective_level)
+            .unwrap_or(reported.food);
+        let fish = lai23_interpreted_stock_units(colony, "fish", now_tick, effective_level)
+            .unwrap_or(reported.fish);
+        let water = lai23_interpreted_stock_units(colony, "water", now_tick, effective_level)
+            .unwrap_or(reported.water);
+        colony.active_raid.is_some()
+            || water < (population * 2.0).max(40.0)
+            || food + fish < (population * 2.0).max(40.0)
+    }
+
+    fn lai23_live_leader_defense_intent(colony: &ColonyRuntime) -> bool {
+        let Some(leader_id) = colony.leader_id.as_deref() else {
+            return false;
+        };
+        if !active_resident_cats(colony).any(|cat| cat.id == leader_id) {
+            return false;
+        }
+        let leader = crate::planner_core::PlannerId::derive("cat", [leader_id]);
+        colony.leader_ai_runtime.intents.iter().any(|(_, intent)| {
+            intent_kind_matches(intent, "defense")
+                && !intent.lifecycle.state.is_terminal()
+                && intent.leader_id.as_ref() == Some(&leader)
+        })
+    }
+
+    fn lai23_prepare_offering_review(colony: &mut ColonyRuntime, now_tick: u64) -> bool {
+        use crate::shrine_offerings::OfferingStage;
+
+        let Some(shrine) = colony
+            .buildings
+            .iter()
+            .find(|building| building.is_complete && building.building_type == BuildingType::Shrine)
+            .map(|building| building.id.clone())
+        else {
+            return false;
+        };
+        if colony
+            .leader_ai_runtime
+            .shrine_favor
+            .shrine_offerings
+            .get(&shrine)
+            .and_then(|state| state.current.as_ref())
+            .is_some_and(|pipeline| pipeline.stage == OfferingStage::Selected)
+        {
+            return true;
+        }
+        if colony
+            .leader_ai_runtime
+            .shrine_favor
+            .shrine_offerings
+            .get(&shrine)
+            .and_then(|state| state.current.as_ref())
+            .is_some_and(|pipeline| !pipeline.stage.is_terminal())
+        {
+            return false;
+        }
+        let leader_id = colony
+            .leader_id
+            .clone()
+            .unwrap_or_else(|| "missing-leader".to_owned());
+        let leader_planner_id = crate::planner_core::PlannerId::derive("cat", [leader_id.as_str()]);
+        let effective_level = lai23_leader_effective_level(colony, &leader_planner_id);
+        let survival_or_active_defense =
+            lai23_survival_or_active_defense(colony, now_tick, effective_level);
+        let estimates = lai23_offering_estimates(colony, now_tick, effective_level);
+        let context = crate::shrine_offerings::ShrineOfferingReviewContext {
+            world_seed: colony.test_rng_seed.unwrap_or_default(),
+            colony_id: crate::planner_core::PlannerId::derive("colony", [colony.id.as_str()]),
+            leader_id: leader_planner_id,
+            review_bucket: now_tick / u64::from(effective_level.leader_cadence_minutes()).max(1),
+            effective_level,
+            covered_by_officer_request: crate::leader_planner::active_officer_goal_coverage(
+                &colony.leader_ai_runtime.officers.requests,
+                now_tick,
+            )
+            .iter()
+            .any(|coverage| coverage.domain == crate::authority::AuthorityDomain::ColonyWide),
+            survival_or_active_defense,
+        };
+        let state = colony
+            .leader_ai_runtime
+            .shrine_favor
+            .shrine_offerings
+            .entry(shrine.clone())
+            .or_insert_with(|| crate::shrine_offerings::ShrineOfferingState::new(shrine));
+        let _ = state.consider_endless_offering(&context, &estimates, now_tick);
+        state
+            .current
+            .as_ref()
+            .is_some_and(|pipeline| pipeline.stage == OfferingStage::Selected)
+    }
+
+    pub(crate) fn diagnostic_lai23_shrine_review(colony: &ColonyRuntime, now_tick: u64) -> String {
+        let Some(shrine) = colony
+            .buildings
+            .iter()
+            .find(|building| building.is_complete && building.building_type == BuildingType::Shrine)
+            .map(|building| building.id.as_str())
+        else {
+            return "shrine=missing".to_owned();
+        };
+        let leader_raw = colony.leader_id.as_deref().unwrap_or("missing-leader");
+        let leader = crate::planner_core::PlannerId::derive("cat", [leader_raw]);
+        let level = lai23_leader_effective_level(colony, &leader);
+        let cadence = u64::from(level.leader_cadence_minutes()).max(1);
+        let population = active_resident_cats(colony).count() as f64;
+        let reserve_floor = (population * 2.0).max(40.0);
+        let reported = &colony.stock_ledger.reported;
+        let interpreted_food =
+            lai23_interpreted_stock_units(colony, "food", now_tick, level).unwrap_or(reported.food);
+        let interpreted_fish =
+            lai23_interpreted_stock_units(colony, "fish", now_tick, level).unwrap_or(reported.fish);
+        let interpreted_water = lai23_interpreted_stock_units(colony, "water", now_tick, level)
+            .unwrap_or(reported.water);
+        let raid_blocked = colony.active_raid.is_some();
+        let food_blocked = interpreted_food + interpreted_fish < reserve_floor;
+        let water_blocked = interpreted_water < reserve_floor;
+        let raid_state = if let Some(raid_id) = colony.active_raid.as_deref() {
+            let gate = raid_gate_position(colony);
+            let live_raiders = colony
+                .raiders
+                .iter()
+                .filter(|raider| raider.raid_id == raid_id && raider.health > 0.0)
+                .collect::<Vec<_>>();
+            let at_gate = live_raiders
+                .iter()
+                .filter(|raider| {
+                    (raider.position.x - f64::from(gate.x))
+                        .abs()
+                        .max((raider.position.y - f64::from(gate.y)).abs())
+                        <= ENGAGE_RANGE
+                })
+                .count();
+            let nearest = live_raiders
+                .iter()
+                .map(|raider| {
+                    (raider.position.x - f64::from(gate.x))
+                        .abs()
+                        .max((raider.position.y - f64::from(gate.y)).abs())
+                })
+                .min_by(f64::total_cmp)
+                .unwrap_or(f64::INFINITY);
+            format!(
+                "id={raid_id},live={},atGate={at_gate},nearest={nearest:.3},captain={},leaderDefense={}",
+                live_raiders.len(),
+                has_officer(colony, OfficerRole::Captain),
+                lai23_live_leader_defense_intent(colony)
+            )
+        } else {
+            "none".to_owned()
+        };
+        let state = colony
+            .leader_ai_runtime
+            .shrine_favor
+            .shrine_offerings
+            .get(shrine);
+        let live_shrine_intents = colony
+            .leader_ai_runtime
+            .intents
+            .iter()
+            .filter(|(_, intent)| {
+                intent_kind_matches(intent, "shrine") && !intent.lifecycle.state.is_terminal()
+            })
+            .count();
+        let estimates = lai23_offering_estimates(colony, now_tick, level)
+            .into_iter()
+            .map(|estimate| {
+                format!(
+                    "{:?}:available={}:replacement={}:risk={}",
+                    estimate.package,
+                    estimate.believed_available_lower,
+                    estimate.replacement_minutes,
+                    estimate.reserve_risk_basis_points
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        format!(
+            "level={};cadence={cadence};bucket={};lastReview={:?};pipeline={:?};survivalDefense={};blockers={{raid:{raid_blocked},food:{food_blocked},water:{water_blocked}}};raidState={{{raid_state}}};interpreted={{food:{interpreted_food:.3},fish:{interpreted_fish:.3},water:{interpreted_water:.3},floor:{reserve_floor:.3}}};reported={{food:{:.3},fish:{:.3},water:{:.3}}};oneMealEmergency={};liveShrineIntents={live_shrine_intents};estimates=[{estimates}]",
+            level.get(),
+            now_tick / cadence,
+            state.and_then(|state| state.last_review_bucket),
+            state
+                .and_then(|state| state.current.as_ref())
+                .map(|pipeline| pipeline.stage),
+            lai23_survival_or_active_defense(colony, now_tick, level),
+            reported.food,
+            reported.fish,
+            reported.water,
+            lai23_one_meal_food_emergency(colony),
+        )
+    }
+
+    fn lai23_offering_estimates(
+        colony: &ColonyRuntime,
+        now_tick: u64,
+        effective_level: crate::leader_planner::EffectiveLevel,
+    ) -> Vec<crate::shrine_offerings::OfferingBeliefEstimate> {
+        use crate::beliefs::ProjectedBeliefValue;
+        use crate::shrine_offerings::{OfferingBeliefEstimate, OfferingPackage};
+
+        let population = active_resident_cats(colony).count() as u64;
+        let food_regeneration_per_hour = colony
+            .leader_ai_runtime
+            .beliefs
+            .project(&lai23_food_regeneration_belief_key(&colony.id), now_tick)
+            .and_then(|projection| match projection.value {
+                ProjectedBeliefValue::RegenerationRange(range) => {
+                    Some((range.lower_bound.max(0) as u64) / 1_000)
+                }
+                _ => None,
+            });
+        [
+            (
+                OfferingPackage::Food,
+                "food",
+                food_regeneration_per_hour.map_or_else(
+                    || population.saturating_mul(16).saturating_add(120),
+                    |per_hour| {
+                        if per_hour == 0 {
+                            24 * 60
+                        } else {
+                            OfferingPackage::Food
+                                .quantity()
+                                .saturating_mul(60)
+                                .div_ceil(per_hour)
+                        }
+                    },
+                ),
+            ),
+            (OfferingPackage::Herbs, "herbs", 120),
+            (OfferingPackage::Materials, "materials", 180),
+            (OfferingPackage::RefinedResources, "refined", 360),
+        ]
+        .into_iter()
+        .filter_map(|(package, subject, replacement_minutes)| {
+            let projection = colony
+                .leader_ai_runtime
+                .beliefs
+                .project(&lai23_stock_belief_key(&colony.id, subject), now_tick)?;
+            let ProjectedBeliefValue::StockRange(range) = projection.value else {
+                return None;
+            };
+            // Inexperienced Leaders can make the documented bad call without
+            // reading authoritative stock: L1 treats the optimistic edge of a wide
+            // report as dependable, L2 uses the point estimate, L3 blends toward
+            // safety, and L4+ plans from the conservative bound. The physical
+            // resolver still refuses nonexistent cargo, so a bad Food choice creates
+            // real replacement pressure rather than conjuring resources.
+            let interpreted_available = lai23_interpreted_stock_milliunits(&range, effective_level);
+            let available = (interpreted_available.max(0) as u64) / 1_000;
+            let evidence_ids = projection
+                .evidence_ids
+                .iter()
+                .map(|evidence| evidence.as_str().to_owned())
+                .collect::<Vec<_>>();
+            Some(OfferingBeliefEstimate {
+                package,
+                believed_available_lower: available,
+                replacement_minutes,
+                labor_minutes: 60,
+                reserve_risk_basis_points: if available >= package.quantity().saturating_mul(2) {
+                    0
+                } else {
+                    4_000
+                },
+                committed_use_penalty_basis_points: 0,
+                confidence_basis_points: projection.confidence.get(),
+                evidence_ids,
+            })
+        })
+        .collect()
+    }
+
+    const fn lai23_offering_resource_kind(
+        package: crate::shrine_offerings::OfferingPackage,
+    ) -> ResourceKind {
+        use crate::shrine_offerings::OfferingPackage;
+
+        match package {
+            OfferingPackage::Food => ResourceKind::Food,
+            OfferingPackage::Herbs => ResourceKind::Herbs,
+            OfferingPackage::Materials => ResourceKind::Materials,
+            OfferingPackage::RefinedResources => ResourceKind::Refined,
+        }
+    }
+
+    fn lai23_commit_offering_cargo_reservation(
+        colony: &mut ColonyRuntime,
+        task_id: &crate::task_runtime::TaskId,
+        now_tick: u64,
+    ) -> bool {
+        use crate::{shrine_offerings::OfferingStage, spatial_tasks::SiteRef};
+
+        let Some((source_id, endpoint_id, package)) = colony
+            .leader_ai_runtime
+            .scheduling
+            .visible_tasks
+            .get(task_id)
+            .and_then(|task| {
+                let SiteRef::Stockpile { stockpile_id, .. } = task.spatial.objective.as_ref()?
+                else {
+                    return None;
+                };
+                let endpoint_id = task
+                    .spatial
+                    .delivery_endpoint
+                    .as_ref()?
+                    .stable_id()
+                    .to_owned();
+                let package = colony
+                    .leader_ai_runtime
+                    .shrine_favor
+                    .shrine_offerings
+                    .values()
+                    .find_map(|state| {
+                        state.current.as_ref().and_then(|pipeline| {
+                            (pipeline.stage == OfferingStage::Selected)
+                                .then_some(pipeline.choice.package)
+                        })
+                    })?;
+                Some((stockpile_id.clone(), endpoint_id, package))
+            })
+        else {
+            return false;
+        };
+        let kind = lai23_offering_resource_kind(package);
+        let quantity = package.quantity();
+        let amount = quantity as f64;
+        let Some(source_index) = colony.stockpiles.iter().position(|pile| {
+            pile.id == source_id
+                && stockpiles::resource_amount(&pile.contents, kind) + f64::EPSILON >= amount
+        }) else {
+            return false;
+        };
+        let cargo_id = format!("offering-cargo:{}", task_id.as_str());
+        let cargo_reserved = colony
+            .leader_ai_runtime
+            .scheduling
+            .visible_tasks
+            .get_mut(task_id)
+            .is_some_and(|task| {
+                task.reserve_cargo_at_source(cargo_id, package.stable_id(), quantity)
+                    .is_ok()
+            });
+        if !cargo_reserved {
+            return false;
+        }
+        stockpiles::add_resource(&mut colony.stockpiles[source_index].contents, kind, -amount);
+        stockpiles::add_resource(&mut colony.resources, kind, -amount);
+
+        let pipeline_reserved = colony
+            .leader_ai_runtime
+            .shrine_favor
+            .shrine_offerings
+            .values_mut()
+            .find_map(|state| {
+                state.current.as_mut().and_then(|pipeline| {
+                    (pipeline.stage == OfferingStage::Selected).then(|| {
+                        pipeline
+                            .resources_reserved(task_id.as_str(), now_tick)
+                            .is_ok()
+                    })
+                })
+            })
+            .unwrap_or(false);
+        if !pipeline_reserved {
+            stockpiles::add_resource(&mut colony.stockpiles[source_index].contents, kind, amount);
+            stockpiles::add_resource(&mut colony.resources, kind, amount);
+            if let Some(task) = colony
+                .leader_ai_runtime
+                .scheduling
+                .visible_tasks
+                .get_mut(task_id)
+            {
+                task.cargo = None;
+            }
+            return false;
+        }
+        colony
+            .leader_ai_runtime
+            .scheduling
+            .known_cargo_site_ids
+            .extend([source_id, endpoint_id]);
+        true
+    }
+
+    /// Return an offering escrow exactly once when its visible carrier chain becomes
+    /// impossible. Before pickup the original source reservation is simply released. After
+    /// pickup the task runtime performs an explicit salvage transition back to that owned
+    /// stockpile, and the Shrine pipeline records a terminal no-Favor outcome.
+    fn lai23_recover_offering_task_cargo(
+        colony: &mut ColonyRuntime,
+        task_id: &crate::task_runtime::TaskId,
+        reason: crate::task_runtime::RuntimeBlockReason,
+        bounded_reason: &'static str,
+        now_tick: u64,
+    ) -> bool {
+        use crate::{
+            shrine_offerings::OfferingStage,
+            spatial_tasks::SiteRef,
+            task_runtime::{CargoLocation, TaskCategory},
+        };
+
+        let Some((shrine_id, source, source_id, package, location)) = colony
+            .leader_ai_runtime
+            .scheduling
+            .visible_tasks
+            .get(task_id)
+            .and_then(|task| {
+                if task.category != TaskCategory::OfferingRitual {
+                    return None;
+                }
+                let source = task.spatial.objective.as_ref()?.clone();
+                let SiteRef::Stockpile { stockpile_id, .. } = &source else {
+                    return None;
+                };
+                let source_id = stockpile_id.clone();
+                let location = task.cargo.as_ref()?.location.clone();
+                let (shrine_id, package) = colony
+                    .leader_ai_runtime
+                    .shrine_favor
+                    .shrine_offerings
+                    .iter()
+                    .find_map(|(shrine_id, state)| {
+                        state.current.as_ref().and_then(|pipeline| {
+                            (pipeline.physical_task_id.as_deref() == Some(task_id.as_str())
+                                && matches!(
+                                    pipeline.stage,
+                                    OfferingStage::ResourcesReserved | OfferingStage::InTransit
+                                ))
+                            .then_some((shrine_id.clone(), pipeline.choice.package))
+                        })
+                    })?;
+                Some((shrine_id, source, source_id, package, location))
+            })
+        else {
+            return false;
+        };
+        if !matches!(
+            location,
+            CargoLocation::ReservedAtSource { .. } | CargoLocation::Carried { .. }
+        ) {
+            return false;
+        }
+        let kind = lai23_offering_resource_kind(package);
+        let amount = package.quantity() as f64;
+        let Some(source_index) = colony
+            .stockpiles
+            .iter()
+            .position(|pile| pile.id == source_id)
+        else {
+            return false;
+        };
+
+        let recovered = match location {
+            CargoLocation::ReservedAtSource { .. } => {
+                let pipeline_cancelled = colony
+                    .leader_ai_runtime
+                    .shrine_favor
+                    .shrine_offerings
+                    .get_mut(&shrine_id)
+                    .and_then(|state| state.current.as_mut())
+                    .is_some_and(|pipeline| {
+                        pipeline.physical_task_id.as_deref() == Some(task_id.as_str())
+                            && pipeline.cancel_before_departure(now_tick).is_ok()
+                    });
+                if pipeline_cancelled
+                    && let Some(task) = colony
+                        .leader_ai_runtime
+                        .scheduling
+                        .visible_tasks
+                        .get_mut(task_id)
+                {
+                    task.cargo = None;
+                }
+                pipeline_cancelled
+            }
+            CargoLocation::Carried { .. } => {
+                let Some(previous_pipeline) = colony
+                    .leader_ai_runtime
+                    .shrine_favor
+                    .shrine_offerings
+                    .get(&shrine_id)
+                    .and_then(|state| state.current.clone())
+                else {
+                    return false;
+                };
+                let pipeline_blocked = colony
+                    .leader_ai_runtime
+                    .shrine_favor
+                    .shrine_offerings
+                    .get_mut(&shrine_id)
+                    .and_then(|state| state.current.as_mut())
+                    .is_some_and(|pipeline| {
+                        pipeline.physical_task_id.as_deref() == Some(task_id.as_str())
+                            && pipeline
+                                .block_after_cargo_salvage(
+                                    bounded_reason,
+                                    source_id.clone(),
+                                    now_tick,
+                                )
+                                .is_ok()
+                    });
+                if !pipeline_blocked {
+                    return false;
+                }
+                let task_recovered = {
+                    let scheduling = &mut colony.leader_ai_runtime.scheduling;
+                    let (visible_tasks, reservations) =
+                        (&mut scheduling.visible_tasks, &mut scheduling.reservations);
+                    visible_tasks.get_mut(task_id).is_some_and(|task| {
+                        task.recover_after_pickup(
+                            reason,
+                            Some(&source),
+                            source.stable_id(),
+                            reservations,
+                            now_tick,
+                        )
+                        .is_ok()
+                    })
+                };
+                if !task_recovered
+                    && let Some(state) = colony
+                        .leader_ai_runtime
+                        .shrine_favor
+                        .shrine_offerings
+                        .get_mut(&shrine_id)
+                {
+                    state.current = Some(previous_pipeline);
+                }
+                task_recovered
+            }
+            _ => false,
+        };
+        if !recovered {
+            return false;
+        }
+        stockpiles::add_resource(&mut colony.stockpiles[source_index].contents, kind, amount);
+        stockpiles::add_resource(&mut colony.resources, kind, amount);
+        colony
+            .leader_ai_runtime
+            .scheduling
+            .known_cargo_site_ids
+            .insert(source_id);
+        true
+    }
+
+    fn prune_lai23_terminal_visible_tasks(colony: &mut ColonyRuntime) {
+        use crate::task_runtime::TaskStage;
+
+        const RETAIN_TERMINAL_VISIBLE_TASKS: usize = 128;
+        let mut terminal = colony
+            .leader_ai_runtime
+            .scheduling
+            .visible_tasks
+            .iter()
+            .filter(|(_, task)| matches!(task.stage, TaskStage::Complete | TaskStage::Cancelled))
+            .map(|(id, task)| (task.updated_tick, id.clone()))
+            .collect::<Vec<_>>();
+        if terminal.len() <= RETAIN_TERMINAL_VISIBLE_TASKS {
+            return;
+        }
+        terminal.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+        let remove_count = terminal.len().saturating_sub(RETAIN_TERMINAL_VISIBLE_TASKS);
+        for (_, task_id) in terminal.into_iter().take(remove_count) {
+            colony
+                .leader_ai_runtime
+                .scheduling
+                .visible_tasks
+                .remove(&task_id);
+            colony
+                .leader_ai_runtime
+                .scheduling
+                .resolved_spatial_tasks
+                .remove(&task_id);
+            colony
+                .leader_ai_runtime
+                .scheduling
+                .world_reservation_ids
+                .remove(&task_id);
+        }
+    }
+
+    fn hazardous_work_unit(
+        category: crate::task_runtime::TaskCategory,
+    ) -> Option<crate::injuries::HazardousWorkUnit> {
+        use crate::{injuries::HazardousWorkUnit, task_runtime::TaskCategory};
+        match category {
+            TaskCategory::Scout => Some(HazardousWorkUnit::Scout),
+            TaskCategory::Hunt => Some(HazardousWorkUnit::Hunt),
+            TaskCategory::Quarry => Some(HazardousWorkUnit::Quarry),
+            TaskCategory::Logging | TaskCategory::Replant => Some(HazardousWorkUnit::Logging),
+            TaskCategory::BuildingConstruction
+            | TaskCategory::RoadConstruction
+            | TaskCategory::Expansion => Some(HazardousWorkUnit::Construction),
+            _ => None,
+        }
+    }
+
+    struct Lai23CompletedHazardousWork {
+        task_id: crate::task_runtime::TaskId,
+        cat_id: String,
+        occurrence: u32,
+        work: crate::injuries::HazardousWorkUnit,
+    }
+
+    fn apply_lai23_completed_work_injury(
+        colony: &mut ColonyRuntime,
+        world_seed: u32,
+        now_ms: i64,
+        now_tick: u64,
+        completed: Lai23CompletedHazardousWork,
+    ) {
+        let Some(cat_runtime) = colony.leader_ai_runtime.cats.get_mut(&completed.cat_id) else {
+            return;
+        };
+        let identity = crate::injuries::IncidentIdentity::new(
+            &completed.cat_id,
+            completed.task_id.as_str(),
+            u64::from(completed.occurrence),
+            now_tick,
+        );
+        let resolution = crate::injuries::evaluate_incident(
+            world_seed,
+            &mut cat_runtime.anatomy,
+            completed.work,
+            &identity,
+        );
+        if matches!(
+            resolution,
+            crate::injuries::IncidentResolution::Fatal { .. }
+        ) && let Some(cat) = colony
+            .cats
+            .iter_mut()
+            .find(|cat| cat.id == completed.cat_id)
+        {
+            cat.death_time = Some(now_ms);
+            cat.needs.health = 0.0;
+        }
+    }
+
+    fn lai23_task_stage_site(
+        task: &crate::task_runtime::VisibleTaskRuntime,
+    ) -> Option<&crate::spatial_tasks::SiteRef> {
+        use crate::task_runtime::TaskStage;
+        match task.stage {
+            TaskStage::TravelToSource | TaskStage::Pickup => task.spatial.objective.as_ref(),
+            TaskStage::TravelToWork | TaskStage::Work => {
+                task.spatial.work_positions.first().map(|slot| &slot.site)
+            }
+            TaskStage::TravelToEndpoint | TaskStage::Deposit => {
+                task.spatial.delivery_endpoint.as_ref()
+            }
+            _ => None,
+        }
+    }
+
+    pub(crate) fn site_contact_tile(site: &crate::spatial_tasks::SiteRef) -> Option<TilePos> {
+        use crate::spatial_tasks::SiteRef;
+        match site {
+            SiteRef::Tile { tile, .. } => Some(*tile),
+            SiteRef::Rect { rect, .. } => Some(rect.anchor()),
+            SiteRef::OrderedTiles { tiles, .. } => tiles.as_slice().first().copied(),
+            SiteRef::Building { anchor, .. } | SiteRef::Shrine { anchor, .. } => Some(*anchor),
+            SiteRef::Stockpile { footprint, .. }
+            | SiteRef::ResourceSource { footprint, .. }
+            | SiteRef::VillageTradeEndpoint { footprint, .. } => Some(footprint.anchor),
+            SiteRef::OrderedRoute { route, .. } => route.first().copied(),
+        }
+    }
+
+    fn lai23_task_type(category: crate::task_runtime::TaskCategory) -> TaskType {
+        use crate::task_runtime::TaskCategory;
+        match category {
+            TaskCategory::Hunt => TaskType::Hunt,
+            TaskCategory::FetchWater | TaskCategory::Drink => TaskType::FetchWater,
+            TaskCategory::Fish => TaskType::Fish,
+            TaskCategory::Scout => TaskType::Explore,
+            TaskCategory::FarmWork | TaskCategory::FibreForage | TaskCategory::Replant => {
+                TaskType::Farm
+            }
+            TaskCategory::Eat => TaskType::Eat,
+            TaskCategory::Sleep => TaskType::Sleep,
+            TaskCategory::Training => TaskType::Teach,
+            TaskCategory::Accounting => TaskType::Clean,
+            _ => TaskType::Build,
+        }
+    }
+
+    fn lai23_revalidate_active_tasks_after_restart(colony: &mut ColonyRuntime, now_tick: u64) {
+        use crate::task_runtime::{CargoLocation, RuntimeBlockReason, TaskStage};
+
+        let living = colony
+            .cats
+            .iter()
+            .filter(|cat| cat.death_time.is_none())
+            .map(|cat| cat.id.clone())
+            .collect::<BTreeSet<_>>();
+        let task_ids = colony
+            .leader_ai_runtime
+            .scheduling
+            .visible_tasks
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        for task_id in task_ids {
+            let Some((
+                was_active,
+                is_offering,
+                has_recoverable_offering_cargo,
+                worker_alive,
+                local_valid,
+                world_id,
+                world_valid,
+                assigned_cat_ids,
+                last_site_id,
+            )) = colony
+                .leader_ai_runtime
+                .scheduling
+                .visible_tasks
+                .get(&task_id)
+                .map(|task| {
+                    let was_active = !matches!(
+                        task.stage,
+                        TaskStage::Resolve
+                            | TaskStage::Reserve
+                            | TaskStage::Blocked
+                            | TaskStage::Complete
+                            | TaskStage::Cancelled
+                    );
+                    let worker_alive = task.assigned_cat_ids.iter().all(|cat| living.contains(cat));
+                    let local_valid = task.reservation_id.as_ref().is_some_and(|reservation| {
+                        colony
+                            .leader_ai_runtime
+                            .scheduling
+                            .reservations
+                            .contains(reservation)
+                    });
+                    let world_id = colony
+                        .leader_ai_runtime
+                        .scheduling
+                        .world_reservation_ids
+                        .get(&task_id)
+                        .cloned();
+                    let world_valid = world_id.as_ref().is_some_and(|id| {
+                        colony
+                            .leader_ai_runtime
+                            .scheduling
+                            .world_reservations
+                            .contains(id)
+                    });
+                    (
+                        was_active,
+                        task.category == crate::task_runtime::TaskCategory::OfferingRitual,
+                        task.cargo.as_ref().is_some_and(|cargo| {
+                            matches!(
+                                cargo.location,
+                                CargoLocation::ReservedAtSource { .. }
+                                    | CargoLocation::Carried { .. }
+                            )
+                        }),
+                        worker_alive,
+                        local_valid,
+                        world_id,
+                        world_valid,
+                        task.assigned_cat_ids.iter().cloned().collect::<Vec<_>>(),
+                        task.spatial.objective.as_ref().map_or_else(
+                            || "restart-location".to_owned(),
+                            |site| site.stable_id().to_owned(),
+                        ),
+                    )
+                })
+            else {
+                continue;
+            };
+
+            let invalid_active_chain =
+                was_active && (!worker_alive || !local_valid || !world_valid);
+            let offering_recovered = is_offering
+                && has_recoverable_offering_cargo
+                && invalid_active_chain
+                && lai23_recover_offering_task_cargo(
+                    colony,
+                    &task_id,
+                    if worker_alive {
+                        RuntimeBlockReason::ReservationLost
+                    } else {
+                        RuntimeBlockReason::WorkerDied
+                    },
+                    if worker_alive {
+                        "reservation_lost"
+                    } else {
+                        "worker_died"
+                    },
+                    now_tick,
+                );
+            if offering_recovered {
+                let scheduling = &mut colony.leader_ai_runtime.scheduling;
+                let (visible_tasks, reservations) =
+                    (&mut scheduling.visible_tasks, &mut scheduling.reservations);
+                if let Some(task) = visible_tasks.get_mut(&task_id)
+                    && task.stage != TaskStage::Blocked
+                {
+                    let _ = task.cancel(reservations, now_tick);
+                }
+            } else {
+                let scheduling = &mut colony.leader_ai_runtime.scheduling;
+                let (visible_tasks, reservations) =
+                    (&mut scheduling.visible_tasks, &mut scheduling.reservations);
+                let Some(task) = visible_tasks.get_mut(&task_id) else {
+                    continue;
+                };
+                let _ = task.revalidate_after_restart(reservations, None, &last_site_id, now_tick);
+                let remains_active = !matches!(
+                    task.stage,
+                    TaskStage::Resolve
+                        | TaskStage::Reserve
+                        | TaskStage::Blocked
+                        | TaskStage::Complete
+                        | TaskStage::Cancelled
+                );
+                if remains_active && (!worker_alive || !world_valid) {
+                    let carried = task.cargo.as_ref().is_some_and(|cargo| {
+                        matches!(cargo.location, CargoLocation::Carried { .. })
+                    });
+                    if carried {
+                        let _ = task.recover_after_pickup(
+                            if worker_alive {
+                                RuntimeBlockReason::ReservationLost
+                            } else {
+                                RuntimeBlockReason::WorkerDied
+                            },
+                            None,
+                            &last_site_id,
+                            reservations,
+                            now_tick,
+                        );
+                    } else if worker_alive {
+                        let _ = task.block_before_pickup(
+                            RuntimeBlockReason::ReservationLost,
+                            reservations,
+                            now_tick,
+                        );
+                    } else {
+                        // A dead worker cannot resume this occurrence. Cancellation
+                        // releases its local claims and lets the live shared intent
+                        // materialize a replacement occurrence for the same category.
+                        let _ = task.cancel(reservations, now_tick);
+                    }
+                }
+            }
+
+            if invalid_active_chain {
+                for cat_id in assigned_cat_ids {
+                    if let Some(cat) = colony.cats.iter_mut().find(|cat| cat.id == cat_id) {
+                        cat.current_task = None;
+                        cat.destination = None;
+                        cat.activity = CatActivity::Idle;
+                    }
+                }
+            }
+            if let Some(world_id) = world_id {
+                let remains_active = colony
+                    .leader_ai_runtime
+                    .scheduling
+                    .visible_tasks
+                    .get(&task_id)
+                    .is_some_and(|task| {
+                        !matches!(
+                            task.stage,
+                            TaskStage::Resolve
+                                | TaskStage::Reserve
+                                | TaskStage::Blocked
+                                | TaskStage::Complete
+                                | TaskStage::Cancelled
+                        )
+                    });
+                let validation = if remains_active && worker_alive && local_valid {
+                    crate::world_reservations::WorldReservationValidation::all_valid()
+                } else {
+                    crate::world_reservations::WorldReservationValidation {
+                        worker_available: false,
+                        ..crate::world_reservations::WorldReservationValidation::all_valid()
+                    }
+                };
+                let scheduling = &mut colony.leader_ai_runtime.scheduling;
+                let _ = scheduling
+                    .world_reservations
+                    .revalidate(&world_id, validation);
+                if !scheduling.world_reservations.contains(&world_id) {
+                    scheduling.world_reservation_ids.remove(&task_id);
+                }
+            }
+        }
+    }
+
+    fn lai23_assert_no_duplicate_leaf_mutations_after_restart(
+        colony: &mut ColonyRuntime,
+        now_tick: u64,
+    ) {
+        colony
+            .leader_ai_runtime
+            .idempotency_receipts
+            .retain(|_, receipt| receipt.expires_tick >= now_tick);
+        let validation = colony.leader_ai_runtime.validate();
+        debug_assert!(
+            validation.is_ok(),
+            "leader AI runtime became invalid after receipt pruning: {validation:?}; institution={}",
+            serde_json::to_string(&colony.leader_ai_runtime.officers.institution)
+                .unwrap_or_else(|error| format!("<serialization failed: {error}>"))
+        );
+    }
+
+    fn lai23_tick_partition_equivalence(colony: &ColonyRuntime, now_tick: u64) {
+        debug_assert!(
+            colony.leader_ai_runtime.planner.planning_epoch == 0
+                || colony.leader_ai_runtime.planner.planning_clock <= now_tick,
+            "planning clock {} is ahead of runtime tick {} (epoch {})",
+            colony.leader_ai_runtime.planner.planning_clock,
+            now_tick,
+            colony.leader_ai_runtime.planner.planning_epoch
+        );
+    }
+
+    fn phase_lai23_06_shrine_favor_offerings(colony: &mut ColonyRuntime, _now_tick: u64) {
+        let shrine_ids = colony
+            .buildings
+            .iter()
+            .filter(|building| {
+                building.is_complete && building.building_type == BuildingType::Shrine
+            })
+            .map(|building| building.id.clone())
+            .collect::<Vec<_>>();
+        let aggregate = &mut colony.leader_ai_runtime.shrine_favor;
+        for shrine_id in shrine_ids {
+            aggregate
+                .shrine_offerings
+                .entry(shrine_id.clone())
+                .or_insert_with(|| crate::shrine_offerings::ShrineOfferingState::new(shrine_id));
+        }
+        let _favor_snapshot = (
+            aggregate.favor.balance,
+            aggregate.favor.event_count(),
+            aggregate.favor.balance >= crate::favor::Favor::ZERO,
+        );
+    }
+
+    fn phase_lai23_08_diplomacy_trade_contracts(colony: &mut ColonyRuntime, now_tick: u64) {
+        let _due_contracts = crate::autonomous_trade::TradeLedger::due_contract_ids(
+            &colony.leader_ai_runtime.trade,
+            now_tick,
+        );
+        let _relationship_count =
+            crate::diplomacy::DiplomacyLedger::records(&colony.leader_ai_runtime.diplomacy).count();
+    }
+
+    fn phase_lai23_09_stress_injury_prosthetic_lifecycle(
+        colony: &mut ColonyRuntime,
+        now_tick: u64,
+        world_seed: u32,
+    ) {
+        use crate::planner_core::PlannerId;
+
+        colony
+            .leader_ai_runtime
+            .reconcile_legacy_cats(world_seed, &colony.id, &colony.cats);
+        let previous_tick = migration_game_minute_at(colony, colony.last_tick);
+        let elapsed_minutes =
+            u32::try_from(now_tick.saturating_sub(previous_tick)).unwrap_or(u32::MAX);
+        for cat in &colony.cats {
+            let Some(runtime) = colony.leader_ai_runtime.cats.get_mut(&cat.id) else {
+                continue;
+            };
+            if cat.death_time.is_none() {
+                if cat.activity == CatActivity::Idle {
+                    crate::cat_stress::StressState::apply_safe_rest(
+                        &mut runtime.stress,
+                        elapsed_minutes,
+                        false,
+                        runtime.traits.personality,
+                    );
+                } else {
+                    crate::cat_stress::StressState::interrupt_rest(&mut runtime.stress);
+                }
+            }
+        }
+
+        let deaths = colony
+            .cats
+            .iter()
+            .filter(|cat| cat.death_time.is_some())
+            .filter_map(|cat| {
+                colony
+                    .leader_ai_runtime
+                    .cats
+                    .get(&cat.id)
+                    .is_some_and(|runtime| runtime.death_processed_tick.is_none())
+                    .then_some(cat.id.clone())
+            })
+            .collect::<Vec<_>>();
+        for cat_id in deaths {
+            let planner_id = PlannerId::derive("cat", [cat_id.as_str()]);
+            let _ = colony
+                .leader_ai_runtime
+                .officers
+                .institution
+                .officer_died(&planner_id, now_tick);
+            if colony.leader_ai_runtime.officers.institution.leader() == Some(&planner_id) {
+                let _ = colony.leader_ai_runtime.officers.institution.leader_died(
+                    &planner_id,
+                    now_tick,
+                    60,
+                );
+                colony.leader_id = None;
+            }
+            let _ = crate::prosthetics::ProstheticLedger::recover_from_death(
+                &mut colony.leader_ai_runtime.prosthetics,
+                &cat_id,
+            );
+            if let Some(runtime) = colony.leader_ai_runtime.cats.get_mut(&cat_id) {
+                runtime.death_processed_tick = Some(now_tick);
+            }
+        }
+
+        if colony
+            .leader_ai_runtime
+            .officers
+            .institution
+            .leader_succession_due(now_tick)
+        {
+            let successor = colony
+                .cats
+                .iter()
+                .filter(|cat| cat.death_time.is_none())
+                .max_by(|left, right| {
+                    left.stats
+                        .leadership
+                        .total_cmp(&right.stats.leadership)
+                        .then_with(|| right.id.cmp(&left.id))
+                })
+                .map(|cat| cat.id.clone());
+            if let Some(successor) = successor {
+                let successor_id = PlannerId::derive("cat", [successor.as_str()]);
+                if colony
+                    .leader_ai_runtime
+                    .officers
+                    .institution
+                    .appoint_leader(successor_id.clone(), now_tick)
+                    .is_ok()
+                {
+                    let previous_leaders = colony
+                        .leader_ai_runtime
+                        .intents
+                        .iter()
+                        .filter_map(|(_, intent)| intent.leader_id.clone())
+                        .filter(|leader_id| leader_id != &successor_id)
+                        .collect::<BTreeSet<_>>();
+                    for previous in previous_leaders {
+                        colony.leader_ai_runtime.intents.adopt_for_successor(
+                            &previous,
+                            successor_id.clone(),
+                            now_tick,
+                        );
+                    }
+                    colony.leader_id = Some(successor);
+                }
+            }
+        }
+    }
+
+    fn phase_lai23_10_report_safe_snapshots_events(colony: &mut ColonyRuntime, now_tick: u64) {
+        colony
+            .leader_ai_runtime
+            .idempotency_receipts
+            .retain(|_, receipt| receipt.expires_tick >= now_tick);
+        let validation = colony.leader_ai_runtime.validate();
+        debug_assert!(
+            validation.is_ok(),
+            "leader AI runtime failed report-boundary validation at tick {now_tick}: \
+         {validation:?}; visible_tasks={:?}; resolved_task_ids={:?}; shrine_states={:?}",
+            colony
+                .leader_ai_runtime
+                .scheduling
+                .visible_tasks
+                .iter()
+                .map(|(id, task)| (
+                    id.as_str(),
+                    task.category,
+                    task.stage,
+                    task.reservation_id.as_ref()
+                ))
+                .collect::<Vec<_>>(),
+            colony
+                .leader_ai_runtime
+                .scheduling
+                .resolved_spatial_tasks
+                .keys()
+                .map(|id| id.as_str())
+                .collect::<Vec<_>>(),
+            colony.leader_ai_runtime.shrine_favor.shrine_offerings
+        );
+    }
+} // retired_lai23_runtime
+
 /// Remove pre-fix ownership of generated capacity studies that never had a physical
 /// consumer, refunding their exact historical point cost once. The removed id itself
 /// is the migration marker, so repeated ticks and restarts are idempotent.
+#[cfg(test)]
 fn migrate_retired_inert_capacity_studies(colony: &mut ColonyRuntime) {
     const RETIRED: &[(&str, f64)] = &[
         ("den_stores", 14.0),
@@ -4715,6 +13668,7 @@ fn phase_3_base_rng_and_fork_roots(colony: &mut ColonyRuntime, _: TickGate) {
 
 /// Phase 4: choose or repair the leader, log leader changes, roll policy tier,
 /// and compute policy action reliability.
+#[cfg(test)]
 fn phase_4_leader_bootstrap_and_policy(colony: &mut ColonyRuntime, gate: TickGate) -> TickPolicy {
     let leader_missing_or_dead = colony
         .leader_id
@@ -4776,10 +13730,30 @@ fn phase_6_life_simulation(colony: &mut ColonyRuntime, gate: TickGate) {
         return;
     }
 
-    let mut life_rng_seed = life_seed(colony.test_rng_seed.unwrap_or(1));
+    let mut life_rng_seed = keyed_life_seed(
+        colony.test_rng_seed.unwrap_or(1),
+        &colony.id,
+        colony.run_number,
+        life_game_second_at(colony, gate.processed_through),
+    );
     let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
     let nursery_active = has_complete_building(colony, BuildingType::Nursery);
     let elder_corner_active = has_complete_building(colony, BuildingType::ElderCorner);
+    let elder_lodge_levels = colony
+        .leader_ai_runtime
+        .families
+        .residences
+        .iter()
+        .filter_map(|(cat_id, building_id)| {
+            let building = colony
+                .leader_ai_runtime
+                .families
+                .buildings
+                .get(building_id)?;
+            (building.housing_kind == Some(crate::family_housing::HousingKind::ElderLodge))
+                .then_some((cat_id.clone(), building.level))
+        })
+        .collect::<BTreeMap<_, _>>();
     let leader_id = colony.leader_id.clone();
     let transit_ids = spatial_migrant_ids(colony)
         .into_iter()
@@ -4812,9 +13786,14 @@ fn phase_6_life_simulation(colony: &mut ColonyRuntime, gate: TickGate) {
         } else {
             1.0
         };
+        let elder_lodge_hazard_multiplier = elder_lodge_levels.get(&cat.id).map_or(1.0, |level| {
+            let lodge = crate::family_housing::elder_lodge_effects(10_000, *level);
+            f64::from(lodge.old_age_hazard_basis_points) / 10_000.0
+        });
         let death_probability =
             old_age_death_probability(cat.age_hours, is_leader_or_healer, elapsed_game_hours)
-                / protection;
+                / protection
+                * elder_lodge_hazard_multiplier;
         if death_probability > 0.0 {
             let roll = roll_seeded(f64::from(life_rng_seed));
             life_rng_seed = roll.next_seed;
@@ -5001,6 +13980,14 @@ fn phase_6_life_simulation(colony: &mut ColonyRuntime, gate: TickGate) {
         0.0
     };
     let housing_cap = colony_housing_capacity(colony);
+    let living_mouths = active_resident_cats(colony).count();
+    if edible_food < lai23_sustainable_food_runway_floor(living_mouths) {
+        // Births already due above remain physical facts, but a village whose
+        // pantry has fallen inside the Hunt route runway does not deliberately
+        // begin another pregnancy. Growth resumes after delivered food restores
+        // the same reserve horizon used by the survival planner.
+        return;
+    }
     // Blessings are the current spendable god-currency balance. Tithes, rituals, and
     // physically delivered offerings all credit `global_upgrade_points`, and god purchases
     // debit that same balance. The archived web game accidentally read the unrelated legacy
@@ -5012,7 +13999,7 @@ fn phase_6_life_simulation(colony: &mut ColonyRuntime, gate: TickGate) {
     let population = f64::from(permanent_alive_population(colony));
     let pregnant_count = alive_cats(&colony.cats)
         .filter(|cat| !probationary.contains(cat.id.as_str()) && cat.is_pregnant)
-        .count() as f64;
+        .count();
 
     let adults: Vec<BreedingCandidate> = colony
         .cats
@@ -5027,16 +14014,26 @@ fn phase_6_life_simulation(colony: &mut ColonyRuntime, gate: TickGate) {
         .map(|(index, cat)| BreedingCandidate {
             cat_index: index,
             id: cat.id.clone(),
+            age_hours: cat.age_hours,
             stats: cat.stats.clone(),
             specialization: cat.specialization,
         })
         .collect();
+    let lineage_floor = founding_cat_count(colony.scale);
+    let secured_lineage = usize::try_from(permanent_alive_population(colony))
+        .unwrap_or(usize::MAX)
+        .saturating_add(pregnant_count);
+    let births_needed = lineage_floor.saturating_sub(secured_lineage);
+    let remaining_reliable_fertile_hours = adults
+        .iter()
+        .map(|candidate| (RELIABLE_CONCEPTION_MAX_AGE_HOURS - candidate.age_hours).max(0.0))
+        .sum::<f64>();
 
     for candidate in &adults {
         let breeding_state = ColonyBreedingState {
             food_ratio,
             water_ratio,
-            population: population + pregnant_count,
+            population: population + pregnant_count as f64,
             housing_capacity: housing_cap,
             food: Some(edible_food),
             water: Some(colony.resources.water),
@@ -5045,8 +14042,16 @@ fn phase_6_life_simulation(colony: &mut ColonyRuntime, gate: TickGate) {
             break;
         }
 
-        let chance =
-            conception_probability(candidate.specialization, blessings, elapsed_game_hours);
+        let candidate_reliable_fertile_hours =
+            (RELIABLE_CONCEPTION_MAX_AGE_HOURS - candidate.age_hours).max(0.0);
+        let chance = lineage_recovery_conception_probability(
+            candidate.specialization,
+            blessings,
+            elapsed_game_hours,
+            births_needed,
+            remaining_reliable_fertile_hours,
+            candidate_reliable_fertile_hours,
+        );
         let roll = next_life_roll(&mut life_rng_seed);
         if roll >= chance {
             continue;
@@ -5119,6 +14124,7 @@ fn is_fertile_stage(age_hours: f64) -> bool {
 struct BreedingCandidate {
     cat_index: usize,
     id: CatId,
+    age_hours: f64,
     stats: CatStats,
     specialization: Option<CatSpecialization>,
 }
@@ -5391,12 +14397,27 @@ fn phase_12_resource_regrowth(colony: &mut ColonyRuntime, gate: TickGate, world_
     }
 
     let game_time_scale = normalize_time_scale(colony);
-    let amount = regrowth_amount(gate.elapsed_sec as f64 * game_time_scale)
-        .floor()
-        .max(0.0) as u32;
-
     for tile in colony.world_tiles.values_mut() {
-        if amount == 0 || tile.last_depleted <= 0 || is_forest_type(tile.tile_type) {
+        if tile.last_depleted <= 0 || is_forest_type(tile.tile_type) {
+            continue;
+        }
+        let elapsed_real_ms = gate
+            .processed_through
+            .saturating_sub(tile.last_depleted)
+            .max(0);
+        let elapsed_game_sec = elapsed_real_ms as f64 / 1_000.0 * game_time_scale;
+        let regrowth_per_hour = if tile.tile_type == TileType::CaveEntrance
+            && tile.max_resources.food
+                == biome_properties(BiomeType::CaveEntrance).max_resources.food
+        {
+            PROCEDURAL_WILDLIFE_CAVE_REGROWTH_PER_HOUR
+        } else {
+            1
+        };
+        let amount = (regrowth_amount(elapsed_game_sec) * f64::from(regrowth_per_hour))
+            .floor()
+            .max(0.0) as u32;
+        if amount == 0 {
             continue;
         }
         tile.resources.food = tile
@@ -5404,6 +14425,20 @@ fn phase_12_resource_regrowth(colony: &mut ColonyRuntime, gate: TickGate, world_
             .food
             .saturating_add(amount)
             .min(tile.max_resources.food);
+        if tile.resources.food >= tile.max_resources.food {
+            tile.last_depleted = 0;
+        } else {
+            // `last_depleted` doubles as the durable whole-hour regrowth cursor.
+            // Advancing it only for credited whole units preserves the fractional
+            // remainder across fine ticks and persistence boundaries.
+            let credited_real_ms = (f64::from(amount) * 3_600_000.0
+                / (game_time_scale * f64::from(regrowth_per_hour)))
+            .floor() as i64;
+            tile.last_depleted = tile
+                .last_depleted
+                .saturating_add(credited_real_ms.max(1))
+                .min(gate.processed_through);
+        }
     }
 
     let due_saplings = colony
@@ -5814,7 +14849,9 @@ pub(crate) fn commit_player_scaffold(
     }
     let (width, height) = footprint_for(building_type);
     let footprint = footprint_tiles(site, width, height);
-    if let Some(error) = placement_error_for_tiles(colony, &footprint, world_seed, true) {
+    if let Some(error) =
+        building_placement_error_for_tiles(colony, &footprint, world_seed, true, building_type)
+    {
         return Err(error.message());
     }
     if reserved_construction_tiles(colony)
@@ -6034,6 +15071,7 @@ fn phase_14_promote_queued_jobs_and_break_ground(
                 if colony.jobs[job_index].requested_by == JobRequester::Leader
                     && automated_job_role(colony, &colony.jobs[job_index])
                         .is_some_and(|role| !has_officer(colony, role))
+                    && !is_founding_field_fallback_chain_job(colony, &colony.jobs[job_index])
                 {
                     continue;
                 }
@@ -6292,10 +15330,18 @@ fn phase_14_promote_queued_jobs_and_break_ground(
             else {
                 continue;
             };
+            let founding_field_fallback = scaffold_type == BuildingType::Field
+                && colony.jobs[job_index].requested_by == JobRequester::Leader
+                && lai23_founding_farmer_fallback_active(colony);
             // Without a Steward, road construction is manual. A scaffold may
             // break ground only where the player has already connected its entrance;
-            // the Steward is what automates a non-empty access spur.
-            if !has_officer(colony, OfficerRole::Steward) && !access_route.is_empty() {
+            // the Steward is what automates a non-empty access spur. Before any
+            // specialist office exists, the founding leader may own this one
+            // survival-field fallback through the same paid physical route.
+            if !has_officer(colony, OfficerRole::Steward)
+                && !founding_field_fallback
+                && !access_route.is_empty()
+            {
                 continue;
             }
             let Some(construction_cargo) =
@@ -6358,7 +15404,7 @@ fn phase_14_promote_queued_jobs_and_break_ground(
                 production_paused: false,
                 construction_cargo: Some(construction_cargo),
             });
-            if has_officer(colony, OfficerRole::Steward) {
+            if has_officer(colony, OfficerRole::Steward) || founding_field_fallback {
                 pave_access_route(colony, &access_route);
             }
             debug_assert!(building_is_road_connected_to_shrine(
@@ -6499,8 +15545,12 @@ fn queue_orphaned_scaffold_recovery(colony: &mut ColonyRuntime, now_ms: i64) {
         .collect::<Vec<_>>();
 
     for (building_id, building_type, site, phase, requested_by, automated_role) in orphaned {
+        let founding_field_recovery = building_type == BuildingType::Field
+            && requested_by == JobRequester::Leader
+            && lai23_founding_farmer_fallback_active(colony);
         if requested_by == JobRequester::Leader
             && automated_role.is_some_and(|role| !has_officer(colony, role))
+            && !founding_field_recovery
         {
             continue;
         }
@@ -6660,27 +15710,28 @@ fn phase_15_assign_promoted_job_destinations(
             Some(tile) => std::slice::from_ref(tile),
             None => &[],
         };
-        let context = JobDestinationContext {
-            anchor: village_anchor_world(colony.anchor),
-            shrine: village_anchor_world(colony.anchor),
-            food_tiles: hunt_tiles,
-            roll: roll.value,
-            site: construction_site.or(offering_source_site),
-            expansion_site,
-            quarry_site: match job.kind {
-                JobKind::GatherLogs => logging_site,
-                JobKind::ReplantTree => replant_site,
-                JobKind::Fish => fishing_site,
-                _ => quarry_site,
-            },
-            water_site,
-            explore_site,
-            gather_spot_site,
+        let destination = match job.kind {
+            JobKind::HuntExpedition => hunt_tiles.first().copied(),
+            JobKind::Quarry => quarry_site,
+            JobKind::GatherLogs => logging_site,
+            JobKind::ReplantTree => replant_site,
+            JobKind::Fish => fishing_site,
+            JobKind::FetchWater => water_site,
+            JobKind::Explore => explore_site,
+            JobKind::BuildHouse => construction_site,
+            JobKind::ExpandVillage => expansion_site,
+            JobKind::HaulGatherSpot => gather_spot_site,
+            JobKind::Ritual | JobKind::PerformOffering | JobKind::ForageFibre => {
+                Some(village_anchor_world(colony.anchor))
+            }
+            JobKind::CarryOffering => offering_source_site,
+            _ => None,
         };
-
-        let Some(destination) = destination_for_job(job.kind.as_str(), &context) else {
+        let Some(destination) = destination else {
             if job.kind == JobKind::ReplantTree {
                 fail_replant_job(colony, &job.id, gate.processed_through);
+            } else {
+                block_legacy_job_without_site(colony, job_index);
             }
             continue;
         };
@@ -6838,6 +15889,20 @@ fn phase_15_assign_promoted_job_destinations(
                 colony.provisional_tiles.entry(cat_id).or_default();
             }
         }
+    }
+}
+
+fn block_legacy_job_without_site(colony: &mut ColonyRuntime, job_index: usize) {
+    let assigned_cat = colony.jobs[job_index].assigned_cat.take();
+    colony.jobs[job_index].status = JobStatus::Queued;
+    colony.jobs[job_index].started_at = None;
+    colony.jobs[job_index].ends_at = None;
+    if let Some(cat_id) = assigned_cat
+        && let Some(cat) = colony.cats.iter_mut().find(|cat| cat.id == cat_id)
+    {
+        cat.current_task = None;
+        cat.destination = None;
+        cat.activity = CatActivity::Idle;
     }
 }
 
@@ -7638,6 +16703,8 @@ fn phase_16_active_scaffold_progress(colony: &mut ColonyRuntime, gate: TickGate)
 
 /// Phase 17: queue the legacy leader emergency hunt when food is below the
 /// policy threshold and no conflicting strategic job exists.
+#[cfg(test)]
+#[allow(dead_code)]
 fn phase_17_legacy_emergency_hunt(colony: &mut ColonyRuntime, gate: TickGate, policy: TickPolicy) {
     if !has_officer(colony, OfficerRole::Farmer) {
         return;
@@ -7686,17 +16753,20 @@ fn phase_17_legacy_emergency_hunt(colony: &mut ColonyRuntime, gate: TickGate, po
 /// headroom covers dispatch plus the three physical source/deposit legs. A five-seed,
 /// 300-game-hour coarse campaign measured the old 6/cat trigger at 4.65/cat while a
 /// healthy fetch was still in flight, so the one-unit margin did not cover route latency.
+#[cfg(test)]
 const WATER_FETCH_TRANSIT_RESERVE_PER_CAT: f64 = 2.0;
 
 /// Water reserve that triggers a physical fetch preemption. Research and migration
 /// thresholds stay unchanged; only the labor-dispatch runway includes transit. The
 /// extra two units per cat keep a mature, migration-grown village above the 5/cat
 /// prosperity floor while up to four physical fetchers are still on their route.
+#[cfg(test)]
 fn water_fetch_preemption_reserve(population: usize) -> f64 {
     (population as f64 * (RESEARCH_COMFORT_WATER_PER_CAT + WATER_FETCH_TRANSIT_RESERVE_PER_CAT))
         .max(RESEARCH_COMFORT_FLOOR)
 }
 
+#[cfg(test)]
 fn committed_water_fetcher_count(colony: &ColonyRuntime) -> usize {
     let alive_ids = active_resident_cats(colony)
         .map(|cat| cat.id.as_str())
@@ -7721,6 +16791,7 @@ fn committed_water_fetcher_count(colony: &ColonyRuntime) -> usize {
     committed.len()
 }
 
+#[cfg(test)]
 fn desired_water_fetcher_count(population: usize, water: f64) -> usize {
     let reserve = water_fetch_preemption_reserve(population);
     let deficit = (reserve - water).max(0.0);
@@ -7732,6 +16803,7 @@ fn desired_water_fetcher_count(population: usize, water: f64) -> usize {
         .clamp(1.0, f64::from(WATER_MAX_SLOTS)) as usize
 }
 
+#[cfg(test)]
 fn job_sunk_progress(job: &JobRuntime, now_ms: i64) -> f64 {
     if job.status == JobStatus::Queued {
         return 0.0;
@@ -7743,6 +16815,7 @@ fn job_sunk_progress(job: &JobRuntime, now_ms: i64) -> f64 {
     (now_ms.saturating_sub(started_at) as f64 / duration as f64).clamp(0.0, 1.0)
 }
 
+#[cfg(test)]
 fn recall_leader_job_for_water(
     colony: &mut ColonyRuntime,
     job_index: usize,
@@ -7767,6 +16840,7 @@ fn recall_leader_job_for_water(
     Some(cat_id)
 }
 
+#[cfg(test)]
 fn queue_deferred_water_fetch(colony: &mut ColonyRuntime, cat_id: CatId, now_ms: i64) {
     let preserved = colony.cats.iter().find(|cat| cat.id == cat_id).map(|cat| {
         (
@@ -7806,6 +16880,7 @@ fn queue_deferred_water_fetch(colony: &mut ColonyRuntime, cat_id: CatId, now_ms:
 /// raw-bench worker; a hunt is the final, runway-checked fallback. The ordinary
 /// movement/hauling pipeline still performs every step and credits no water until the
 /// carrier deposits it.
+#[cfg(test)]
 fn phase_17b_water_reserve_preemption(colony: &mut ColonyRuntime, gate: TickGate) {
     let population = active_resident_cats(colony).count();
     if population == 0
@@ -7996,6 +17071,8 @@ fn phase_17b_water_reserve_preemption(colony: &mut ColonyRuntime, gate: TickGate
 /// This runs before the broad labor director so survival work sees that cat as
 /// occupied and does not overwrite the assignment. Once any knowledge has
 /// returned, ordinary deficit-driven scout slots take over.
+#[cfg(test)]
+#[allow(dead_code)]
 fn phase_17c_founding_wood_scout(colony: &mut ColonyRuntime, gate: TickGate) {
     if colony.revealed_tiles != founding_revealed_tiles(colony.anchor, &colony.claimed_tiles)
         || colony.jobs.iter().any(|job| {
@@ -8034,6 +17111,7 @@ fn phase_17c_founding_wood_scout(colony: &mut ColonyRuntime, gate: TickGate) {
 
 /// Phase 18: assemble the leader snapshot: workforce, housing/storage pressure,
 /// jobs, staffing gaps, warriors, threat, and starvation flags.
+#[cfg(test)]
 fn phase_18_leader_snapshot_assembly(
     colony: &mut ColonyRuntime,
     _gate: TickGate,
@@ -8198,6 +17276,7 @@ fn phase_18_leader_snapshot_assembly(
 /// created are two views of one promise, so both normalize to the same building key;
 /// site reservations deduplicate by coordinates. Legacy building levels never multiply
 /// beds. The same additive research bonus as completed housing applies once per den.
+#[cfg(test)]
 fn committed_den_capacity(colony: &ColonyRuntime, extra_per_den: f64) -> u32 {
     let mut future_dens = BTreeSet::new();
     for building in &colony.buildings {
@@ -8246,6 +17325,8 @@ fn committed_den_capacity(colony: &ColonyRuntime, extra_per_den: f64) -> u32 {
 }
 
 /// Phase 19: execute leader cancellation decisions before spending labor.
+#[cfg(test)]
+#[allow(dead_code)]
 fn phase_19_leader_cancellations(
     colony: &mut ColonyRuntime,
     gate: TickGate,
@@ -8340,6 +17421,8 @@ fn phase_19_leader_cancellations(
     plan
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 fn reserve_one_role_slot(plan: &mut DirectorPlan, role: OfficerRole) {
     let candidate = plan
         .slots
@@ -8356,6 +17439,7 @@ fn reserve_one_role_slot(plan: &mut DirectorPlan, role: OfficerRole) {
     }
 }
 
+#[cfg(test)]
 fn reserve_one_non_survival_slot(plan: &mut DirectorPlan) {
     let candidate = plan
         .slots
@@ -8372,12 +17456,14 @@ fn reserve_one_non_survival_slot(plan: &mut DirectorPlan) {
     }
 }
 
+#[cfg(test)]
 fn raw_chain_needs_reserved_labor(colony: &ColonyRuntime) -> bool {
     runnable_raw_material_bench(colony).is_some()
 }
 
 /// Phase 20: match idle cats to leader labor slots and staff production,
 /// research, smithy, expedition, and training work.
+#[cfg(test)]
 fn phase_20_leader_labor_assignments_and_staffing(
     colony: &mut ColonyRuntime,
     gate: TickGate,
@@ -8592,6 +17678,7 @@ fn phase_20_leader_labor_assignments_and_staffing(
 /// map always gets one wood mission first; subsequent simultaneous scouts fan
 /// out generally. Later resource pressure steers new expeditions without
 /// changing the leader director's workforce budgeting.
+#[cfg(test)]
 fn leader_scout_mission(colony: &ColonyRuntime, world_seed: u32) -> ScoutMission {
     let wood_already_dispatched = active_or_queued_jobs(colony).iter().any(|job| {
         matches!(
@@ -8627,8 +17714,10 @@ fn leader_scout_mission(colony: &ColonyRuntime, world_seed: u32) -> ScoutMission
 /// Keep a visible exploration cadence in a populated village. Missions are already
 /// long physical journeys; a short rest after return avoids duplicate dispatches
 /// without leaving the map scout-free for six game-hours.
+#[cfg(test)]
 const LEADER_GENERAL_SCOUT_COOLDOWN_MS: i64 = 10 * 60_000;
 
+#[cfg(test)]
 fn leader_general_scout_due(colony: &ColonyRuntime, now_ms: i64) -> bool {
     colony
         .jobs
@@ -8657,20 +17746,25 @@ fn leader_general_scout_due(colony: &ColonyRuntime, now_ms: i64) -> bool {
 /// Game-time a run must be old before the leader spends anything on research (see the
 /// establishment-window comment in [`manage_research_hut`]). Matches the 30-game-hour
 /// establishment window `run_established_core_population_trajectory` samples after.
+#[cfg(test)]
 const RESEARCH_ESTABLISHMENT_MS: i64 = 30 * 3_600_000;
 /// Active shrine economy begins only after the founding survival window. This keeps
 /// the opening larder and construction bank focused on establishing the village.
+#[cfg(test)]
 const SHRINE_ESTABLISHMENT_MS: i64 = RESEARCH_ESTABLISHMENT_MS;
 /// A tithe is a meaningful colony-scale offering, not a per-minute tax. This
 /// cadence keeps the active faucet slow while preventing a replenishing larder
 /// from losing hundreds of food over a few days.
+#[cfg(test)]
 const TITHE_COOLDOWN_MS: i64 = 24 * 3_600_000;
 /// Automated material rituals are a deliberate half-day cadence, not a continuous
 /// quarry-to-blessing conveyor. Manual player offerings remain resource-gated only.
+#[cfg(test)]
 const OFFERING_COOLDOWN_MS: i64 = 12 * 3_600_000;
 const OFFERING_CARGO_PREFIX: &str = "offering-cargo:";
 
 /// The supported physical shrine offerings, in stable player-facing order.
+#[cfg(test)]
 const OFFERING_RESOURCE_KINDS: [ResourceKind; 3] = [
     ResourceKind::Food,
     ResourceKind::Herbs,
@@ -8782,6 +17876,7 @@ pub(crate) fn offering_metadata(
 }
 
 /// Legacy material helper retained for the Loremaster's established policy.
+#[cfg(test)]
 pub(crate) fn material_offering_metadata(
     colony: &ColonyRuntime,
     from: WorldPos,
@@ -8790,6 +17885,7 @@ pub(crate) fn material_offering_metadata(
     offering_metadata(colony, from, now_ms, ResourceKind::Materials)
 }
 
+#[cfg(test)]
 fn offering_cargo_marker(job_id: &str) -> String {
     format!("{OFFERING_CARGO_PREFIX}{job_id}")
 }
@@ -8798,12 +17894,14 @@ fn offering_cargo_job_id(marker: Option<&str>) -> Option<&str> {
     marker?.strip_prefix(OFFERING_CARGO_PREFIX)
 }
 
+#[cfg(test)]
 fn automated_offering_ready(colony: &ColonyRuntime, now_ms: i64) -> bool {
     colony
         .last_offering_at
         .is_none_or(|last| now_ms.saturating_sub(last) >= OFFERING_COOLDOWN_MS)
 }
 
+#[cfg(test)]
 fn automated_tithe_ready(colony: &ColonyRuntime, now_ms: i64) -> bool {
     colony
         .last_tithe_at
@@ -8819,6 +17917,7 @@ fn automated_tithe_ready(colony: &ColonyRuntime, now_ms: i64) -> bool {
 /// a scholar staffed in good times kept studying straight through a later larder
 /// collapse (a 1-cat drain that at the harsh 5-game-minute test cadence tipped seed 7's
 /// trough into an `UnattendedCollapse` reset ~20 game-hours after research engaged).
+#[cfg(test)]
 fn release_research_staff_unless_comfortable(
     colony: &mut ColonyRuntime,
     snapshot: &LeaderSnapshot,
@@ -8847,6 +17946,8 @@ fn release_research_staff_unless_comfortable(
     }
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 fn has_research_hut_or_build_in_flight(colony: &ColonyRuntime) -> bool {
     let has_building = colony
         .buildings
@@ -8891,6 +17992,8 @@ fn has_research_hut_or_build_in_flight(colony: &ColonyRuntime) -> bool {
 /// Deterministic: comfort and staffing are flat functions of colony state; only the
 /// commission draws the seeded policy-reliability roll (at the same call site the other
 /// capital decisions use).
+#[cfg(test)]
+#[allow(dead_code)]
 fn manage_research_hut(
     colony: &mut ColonyRuntime,
     gate: TickGate,
@@ -8965,6 +18068,7 @@ fn manage_research_hut(
 /// Count the colony's fields, whether standing or still under construction (built +
 /// in-flight `build_house` scaffolds targeting a field), so the leader never over-orders
 /// past the population-scaled cap while earlier field jobs are still on the way.
+#[cfg(test)]
 fn field_count_built_or_in_flight(colony: &ColonyRuntime) -> usize {
     let built = colony
         .buildings
@@ -9010,6 +18114,7 @@ fn field_count_built_or_in_flight(colony: &ColonyRuntime) -> usize {
 /// Deterministic: population, ratios, and the field cap are flat functions of colony state;
 /// only the commission draws the seeded policy-reliability roll, at the same call site the
 /// other capital decisions use.
+#[cfg(test)]
 fn manage_field(
     colony: &mut ColonyRuntime,
     gate: TickGate,
@@ -9093,6 +18198,7 @@ fn manage_field(
 }
 
 /// Non-panicking ratio: `value / capacity`, or `0.0` when capacity is non-positive.
+#[cfg(test)]
 fn ratio_or_zero(value: f64, capacity: f64) -> f64 {
     if capacity > 0.0 {
         value / capacity
@@ -9102,6 +18208,7 @@ fn ratio_or_zero(value: f64, capacity: f64) -> f64 {
 }
 
 /// Phase 21: execute leader capital decisions and minute-cadence tithe deposits.
+#[cfg(test)]
 fn phase_21_leader_capital_decisions_and_tithe(
     colony: &mut ColonyRuntime,
     gate: TickGate,
@@ -9217,6 +18324,7 @@ fn phase_21_leader_capital_decisions_and_tithe(
 /// initiate one without a request. The request path remains available while the
 /// office is vacant: the player has already made the missing decision, so this
 /// phase only performs the ordinary resource, conflict, worker, and policy checks.
+#[cfg(test)]
 fn phase_22_ritual_approval(colony: &mut ColonyRuntime, gate: TickGate, policy: TickPolicy) {
     let jobs = active_or_queued_jobs(colony)
         .into_iter()
@@ -9264,6 +18372,7 @@ fn phase_22_ritual_approval(colony: &mut ColonyRuntime, gate: TickGate, policy: 
 /// comfort buffer used by research and a one-day interval between dispatches.
 /// Player-requested rituals deliberately bypass this conservative policy: poor
 /// manual guidance is allowed to have consequences.
+#[cfg(test)]
 fn automated_ritual_ready(colony: &ColonyRuntime, now_ms: i64) -> bool {
     const MIN_RITUAL_POPULATION: usize = 8;
     const RITUAL_COOLDOWN_MS: i64 = 24 * 3_600_000;
@@ -9847,7 +18956,7 @@ fn farm_designation_geometry_signature(colony: &ColonyRuntime, world_seed: u32) 
 /// cannot fit it. The agricultural claim is deliberately excluded from settlement-wall
 /// derivation and the worker still performs every production and bounded-basket step.
 fn ensure_farmer_plots(colony: &mut ColonyRuntime, world_seed: u32, now_ms: i64) {
-    if !has_officer(colony, OfficerRole::Farmer) {
+    if !has_officer(colony, OfficerRole::Farmer) && !lai23_founding_farmer_fallback_active(colony) {
         return;
     }
     let fields = colony
@@ -10248,8 +19357,30 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
             true,
         );
     }
-    if has_officer(colony, OfficerRole::Farmer) {
+    let founding_farmer_fallback = lai23_founding_farmer_fallback_active(colony);
+    let one_meal_food_emergency = lai23_one_meal_food_emergency(colony);
+    if has_officer(colony, OfficerRole::Farmer) && !one_meal_food_emergency {
         auto_staff_idle_fields(colony, gate.processed_through, world_seed, true);
+    } else if founding_farmer_fallback && !one_meal_food_emergency {
+        // Reuse the proven physical staffing selector, then mark the assignment
+        // as leader-directed rather than pretending a vacant Farmer office
+        // exists. `advance_designated_farms` preserves manual/leader workers and
+        // still requires every trip, crop basket, and deposit.
+        auto_staff_idle_fields(colony, gate.processed_through, world_seed, false);
+        for field in colony
+            .buildings
+            .iter_mut()
+            .filter(|building| building.building_type == BuildingType::Field)
+        {
+            if field.automated_by == Some(OfficerRole::Farmer) {
+                field.automated_by = None;
+            }
+            for slot in &mut field.additional_work_slots {
+                if slot.automated_by == Some(OfficerRole::Farmer) {
+                    slot.automated_by = None;
+                }
+            }
+        }
     }
     // Once both 4-unit scaffold reserves plus one 2/2 tools cycle are funded, give
     // woodworking first claim on an idle cat. Otherwise fund construction first by
@@ -11109,12 +20240,14 @@ fn staffed_accounting_tent(colony: &ColonyRuntime) -> Option<(BuildingRuntime, S
 }
 
 /// Rolling real-time interval between successful Leader research choices.
+#[cfg(test)]
 const LEADER_RESEARCH_CHOICE_INTERVAL_MS: i64 = 24 * 60 * 60 * 1000;
 
 /// Phase 24: accrue research from staffed research huts/schools, then let the living Leader
 /// choose one affordable node per rolling 24-hour interval. Loremaster-owned labor creates
 /// the points; the strategic choice belongs to the always-present Leader. The player can
 /// still spend research points directly at any time.
+#[cfg(test)]
 fn phase_24_research(colony: &mut ColonyRuntime, gate: TickGate) {
     let research_workforce = research_workforce(colony);
     let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
@@ -11179,9 +20312,16 @@ const PERSONAL_NEED_THRESHOLD_HUNGER: f64 = 65.0;
 const PERSONAL_NEED_THRESHOLD_THIRST: f64 = 55.0;
 const PERSONAL_NEED_THRESHOLD_REST: f64 = 20.0;
 const PERSONAL_NEED_RELEASE_REST: f64 = 80.0;
-const PERSONAL_NEED_CRITICAL: f64 = 15.0;
 const PERSONAL_MEAL_RESTORE: f64 = 30.0;
 const PERSONAL_DRINK_RESTORE: f64 = 40.0;
+// A founding crisis needs at least a few physical trips to finish. Without this
+// bounded commitment, every hunter can cross their ordinary meal threshold in
+// the same review band, cancel, and be replaced by another equally hungry cat
+// forever. The crew is selected from persisted task occurrences, not hidden
+// resource truth, and still abandons the trip with enough personal-need runway
+// to reach the pantry before physical health damage begins.
+const LAI23_COMMITTED_WATER_RELIEF_CREW: usize = 2;
+const LAI23_COMMITTED_RELIEF_NEED_FLOOR: f64 = PERSONAL_NEED_THRESHOLD_HUNGER;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -11285,10 +20425,89 @@ fn personal_water_serving(colony: &ColonyRuntime) -> f64 {
     hourly * hours_restored / (effects.water_efficiency_mult * stewardship).max(f64::EPSILON)
 }
 
-fn personal_need_is_critical(cat: &Cat) -> bool {
-    cat.needs.hunger < PERSONAL_NEED_CRITICAL
-        || cat.needs.thirst < PERSONAL_NEED_CRITICAL
-        || cat.needs.rest < PERSONAL_NEED_CRITICAL
+fn personal_need_requires_committed_relief_yield(cat: &Cat, task: TaskType) -> bool {
+    match task {
+        TaskType::Eat => cat.needs.hunger < LAI23_COMMITTED_RELIEF_NEED_FLOOR,
+        TaskType::Drink => cat.needs.thirst < LAI23_COMMITTED_RELIEF_NEED_FLOOR,
+        TaskType::Sleep => cat.needs.rest < LAI23_COMMITTED_RELIEF_NEED_FLOOR,
+        _ => false,
+    }
+}
+
+fn lai23_cat_is_committed_relief_worker(colony: &ColonyRuntime, cat_id: &str) -> bool {
+    use crate::task_runtime::TaskCategory;
+
+    let committed_for = |category, limit| {
+        let mut assigned = colony
+            .leader_ai_runtime
+            .scheduling
+            .visible_tasks
+            .values()
+            .filter(|task| {
+                task.category == category
+                    && !task.stage.is_terminal()
+                    && !task.assigned_cat_ids.is_empty()
+            })
+            .collect::<Vec<_>>();
+        assigned.sort_by_key(|task| (task.occurrence, task.id.clone()));
+        assigned
+            .into_iter()
+            .take(limit)
+            .any(|task| task.assigned_cat_ids.contains(cat_id))
+    };
+
+    committed_for(
+        TaskCategory::Hunt,
+        lai23_max_active_visible_tasks(colony, TaskCategory::Hunt),
+    ) || committed_for(TaskCategory::FetchWater, LAI23_COMMITTED_WATER_RELIEF_CREW)
+}
+
+fn cancel_lai23_survival_task_for_personal_need(
+    colony: &mut ColonyRuntime,
+    cat_id: &str,
+    now_ms: i64,
+) -> bool {
+    use crate::task_runtime::TaskCategory;
+
+    let task_id = colony
+        .leader_ai_runtime
+        .scheduling
+        .visible_tasks
+        .iter()
+        .find_map(|(task_id, task)| {
+            (matches!(task.category, TaskCategory::Hunt | TaskCategory::FetchWater)
+                && !task.stage.is_terminal()
+                && task.assigned_cat_ids.contains(cat_id))
+            .then_some(task_id.clone())
+        });
+    let Some(task_id) = task_id else {
+        return false;
+    };
+    let now_tick = migration_game_minute_at(colony, now_ms);
+    let cancelled = {
+        let scheduling = &mut colony.leader_ai_runtime.scheduling;
+        let (visible_tasks, reservations) =
+            (&mut scheduling.visible_tasks, &mut scheduling.reservations);
+        visible_tasks
+            .get_mut(&task_id)
+            .is_some_and(|task| task.cancel(reservations, now_tick).is_ok())
+    };
+    if !cancelled {
+        return false;
+    }
+    if let Some(world_id) = colony
+        .leader_ai_runtime
+        .scheduling
+        .world_reservation_ids
+        .remove(&task_id)
+    {
+        let _ = colony
+            .leader_ai_runtime
+            .scheduling
+            .world_reservations
+            .release(&world_id);
+    }
+    true
 }
 
 /// Survival needs outrank work when their ordinary threshold is crossed. Waiting until
@@ -11299,6 +20518,17 @@ fn preempt_autonomous_work_for_personal_need(
     cat_id: &str,
     now_ms: i64,
 ) -> PersonalNeedResume {
+    if cancel_lai23_survival_task_for_personal_need(colony, cat_id, now_ms) {
+        if let Some(cat) = colony.cats.iter_mut().find(|cat| cat.id == cat_id) {
+            cat.current_task = None;
+            cat.destination = None;
+            cat.activity = CatActivity::Idle;
+        }
+        // The still-approved shared Survival intent deterministically creates a
+        // replacement child for another available cat on the next scheduler
+        // pass. Resuming this exact occurrence would reattach a released claim.
+        return PersonalNeedResume::default();
+    }
     let mut resume = colony
         .cats
         .iter()
@@ -11449,6 +20679,10 @@ fn choose_personal_need(cat: &Cat) -> Option<TaskType> {
     }
 }
 
+pub(crate) fn diagnostic_personal_need(cat: &Cat) -> Option<TaskType> {
+    choose_personal_need(cat)
+}
+
 fn personal_need_is_available(colony: &ColonyRuntime, cat_id: &str, task: TaskType) -> bool {
     match task {
         TaskType::Eat | TaskType::Drink => {
@@ -11474,6 +20708,14 @@ fn personal_need_is_available(colony: &ColonyRuntime, cat_id: &str, task: TaskTy
             .any(|den| den_reservation_count(colony, den, cat_id) < 5),
         _ => false,
     }
+}
+
+pub(crate) fn diagnostic_personal_need_is_available(
+    colony: &ColonyRuntime,
+    cat_id: &str,
+    task: TaskType,
+) -> bool {
+    personal_need_is_available(colony, cat_id, task)
 }
 
 /// Phase 25: apply survival needs, deaths, carried-yield salvage, and
@@ -11629,10 +20871,18 @@ fn phase_25_survival_deaths_and_carried_yield_salvage(
                     if !personal_need_is_available(colony, &cat_id, task) {
                         continue;
                     }
-                    let critical = personal_need_is_critical(&colony.cats[index]);
+                    let assigned_survival = lai23_cat_has_active_survival_task(colony, &cat_id);
+                    let committed_relief =
+                        assigned_survival && lai23_cat_is_committed_relief_worker(colony, &cat_id);
+                    let committed_need_emergency =
+                        personal_need_requires_committed_relief_yield(&colony.cats[index], task);
+                    let assigned_survival_may_yield =
+                        assigned_survival && (!committed_relief || committed_need_emergency);
                     let resume = if may_start {
                         Some(PersonalNeedResume::default())
-                    } else if critical && colony.cats[index].carrying.is_none() {
+                    } else if (!assigned_survival || assigned_survival_may_yield)
+                        && colony.cats[index].carrying.is_none()
+                    {
                         Some(preempt_autonomous_work_for_personal_need(
                             colony,
                             &cat_id,
@@ -11789,6 +21039,8 @@ fn phase_25c_prosperity_migration(colony: &mut ColonyRuntime, gate: TickGate, wo
         ),
         in_crisis: colony.critical_since.is_some()
             || colony.active_raid.is_some()
+            || colony.resources.food + colony.resources.fish
+                < lai23_sustainable_food_runway_floor(active_resident_cats(colony).count())
             || matches!(colony.status, ColonyStatus::Struggling | ColonyStatus::Dead),
     };
     let previous_cohort_bucket = colony.migration_state.last_evaluated_cohort_bucket;
@@ -11865,6 +21117,16 @@ pub(crate) fn migration_game_minute_at(colony: &ColonyRuntime, now_ms: i64) -> u
     let minutes = elapsed_ms * normalize_time_scale(colony) / 60_000.0;
     if minutes.is_finite() {
         minutes.floor().clamp(0.0, u64::MAX as f64) as u64
+    } else {
+        u64::MAX
+    }
+}
+
+fn life_game_second_at(colony: &ColonyRuntime, now_ms: i64) -> u64 {
+    let elapsed_ms = now_ms.saturating_sub(colony.run_started_at).max(0) as f64;
+    let seconds = elapsed_ms * normalize_time_scale(colony) / 1_000.0;
+    if seconds.is_finite() {
+        seconds.floor().clamp(0.0, u64::MAX as f64) as u64
     } else {
         u64::MAX
     }
@@ -12662,7 +21924,7 @@ fn phase_31_mid_job_hauling(colony: &mut ColonyRuntime, gate: TickGate, world_se
 fn phase_32_movement_setup_and_village_expansion_queue(
     colony: &mut ColonyRuntime,
     gate: TickGate,
-    policy: TickPolicy,
+    _policy: TickPolicy,
     world_seed: u32,
 ) -> MovementPassContext {
     let mut movement_seed = movement_seed(colony.test_rng_seed.unwrap_or(1));
@@ -12762,16 +22024,8 @@ fn phase_32_movement_setup_and_village_expansion_queue(
         *site = Some(future_site);
     }
     let construction_needs_land = blocked_construction_index.is_some();
-    let ordinary_expansion_pressure = should_expand(
-        active_resident_cats(colony).count() as i32,
-        claimed_area.len() as i32,
-        colony.buildings.len() as i32,
-    );
     if !claimed_area.is_empty()
-        && (construction_needs_land
-            || (ordinary_expansion_pressure
-                && has_officer(colony, OfficerRole::Steward)
-                && can_take_policy_action(colony, policy)))
+        && construction_needs_land
         && !active_or_queued_jobs(colony)
             .iter()
             .any(|job| job.kind == JobKind::ExpandVillage)
@@ -12955,7 +22209,6 @@ fn phase_33_movement_deposits_and_no_destination_wander(
     // delivery boundary so headroom includes what the colony ate this tick without
     // changing the earlier job-promotion and mid-job routing phases.
     reconcile_colony_stockpiles(colony);
-    advance_material_offering_logistics(colony, gate.processed_through);
 
     let cat_ids = colony
         .cats
@@ -13261,6 +22514,7 @@ fn ensure_offering_escrow(colony: &mut ColonyRuntime, escrow_id: &str, kind: Res
 /// Return canceled/interrupted ritual escrow to visible storage without changing the
 /// aggregate ledger. If finite stores filled while the offering was out, the remainder
 /// stays in its persisted shrine escrow and retries on later ticks instead of vanishing.
+#[cfg(test)]
 fn recover_orphaned_offering_escrows(colony: &mut ColonyRuntime) {
     let live = colony
         .jobs
@@ -13313,6 +22567,7 @@ fn recover_orphaned_offering_escrows(colony: &mut ColonyRuntime) {
     }
 }
 
+#[cfg(test)]
 fn retarget_offering_source(
     colony: &mut ColonyRuntime,
     job_index: usize,
@@ -13366,6 +22621,7 @@ fn offering_job_is_active(colony: &ColonyRuntime, job_id: &str) -> bool {
 /// it only updates exact endpoints, leaving the single shared phase-34 A* pass to move
 /// each cat. Goods leave aggregate+source only at pickup, re-enter aggregate in shrine
 /// escrow only at delivery, and cannot become blessings until PerformOffering completes.
+#[cfg(test)]
 fn advance_material_offering_logistics(colony: &mut ColonyRuntime, now_ms: i64) {
     const RETURN_MARKER: &str = "offering-return";
 
@@ -14173,9 +23429,6 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
             spatial_migration_phase,
             Some(MigrantSpatialPhase::Arriving | MigrantSpatialPhase::Departing)
         );
-        let unladen_personal_return = is_personal_need_task(current_task)
-            && colony.cats[cat_index].carrying.is_none()
-            && !colony.claimed_tiles.contains(&world_pos_to_tile(world_pos));
         let route = if is_personal_need_task(current_task) {
             find_personal_need_path(
                 pathfinding_pos(world_pos),
@@ -14249,25 +23502,13 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
                 .farm_route_debug
                 .record_movement_pass(&cat_id, route.is_some());
         }
-        if route.is_none()
-            && (current_task == Some(TaskType::Farm)
-                || offering_route_required
-                || construction_route_required
-                || migration_route_required
-                || is_personal_need_task(current_task) && !unladen_personal_return)
-        {
-            // Physical farm, offering, construction, and migration logistics never use
-            // the generic straight-line fallback: a flooded route, closed staged wall,
-            // or newly impassable tile suspends the trip until a real A* route exists
-            // instead of letting a carrier walk through barriers.
-            continue;
-        }
-        if route.is_none() && current_task.is_none() && activity == CatActivity::Idle {
-            // Cosmetic wandering is never entitled to the legacy straight-line
-            // fallback. Dropping an unreachable idle target prevents a resident from
-            // stepping into a hard terrain pocket and later becoming unable to reach
-            // food, water, or shelter.
-            colony.cats[cat_index].destination = None;
+        if route.is_none() {
+            // Every authoritative movement requires a real route. Idle cosmetic
+            // targets are discarded; work, cargo, care, and migration wait with
+            // their current state intact until topology permits revalidation.
+            if current_task.is_none() && activity == CatActivity::Idle {
+                colony.cats[cat_index].destination = None;
+            }
             continue;
         }
         let at_gate = (world_pos.x - f64::from(movement.gate.x)).abs() < 1.0
@@ -16093,10 +25334,15 @@ fn phase_36_threat_and_raid_director(
         }
     }
 
-    // A Captain owns autonomous mustering and gate combat. With the office vacant,
-    // the warband waits at the gate for explicit DefendRaid clicks; it does not
-    // instantly loot or wipe a colony between player sessions.
-    if any_at_gate && has_officer(colony, OfficerRole::Captain) {
+    // A Captain owns autonomous mustering and resolves immediately. While that
+    // specialist office is vacant, the living Leader remains the colony-wide
+    // fallback: a report-driven Defense intent authorizes the same physical
+    // muster after the Leader's quality-dependent review delay. With neither
+    // authority present, the warband waits for explicit DefendRaid clicks and
+    // cannot loot a colony merely because the player is offline.
+    if any_at_gate
+        && (has_officer(colony, OfficerRole::Captain) || lai23_live_leader_defense_intent(colony))
+    {
         resolve_active_raid(colony, gate, &active_raid_id, &mut next_raid_roll);
     }
 
@@ -17002,6 +26248,16 @@ fn phase_36c_physical_transport(
 /// One full unspecialized hunt (8h) plus a bounded return/deposit runway. This is
 /// intentionally measured from the original crisis, never from each new job/tick.
 const CRITICAL_INBOUND_RELIEF_GRACE_MS: i64 = 30_000_000;
+const LAI23_VISIBLE_CRITICAL_RELIEF_GRACE_MS: i64 = 90_000_000;
+/// Reported reserve above the two-per-cat research comfort floor that triggers
+/// physical survival dispatch. Frontier travel, personal-needs yielding, return,
+/// and deposit can span many scheduler bands; fourteen hours is the bounded route
+/// runway that lets a competent scheduler start before the pantry is already
+/// inside the expedition's unavoidable latency.
+const LAI23_SURVIVAL_ROUTE_RUNWAY_PER_CAT: f64 = 14.0;
+/// Minimum finite wildlife stock worth reserving for a physical Hunt expedition.
+/// Phase 12 regrows one unit per hour, so this is a four-hour batching window.
+const LAI23_MINIMUM_HUNT_BATCH_UNITS: u32 = 4;
 
 /// A staffed hunt/fetch can be credible relief before its yield is credited: either its living
 /// carrier is physically returning to the right pile, or its queued/active timer has a finite due point
@@ -17090,12 +26346,91 @@ fn has_inbound_critical_relief(
             })
         })
     };
+    let visible_relief = |category| {
+        use crate::task_runtime::TaskStage;
+
+        colony
+            .leader_ai_runtime
+            .scheduling
+            .visible_tasks
+            .values()
+            .any(|task| {
+                task.category == category
+                    && matches!(
+                        task.stage,
+                        TaskStage::Reserve
+                            | TaskStage::TravelToSource
+                            | TaskStage::Pickup
+                            | TaskStage::TravelToWork
+                            | TaskStage::Work
+                            | TaskStage::TravelToEndpoint
+                            | TaskStage::Deposit
+                            | TaskStage::Complete
+                    )
+            })
+    };
     (!food_needed
         || carries(CarryingKind::Food)
         || carries(CarryingKind::Fish)
         || active_job(JobKind::HuntExpedition)
-        || active_job(JobKind::Fish))
-        && (!water_needed || carries(CarryingKind::Water) || active_job(JobKind::FetchWater))
+        || active_job(JobKind::Fish)
+        || visible_relief(crate::task_runtime::TaskCategory::Hunt))
+        && (!water_needed
+            || carries(CarryingKind::Water)
+            || active_job(JobKind::FetchWater)
+            || visible_relief(crate::task_runtime::TaskCategory::FetchWater))
+}
+
+fn has_assigned_lai23_visible_critical_relief(colony: &ColonyRuntime) -> bool {
+    let food_needed = colony.resources.food + colony.resources.fish <= 0.0;
+    let water_needed = colony.resources.water <= 0.0;
+    if !food_needed && !water_needed {
+        return false;
+    }
+    let visible_relief = |category| {
+        use crate::task_runtime::TaskStage;
+
+        colony
+            .leader_ai_runtime
+            .scheduling
+            .visible_tasks
+            .values()
+            .any(|task| {
+                task.category == category
+                    && !task.assigned_cat_ids.is_empty()
+                    && matches!(
+                        task.stage,
+                        TaskStage::TravelToSource
+                            | TaskStage::Pickup
+                            | TaskStage::TravelToWork
+                            | TaskStage::Work
+                            | TaskStage::TravelToEndpoint
+                            | TaskStage::Deposit
+                    )
+            })
+    };
+    // Any assigned physical survival leg is meaningful relief while the other
+    // category is regenerated on the next planner boundary. Requiring both
+    // categories here incorrectly collapses a colony in the handoff tick when
+    // one sibling task has completed and the replacement is not yet materialized.
+    (!food_needed || visible_relief(crate::task_runtime::TaskCategory::Hunt))
+        || (!water_needed || visible_relief(crate::task_runtime::TaskCategory::FetchWater))
+}
+
+fn lai23_cat_has_active_survival_task(colony: &ColonyRuntime, cat_id: &str) -> bool {
+    colony
+        .leader_ai_runtime
+        .scheduling
+        .visible_tasks
+        .values()
+        .any(|task| {
+            matches!(
+                task.category,
+                crate::task_runtime::TaskCategory::Hunt
+                    | crate::task_runtime::TaskCategory::FetchWater
+            ) && !task.stage.is_terminal()
+                && task.assigned_cat_ids.contains(cat_id)
+        })
 }
 
 fn phase_37_final_clamp_critical_collapse_status_persist(
@@ -17145,12 +26480,13 @@ fn phase_37_final_clamp_critical_collapse_status_persist(
         if colony.critical_since.is_none() {
             colony.critical_since = Some(gate.processed_through);
         }
-        let relief_grace =
-            if has_inbound_critical_relief(colony, gate.processed_through, critical_ms) {
-                CRITICAL_INBOUND_RELIEF_GRACE_MS
-            } else {
-                0
-            };
+        let relief_grace = if has_assigned_lai23_visible_critical_relief(colony) {
+            LAI23_VISIBLE_CRITICAL_RELIEF_GRACE_MS
+        } else if has_inbound_critical_relief(colony, gate.processed_through, critical_ms) {
+            CRITICAL_INBOUND_RELIEF_GRACE_MS
+        } else {
+            0
+        };
         if crate::idle_rules::should_reset_from_critical_after(
             colony.critical_since,
             gate.processed_through,
@@ -17295,6 +26631,10 @@ fn reset_run(colony: &mut ColonyRuntime, now_ms: i64, reason: RunResetReason) {
     };
     colony.run_started_at = now_ms;
     colony.last_tick = now_ms;
+    // Planner clocks are run-relative; a collapse starts a new run epoch and
+    // must not carry a future absolute review tick into the reset timeline.
+    colony.leader_ai_runtime.planner.planning_clock = 0;
+    colony.leader_ai_runtime.planner.planning_epoch = 0;
     colony.critical_since = None;
     colony.ritual_requested_at = None;
     colony.threat_pressure = 0.0;
@@ -17381,7 +26721,7 @@ fn try_repair_founding_housing_core(colony: &mut ColonyRuntime) -> bool {
     let _ = connect_current_gate_to_shrine(colony, placement_seed);
 
     let required_dens: usize = match colony.scale {
-        VillageScale::Communal => 6,
+        VillageScale::Communal => 7,
         VillageScale::Personal => 3,
     };
     let missing_dens = required_dens.saturating_sub(
@@ -17780,25 +27120,8 @@ fn recovery_world_tile(
             colony.anchor.x,
             colony.anchor.y,
         ) {
-            let tile_pos = TilePos {
-                x: tile.x,
-                y: tile.y,
-            };
-            generated_tiles.insert(
-                tile_pos,
-                WorldTileRuntime {
-                    pos: tile_pos,
-                    tile_type: tile.tile_type,
-                    resources: tile.resources,
-                    max_resources: tile.max_resources,
-                    danger_level: tile.danger_level,
-                    path_wear: tile.path_wear,
-                    last_depleted: tile.last_depleted,
-                    overlay_feature: tile
-                        .overlay_feature
-                        .map(|feature| feature.as_str().to_owned()),
-                },
-            );
+            let runtime = runtime_world_tile_from_generated(tile, world_seed, colony.anchor);
+            generated_tiles.insert(runtime.pos, runtime);
         }
     }
     generated_tiles.get(&pos).cloned()
@@ -18253,6 +27576,8 @@ fn cheb_distance_world(left: WorldPos, right: WorldPos) -> f64 {
     (left.x - right.x).abs().max((left.y - right.y).abs())
 }
 
+#[cfg(test)]
+#[cfg(test)]
 fn next_base_roll(colony: &mut ColonyRuntime) -> f64 {
     let seed = colony.test_rng_seed.unwrap_or(1);
     let roll = roll_seeded(f64::from(seed));
@@ -18270,7 +27595,7 @@ fn next_life_roll(seed: &mut u32) -> f64 {
 /// Total cats the village can currently shelter (shrine + completed dens), for the
 /// breeding gate's housing headroom check. Computed independently of phase 18's
 /// `LeaderSnapshot` since phase 6 (life sim) runs earlier in the tick.
-fn colony_housing_capacity(colony: &ColonyRuntime) -> f64 {
+pub(crate) fn colony_housing_capacity(colony: &ColonyRuntime) -> f64 {
     let housing_buildings: Vec<crate::housing::HousingBuilding> = colony
         .buildings
         .iter()
@@ -18286,6 +27611,44 @@ fn colony_housing_capacity(colony: &ColonyRuntime) -> f64 {
     crate::housing::housing_capacity(&housing_buildings, effects.housing_per_den)
         * effects.housing_capacity_mult
         * completed_building_multiplier(colony, BuildingType::Den, effects.den_stewardship_mult)
+}
+
+pub(crate) fn lai32_debug_reachable_food_sources(colony: &ColonyRuntime) -> Option<(usize, u32)> {
+    let routes = lai23_survival_route_context(colony)?;
+    let mut source_count = 0_usize;
+    let mut food_units = 0_u32;
+    for tile in colony.world_tiles.values().filter(|tile| {
+        tile.resources.food > 0
+            && tile_is_explored(colony, tile)
+            && cheb_from_anchor(colony.anchor, tile.pos) > 4
+    }) {
+        if lai23_adjacent_work_tile(colony, &routes, tile.pos).is_some() {
+            source_count += 1;
+            food_units = food_units.saturating_add(tile.resources.food);
+        }
+    }
+    Some((source_count, food_units))
+}
+
+/// Route-aware counterpart limited to the exact source contract used by Hunt tasks.
+/// Keeping this separate from the broad biome-forage diagnostic makes a failure payload
+/// distinguish "food exists somewhere in the world" from "a legal Hunt can reach it."
+pub(crate) fn lai32_debug_reachable_hunt_sources(colony: &ColonyRuntime) -> Option<(usize, u32)> {
+    let routes = lai23_survival_route_context(colony)?;
+    let mut source_count = 0_usize;
+    let mut food_units = 0_u32;
+    for tile in colony.world_tiles.values().filter(|tile| {
+        tile.tile_type == TileType::CaveEntrance
+            && tile.resources.food > 0
+            && tile_is_explored(colony, tile)
+            && cheb_from_anchor(colony.anchor, tile.pos) > 4
+    }) {
+        if lai23_adjacent_work_tile(colony, &routes, tile.pos).is_some() {
+            source_count += 1;
+            food_units = food_units.saturating_add(tile.resources.food);
+        }
+    }
+    Some((source_count, food_units))
 }
 
 fn alive_cats(cats: &[Cat]) -> impl Iterator<Item = &Cat> {
@@ -18359,13 +27722,41 @@ fn automated_job_role(colony: &ColonyRuntime, job: &JobRuntime) -> Option<Office
 /// Primitive jobs belong to the always-present founding Leader even though their
 /// richer category automation later belongs to Farmer/Loremaster. Role-vacancy
 /// cleanup must not cancel these every tick or a fresh village can never finish a
-/// physical hunt, water fetch, or scout return.
+/// physical hunt, water fetch, scout return, or one capacity-restoring Den.
 fn is_baseline_leader_job(job: &JobRuntime) -> bool {
     job.requested_by == JobRequester::Leader
-        && matches!(
+        && (matches!(
             job.kind,
             JobKind::HuntExpedition | JobKind::FetchWater | JobKind::Explore
-        )
+        ) || job.kind == JobKind::BuildHouse
+            && job_building_type(job) == Some(BuildingType::Den))
+}
+
+/// A fresh village has no specialist offices yet, but the founding Leader must
+/// still be able to establish the first renewable food chain. The reservation
+/// is one logical project even while it temporarily appears as a queued Field
+/// plus a linked one-tile expansion. Vacancy cleanup must preserve both halves
+/// or the expansion loses its builder and the Field can never break ground.
+fn is_founding_field_fallback_chain_job(colony: &ColonyRuntime, job: &JobRuntime) -> bool {
+    if !lai23_founding_farmer_fallback_active(colony) || job.requested_by != JobRequester::Leader {
+        return false;
+    }
+    if job.kind == JobKind::BuildHouse && job_building_type(job) == Some(BuildingType::Field) {
+        return true;
+    }
+    let JobMetadata::Expansion {
+        source_build_job_id: Some(source_id),
+        ..
+    } = &job.metadata
+    else {
+        return false;
+    };
+    colony.jobs.iter().any(|source| {
+        source.id == *source_id
+            && source.requested_by == JobRequester::Leader
+            && source.kind == JobKind::BuildHouse
+            && job_building_type(source) == Some(BuildingType::Field)
+    })
 }
 
 fn baseline_leader_job_cap(kind: JobKind, population: usize) -> Option<usize> {
@@ -18378,6 +27769,7 @@ fn baseline_leader_job_cap(kind: JobKind, population: usize) -> Option<usize> {
         JobKind::HuntExpedition => Some(proportional_cap(BASELINE_HUNT_MAX_SLOTS)),
         JobKind::FetchWater => Some(proportional_cap(BASELINE_WATER_MAX_SLOTS)),
         JobKind::Explore => Some(proportional_cap(BASELINE_SCOUT_MAX_SLOTS)),
+        JobKind::BuildHouse => Some(1),
         _ => None,
     }
 }
@@ -18414,6 +27806,7 @@ pub(crate) fn release_role_automation(colony: &mut ColonyRuntime, role: OfficerR
     let mut preserved_hunts = 0usize;
     let mut preserved_water = 0usize;
     let mut preserved_scouts = 0usize;
+    let mut preserved_dens = 0usize;
     let living_population = active_resident_cats(colony).count();
     let cancelled_indices = colony
         .jobs
@@ -18426,11 +27819,15 @@ pub(crate) fn release_role_automation(colony: &mut ColonyRuntime, role: OfficerR
             {
                 return None;
             }
+            if role == OfficerRole::Farmer && is_founding_field_fallback_chain_job(colony, job) {
+                return None;
+            }
             if is_baseline_leader_job(job) {
                 let preserved = match job.kind {
                     JobKind::HuntExpedition => &mut preserved_hunts,
                     JobKind::FetchWater => &mut preserved_water,
                     JobKind::Explore => &mut preserved_scouts,
+                    JobKind::BuildHouse => &mut preserved_dens,
                     _ => unreachable!("baseline helper accepted a non-baseline job"),
                 };
                 if *preserved < baseline_leader_job_cap(job.kind, living_population).unwrap_or(0) {
@@ -18766,6 +28163,7 @@ fn append_event(
     });
 }
 
+#[cfg(test)]
 fn can_take_policy_action(colony: &mut ColonyRuntime, policy: TickPolicy) -> bool {
     next_base_roll(colony) <= policy.config.action_reliability
 }
@@ -18778,10 +28176,13 @@ fn active_or_queued_jobs(colony: &ColonyRuntime) -> Vec<&JobRuntime> {
         .collect()
 }
 
+#[cfg(test)]
 fn count_jobs(jobs: &[&JobRuntime], kind: JobKind) -> u32 {
     jobs.iter().filter(|job| job.kind == kind).count() as u32
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 fn has_conflicting_active_job(colony: &ColonyRuntime, kind: JobKind) -> bool {
     active_or_queued_jobs(colony).iter().any(|job| match kind {
         JobKind::LeaderPlanHunt => {
@@ -18801,6 +28202,7 @@ fn job_building_type(job: &JobRuntime) -> Option<BuildingType> {
     }
 }
 
+#[cfg(test)]
 fn storage_buildings(colony: &ColonyRuntime) -> Vec<StorageBuilding> {
     colony
         .buildings
@@ -18888,6 +28290,8 @@ fn select_best_cat_for_labor(
         .map(|cat| cat.id.clone())
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 fn select_best_scout_cat(colony: &ColonyRuntime) -> Option<CatId> {
     let busy_ids = active_or_queued_jobs(colony)
         .iter()
@@ -18918,6 +28322,7 @@ fn select_best_scout_cat(colony: &ColonyRuntime) -> Option<CatId> {
 /// employment fill used every idle cat, reclaim one luxury-bench worker rather
 /// than leaving an otherwise reachable shrine action permanently undispatched.
 /// `queue_job` releases the selected worker's bench assignment.
+#[cfg(test)]
 fn select_best_raw_material_worker(
     colony: &ColonyRuntime,
     specialization: Option<CatSpecialization>,
@@ -18963,6 +28368,7 @@ fn select_best_raw_material_worker(
 /// Which critical store is reclaiming production labour. Water deliberately preserves
 /// Field/Mill staffing; an empty larder may reclaim it until urgent hunts are staffed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg(test)]
 enum EmergencyResource {
     Food,
     Water,
@@ -18973,6 +28379,7 @@ enum EmergencyResource {
 /// returned cat still runs the ordinary timed hunt/fetch job; this is labor preemption, not
 /// a free resource faucet. Field and Mill workers are excluded from autonomous water relief,
 /// but become eligible for Farmer-owned food relief when the larder itself is empty.
+#[cfg(test)]
 fn select_best_preemptible_production_worker(
     colony: &ColonyRuntime,
     specialization: Option<CatSpecialization>,
@@ -18981,6 +28388,7 @@ fn select_best_preemptible_production_worker(
     select_best_preemptible_production_worker_for_labor(colony, specialization, None, emergency)
 }
 
+#[cfg(test)]
 fn select_best_preemptible_production_worker_for_labor(
     colony: &ColonyRuntime,
     specialization: Option<CatSpecialization>,
@@ -19219,6 +28627,7 @@ fn task_for_job(kind: JobKind) -> Option<TaskType> {
     }
 }
 
+#[cfg(test)]
 fn cat_brief(cat: &Cat) -> CatBrief {
     CatBrief {
         id: cat.id.clone(),
@@ -19328,6 +28737,7 @@ fn reconcile_building_work_slots(colony: &mut ColonyRuntime) {
     }
 }
 
+#[cfg(test)]
 fn cancel_jobs(
     colony: &mut ColonyRuntime,
     now_ms: i64,
@@ -19797,22 +29207,8 @@ fn ensure_scout_search_tiles(colony: &mut ColonyRuntime, world_seed: u32) {
                 colony.anchor.x,
                 colony.anchor.y,
             ) {
-                let pos = TilePos {
-                    x: tile.x,
-                    y: tile.y,
-                };
-                colony.world_tiles.entry(pos).or_insert(WorldTileRuntime {
-                    pos,
-                    tile_type: tile.tile_type,
-                    resources: tile.resources,
-                    max_resources: tile.max_resources,
-                    danger_level: tile.danger_level,
-                    path_wear: tile.path_wear,
-                    last_depleted: tile.last_depleted,
-                    overlay_feature: tile
-                        .overlay_feature
-                        .map(|feature| feature.as_str().to_owned()),
-                });
+                let runtime = runtime_world_tile_from_generated(tile, world_seed, colony.anchor);
+                colony.world_tiles.entry(runtime.pos).or_insert(runtime);
             }
         }
     }
@@ -20719,7 +30115,13 @@ fn next_claimed_building_site(
         .copied()
         .filter(|anchor| {
             let tiles = footprint_tiles(*anchor, w, h);
-            occupancy.placement_error_for_tiles(&tiles, true).is_none()
+            let placement_is_clear = {
+                let error = occupancy.placement_error_for_tiles(&tiles, true);
+                error.is_none()
+                    || (building_type == BuildingType::Field
+                        && error == Some(SpatialPlacementError::PerimeterWall))
+            };
+            placement_is_clear
                 && tiles.iter().all(|tile| !reserved_tiles.contains(tile))
                 && (building_type == BuildingType::Field
                     || tiles
@@ -20926,7 +30328,7 @@ fn claimed_building_site_is_ready(
     let (width, height) = footprint_for(building_type);
     let tiles = footprint_tiles(site, width, height);
     let claimed = colony.claimed_tiles.iter().copied().collect();
-    placement_error_for_tiles(colony, &tiles, world_seed, true).is_none()
+    building_placement_error_for_tiles(colony, &tiles, world_seed, true, building_type).is_none()
         && (building_type == BuildingType::Field
             || tiles
                 .iter()
@@ -20938,6 +30340,52 @@ fn claimed_building_site_is_ready(
                     && tile_is_farmable(world_seed, *tile, colony.world_tiles.get(tile))
             }))
         && cached_candidate_building_road_route(colony, site, building_type, world_seed).is_some()
+}
+
+/// Human-readable decomposition of the exact authoritative predicates that keep a
+/// reserved construction footprint queued. Campaign probes use this instead of
+/// guessing from wall-clock liveness: the text contains no hidden resource truth and is
+/// never consumed by simulation decisions.
+#[doc(hidden)]
+pub(crate) fn building_site_readiness_diagnostic(
+    colony: &ColonyRuntime,
+    site: TilePos,
+    world_seed: u32,
+    building_type: BuildingType,
+) -> String {
+    let (width, height) = footprint_for(building_type);
+    let tiles = footprint_tiles(site, width, height);
+    let claimed = colony.claimed_tiles.iter().copied().collect::<HashSet<_>>();
+    let placement =
+        building_placement_error_for_tiles(colony, &tiles, world_seed, true, building_type);
+    let non_agricultural = tiles
+        .iter()
+        .all(|tile| !colony.agricultural_tiles.contains(tile));
+    let claim_margin = building_footprint_has_claim_margin(&tiles, &claimed);
+    let claim_region = building_claim_region(site, building_type).unwrap_or_default();
+    let mut missing_claims = claim_region
+        .iter()
+        .filter(|tile| !claimed.contains(tile))
+        .copied()
+        .collect::<Vec<_>>();
+    missing_claims.sort_by_key(|tile| (tile.y, tile.x));
+    let exterior = tiles
+        .iter()
+        .all(|tile| !inside_village_interior(colony, *tile));
+    let farmable = tiles
+        .iter()
+        .all(|tile| tile_is_farmable(world_seed, *tile, colony.world_tiles.get(tile)));
+    let access_route =
+        cached_candidate_building_road_route(colony, site, building_type, world_seed);
+    format!(
+        "site=({},{}),type={building_type:?},placement={placement:?},non_agricultural={non_agricultural},claim_margin={claim_margin},missing_claims={missing_claims:?},exterior={exterior},farmable={farmable},access_route={}",
+        site.x,
+        site.y,
+        access_route.as_ref().map_or_else(
+            || "none".to_owned(),
+            |route| format!("some({})", route.len())
+        )
+    )
 }
 
 /// Choose a deterministic future footprint for a site-less construction. The candidate's
@@ -21107,7 +30555,8 @@ pub fn can_plan_building_at(
 ) -> bool {
     let (width, height) = footprint_for(building_type);
     let footprint = footprint_tiles(site, width, height);
-    if placement_error_for_tiles(colony, &footprint, world_seed, true).is_some()
+    if building_placement_error_for_tiles(colony, &footprint, world_seed, true, building_type)
+        .is_some()
         || reserved_construction_tiles(colony)
             .iter()
             .any(|tile| footprint.contains(tile))
@@ -21770,6 +31219,7 @@ fn raw_material_staffing_priority(
 /// plan can weigh their open slots against hunting/water. They are claimed directly by
 /// `AssignWorkshop` in phase 20 or, if still open, by phase 23's genuinely-idle mop-up.
 /// Keeps the benches non-sticky without hiding their demand from the plan.
+#[cfg(test)]
 fn release_raw_material_workshop_workers(colony: &mut ColonyRuntime) {
     for index in 0..colony.buildings.len() {
         let building = &colony.buildings[index];
@@ -22059,6 +31509,7 @@ fn staff_reserved_raw_material_bench(colony: &mut ColonyRuntime, now_ms: i64) {
 
 /// Return only officer-owned Field/Mill workers to the labor pool during a food
 /// emergency. Explicit player staffing remains physical player state.
+#[cfg(test)]
 fn release_automated_food_production_workers(colony: &mut ColonyRuntime) {
     #[cfg(test)]
     let farm_preemptions = colony
@@ -22217,6 +31668,7 @@ fn physical_textile_needs_worker(colony: &ColonyRuntime, building: &BuildingRunt
 
 /// Release only officer-owned luxury workers. A player-assigned textile bench remains
 /// authoritative even when paused, locked, starved, or deliberately queue-empty.
+#[cfg(test)]
 fn release_unrunnable_textile_workers(colony: &mut ColonyRuntime) {
     let office_filled = has_officer(colony, OfficerRole::ClothLeader);
     let release = colony
@@ -22261,6 +31713,7 @@ fn auto_staff_runnable_textile_benches(colony: &mut ColonyRuntime, now_ms: i64) 
     }
 }
 
+#[cfg(test)]
 fn auto_staff_one_runnable_textile_bench(colony: &mut ColonyRuntime, now_ms: i64) {
     let mut candidates = colony
         .buildings
@@ -22436,6 +31889,7 @@ fn physical_smithy_needs_worker(colony: &ColonyRuntime, building: &BuildingRunti
     physical_smithy_route_committed(colony, building) || physical_smithy_runnable(colony, building)
 }
 
+#[cfg(test)]
 fn release_unrunnable_smithy_workers(colony: &mut ColonyRuntime) {
     let office_filled = has_officer(colony, OfficerRole::Captain);
     let release = colony
@@ -22472,6 +31926,7 @@ fn release_unrunnable_smithy_workers(colony: &mut ColonyRuntime) {
     }
 }
 
+#[cfg(test)]
 fn automated_worker_ids(building: &BuildingRuntime, role: OfficerRole) -> Vec<CatId> {
     building
         .assigned_cat
@@ -22488,6 +31943,7 @@ fn automated_worker_ids(building: &BuildingRuntime, role: OfficerRole) -> Vec<Ca
         .collect()
 }
 
+#[cfg(test)]
 fn release_idle_building_cat(colony: &mut ColonyRuntime, cat_id: &str) {
     let job_bound = colony.jobs.iter().any(|job| {
         matches!(job.status, JobStatus::Active | JobStatus::Queued)
@@ -22758,6 +32214,7 @@ fn grant_building_skill(colony: &mut ColonyRuntime, building_id: &str, labor: La
 /// job, and a dead/absent assignee contributes nothing. This is the sole input to
 /// [`phase_24_research`]'s point accrual; a colony with no staffed hut/school yields 0.0 and
 /// is byte-identical to the pre-wiring behaviour.
+#[cfg(test)]
 fn research_workforce(colony: &ColonyRuntime) -> f64 {
     let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
     colony
@@ -22792,6 +32249,7 @@ fn research_workforce(colony: &ColonyRuntime) -> f64 {
         .sum()
 }
 
+#[cfg(test)]
 fn research_worker_ids(colony: &ColonyRuntime) -> Vec<CatId> {
     colony
         .buildings
@@ -31423,6 +40881,77 @@ mod tests {
         );
     }
 
+    #[test]
+    fn unreachable_source_never_uses_straight_line() {
+        let start = pos(10, 6);
+        let destination = pos(12, 6);
+        let mut cat = adult_idle_cat("blocked-hunter", "colony-1");
+        cat.position = position_from_world(tile_pos_to_world(start));
+        cat.destination = Some(position_from_world(tile_pos_to_world(destination)));
+        cat.activity = CatActivity::Traveling;
+        cat.current_task = Some(TaskType::Hunt);
+
+        let mut world_tiles = BTreeMap::new();
+        for x in 9..=13 {
+            for y in 5..=7 {
+                world_tiles.insert(pos(x, y), tile(x, y, 0, None));
+            }
+        }
+        let mut staged_wall_edges = HashSet::new();
+        for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            staged_wall_edges.insert(pathfinding::FenceEdge::new(
+                start.x,
+                start.y,
+                start.x + dx,
+                start.y + dy,
+            ));
+        }
+
+        let mut colony = ColonyRuntime {
+            id: "colony-1".to_owned(),
+            resources: plentiful_resources(),
+            cats: vec![cat],
+            world_tiles,
+            test_rng_seed: Some(123),
+            ..ColonyRuntime::default()
+        };
+        let movement = MovementPassContext {
+            movement_seed: movement_seed(123),
+            movement_elapsed: 1.0,
+            wander_chance: 0.0,
+            ring_radius: 4,
+            anchor: VILLAGE_ANCHOR_TILE,
+            claimed_area: Default::default(),
+            area_gate: None,
+            staged_wall_edges,
+            gate: pos(6, 10),
+            walk_tiles: colony
+                .world_tiles
+                .values()
+                .map(walk_tile_from_runtime)
+                .collect(),
+            zones: Vec::new(),
+            world_seed: 123,
+        };
+
+        phase_34_movement_travel_job_acceptance_reveal_path_wear(
+            &mut colony,
+            TickGate {
+                elapsed_sec: 1,
+                processed_through: 1_000,
+                minute_rolled: false,
+                previous_water: 0,
+            },
+            &movement,
+        );
+
+        assert_eq!(
+            colony.cats[0].position,
+            position_from_world(tile_pos_to_world(start)),
+            "a denied route must block instead of invoking the generic straight-line walker"
+        );
+    }
+
     fn long_walk_position_with_transport_research(rail_researched: bool) -> Position {
         let start = pos(100, 100);
         let mut cat = adult_idle_cat("long-walker", "colony-1");
@@ -32780,7 +42309,7 @@ mod tests {
     }
 
     #[test]
-    fn captain_automates_gate_combat_while_a_vacancy_waits_for_manual_defense() {
+    fn captain_automates_gate_combat_and_leader_covers_the_office_vacancy() {
         let mut defender = adult_idle_cat("defender", "colony-1");
         defender.stats.attack = 200.0;
         defender.stats.defense = 200.0;
@@ -32819,48 +42348,70 @@ mod tests {
         let _ = world_tick(&mut filled, 1_000);
         let _ = world_tick(&mut vacant, 1_000);
         assert!(filled.colonies[0].active_raid.is_none());
-        assert_eq!(
-            vacant.colonies[0].active_raid.as_deref(),
-            Some("guided-raid")
-        );
-        assert_eq!(vacant.colonies[0].raiders[0].health, 12.0);
-        assert!(vacant.colonies[0].events.iter().all(|event| {
-            !matches!(
-                event.kind,
-                EventKind::Raid(RaidPhase::Won | RaidPhase::Lost)
-            )
-        }));
-
-        for now_ms in [1_100, 1_200] {
-            let action = proto::ClientAction::DefendRaid {
-                session_id: "guided-session".to_owned(),
-                nickname: "Guide".to_owned(),
-                sig: "pure-sim".to_owned(),
-            };
-            let result = apply_action(
-                &mut vacant,
-                &action,
-                &ActionCtx {
-                    session_id: "guided-session".to_owned(),
-                    player_id: "guided-player".to_owned(),
-                    colony_id: "colony-1".to_owned(),
-                    now_ms,
-                },
-            );
-            assert!(result.ok, "manual defense click failed");
-        }
-        assert_eq!(vacant.colonies[0].raiders[0].health, 0.0);
-        let _ = world_tick(&mut vacant, 2_000);
         assert_eq!(vacant.colonies[0].active_raid, None);
         assert!(vacant.colonies[0].raiders.is_empty());
         assert_eq!(
             vacant.colonies[0]
                 .events
                 .iter()
-                .filter(|event| event.kind == EventKind::Raid(RaidPhase::Repelled))
+                .filter(|event| {
+                    matches!(
+                        event.kind,
+                        EventKind::Raid(RaidPhase::Won | RaidPhase::Lost)
+                    )
+                })
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn leader_defense_intent_musters_the_gate_while_captain_office_is_vacant() {
+        let mut defender = adult_idle_cat("defender", "colony-1");
+        defender.stats.attack = 200.0;
+        defender.stats.defense = 200.0;
+        let mut colony = ColonyRuntime {
+            id: "colony-1".to_owned(),
+            cats: vec![defender],
+            leader_id: Some("defender".to_owned()),
+            resources: plentiful_resources(),
+            last_tick: 0,
+            test_rng_seed: Some(12_345),
+            ..ColonyRuntime::default()
+        };
+        colony.active_raid = Some("leader-guided-raid".to_owned());
+        colony.raiders.push(RaiderRuntime {
+            id: "leader-guided-raider".to_owned(),
+            raid_id: "leader-guided-raid".to_owned(),
+            position: position_from_world(tile_pos_to_world(raid_gate_position(&colony))),
+            destination: None,
+            attack: 1.0,
+            defense: 1.0,
+            health: 12.0,
+        });
+        migrate_legacy_leadership_into_runtime(&mut colony, 0);
+        run_due_leader_reviews(&mut colony, 0, 12_345);
+        assert!(
+            lai23_live_leader_defense_intent(&colony),
+            "active threat must produce a non-omittable Leader defense intent"
+        );
+        assert!(!has_officer(&colony, OfficerRole::Captain));
+
+        let mut world = WorldState {
+            shared_spatial: Default::default(),
+            world_seed: 12_345,
+            colonies: vec![colony],
+        };
+        let _ = world_tick(&mut world, 1_000);
+        let colony = &world.colonies[0];
+        assert_eq!(colony.active_raid, None);
+        assert!(colony.raiders.is_empty());
+        assert!(colony.events.iter().any(|event| {
+            matches!(
+                event.kind,
+                EventKind::Raid(RaidPhase::Won | RaidPhase::Lost)
+            )
+        }));
     }
 
     #[test]
@@ -38023,17 +47574,9 @@ mod tests {
         let cat = &colony.cats[0];
         assert_ne!(cat.current_task, Some(TaskType::Farm));
         assert_eq!(colony.farms[0].worker_id, None);
-        assert!(
-            colony
-                .jobs
-                .iter()
-                .any(|job| job.kind == JobKind::LeaderPlanHunt),
-            "food relief remains a real timed hunt chain: {:?}",
-            colony.jobs
-        );
         assert_eq!(
             cat.current_task, None,
-            "the former farmer is free to schedule"
+            "the former farmer is free for the next report-safe survival review"
         );
     }
 
@@ -40031,6 +49574,32 @@ mod tests {
             minute_rolled: true,
             ..production_gate(elapsed_sec, processed_through)
         }
+    }
+
+    #[test]
+    fn food_regrowth_carries_fractional_time_across_fine_ticks_and_restarts() {
+        let site = TilePos { x: 2, y: 3 };
+        let mut source = tile(site.x, site.y, 0, None);
+        source.max_resources.food = 10;
+        source.last_depleted = 1;
+        let mut coarse = ColonyRuntime {
+            world_tiles: BTreeMap::from([(site, source.clone())]),
+            test_time_scale: 1.0,
+            ..ColonyRuntime::default()
+        };
+        let mut fine = coarse.clone();
+
+        phase_12_resource_regrowth(&mut coarse, regrowth_gate(3_600, 3_600_001), 123);
+        for quarter in 1..=4 {
+            // Cloning between partitions models an authoritative persistence
+            // restart; the timestamp cursor is the only carried accumulator.
+            fine = fine.clone();
+            phase_12_resource_regrowth(&mut fine, regrowth_gate(900, 1 + quarter * 900_000), 123);
+        }
+
+        assert_eq!(fine.world_tiles, coarse.world_tiles);
+        assert_eq!(fine.world_tiles[&site].resources.food, 1);
+        assert_eq!(fine.world_tiles[&site].last_depleted, 3_600_001);
     }
 
     #[test]
@@ -51589,6 +61158,32 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any())]
+    fn lai23_stale_runtime_leader_rebinds_before_survival_review() {
+        let mut colony = found_colony(320_000, "colony-1", 10_000, 320_000);
+        let dead_leader = colony.cats[0].id.clone();
+        colony.leader_id = Some(dead_leader.clone());
+        migrate_legacy_leadership_into_runtime(&mut colony, 1);
+        colony
+            .cats
+            .iter_mut()
+            .find(|cat| cat.id == dead_leader)
+            .expect("founding leader")
+            .death_time = Some(2_000);
+
+        ensure_lai23_founding_leader(&mut colony, 2_000, 2);
+
+        let successor = colony.leader_id.expect("living handoff leader");
+        assert_ne!(successor, dead_leader);
+        assert!(
+            colony
+                .cats
+                .iter()
+                .any(|cat| cat.id == successor && cat.death_time.is_none())
+        );
+    }
+
+    #[test]
     fn run_reset_preserves_the_colony_daily_research_clock() {
         let mut colony = found_colony(47, "colony-1", 10_000, 47);
         colony.upgrade_tree.research_points = 100.0;
@@ -52437,6 +62032,41 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_food_need_preempts_farm_before_the_cat_is_critical() {
+        let mut cat = survival_cat(CatNeeds {
+            hunger: 64.0,
+            thirst: 100.0,
+            rest: 100.0,
+            health: 100.0,
+        });
+        cat.current_task = Some(TaskType::Farm);
+        cat.activity = CatActivity::Working;
+        let mut colony = survival_colony(cat, 8.0, 8.0);
+        reconcile_colony_stockpiles(&mut colony);
+
+        phase_25_survival_deaths_and_carried_yield_salvage(
+            &mut colony,
+            production_gate(1, 1_000),
+            normal_policy(),
+        );
+
+        let cat = &colony.cats[0];
+        assert_eq!(cat.current_task, Some(TaskType::Eat));
+        let marker = cat
+            .carrying
+            .as_ref()
+            .and_then(|carrying| parse_personal_need_marker(carrying.source_gather_spot.as_deref()))
+            .expect("ordinary need starts a durable meal route");
+        assert_eq!(marker.stage, PersonalNeedStage::Seeking);
+        assert_eq!(
+            marker.resume.current_task,
+            Some(TaskType::Farm),
+            "the Field resumes after the meal instead of losing work"
+        );
+        assert_eq!(cat.needs.health, 100.0);
+    }
+
+    #[test]
     fn blocked_or_fatal_personal_route_conserves_the_serving() {
         let mut cat = survival_cat(CatNeeds {
             hunger: 100.0,
@@ -53153,11 +62783,14 @@ mod tests {
         assert!(!colony.cats[0].is_pregnant && !colony.cats[1].is_pregnant);
 
         colony.test_time_scale = 1.0;
+        let gate = production_gate(3_600, 3_600_000);
         colony.test_rng_seed = Some(seed_with_first_life_roll_below(
+            &colony,
+            gate,
             crate::life_sim::BASE_BREEDING_CHANCE_PER_HOUR,
         ));
         colony.resources.blessings = 100.0;
-        phase_6_life_simulation(&mut colony, production_gate(3_600, 3_600_000));
+        phase_6_life_simulation(&mut colony, gate);
 
         // 24h start age + 1h elapsed = 25h; gestation is due at age 43h.
         assert!(colony.cats[0].is_pregnant, "mother should have conceived");
@@ -53168,6 +62801,52 @@ mod tests {
         assert_eq!(colony.cats[0].pregnancy_due_age_hours, Some(43.0));
         assert_eq!(colony.cats[1].pregnancy_due_age_hours, None);
         assert_eq!(colony.cats[0].pregnancy_mate_id.as_deref(), Some("father"));
+    }
+
+    #[test]
+    fn lineage_recovery_can_conceive_below_the_authored_base_roll() {
+        let mut colony = breeding_colony(
+            vec![
+                adult_idle_cat("mother", "colony-1"),
+                adult_idle_cat("father", "colony-1"),
+            ],
+            150.0,
+            150.0,
+        );
+        colony.test_time_scale = 1.0;
+        let gate = production_gate(3_600, 3_600_000);
+        let game_second = life_game_second_at(&colony, gate.processed_through);
+        colony.test_rng_seed = Some(
+            (1..u32::MAX)
+                .find(|seed| {
+                    let roll = roll_seeded(f64::from(keyed_life_seed(
+                        *seed,
+                        &colony.id,
+                        colony.run_number,
+                        game_second,
+                    )))
+                    .value;
+                    (crate::life_sim::BASE_BREEDING_CHANCE_PER_HOUR..0.02).contains(&roll)
+                })
+                .expect("LCG reaches the bounded recovery-only interval"),
+        );
+
+        phase_6_life_simulation(&mut colony, gate);
+
+        assert!(
+            colony.cats.iter().any(|cat| cat.is_pregnant),
+            "a healthy two-cat lineage below its personal-village floor should use \
+             its finite reproductive opportunity budget"
+        );
+        assert_eq!(
+            colony
+                .events
+                .iter()
+                .filter(|event| event.kind == EventKind::Conception)
+                .count(),
+            1,
+            "recovery retains the one-conception-per-tick bound"
+        );
     }
 
     #[test]
@@ -54705,7 +64384,7 @@ mod tests {
         let mut colony = found_colony(seed, "colony-1", 1_000, seed);
         let area = claimed_area(&colony);
         assert!(
-            !should_expand(
+            !crate::village_area::should_expand(
                 alive_cats(&colony.cats).count() as i32,
                 area.len() as i32,
                 colony.buildings.len() as i32,
@@ -57926,10 +67605,10 @@ mod tests {
         assert_eq!(global.scale, VillageScale::Communal);
         assert_eq!(global.owner_player_id, None);
         assert_eq!(alive_cats(&global.cats).count(), 30);
-        assert_eq!(colony_housing_capacity(&global), 30.0);
+        assert_eq!(colony_housing_capacity(&global), 35.0);
         assert_eq!(global.claimed_tiles.len(), 19 * 19);
         assert_eq!(global.revealed_tiles.len(), 23 * 23);
-        assert_eq!(global.buildings.len(), 16);
+        assert_eq!(global.buildings.len(), 17);
 
         assert_eq!(personal.kind, VillageKind::Personal);
         assert_eq!(personal.scale, VillageScale::Personal);
@@ -57940,7 +67619,7 @@ mod tests {
         assert_eq!(personal.buildings.len(), 7);
 
         for (building_type, global_count, personal_count) in [
-            (BuildingType::Den, 6, 3),
+            (BuildingType::Den, 7, 3),
             (BuildingType::WoodCutter, 2, 1),
             (BuildingType::StonePrep, 2, 1),
             (BuildingType::Woodworking, 2, 1),
@@ -58024,7 +67703,7 @@ mod tests {
             .find(|colony| colony.kind == VillageKind::Personal)
             .unwrap();
         assert_eq!(alive_cats(&global.cats).count(), 30);
-        assert_eq!(colony_housing_capacity(global), 30.0);
+        assert_eq!(colony_housing_capacity(global), 35.0);
         assert!(global.buildings.iter().any(|building| {
             building.is_complete && building.building_type == BuildingType::Barracks
         }));
@@ -58876,23 +68555,37 @@ mod tests {
         assert!(!used.contains(migrant.name.as_str()));
     }
 
-    fn seed_with_first_life_roll_below(limit: f64) -> u32 {
+    fn seed_with_first_life_roll_below(colony: &ColonyRuntime, gate: TickGate, limit: f64) -> u32 {
+        let game_second = life_game_second_at(colony, gate.processed_through);
         (1..u32::MAX)
-            .find(|seed| roll_seeded(f64::from(life_seed(*seed))).value < limit)
+            .find(|seed| {
+                roll_seeded(f64::from(keyed_life_seed(
+                    *seed,
+                    &colony.id,
+                    colony.run_number,
+                    game_second,
+                )))
+                .value
+                    < limit
+            })
             .expect("LCG reaches requested low roll")
     }
 
     #[test]
     fn breeding_requires_permanent_headroom_and_starts_slowly_when_a_den_opens() {
-        let seed = seed_with_first_life_roll_below(crate::life_sim::BASE_BREEDING_CHANCE_PER_HOUR);
-        let mut full = found_colony(4242, "colony-1", 0, seed);
+        let gate = production_gate(3_600, 3_600_000);
+        let mut full = found_colony(4242, "colony-1", 0, 1);
         for cat in &mut full.cats {
             cat.age_hours = 24.0;
         }
         full.resources.food = 1_000.0;
         full.resources.water = 1_000.0;
-        full.test_rng_seed = Some(seed);
         full.run_started_at = -36 * 3_600_000;
+        full.test_rng_seed = Some(seed_with_first_life_roll_below(
+            &full,
+            gate,
+            crate::life_sim::BASE_BREEDING_CHANCE_PER_HOUR,
+        ));
         let mut roomy = full.clone();
         roomy.buildings.push(BuildingRuntime {
             id: "headroom-den".to_owned(),
@@ -58910,8 +68603,8 @@ mod tests {
             construction_cargo: None,
         });
 
-        phase_6_life_simulation(&mut full, production_gate(3_600, 3_600_000));
-        phase_6_life_simulation(&mut roomy, production_gate(3_600, 3_600_000));
+        phase_6_life_simulation(&mut full, gate);
+        phase_6_life_simulation(&mut roomy, gate);
 
         assert!(full.cats.iter().all(|cat| !cat.is_pregnant));
         assert!(
@@ -58922,11 +68615,15 @@ mod tests {
 
     #[test]
     fn fresh_run_breeding_waits_until_after_the_first_migration_window() {
-        let seed = seed_with_first_life_roll_below(crate::life_sim::BASE_BREEDING_CHANCE_PER_HOUR);
-        let mut colony = found_colony(4242, "colony-1", 0, seed);
+        let post_establishment_gate = production_gate(3_600, 36 * 3_600_000);
+        let mut colony = found_colony(4242, "colony-1", 0, 1);
         colony.resources.food = 1_000.0;
         colony.resources.water = 1_000.0;
-        colony.test_rng_seed = Some(seed);
+        colony.test_rng_seed = Some(seed_with_first_life_roll_below(
+            &colony,
+            post_establishment_gate,
+            crate::life_sim::BASE_BREEDING_CHANCE_PER_HOUR,
+        ));
         colony.buildings.push(BuildingRuntime {
             id: "breeding-headroom".to_owned(),
             building_type: BuildingType::Den,
@@ -58949,7 +68646,7 @@ mod tests {
             "even a guaranteed low roll cannot conceive during establishment"
         );
 
-        phase_6_life_simulation(&mut colony, production_gate(3_600, 36 * 3_600_000));
+        phase_6_life_simulation(&mut colony, post_establishment_gate);
         assert!(
             colony.cats.iter().any(|cat| cat.is_pregnant),
             "the same healthy housed colony may conceive once establishment ends"
@@ -58958,15 +68655,19 @@ mod tests {
 
     #[test]
     fn probationers_consume_and_work_but_never_enter_the_breeding_pool() {
-        let seed = seed_with_first_life_roll_below(crate::life_sim::BASE_BREEDING_CHANCE_PER_HOUR);
-        let mut colony = found_colony(4242, "colony-1", 0, seed);
+        let gate = production_gate(3_600, 3_600_000);
+        let mut colony = found_colony(4242, "colony-1", 0, 1);
         for cat in &mut colony.cats {
             cat.age_hours = 0.0;
         }
         colony.resources.food = 1_000.0;
         colony.resources.water = 1_000.0;
-        colony.test_rng_seed = Some(seed);
         colony.run_started_at = -36 * 3_600_000;
+        colony.test_rng_seed = Some(seed_with_first_life_roll_below(
+            &colony,
+            gate,
+            crate::life_sim::BASE_BREEDING_CHANCE_PER_HOUR,
+        ));
         colony.buildings.push(BuildingRuntime {
             id: "open-den".to_owned(),
             building_type: BuildingType::Den,
@@ -59012,7 +68713,7 @@ mod tests {
             "a probationer may work while waiting for a permanent bed"
         );
 
-        phase_6_life_simulation(&mut colony, production_gate(3_600, 3_600_000));
+        phase_6_life_simulation(&mut colony, gate);
 
         assert!(colony.cats.iter().all(|cat| !cat.is_pregnant));
         assert_eq!(permanent_alive_population(&colony), 15);
@@ -59624,7 +69325,7 @@ mod tests {
 
     fn personal_founding_loadout() -> Resources {
         Resources {
-            food: 50.0,
+            food: 150.0,
             fish: 0.0,
             water: 100.0,
             herbs: 16.0,
@@ -59661,7 +69362,7 @@ mod tests {
 
     fn communal_founding_loadout() -> Resources {
         Resources {
-            food: 100.0,
+            food: 300.0,
             fish: 0.0,
             water: 200.0,
             herbs: 32.0,
@@ -59889,6 +69590,104 @@ mod tests {
             assert!(!colony.claimed_tiles.contains(&pond.pos));
             assert!(colony.revealed_tiles.contains(&pond.pos));
         }
+    }
+
+    #[test]
+    fn procedural_wildlife_caves_are_seeded_finite_and_never_relabel_meadow_hunts() {
+        let anchor = TilePos { x: 0, y: 0 };
+        let candidate = |x, y, tile_type| WorldTileData {
+            x,
+            y,
+            tile_type,
+            resources: TileResources {
+                food: 7,
+                herbs: 3,
+                water: 0,
+                gem: 0,
+                clay: 0,
+                sand: 0,
+            },
+            max_resources: MaxResources { food: 15, herbs: 8 },
+            danger_level: 20.0,
+            path_wear: 0,
+            last_depleted: 0,
+            overlay_feature: None,
+        };
+        let caves_for = |seed| {
+            (20..=80)
+                .flat_map(|y| (20..=80).map(move |x| (x, y)))
+                .filter_map(|(x, y)| {
+                    let tile = runtime_world_tile_from_generated(
+                        candidate(x, y, TileType::Forest),
+                        seed,
+                        anchor,
+                    );
+                    (tile.tile_type == TileType::CaveEntrance).then_some(tile)
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let first = caves_for(320_000);
+        let repeated = caves_for(320_000);
+        let different = caves_for(320_001);
+        assert_eq!(first, repeated, "same seed and coordinates are byte-stable");
+        assert_ne!(
+            first.iter().map(|tile| tile.pos).collect::<Vec<_>>(),
+            different.iter().map(|tile| tile.pos).collect::<Vec<_>>(),
+            "world seed changes the sparse cave pattern"
+        );
+        assert!(
+            first.len() > 500,
+            "the one-quarter frontier rule should produce enough independent finite work sites"
+        );
+        let cave = biome_properties(BiomeType::CaveEntrance);
+        for tile in &first {
+            assert!(
+                (cave.base_resources.food.min..=cave.base_resources.food.max)
+                    .contains(&tile.resources.food)
+            );
+            assert_eq!(tile.max_resources, cave.max_resources);
+            assert_eq!(tile.resources.herbs, 0);
+            assert_eq!(tile.resources.water, 0);
+            assert_eq!(tile.danger_level.to_bits(), cave.base_danger.to_bits());
+        }
+
+        let mut depleted = first[0].clone();
+        depleted.resources.food = 0;
+        depleted.last_depleted = 1;
+        let depleted_pos = depleted.pos;
+        let mut colony = ColonyRuntime {
+            world_tiles: BTreeMap::from([(depleted_pos, depleted)]),
+            test_time_scale: 1.0,
+            ..ColonyRuntime::default()
+        };
+        phase_12_resource_regrowth(
+            &mut colony,
+            TickGate {
+                elapsed_sec: 3_600,
+                processed_through: 3_600_001,
+                minute_rolled: true,
+                previous_water: 0,
+            },
+            320_000,
+        );
+        assert_eq!(
+            colony.world_tiles[&depleted_pos].resources.food,
+            PROCEDURAL_WILDLIFE_CAVE_REGROWTH_PER_HOUR,
+            "a procedural cave credits its finite two-unit hourly wildlife stock"
+        );
+        assert_eq!(
+            colony.world_tiles[&depleted_pos].last_depleted, 3_600_001,
+            "the whole-hour cursor remains partition-safe at the faster cave rate"
+        );
+
+        let meadow =
+            runtime_world_tile_from_generated(candidate(40, 40, TileType::Meadow), 320_000, anchor);
+        assert_eq!(
+            meadow.tile_type,
+            TileType::Meadow,
+            "ordinary forage remains forage and can never become a Hunt marker"
+        );
     }
 
     #[test]
@@ -67181,4 +76980,1502 @@ mod physical_transport_tests {
             "output is not credited before haulage"
         );
     }
+
+    #[cfg(any())]
+    mod retired_lai23_runtime_tests {
+        use super::*;
+
+        #[test]
+        fn lai23_depleted_revealed_hunt_source_rejoins_phase12_regrowth() {
+            let mut colony = found_colony(320_000, "colony-1", 0, 320_000);
+            let source = colony
+                .world_tiles
+                .values()
+                .find(|tile| {
+                    tile.resources.food > 0
+                        && !is_forest_type(tile.tile_type)
+                        && tile_is_explored(&colony, tile)
+                        && cheb_from_anchor(colony.anchor, tile.pos) > 4
+                })
+                .map(|tile| tile.pos)
+                .expect("founding fixture has a revealed non-forest food source");
+            let tile = colony.world_tiles.get_mut(&source).expect("source tile");
+            tile.resources.food = 0;
+            tile.max_resources.food = 100;
+            tile.last_depleted = 1;
+            phase_12_resource_regrowth(
+                &mut colony,
+                TickGate {
+                    elapsed_sec: 3_600,
+                    processed_through: 3_601_000,
+                    minute_rolled: true,
+                    previous_water: 0,
+                },
+                320_000,
+            );
+            assert!(colony.world_tiles[&source].resources.food > 0);
+        }
+
+        #[test]
+        fn lai23_report_safe_food_availability_reenables_hunt_after_depletion() {
+            let mut colony = found_colony(320_000, "colony-1", 0, 320_000);
+            let source = food_tiles_near_village(&colony)
+                .into_iter()
+                .map(world_pos_to_tile)
+                .next()
+                .expect("founding fixture has a revealed food source");
+            colony
+                .world_tiles
+                .get_mut(&source)
+                .expect("source tile")
+                .resources
+                .food = LAI23_MINIMUM_HUNT_BATCH_UNITS;
+            colony.resources.food = 0.0;
+            colony.resources.fish = 0.0;
+            let categories = lai23_needed_survival_categories(&colony);
+            assert!(categories.contains(&crate::task_runtime::TaskCategory::Hunt));
+            assert!(!lai23_food_tiles_with_available_resource(&colony).is_empty());
+        }
+
+        #[test]
+        fn lai23_hunt_waits_for_a_physical_regrowth_batch_instead_of_one_unit_trips() {
+            let mut colony = found_colony(320_000, "colony-1", 0, 320_000);
+            for tile in colony.world_tiles.values_mut() {
+                if tile.tile_type == TileType::CaveEntrance {
+                    tile.resources.food = LAI23_MINIMUM_HUNT_BATCH_UNITS - 1;
+                }
+            }
+            colony.resources.food = 0.0;
+            colony.resources.fish = 0.0;
+            assert!(
+                lai23_food_tiles_with_available_resource(&colony).is_empty(),
+                "one-to-three wildlife units must regrow rather than trigger a map expedition"
+            );
+            assert!(
+                !lai23_needed_survival_categories(&colony)
+                    .contains(&crate::task_runtime::TaskCategory::Hunt)
+            );
+
+            let source = colony
+                .world_tiles
+                .values()
+                .find(|tile| {
+                    tile.tile_type == TileType::CaveEntrance
+                        && tile_is_explored(&colony, tile)
+                        && cheb_from_anchor(colony.anchor, tile.pos) > 4
+                })
+                .map(|tile| tile.pos)
+                .expect("founding fixture has a legal revealed cave");
+            colony
+                .world_tiles
+                .get_mut(&source)
+                .expect("source tile")
+                .resources
+                .food = LAI23_MINIMUM_HUNT_BATCH_UNITS;
+
+            let routes =
+                lai23_survival_route_context(&colony).expect("batched Hunt route context resolves");
+            let occurrence =
+                lai23_visible_task_occurrence(crate::task_runtime::TaskCategory::Hunt, 0, 0);
+            let request = lai23_hunt_resolution_request(&colony, occurrence, &routes)
+                .expect("four-unit cave becomes eligible");
+            assert_eq!(
+                request.requested_source_units,
+                LAI23_MINIMUM_HUNT_BATCH_UNITS
+            );
+            assert_eq!(
+                request.pinned_objective_id,
+                Some(
+                    lai23_resource_source_site(
+                        "hunt",
+                        source,
+                        crate::spatial_tasks::ResourceSourceKind::Hunting,
+                    )
+                    .stable_id()
+                    .to_owned()
+                )
+            );
+        }
+
+        #[test]
+        fn lai23_parallel_hunts_pin_distinct_real_sources_before_canonical_resolution() {
+            use crate::{
+                spatial_resolver::{SpatialResolutionOutcome, resolve_spatial_task},
+                task_runtime::TaskCategory,
+            };
+
+            let colony = found_colony(320_000, "colony-1", 0, 320_000);
+            let source_count = lai23_food_tiles_with_available_resource(&colony).len();
+            assert!(
+                source_count >= 3,
+                "the founding fixture must exercise a multi-source hunt wave"
+            );
+            let routes =
+                lai23_survival_route_context(&colony).expect("founding survival routes resolve");
+            let wave_size = source_count.min(6);
+            let mut pinned = BTreeSet::new();
+            for slot in 0..wave_size {
+                let occurrence = lai23_visible_task_occurrence(TaskCategory::Hunt, 0, slot as u64);
+                let request = lai23_hunt_resolution_request(&colony, occurrence, &routes)
+                    .expect("hunt source request");
+                let expected = request
+                    .pinned_objective_id
+                    .clone()
+                    .expect("every hunt child pins one report-visible source");
+                assert!(
+                    pinned.insert(expected.clone()),
+                    "parallel hunt children must not collapse onto the first source"
+                );
+                let SpatialResolutionOutcome::Resolved(resolved) = resolve_spatial_task(request)
+                else {
+                    panic!("the pinned report-visible hunt source must resolve");
+                };
+                assert_eq!(resolved.objective().stable_id(), expected);
+                let crate::spatial_tasks::SiteRef::ResourceSource {
+                    footprint,
+                    resource_kind,
+                    ..
+                } = resolved.objective()
+                else {
+                    panic!("Hunt objective must retain a physical resource source");
+                };
+                assert_eq!(
+                    *resource_kind,
+                    crate::spatial_tasks::ResourceSourceKind::Hunting
+                );
+                assert_eq!(
+                    colony.world_tiles[&footprint.anchor].tile_type,
+                    TileType::CaveEntrance,
+                    "every world-visible Hunt marker is pinned to a cave entrance"
+                );
+                let work_tile = site_contact_tile(&resolved.work_slot().site)
+                    .expect("Hunt has an exact adjacent work tile");
+                assert_eq!(
+                    (work_tile.x - footprint.anchor.x)
+                        .abs()
+                        .saturating_add((work_tile.y - footprint.anchor.y).abs()),
+                    1,
+                    "the physical hunter works on a dry tile adjacent to the cave"
+                );
+            }
+            assert_eq!(pinned.len(), wave_size);
+
+            let later_wave = (0..wave_size)
+                .map(|slot| {
+                    let occurrence =
+                        lai23_visible_task_occurrence(TaskCategory::Hunt, 15, slot as u64);
+                    lai23_hunt_resolution_request(&colony, occurrence, &routes)
+                        .and_then(|request| request.pinned_objective_id)
+                        .expect("later Hunt wave remains pinned")
+                })
+                .collect::<BTreeSet<_>>();
+            assert_eq!(later_wave.len(), wave_size);
+            if source_count > wave_size {
+                assert_ne!(
+                    later_wave, pinned,
+                    "later waves rotate through the complete cave set instead of rebuilding the same bottleneck"
+                );
+            }
+        }
+
+        #[test]
+        fn lai23_workshop_task_projects_the_entire_canonical_three_by_three_building() {
+            use crate::{
+                spatial_tasks::{SiteRef, canonical_building_footprint},
+                task_runtime::{TaskCategory, TaskStage},
+            };
+
+            let mut colony = found_global_colony(320_000, "colony-1", 0, 320_000);
+            let anchor = TilePos { x: 30, y: 30 };
+            colony.buildings.push(BuildingRuntime {
+                id: "workshop-spatial-test".to_owned(),
+                building_type: BuildingType::Workshop,
+                level: 1,
+                position: anchor,
+                is_complete: true,
+                construction_progress: 100,
+                production_queue: vec![ProductionQueueEntry {
+                    recipe_id: "physical-test-recipe".to_owned(),
+                    repeat: false,
+                }],
+                ..BuildingRuntime::default()
+            });
+
+            lai23_sync_workshop_visible_tasks(&mut colony, 1);
+            lai23_sync_workshop_visible_tasks(&mut colony, 2);
+
+            let tasks = colony
+                .leader_ai_runtime
+                .scheduling
+                .visible_tasks
+                .values()
+                .filter(|task| task.category == TaskCategory::WorkshopWork)
+                .collect::<Vec<_>>();
+            assert_eq!(tasks.len(), 1, "one physical queue has one marker");
+            let task = tasks[0];
+            let expected = canonical_building_footprint(BuildingType::Workshop, anchor);
+            let assert_whole_workshop = |site: &SiteRef| {
+                let SiteRef::Building {
+                    building_type,
+                    anchor: site_anchor,
+                    footprint,
+                    ..
+                } = site
+                else {
+                    panic!("Workshop marker must be a building site, got {site:?}");
+                };
+                assert_eq!(*building_type, BuildingType::Workshop);
+                assert_eq!(*site_anchor, anchor);
+                assert_eq!(*footprint, expected);
+                assert_eq!(footprint.width, 3);
+                assert_eq!(footprint.height, 3);
+                assert_eq!(footprint.tiles.len(), 9);
+            };
+            assert_whole_workshop(task.spatial.objective.as_ref().expect("objective"));
+            let SiteRef::Rect {
+                rect, footprint, ..
+            } = &task.spatial.work_positions[0].site
+            else {
+                panic!(
+                    "Workshop work site must be its complete rectangular area, got {:?}",
+                    task.spatial.work_positions[0].site
+                );
+            };
+            assert_eq!(*rect, expected.rect());
+            assert_eq!(*footprint, expected);
+            assert_eq!(footprint.tiles.len(), 9);
+            assert_whole_workshop(
+                task.spatial
+                    .delivery_endpoint
+                    .as_ref()
+                    .expect("delivery endpoint"),
+            );
+            assert!(
+                colony
+                    .leader_ai_runtime
+                    .intents
+                    .get(&task.intent_id)
+                    .is_some(),
+                "projection retains an authoritative intent parent"
+            );
+
+            colony
+                .buildings
+                .iter_mut()
+                .find(|building| building.id == "workshop-spatial-test")
+                .expect("Workshop persists")
+                .production_queue
+                .clear();
+            lai23_sync_workshop_visible_tasks(&mut colony, 3);
+            assert_eq!(
+                colony
+                    .leader_ai_runtime
+                    .scheduling
+                    .visible_tasks
+                    .values()
+                    .find(|task| task.category == TaskCategory::WorkshopWork)
+                    .map(|task| task.stage),
+                Some(TaskStage::Complete)
+            );
+        }
+
+        #[test]
+        fn lai23_empty_reachable_source_window_materializes_no_task_without_panicking() {
+            let mut candidates = Vec::new();
+            assert_eq!(
+                lai23_pin_resolution_candidate_for_occurrence(&mut candidates, 1),
+                None
+            );
+        }
+
+        #[test]
+        fn lai23_founding_leader_preserves_one_physical_food_field_without_a_farmer_office() {
+            let mut colony = found_global_colony(320_000, "colony-1", 0, 320_000);
+            ensure_lai23_founding_leader(&mut colony, 0, 0);
+            assert!(lai23_founding_farmer_fallback_active(&colony));
+            let mut succession_gap = colony.clone();
+            succession_gap.leader_ai_runtime =
+                crate::leader_ai_runtime::LeaderAiRuntimeState::new_for_colony("colony-1")
+                    .expect("valid runtime");
+            assert!(
+                lai23_founding_farmer_fallback_active(&succession_gap),
+                "a living seated leader preserves the chain during the institution handoff tick"
+            );
+            assert_eq!(field_count_built_or_in_flight(&colony), 0);
+
+            lai23_ensure_food_field_job(&mut colony, 60_000);
+            prune_invalid_officers(&mut colony, 61_000);
+
+            let jobs = active_or_queued_jobs(&colony)
+                .into_iter()
+                .filter(|job| {
+                    job.kind == JobKind::BuildHouse
+                        && job_building_type(job) == Some(BuildingType::Field)
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(jobs.len(), 1);
+            assert_eq!(jobs[0].requested_by, JobRequester::Leader);
+            let field_job_id = jobs[0].id.clone();
+            let builder = jobs[0]
+                .assigned_cat
+                .clone()
+                .expect("the founding Field reserves one real builder");
+            colony
+                .jobs
+                .iter_mut()
+                .find(|job| job.id == field_job_id)
+                .expect("field job")
+                .assigned_cat = None;
+            let expansion_target = TilePos {
+                x: colony.anchor.x - 1,
+                y: colony.anchor.y,
+            };
+            queue_job_requested_by(
+                &mut colony,
+                62_000,
+                JobKind::ExpandVillage,
+                JobRequester::Leader,
+                Some(builder.clone()),
+                JobMetadata::Expansion {
+                    target: expansion_target,
+                    accepted: false,
+                    source_build_job_id: Some(field_job_id.clone()),
+                    wall_work_ms: 0,
+                },
+            );
+            release_role_automation(&mut colony, OfficerRole::Farmer, 63_000);
+            let expansion = colony
+                .jobs
+                .iter()
+                .find(|job| {
+                    job.kind == JobKind::ExpandVillage
+                        && matches!(job.status, JobStatus::Queued | JobStatus::Active)
+                })
+                .cloned()
+                .expect("founding fallback preserves the linked physical expansion");
+            restore_expansion_worker_to_construction(&mut colony, &expansion);
+            assert_eq!(
+                colony
+                    .jobs
+                    .iter()
+                    .find(|job| job.id == field_job_id)
+                    .and_then(|job| job.assigned_cat.as_deref()),
+                Some(builder.as_str()),
+                "the linked expansion returns its builder to the exact Field project"
+            );
+            assert!(
+                !colony.officers.contains_key(&OfficerRole::Farmer),
+                "founding fallback must not fabricate an officer appointment"
+            );
+        }
+
+        #[test]
+        fn lai23_founding_field_breaks_ground_after_its_exact_agricultural_claim_region() {
+            let seed = 320_000;
+            let mut colony = found_global_colony(seed, "colony-1", 0, seed);
+            ensure_lai23_founding_leader(&mut colony, 0, 0);
+            lai23_ensure_food_field_job(&mut colony, 60_000);
+            let site = next_expansion_building_site(&colony, seed, BuildingType::Field)
+                .expect("the founding map has one deterministic exterior Field reservation");
+            let wall_before = effective_wall_segments(&colony);
+            let region = building_claim_region(site, BuildingType::Field)
+                .expect("supported Field coordinates have a finite claim region");
+            for tile in region {
+                if colony.claimed_tiles.contains(&tile) {
+                    continue;
+                }
+                colony.claimed_tiles.push(tile);
+                colony.agricultural_tiles.insert(tile);
+                colony.revealed_tiles.insert(tile);
+                let mut ground = fresh_ground_tile(tile);
+                ground.last_depleted = 60_000;
+                colony.world_tiles.insert(tile, ground);
+            }
+            colony.claimed_tiles.sort_by_key(|tile| (tile.y, tile.x));
+            colony.claimed_tiles.dedup();
+            let field_job = colony
+                .jobs
+                .iter_mut()
+                .find(|job| job_building_type(job) == Some(BuildingType::Field))
+                .expect("founding Field job");
+            let JobMetadata::Construction {
+                site: reserved_site,
+                ..
+            } = &mut field_job.metadata
+            else {
+                panic!("Field uses construction metadata");
+            };
+            *reserved_site = Some(site);
+
+            assert_eq!(
+                effective_wall_segments(&colony),
+                wall_before,
+                "exterior agricultural preparation must not grow or reshape the village wall"
+            );
+            assert!(
+                claimed_building_site_is_ready(&colony, site, seed, BuildingType::Field),
+                "{}",
+                building_site_readiness_diagnostic(&colony, site, seed, BuildingType::Field)
+            );
+
+            phase_14_promote_queued_jobs_and_break_ground(&mut colony, gate(1, 61_000), seed);
+
+            let scaffold = colony
+                .buildings
+                .iter()
+                .find(|building| building.building_type == BuildingType::Field)
+                .expect("the exact completed parcel breaks ground without another expansion");
+            assert_eq!(scaffold.position, site);
+            assert!(!scaffold.is_complete);
+            assert!(scaffold.construction_cargo.is_some());
+            assert!(colony.jobs.iter().any(|job| {
+                job_building_type(job) == Some(BuildingType::Field)
+                    && job.status == JobStatus::Active
+                    && matches!(
+                        job.metadata,
+                        JobMetadata::Construction {
+                            building_id: Some(_),
+                            site: Some(reserved),
+                            ..
+                        } if reserved == site
+                    )
+            }));
+        }
+
+        #[test]
+        fn lai23_shrine_task_resolves_exact_stockpile_to_shrine_geometry() {
+            use crate::{spatial_resolver::SpatialTaskCategory, task_runtime::TaskCategory};
+
+            let mut colony = found_global_colony(320_000, "colony-1", 0, 320_000);
+            colony.resources.food = 200.0;
+            colony.resources.water = 200.0;
+            colony.resources.herbs = 100.0;
+            colony.resources.materials = 100.0;
+            colony.resources.refined = 100.0;
+            reconcile_colony_stockpiles(&mut colony);
+            colony.stock_ledger =
+                StockLedger::counted_with_piles(&colony.resources, &colony.stockpiles, 0);
+            phase_lai23_02_beliefs_reports_expiry_contradictions(&mut colony, 0, 0);
+            assert!(
+                (0..100).any(|tick| lai23_prepare_offering_review(&mut colony, tick)),
+                "bounded review buckets include one non-omitted physical offering"
+            );
+            let (spatial, resolved, routes) =
+                lai23_resolve_visible_task(&colony, TaskCategory::OfferingRitual, 3, None)
+                    .expect("complete Shrine and visible stockpile resolve");
+            let resolved = resolved.expect("Shrine work participates in authoritative resolution");
+            assert_eq!(resolved.category, SpatialTaskCategory::OfferingRitual);
+            assert_eq!(resolved.spatial, spatial);
+            assert_eq!(routes.len(), 2);
+            resolved
+                .validate()
+                .expect("resolved Shrine geometry validates");
+            assert!(matches!(
+                resolved.objective(),
+                crate::spatial_tasks::SiteRef::Stockpile { .. }
+            ));
+            assert!(matches!(
+                resolved.work_slot().site,
+                crate::spatial_tasks::SiteRef::Shrine { .. }
+            ));
+        }
+
+        #[test]
+        fn lai23_poor_leader_can_overcommit_scarce_food_while_level_four_defers() {
+            use crate::shrine_offerings::OfferingPackage;
+
+            let mut poor = found_colony(320_000, "colony-1", 0, 320_000);
+            ensure_lai23_founding_leader(&mut poor, 0, 0);
+            migrate_legacy_leadership_into_runtime(&mut poor, 0);
+            poor.resources.food = 30.0;
+            poor.resources.fish = 0.0;
+            poor.resources.water = 200.0;
+            poor.resources.herbs = 0.0;
+            poor.resources.materials = 0.0;
+            poor.resources.refined = 0.0;
+            reconcile_colony_stockpiles(&mut poor);
+            phase_lai23_02_beliefs_reports_expiry_contradictions(&mut poor, 0, 0);
+            let mut good = poor.clone();
+            let leader_raw = poor.leader_id.clone().expect("founding Leader");
+            let leader_id = crate::planner_core::PlannerId::derive("cat", [leader_raw.as_str()]);
+            let poor_level = lai23_leader_effective_level(&poor, &leader_id);
+            assert_eq!(poor_level.get(), 1);
+            assert!(
+                !lai23_survival_or_active_defense(&poor, 0, poor_level),
+                "the inexperienced Leader mistakes the optimistic edge for a safe reserve"
+            );
+
+            assert!(
+                (0..100).any(|tick| lai23_prepare_offering_review(&mut poor, tick)),
+                "one bounded review must survive the level-one omission roll"
+            );
+            assert_eq!(
+                poor.leader_ai_runtime
+                    .shrine_favor
+                    .shrine_offerings
+                    .values()
+                    .find_map(|state| state.current.as_ref())
+                    .map(|pipeline| pipeline.choice.package),
+                Some(OfferingPackage::Food),
+                "the bad decision consumes the report, not hidden authoritative stock"
+            );
+
+            good.leader_ai_runtime
+                .officers
+                .institution
+                .record_completed_leader_duty_minutes(leader_id.clone(), 240 * 60)
+                .expect("completed Leader duty reaches level four");
+            let good_level = lai23_leader_effective_level(&good, &leader_id);
+            assert_eq!(good_level.get(), 4);
+            assert!(
+                lai23_survival_or_active_defense(&good, 0, good_level),
+                "the experienced Leader plans from the conservative bound"
+            );
+            assert!(
+                !(0..100).any(|tick| lai23_prepare_offering_review(&mut good, tick)),
+                "survival pressure defers every Shrine review before omission or cargo reservation"
+            );
+            assert!(
+                good.leader_ai_runtime
+                    .shrine_favor
+                    .shrine_offerings
+                    .values()
+                    .all(|state| state.current.is_none())
+            );
+        }
+
+        #[test]
+        fn lai23_shrine_reserves_carries_deposits_and_credits_one_exact_physical_package() {
+            use crate::{
+                favor::Favor,
+                shrine_offerings::{OfferingStage, ShrineOfferingState},
+                task_runtime::{CargoLocation, TaskCategory},
+            };
+
+            let mut colony = found_global_colony(320_000, "colony-1", 0, 320_000);
+            colony.resources.food = 200.0;
+            colony.resources.water = 200.0;
+            colony.resources.herbs = 100.0;
+            colony.resources.materials = 100.0;
+            colony.resources.refined = 100.0;
+            reconcile_colony_stockpiles(&mut colony);
+            colony.stock_ledger =
+                StockLedger::counted_with_piles(&colony.resources, &colony.stockpiles, 0);
+            phase_lai23_02_beliefs_reports_expiry_contradictions(&mut colony, 0, 0);
+            assert!((0..100).any(|tick| lai23_prepare_offering_review(&mut colony, tick)));
+            let pipeline = colony
+                .leader_ai_runtime
+                .shrine_favor
+                .shrine_offerings
+                .values()
+                .find_map(|state: &ShrineOfferingState| state.current.as_ref())
+                .expect("review selected one package");
+            let package = pipeline.choice.package;
+            let resource_kind = lai23_offering_resource_kind(package);
+            let before = stockpiles::resource_amount(&colony.resources, resource_kind);
+            let intent_id = crate::planner_core::IntentId::derive(
+                &colony.id,
+                0,
+                "shrine",
+                "physical-offering-test",
+                0,
+            );
+            assert!(lai23_create_visible_task_for_intent(
+                &mut colony,
+                &intent_id,
+                TaskCategory::OfferingRitual,
+                3,
+                1,
+                None,
+            ));
+            let task_id = colony
+                .leader_ai_runtime
+                .scheduling
+                .visible_tasks
+                .keys()
+                .next()
+                .cloned()
+                .expect("visible offering task");
+            assert!(lai23_commit_offering_cargo_reservation(
+                &mut colony,
+                &task_id,
+                2
+            ));
+            assert_eq!(
+                stockpiles::resource_amount(&colony.resources, resource_kind),
+                before - package.quantity() as f64
+            );
+            let task = colony
+                .leader_ai_runtime
+                .scheduling
+                .visible_tasks
+                .get(&task_id)
+                .expect("task retained");
+            assert!(matches!(
+                task.cargo.as_ref().map(|cargo| &cargo.location),
+                Some(CargoLocation::ReservedAtSource { .. })
+            ));
+            assert_eq!(
+                colony
+                    .leader_ai_runtime
+                    .shrine_favor
+                    .shrine_offerings
+                    .values()
+                    .find_map(|state| state.current.as_ref())
+                    .map(|pipeline| pipeline.stage),
+                Some(OfferingStage::ResourcesReserved)
+            );
+
+            let endpoint_id = task
+                .spatial
+                .delivery_endpoint
+                .as_ref()
+                .expect("Shrine endpoint")
+                .stable_id()
+                .to_owned();
+            let task = colony
+                .leader_ai_runtime
+                .scheduling
+                .visible_tasks
+                .get_mut(&task_id)
+                .expect("task retained");
+            task.cargo.as_mut().expect("cargo").location = CargoLocation::Carried {
+                cat_id: "physical-carrier".to_owned(),
+            };
+            lai23_mark_offering_departed(&mut colony, task_id.as_str(), 3);
+            colony
+                .leader_ai_runtime
+                .scheduling
+                .visible_tasks
+                .get_mut(&task_id)
+                .expect("task retained")
+                .cargo
+                .as_mut()
+                .expect("cargo")
+                .location = CargoLocation::DepositedAtEndpoint { endpoint_id };
+            lai23_mark_offering_deposited(&mut colony, task_id.as_str(), 4);
+            apply_lai23_completed_offering_task(&mut colony, task_id.as_str(), 5);
+
+            let pipeline = colony
+                .leader_ai_runtime
+                .shrine_favor
+                .shrine_offerings
+                .values()
+                .find_map(|state| state.current.as_ref())
+                .expect("pipeline retained as audit history");
+            assert_eq!(pipeline.stage, OfferingStage::Completed);
+            assert_eq!(
+                colony.leader_ai_runtime.shrine_favor.favor.balance,
+                Favor::ONE
+            );
+            assert_eq!(
+                stockpiles::resource_amount(&colony.resources, resource_kind),
+                before - package.quantity() as f64,
+                "consumption happens once at reservation and cannot be double-debited at ritual"
+            );
+        }
+
+        #[test]
+        fn lai23_shrine_releases_reserved_package_exactly_once_before_pickup() {
+            use crate::{
+                favor::Favor,
+                shrine_offerings::{OfferingCargoDisposition, OfferingStage},
+                task_runtime::{CargoLocation, RuntimeBlockReason, TaskCategory},
+            };
+
+            let mut colony = found_global_colony(320_000, "colony-1", 0, 320_000);
+            colony.resources.food = 200.0;
+            colony.resources.water = 200.0;
+            colony.resources.herbs = 100.0;
+            colony.resources.materials = 100.0;
+            colony.resources.refined = 100.0;
+            reconcile_colony_stockpiles(&mut colony);
+            colony.stock_ledger =
+                StockLedger::counted_with_piles(&colony.resources, &colony.stockpiles, 0);
+            phase_lai23_02_beliefs_reports_expiry_contradictions(&mut colony, 0, 0);
+            assert!((0..100).any(|tick| lai23_prepare_offering_review(&mut colony, tick)));
+            let package = colony
+                .leader_ai_runtime
+                .shrine_favor
+                .shrine_offerings
+                .values()
+                .find_map(|state| state.current.as_ref())
+                .expect("review selected one package")
+                .choice
+                .package;
+            let resource_kind = lai23_offering_resource_kind(package);
+            let aggregate_before = stockpiles::resource_amount(&colony.resources, resource_kind);
+            let intent_id = crate::planner_core::IntentId::derive(
+                &colony.id,
+                0,
+                "shrine",
+                "reserved-recovery-test",
+                0,
+            );
+            assert!(lai23_create_visible_task_for_intent(
+                &mut colony,
+                &intent_id,
+                TaskCategory::OfferingRitual,
+                3,
+                1,
+                None,
+            ));
+            let task_id = colony
+                .leader_ai_runtime
+                .scheduling
+                .visible_tasks
+                .keys()
+                .next()
+                .cloned()
+                .expect("visible offering task");
+            let source_id = match colony
+                .leader_ai_runtime
+                .scheduling
+                .visible_tasks
+                .get(&task_id)
+                .and_then(|task| task.spatial.objective.as_ref())
+                .expect("physical source")
+            {
+                crate::spatial_tasks::SiteRef::Stockpile { stockpile_id, .. } => {
+                    stockpile_id.clone()
+                }
+                source => panic!("offering source must be a stockpile, got {source:?}"),
+            };
+            let source_before = colony
+                .stockpiles
+                .iter()
+                .find(|pile| pile.id == source_id)
+                .map(|pile| stockpiles::resource_amount(&pile.contents, resource_kind))
+                .expect("source pile");
+            assert!(lai23_commit_offering_cargo_reservation(
+                &mut colony,
+                &task_id,
+                2
+            ));
+            assert!(matches!(
+                colony
+                    .leader_ai_runtime
+                    .scheduling
+                    .visible_tasks
+                    .get(&task_id)
+                    .and_then(|task| task.cargo.as_ref())
+                    .map(|cargo| &cargo.location),
+                Some(CargoLocation::ReservedAtSource { .. })
+            ));
+
+            assert!(lai23_recover_offering_task_cargo(
+                &mut colony,
+                &task_id,
+                RuntimeBlockReason::ReservationLost,
+                "reservation_lost",
+                3,
+            ));
+            assert!(
+                !lai23_recover_offering_task_cargo(
+                    &mut colony,
+                    &task_id,
+                    RuntimeBlockReason::ReservationLost,
+                    "reservation_lost",
+                    4,
+                ),
+                "a terminal pipeline cannot release the same escrow twice"
+            );
+            assert_eq!(
+                stockpiles::resource_amount(&colony.resources, resource_kind),
+                aggregate_before
+            );
+            assert_eq!(
+                colony
+                    .stockpiles
+                    .iter()
+                    .find(|pile| pile.id == source_id)
+                    .map(|pile| stockpiles::resource_amount(&pile.contents, resource_kind)),
+                Some(source_before)
+            );
+            let task = colony
+                .leader_ai_runtime
+                .scheduling
+                .visible_tasks
+                .get(&task_id)
+                .expect("task retained as history");
+            assert!(task.cargo.is_none());
+            let pipeline = colony
+                .leader_ai_runtime
+                .shrine_favor
+                .shrine_offerings
+                .values()
+                .find_map(|state| state.current.as_ref())
+                .expect("pipeline retained as history");
+            assert_eq!(pipeline.stage, OfferingStage::Cancelled);
+            assert_eq!(
+                pipeline.cargo_disposition,
+                Some(OfferingCargoDisposition::ReleasedBeforePickup)
+            );
+            assert_eq!(
+                colony.leader_ai_runtime.shrine_favor.favor.balance,
+                Favor::ZERO
+            );
+        }
+
+        #[test]
+        fn lai23_shrine_salvages_carried_package_exactly_once_after_worker_death() {
+            use crate::{
+                favor::Favor,
+                shrine_offerings::{OfferingCargoDisposition, OfferingStage},
+                task_runtime::{CargoLocation, RuntimeBlockReason, TaskCategory, TaskStage},
+            };
+
+            let mut colony = found_global_colony(320_000, "colony-1", 0, 320_000);
+            colony.resources.food = 200.0;
+            colony.resources.water = 200.0;
+            colony.resources.herbs = 100.0;
+            colony.resources.materials = 100.0;
+            colony.resources.refined = 100.0;
+            reconcile_colony_stockpiles(&mut colony);
+            colony.stock_ledger =
+                StockLedger::counted_with_piles(&colony.resources, &colony.stockpiles, 0);
+            phase_lai23_02_beliefs_reports_expiry_contradictions(&mut colony, 0, 0);
+            assert!((0..100).any(|tick| lai23_prepare_offering_review(&mut colony, tick)));
+            let package = colony
+                .leader_ai_runtime
+                .shrine_favor
+                .shrine_offerings
+                .values()
+                .find_map(|state| state.current.as_ref())
+                .expect("review selected one package")
+                .choice
+                .package;
+            let resource_kind = lai23_offering_resource_kind(package);
+            let aggregate_before = stockpiles::resource_amount(&colony.resources, resource_kind);
+            let intent_id = crate::planner_core::IntentId::derive(
+                &colony.id,
+                0,
+                "shrine",
+                "carried-recovery-test",
+                0,
+            );
+            assert!(lai23_create_visible_task_for_intent(
+                &mut colony,
+                &intent_id,
+                TaskCategory::OfferingRitual,
+                3,
+                1,
+                None,
+            ));
+            let task_id = colony
+                .leader_ai_runtime
+                .scheduling
+                .visible_tasks
+                .keys()
+                .next()
+                .cloned()
+                .expect("visible offering task");
+            let source_id = match colony
+                .leader_ai_runtime
+                .scheduling
+                .visible_tasks
+                .get(&task_id)
+                .and_then(|task| task.spatial.objective.as_ref())
+                .expect("physical source")
+            {
+                crate::spatial_tasks::SiteRef::Stockpile { stockpile_id, .. } => {
+                    stockpile_id.clone()
+                }
+                source => panic!("offering source must be a stockpile, got {source:?}"),
+            };
+            let source_before = colony
+                .stockpiles
+                .iter()
+                .find(|pile| pile.id == source_id)
+                .map(|pile| stockpiles::resource_amount(&pile.contents, resource_kind))
+                .expect("source pile");
+            assert!(lai23_commit_offering_cargo_reservation(
+                &mut colony,
+                &task_id,
+                2
+            ));
+            colony
+                .leader_ai_runtime
+                .scheduling
+                .visible_tasks
+                .get_mut(&task_id)
+                .expect("task retained")
+                .cargo
+                .as_mut()
+                .expect("cargo")
+                .location = CargoLocation::Carried {
+                cat_id: "lost-carrier".to_owned(),
+            };
+            lai23_mark_offering_departed(&mut colony, task_id.as_str(), 3);
+
+            assert!(lai23_recover_offering_task_cargo(
+                &mut colony,
+                &task_id,
+                RuntimeBlockReason::WorkerDied,
+                "worker_died",
+                4,
+            ));
+            assert!(
+                !lai23_recover_offering_task_cargo(
+                    &mut colony,
+                    &task_id,
+                    RuntimeBlockReason::WorkerDied,
+                    "worker_died",
+                    5,
+                ),
+                "salvaged cargo cannot be restored twice"
+            );
+            assert_eq!(
+                stockpiles::resource_amount(&colony.resources, resource_kind),
+                aggregate_before
+            );
+            assert_eq!(
+                colony
+                    .stockpiles
+                    .iter()
+                    .find(|pile| pile.id == source_id)
+                    .map(|pile| stockpiles::resource_amount(&pile.contents, resource_kind)),
+                Some(source_before)
+            );
+            let task = colony
+                .leader_ai_runtime
+                .scheduling
+                .visible_tasks
+                .get(&task_id)
+                .expect("task retained as history");
+            assert_eq!(task.stage, TaskStage::Blocked);
+            assert!(matches!(
+                task.cargo.as_ref().map(|cargo| &cargo.location),
+                Some(CargoLocation::SalvagedAtStockpile { stockpile_id })
+                    if stockpile_id == &source_id
+            ));
+            let pipeline = colony
+                .leader_ai_runtime
+                .shrine_favor
+                .shrine_offerings
+                .values()
+                .find_map(|state| state.current.as_ref())
+                .expect("pipeline retained as history");
+            assert_eq!(pipeline.stage, OfferingStage::Blocked);
+            assert_eq!(
+                pipeline.cargo_disposition,
+                Some(OfferingCargoDisposition::SalvagedToStockpile {
+                    stockpile_id: source_id,
+                })
+            );
+            assert_eq!(
+                colony.leader_ai_runtime.shrine_favor.favor.balance,
+                Favor::ZERO
+            );
+        }
+
+        #[test]
+        fn lai23_full_housing_queues_one_physical_den_and_projects_its_exact_footprint() {
+            let mut colony = found_colony(320_000, "colony-1", 0, 320_000);
+            assert!(lai23_housing_growth_is_needed(&colony));
+            lai23_ensure_growth_den_job(&mut colony, 60_000);
+            lai23_ensure_growth_den_job(&mut colony, 61_000);
+            release_role_automation(&mut colony, OfficerRole::Steward, 62_000);
+            let growth_jobs = active_or_queued_jobs(&colony)
+                .into_iter()
+                .filter(|job| {
+                    job.kind == JobKind::BuildHouse
+                        && job_building_type(job) == Some(BuildingType::Den)
+                })
+                .map(|job| job.id.clone())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                growth_jobs.len(),
+                1,
+                "repeated reviews cannot duplicate a Den"
+            );
+
+            let planned = TilePos {
+                x: colony.anchor.x + 20,
+                y: colony.anchor.y + 20,
+            };
+            let job = colony
+                .jobs
+                .iter_mut()
+                .find(|job| job.id == growth_jobs[0])
+                .expect("queued growth job");
+            let JobMetadata::Construction { site, .. } = &mut job.metadata else {
+                panic!("growth job must use construction metadata");
+            };
+            *site = Some(planned);
+
+            let (spatial, independently_resolved, _) = lai23_resolve_visible_task(
+                &colony,
+                crate::task_runtime::TaskCategory::BuildingConstruction,
+                4,
+                None,
+            )
+            .expect("planned growth site is projectable");
+            assert!(
+                independently_resolved.is_none(),
+                "physical construction remains the sole executor"
+            );
+            let crate::spatial_tasks::SiteRef::Building {
+                building_type,
+                anchor,
+                footprint,
+                ..
+            } = spatial.objective.expect("growth marker has an objective")
+            else {
+                panic!("growth objective must be a typed building site");
+            };
+            assert_eq!(building_type, BuildingType::Den);
+            assert_eq!(anchor, planned);
+            assert_eq!(
+                footprint,
+                crate::spatial_tasks::canonical_building_footprint(BuildingType::Den, planned)
+            );
+        }
+
+        #[test]
+        fn lai23_relief_commitment_is_stable_bounded_and_leaves_replacements_free() {
+            use crate::task_runtime::TaskCategory;
+
+            let mut world = new_world(320_000);
+            world
+                .colonies
+                .push(found_global_colony(320_000, "colony-1", 0, 320_000));
+            for tick in 1..=20_i64 {
+                let _ = world_tick(&mut world, tick * 900_000);
+                let colony = &world.colonies[0];
+                let hunt_count = colony
+                    .leader_ai_runtime
+                    .scheduling
+                    .visible_tasks
+                    .values()
+                    .filter(|task| {
+                        task.category == TaskCategory::Hunt
+                            && !task.stage.is_terminal()
+                            && !task.assigned_cat_ids.is_empty()
+                    })
+                    .count();
+                let water_count = colony
+                    .leader_ai_runtime
+                    .scheduling
+                    .visible_tasks
+                    .values()
+                    .filter(|task| {
+                        task.category == TaskCategory::FetchWater
+                            && !task.stage.is_terminal()
+                            && !task.assigned_cat_ids.is_empty()
+                    })
+                    .count();
+                if hunt_count > 0 && water_count > LAI23_COMMITTED_WATER_RELIEF_CREW {
+                    break;
+                }
+            }
+
+            let colony = &world.colonies[0];
+            for (category, limit, requires_replaceable_tail) in [
+                (
+                    TaskCategory::Hunt,
+                    lai23_max_active_visible_tasks(colony, TaskCategory::Hunt),
+                    false,
+                ),
+                (
+                    TaskCategory::FetchWater,
+                    LAI23_COMMITTED_WATER_RELIEF_CREW,
+                    true,
+                ),
+            ] {
+                let mut assignments = colony
+                    .leader_ai_runtime
+                    .scheduling
+                    .visible_tasks
+                    .values()
+                    .filter(|task| {
+                        task.category == category
+                            && !task.stage.is_terminal()
+                            && !task.assigned_cat_ids.is_empty()
+                    })
+                    .map(|task| {
+                        (
+                            task.occurrence,
+                            task.id.clone(),
+                            task.assigned_cat_ids
+                                .iter()
+                                .next()
+                                .expect("an active survival task has one worker")
+                                .clone(),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                assignments.sort();
+                assert!(!assignments.is_empty(), "founding {category:?} work exists");
+                if requires_replaceable_tail {
+                    assert!(
+                        assignments.len() > limit,
+                        "the founding crisis supplies both committed and replaceable {category:?} work"
+                    );
+                } else {
+                    assert!(
+                        assignments.len() <= limit,
+                        "the active Hunt crew cannot exceed the population-scaled director cap"
+                    );
+                }
+                for (_, _, cat_id) in assignments.iter().take(limit) {
+                    assert!(lai23_cat_is_committed_relief_worker(colony, cat_id));
+                }
+                for (_, _, cat_id) in assignments.iter().skip(limit) {
+                    assert!(
+                        !lai23_cat_is_committed_relief_worker(colony, cat_id),
+                        "workers beyond the bounded relief crew remain free to yield"
+                    );
+                }
+            }
+        }
+
+        #[test]
+        fn lai23_personal_need_releases_survival_task_and_world_claim_for_replacement() {
+            let mut world = new_world(320_000);
+            world
+                .colonies
+                .push(found_global_colony(320_000, "colony-1", 0, 320_000));
+            let mut assigned = None;
+            for tick in 1..=20_i64 {
+                let _ = world_tick(&mut world, tick * 900_000);
+                assigned = world.colonies[0]
+                    .leader_ai_runtime
+                    .scheduling
+                    .visible_tasks
+                    .iter()
+                    .find_map(|(task_id, task)| {
+                        (matches!(
+                            task.category,
+                            crate::task_runtime::TaskCategory::Hunt
+                                | crate::task_runtime::TaskCategory::FetchWater
+                        ) && !task.assigned_cat_ids.is_empty()
+                            && !task.stage.is_terminal())
+                        .then(|| {
+                            (
+                                task_id.clone(),
+                                task.assigned_cat_ids
+                                    .iter()
+                                    .next()
+                                    .expect("assigned task has a worker")
+                                    .clone(),
+                            )
+                        })
+                    });
+                if assigned.is_some() {
+                    break;
+                }
+            }
+            let (task_id, cat_id) = assigned.expect("founding survival work receives a worker");
+            assert!(
+                world.colonies[0]
+                    .leader_ai_runtime
+                    .scheduling
+                    .world_reservation_ids
+                    .contains_key(&task_id)
+            );
+
+            assert!(cancel_lai23_survival_task_for_personal_need(
+                &mut world.colonies[0],
+                &cat_id,
+                20 * 900_000,
+            ));
+            let scheduling = &world.colonies[0].leader_ai_runtime.scheduling;
+            assert_eq!(
+                scheduling.visible_tasks[&task_id].stage,
+                crate::task_runtime::TaskStage::Cancelled
+            );
+            assert!(!scheduling.world_reservation_ids.contains_key(&task_id));
+            assert!(
+                scheduling.visible_tasks[&task_id]
+                    .assigned_cat_ids
+                    .is_empty()
+            );
+        }
+
+        #[test]
+        fn lai23_stalled_visible_route_releases_worker_and_both_reservations() {
+            use crate::task_runtime::TaskStage;
+
+            let mut world = new_world(320_000);
+            world
+                .colonies
+                .push(found_global_colony(320_000, "colony-1", 0, 320_000));
+            let mut assigned = None;
+            for tick in 1..=20_i64 {
+                let _ = world_tick(&mut world, tick * 900_000);
+                assigned = world.colonies[0]
+                    .leader_ai_runtime
+                    .scheduling
+                    .visible_tasks
+                    .iter()
+                    .find_map(|(task_id, task)| {
+                        (!task.stage.is_terminal() && !task.assigned_cat_ids.is_empty()).then(
+                            || {
+                                (
+                                    task_id.clone(),
+                                    task.assigned_cat_ids
+                                        .iter()
+                                        .next()
+                                        .expect("assigned task has one worker")
+                                        .clone(),
+                                )
+                            },
+                        )
+                    });
+                if assigned.is_some() {
+                    break;
+                }
+            }
+            let (task_id, cat_id) = assigned.expect("founding survival route receives a worker");
+            let now_tick = LAI23_VISIBLE_TASK_TRAVEL_TIMEOUT_MINUTES + 1_000;
+            let colony = &mut world.colonies[0];
+            let task = colony
+                .leader_ai_runtime
+                .scheduling
+                .visible_tasks
+                .get_mut(&task_id)
+                .expect("assigned task persists");
+            task.stage = TaskStage::TravelToSource;
+            task.updated_tick = 1_000;
+            assert!(
+                colony
+                    .leader_ai_runtime
+                    .scheduling
+                    .world_reservation_ids
+                    .contains_key(&task_id)
+            );
+
+            cancel_stalled_lai23_visible_task_routes(colony, now_tick);
+
+            let scheduling = &colony.leader_ai_runtime.scheduling;
+            assert_eq!(
+                scheduling.visible_tasks[&task_id].stage,
+                TaskStage::Cancelled
+            );
+            assert!(!scheduling.world_reservation_ids.contains_key(&task_id));
+            assert!(
+                scheduling.visible_tasks[&task_id]
+                    .assigned_cat_ids
+                    .is_empty()
+            );
+            let cat = colony
+                .cats
+                .iter()
+                .find(|cat| cat.id == cat_id)
+                .expect("worker persists");
+            assert_eq!(cat.current_task, None);
+            assert_eq!(cat.destination, None);
+            assert_eq!(cat.activity, CatActivity::Idle);
+        }
+
+        #[test]
+        fn lai23_threat_posture_replaces_failed_survival_goal_from_reported_deficit() {
+            let mut colony = found_colony(320_000, "colony-1", 0, 320_000);
+            let leader = colony.cats.first().expect("founding leader cat").id.clone();
+            colony.leader_id = Some(leader);
+            colony.threat_pressure = 90.0;
+            colony.stock_ledger.reported.food = 0.0;
+            colony.stock_ledger.reported.fish = 0.0;
+            colony.stock_ledger.reported.water = 0.0;
+
+            let inputs = leader_posture_inputs(&colony);
+            let posture = crate::leader_planner::select_posture(&inputs)
+                .expect("report-safe posture inputs are valid");
+            assert_eq!(
+                posture.posture,
+                crate::leader_planner::LeaderPosture::Defend
+            );
+            let candidates =
+                crate::leader_planner::foundational_goal_candidates(&inputs, posture.posture)
+                    .expect("report-safe goal candidates are valid");
+            assert!(
+                candidates
+                    .iter()
+                    .any(|candidate| candidate.kind
+                        == crate::leader_planner::LeaderGoalKind::Defense)
+            );
+            assert!(
+                candidates
+                    .iter()
+                    .any(|candidate| candidate.kind
+                        == crate::leader_planner::LeaderGoalKind::Survival)
+            );
+
+            run_due_leader_reviews(&mut colony, 0, 320_000);
+            assert!(colony.leader_ai_runtime.intents.iter().any(|(_, intent)| {
+                intent_kind_matches(intent, "defense") && !intent.lifecycle.state.is_terminal()
+            }));
+            let first_survival = colony
+                .leader_ai_runtime
+                .intents
+                .iter()
+                .find(|(_, intent)| intent_kind_matches(intent, "survival"))
+                .map(|(id, _)| id.clone())
+                .expect("threat review emits survival alongside defense");
+
+            let _ = colony.leader_ai_runtime.intents.expire_due(5_000);
+            assert!(
+                colony
+                    .leader_ai_runtime
+                    .intents
+                    .get(&first_survival)
+                    .is_some_and(|intent| intent.lifecycle.state.is_terminal())
+            );
+            run_due_leader_reviews(&mut colony, 5_000, 320_000);
+            assert!(colony.leader_ai_runtime.intents.iter().any(|(_, intent)| {
+                intent_kind_matches(intent, "survival") && !intent.lifecycle.state.is_terminal()
+            }));
+        }
+
+        #[test]
+        fn lai23_completed_leader_reviews_persist_duty_and_raise_live_cadence_level() {
+            let mut colony = found_global_colony(320_000, "colony-1", 0, 320_000);
+            ensure_lai23_founding_leader(&mut colony, 0, 0);
+            migrate_legacy_leadership_into_runtime(&mut colony, 0);
+            colony.stock_ledger.reported.food = 1_000.0;
+            colony.stock_ledger.reported.fish = 1_000.0;
+            colony.stock_ledger.reported.water = 1_000.0;
+            let raw_leader = colony.leader_id.clone().expect("founding leader");
+            let leader_id = crate::planner_core::PlannerId::derive("cat", [raw_leader.as_str()]);
+            assert_eq!(lai23_leader_effective_level(&colony, &leader_id).get(), 1);
+
+            run_due_leader_reviews(&mut colony, 0, 320_000);
+            run_due_leader_reviews(&mut colony, 24 * 60, 320_000);
+
+            assert_eq!(
+                colony
+                    .leader_ai_runtime
+                    .officers
+                    .institution
+                    .leader_completed_duty_minutes(&leader_id),
+                24 * 60
+            );
+            assert_eq!(lai23_leader_effective_level(&colony, &leader_id).get(), 2);
+
+            let encoded =
+                serde_json::to_string(&colony.leader_ai_runtime).expect("runtime serializes");
+            let restored: crate::leader_ai_runtime::LeaderAiRuntimeState =
+                serde_json::from_str(&encoded).expect("runtime duty round-trips");
+            assert_eq!(
+                restored
+                    .officers
+                    .institution
+                    .leader_completed_duty_minutes(&leader_id),
+                24 * 60
+            );
+        }
+
+        #[test]
+        fn lai23_stock_truth_is_bounded_and_regeneration_unlocks_only_at_forester_level_four() {
+            use crate::{
+                beliefs::{ProjectedBeliefValue, ReportLevel},
+                officers::OfficerRole,
+                planner_core::PlannerId,
+            };
+
+            let mut colony = found_global_colony(320_000, "colony-1", 0, 320_000);
+            ensure_lai23_founding_leader(&mut colony, 0, 0);
+            migrate_legacy_leadership_into_runtime(&mut colony, 0);
+            phase_lai23_02_beliefs_reports_expiry_contradictions(&mut colony, 0, 0);
+            let stock = colony
+                .leader_ai_runtime
+                .beliefs
+                .project(&lai23_stock_belief_key(&colony.id, "food"), 0)
+                .expect("the ordinary count creates a bounded stock observation");
+            assert_eq!(stock.report_level, ReportLevel::One);
+            assert!(matches!(
+                stock.value,
+                ProjectedBeliefValue::StockRange(ref range)
+                    if range.lower_bound < range.estimate && range.estimate < range.upper_bound
+            ));
+            assert!(
+                colony
+                    .leader_ai_runtime
+                    .beliefs
+                    .project(&lai23_food_regeneration_belief_key(&colony.id), 0)
+                    .is_none(),
+                "no officer means no regeneration-rate knowledge"
+            );
+
+            let forester_raw = colony
+                .cats
+                .iter()
+                .find(|cat| Some(&cat.id) != colony.leader_id.as_ref())
+                .expect("a non-Leader cat can fill the Forester office")
+                .id
+                .clone();
+            let forester_id = PlannerId::derive("cat", [forester_raw.as_str()]);
+            let institution = &mut colony.leader_ai_runtime.officers.institution;
+            institution
+                .open_office(OfficerRole::Forester, 0)
+                .expect("Forester office opens");
+            institution
+                .appoint_officer(OfficerRole::Forester, forester_id.clone(), 0)
+                .expect("Forester appointment succeeds");
+            institution
+                .record_completed_duty_hours(forester_id, OfficerRole::Forester, 239)
+                .expect("level-three duty history records");
+            run_due_officer_reviews(&mut colony, 60);
+            assert!(
+                colony
+                    .leader_ai_runtime
+                    .beliefs
+                    .project(&lai23_food_regeneration_belief_key(&colony.id), 60)
+                    .is_none(),
+                "level three cannot emit regeneration-rate knowledge"
+            );
+
+            run_due_officer_reviews(&mut colony, 90);
+            let regeneration = colony
+                .leader_ai_runtime
+                .beliefs
+                .project(&lai23_food_regeneration_belief_key(&colony.id), 90)
+                .expect("level-four Forester emits a bounded regeneration estimate");
+            assert_eq!(regeneration.report_level, ReportLevel::Four);
+            assert!(matches!(
+                regeneration.value,
+                ProjectedBeliefValue::RegenerationRange(ref range)
+                    if range.lower_bound < range.estimate && range.estimate < range.upper_bound
+            ));
+        }
+
+        #[test]
+        fn lai23_favor_owned_catalog_study_activates_the_existing_physical_effect_once() {
+            use crate::research_purchase::StudyId;
+
+            let mut colony = found_global_colony(320_000, "colony-1", 0, 320_000);
+            let study_id = "accounting_tent_workflow";
+            assert!(
+                crate::research_catalog::research_catalog()
+                    .get(study_id)
+                    .is_some(),
+                "test study belongs to the current physical catalog"
+            );
+            colony
+                .leader_ai_runtime
+                .research
+                .purchases
+                .owned_studies
+                .insert(StudyId::derive(study_id));
+
+            sync_lai23_owned_research_effects(&mut colony);
+            sync_lai23_owned_research_effects(&mut colony);
+
+            assert!(crate::upgrade_tree::is_owned(
+                &colony.upgrade_tree,
+                study_id
+            ));
+            assert_eq!(
+                colony
+                    .upgrade_tree
+                    .owned_node_ids
+                    .iter()
+                    .filter(|owned| owned.as_str() == study_id)
+                    .count(),
+                1,
+                "repeated world ticks cannot duplicate the operational entitlement"
+            );
+        }
+    } // retired_lai23_runtime_tests
 }

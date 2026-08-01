@@ -46,7 +46,7 @@ pub const ENEMY_STATS: [(EnemyType, EnemyStats); 5] = [
     ),
 ];
 
-pub const BUILDING_COSTS: [(BuildingType, u32); 25] = [
+pub const BUILDING_COSTS: [(BuildingType, u32); 29] = [
     (BuildingType::Den, 0),
     (BuildingType::FoodStorage, 5),
     (BuildingType::WaterBowl, 3),
@@ -54,6 +54,8 @@ pub const BUILDING_COSTS: [(BuildingType, u32); 25] = [
     (BuildingType::HerbGarden, 10),
     (BuildingType::Nursery, 12),
     (BuildingType::ElderCorner, 10),
+    (BuildingType::FamilyHome, 15),
+    (BuildingType::ElderLodge, 20),
     (BuildingType::Walls, 15),
     (BuildingType::MouseFarm, 25),
     (BuildingType::Shrine, 0),
@@ -84,6 +86,11 @@ pub const BUILDING_COSTS: [(BuildingType, u32); 25] = [
     // P12.4 processing chain: the mill precedes the heavier timber works.
     (BuildingType::Mill, 20),
     (BuildingType::Sawmill, 25),
+    // LAI.46 stations. Both are developed 3x3 food stations in the same tier as
+    // the mill they complement; the real physical build still pays the staged
+    // construction bill, so this value only feeds the inspector cost preview.
+    (BuildingType::Cookhouse, 20),
+    (BuildingType::FishingHut, 20),
 ];
 
 pub const TASK_TO_SKILL: [(TaskType, &str); 17] = [
@@ -187,6 +194,8 @@ mod tests {
             (BuildingType::HerbGarden, 10),
             (BuildingType::Nursery, 12),
             (BuildingType::ElderCorner, 10),
+            (BuildingType::FamilyHome, 15),
+            (BuildingType::ElderLodge, 20),
             (BuildingType::Walls, 15),
             (BuildingType::MouseFarm, 25),
             (BuildingType::Shrine, 0),
@@ -205,6 +214,8 @@ mod tests {
             (BuildingType::School, 15),
             (BuildingType::Mill, 20),
             (BuildingType::Sawmill, 25),
+            (BuildingType::Cookhouse, 20),
+            (BuildingType::FishingHut, 20),
         ];
 
         assert_eq!(BUILDING_COSTS.len(), BuildingType::ALL.len());

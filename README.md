@@ -20,19 +20,47 @@ non-commercial game project.
 
 ---
 
+## Leader intelligence overhaul
+
+The colony now runs through a deterministic, report-limited strategic planner rather than a
+perfect-information rule list. Leaders choose among survival, families/housing, construction and
+storage, food/production, the Hole's endless physical feed demand, two-lane research, defense,
+diplomacy, and material barter; seven specialist
+officers improve decisions and may omit, delay, or choose poorly according to their experience.
+Gods see the same reported knowledge the colony has, including regeneration only after an
+effective level-4 officer report. Every visible job resolves to its real world site: Hunts to
+caves, Water jobs to sources and banks/endpoints, and Workshop jobs to the complete 3×3 footprint.
+
+The maintained design, implementation board, contributor extension guide, diagnostics, and
+browser acceptance evidence are indexed in
+[`docs/leader-ai-overhaul/README.md`](docs/leader-ai-overhaul/README.md).
+Contributor entry points are the
+[extension guide](docs/leader-ai-overhaul/extending-the-system.md),
+[diagnostics guide](docs/leader-ai-overhaul/diagnostics-and-debugging.md), and
+[browser play-test contract](docs/leader-ai-overhaul/browser-playtests/README.md).
+
+**Delivery status (2026-07-25):** the first LAI.34 cutover is historical baseline; the exact
+LAI.35–LAI.70 two-plan integration is in progress. The current board records implemented pure
+foundations and every remaining runtime/protocol/persistence/server/client/art/diagnostic/deletion
+gate. Shrine/Favor, generic stored Food/Fish/Preserves, scholar Insight, coin settlement, semantic
+save conversion, direct routine micromanagement, and the old research UI are removal targets—not
+restart compatibility requirements. See the
+[integrated implementation map](docs/leader-ai-overhaul/integrated-implementation-map.md).
+
 ## What is this?
 
 **"An idle version of Dwarf Fortress, played by cats, in a forest."** Idle Cat Forest is a
 top-down, single-level god-sim: a cat colony lives, works, breeds, ages, researches, and
 fights entirely on its own, driven by an authoritative server that ticks the simulation once
-a second whether or not anyone is watching. Early play lets you direct exact jobs, placements,
-workers, and priorities; assigning leadership roles progressively hands those categories back
-to the colony. You also found villages, paint zones, vote, and spend a slow tech tree while the
-cats continue living their own lives.
+a second whether or not anyone is watching. The God influences broad priorities, player research,
+temporary aid/boosts, one election backing block, personal diplomacy, and authorized expulsion;
+the Leader owns exact routine jobs, sites, buildings, roads, crops, storage, production, food
+permissions, officers, and workers. Cats keep bodily refusal and self-preservation.
 
-A **utility-AI leader director** keeps a fresh village alive with bounded hunting, water, and
-scouting work, while seven officer roles automate their own specialist categories. Vacant
-specialist categories stay manual, so appointing officers visibly hands work back to the colony.
+The earlier P12 baseline used a **utility-AI leader director** to keep a fresh village alive with
+bounded hunting, water, and scouting work, while seven officer roles automated specialist
+categories. That historical behavior remains useful migration context; the production target is
+the persistent, imperfect-knowledge planner described above and in the overhaul directory.
 Cats walk every tile to get where they're going, lineages form through breeding, roads wear in
 from traffic, stockpiles fill and empty, and raid pressure builds with your success. See
 [`docs/GAME_VISION.md`](docs/GAME_VISION.md) for the full design pillars
@@ -68,8 +96,10 @@ cat-client (Bevy 0.19 renderer/UI, native + wasm-targetable)
         ↕ WebSocket (ewebsock), snapshot in / action out, JSON over cat-protocol
 cat-server (tokio + axum, authoritative)
   ├── runs cat-sim's world_tick() once a second for every colony
-  ├── broadcasts WorldSnapshot to all connected clients
-  ├── receives ClientAction, applies it via cat-sim, persists to SQLite (rusqlite)
+  ├── broadcasts WorldSnapshot plus report-safe LAI.24 snapshots
+  ├── applies authenticated/versioned LAI.25 actions and persists to SQLite (rusqlite)
+  ├── keeps authenticated non-overlapping base-world ClientAction controls
+  ├── rejects retired leader/progression ClientAction variants with UPDATE_REQUIRED
   └── HMAC-signed session identity, per-session rate limiting
         ↕ calls
 cat-sim (pure, deterministic simulation core — no I/O, no rendering, no std::time)
@@ -79,32 +109,32 @@ Plus **cat-dev**, a small launcher bin (`cargo dev`) that builds and runs `cat-s
 `cat-desktop` together for local development.
 
 - **`cat-sim`** — the whole simulation as pure functions over plain data: life sim (aging,
-  breeding, genetics, old-age/starvation death), movement + A* pathfinding, the leader
-  director (a utility-AI that allocates a shared labor budget across colony goals), jobs,
-  production/hauling/storage, an upgrade tree with god-purchase and cat-research paths,
-  threat/raids/combat, elections, zones, roads, terrain generation, and the newer DF-style
-  item/material economy (crafting, traders, coin). One `world_tick(&mut WorldState, now)` call
-  runs 53 ordered phases per colony per tick — the single source of truth, same discipline as
+  breeding, genetics, old-age/starvation death), movement + A* pathfinding, the persistent
+  report-limited leader planner, jobs,
+  production/hauling/physical storage, staged construction, families/housing/mentoring,
+  governance/elections, Notes/Void research lanes, the Hole, divine policy, threat/raids/combat,
+  zones, roads/walls/farms, terrain generation, and the DF-style item/material/barter economy.
+  One `world_tick(&mut WorldState, now)` call
+  runs the integrated ordered phases per colony per tick — the single source of truth, same discipline as
   the old TS `workerTick`. `#![forbid(unsafe_code)]`, no `rand` — all randomness goes through a
   ported seeded LCG (`rng.rs`) with forked chains for movement/life/raids so replay is
   deterministic. World state is multi-colony (`WorldState { colonies: Vec<ColonyRuntime> }`)
   from the ground up — the old game's single global colony is now colony `#1` of many, with
   player-founded villages (`found_colony`) as a first-class primitive.
-- **`cat-protocol`** — `serde` wire types shared by client and server: `WorldSnapshot` /
-  `ColonySnapshot` (resources, cats, jobs, buildings, upgrades, threat, raiders, zones, items,
-  officers, gather spots, roads, transport, and physical caravans) and a typed `ClientAction`
-  enum (found/join/select/trade villages, request jobs, purchase research, vote, plan and staff
-  buildings, assign officers and labor preferences, defend raids, author farms/roads/stockpiles/
-  gather spots/fishing, edit station queues, equip/repair goods, construct and route rail/shipping,
-  trade with visitors, and use release-disabled test controls).
+- **`cat-protocol`** — `serde` wire types shared by client and server: the wider-world
+  `WorldSnapshot`/`ColonySnapshot`, report-safe `LeaderAiSnapshotEnvelope` (LAI.24), and
+  authenticated expected-versioned integrated action envelope. The final cutover removes direct
+  base-world controls that bypass Leader authority; all remaining broad God actions have their own
+  strict expected-version lane, idempotency, authorization, and typed rejection.
 - **`cat-server`** — `axum` exposes `GET /health`, stateful `GET /ready`, and `GET /ws`
   (WebSocket). CPU-heavy simulation and synchronous persistence run on Tokio's blocking pool;
   new sockets receive a startup-initialized last-completed snapshot without waiting behind an
   in-progress tick. The loop ticks the shared world once a second, saves to SQLite every 5 ticks (plus a
   graceful-shutdown save), and broadcasts the new snapshot. Persistence
-  (`crates/cat-server/src/persistence.rs`) mirrors the old Drizzle schema in `rusqlite` tables
-  (`world`, `colonies`, `cats`, `jobs`, `buildings`, `world_tiles`, `shared_world_tiles`, `events`, `zones`,
-  `elections`, `votes`, `raiders`) with additive migrations on open. Session identity is
+  (`crates/cat-server/src/persistence.rs`) uses a fresh strict schema for the integrated aggregates,
+  physical identities, tasks/reservations/cargo, families/governance, Notes/Void research,
+  construction/storage, divine effects, and barter. Known obsolete gameplay schemas reset/recreate;
+  unknown/future/malformed state fails closed. Session identity is
   HMAC-signed (`SESSION_HMAC_SECRET`; the development fallback is loopback-only unless explicitly
   opted in). Public binds require an Origin allowlist. Actions and connections are bounded per
   authenticated session and effective client IP, including explicitly trusted reverse proxies.
@@ -113,10 +143,11 @@ Plus **cat-dev**, a small launcher bin (`cargo dev`) that builds and runs `cat-s
   world **top-down** (a design pivot away from the archived game's isometric map — see
   `docs/GAME_VISION.md`): terrain by biome, cats with shape-and-color specialization/officer
   badges and carried-item markers, label-free roofed homes and open craft stations, visible stockpiles/gather spots,
-  fog of war, roads, raiders, a DF-Steam-inspired HUD (resources, census, event log, trade,
-  inspectors), and a full-page 487-study ("about 500") research ledger. All 487 studies are live
-  and purchasable; 108 physical recipes and every generated resource payload have authoritative
-  runtime consumers.
+  fog of war, roads/walls/farms, construction/storage/family/enterprise states, and the exact
+  five-screen Log/Stores/Village/Research/Council shell with six Council tabs. Research shows the
+  canonical graph, physical God queue/preparation, free report-safe Leader lane, Notes/Void,
+  permits, repeatables, and boosts. It renders only snapshot-provided truth and complete task
+  geometry.
 - **`cat-desktop`** / **`cat-web`** — thin binaries over `cat-client`. `cat-web` builds with
   Trunk, serves the selected assets, derives a same-origin WebSocket URL for deployment, and
   has been exercised end-to-end in Chromium. The production `Dockerfile` serves the optimized
@@ -207,7 +238,7 @@ the exact bar and rationale.
 cat_idler/
 ├── crates/
 │   ├── cat-sim/          # Pure deterministic simulation core (60+ modules, 53-phase world_tick)
-│   ├── cat-protocol/     # serde wire types: WorldSnapshot/ColonySnapshot + ClientAction
+│   ├── cat-protocol/     # WorldSnapshot plus LAI.24 snapshots and LAI.25 actions
 │   ├── cat-server/       # tokio + axum WS server, rusqlite persistence, identity, rate-limit
 │   ├── cat-client/       # Bevy 0.19 renderer + UI (native + wasm)
 │   ├── cat-desktop/      # native launcher bin over cat-client
@@ -241,9 +272,11 @@ runnable, on branch `archive/web-game` (tag `web-final`).
 
 Docs describing the old TypeScript/Next.js game (`docs/plan.md`, `docs/ROADMAP.md`,
 `docs/LEADER_AI_DESIGN.md`, `docs/TERRAIN_DESIGN.md`, `docs/ENGINE_PLATFORM.md`,
-`docs/ENGINE_FRONTEND.md`, `docs/TASKS.md`, `docs/TESTING.md`, `docs/UI_CONCEPTS.md`) are
+`docs/ENGINE_FRONTEND.md`, `docs/TASKS.md`, `docs/UI_CONCEPTS.md`) are
 marked superseded at the top of each file and kept only as design-history reference for the
 port — they no longer describe how to build, run, or test this project.
+[`docs/TESTING.md`](docs/TESTING.md) is the maintained Rust/Bevy test workflow; the leader-AI
+release additions are linked from its LAI section.
 
 ## Status
 
@@ -263,6 +296,10 @@ leader/healer old-age thresholds.
 The tiered local-smoke/remote-full workflow is documented in
 [`docs/TESTING.md`](docs/TESTING.md); newly reproduced defects go in
 [`docs/FIX_LOG.md`](docs/FIX_LOG.md).
+
+The paragraph above is the verified pre-LAI product baseline. Current leader-intelligence
+completion and external release gates are tracked on the
+[overhaul board](docs/leader-ai-overhaul/BOARD.md).
 
 ---
 

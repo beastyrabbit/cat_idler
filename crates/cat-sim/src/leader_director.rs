@@ -503,6 +503,23 @@ pub struct DirectorPlan {
     pub slots: Vec<OpenSlots>,
 }
 
+/// Retired compatibility entry point.
+///
+/// The legacy snapshot contains authoritative resource truth and has no persisted
+/// belief/report input, so it cannot produce a legal LAI plan. Production callers
+/// receive an inert plan; the authoritative runtime uses `leader_planner` and
+/// `leader_ai_runtime` instead. The test-only implementation below remains solely
+/// to preserve the archived TypeScript parity fixtures.
+#[cfg(not(test))]
+#[must_use]
+pub fn direct_colony(_snapshot: &LeaderSnapshot) -> DirectorPlan {
+    DirectorPlan {
+        decisions: Vec::new(),
+        slots: Vec::new(),
+    }
+}
+
+#[cfg(test)]
 #[must_use]
 pub fn direct_colony(snapshot: &LeaderSnapshot) -> DirectorPlan {
     let mut decisions = Vec::new();

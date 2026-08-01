@@ -379,6 +379,11 @@ pub const fn building_staff_cap(building_type: BuildingType) -> u32 {
         | BuildingType::Sawmill
         | BuildingType::AccountingTent
         | BuildingType::MouseFarm
+        // LAI.46 stations seat one legacy worker slot each. Their real
+        // concurrent station slots are owned by the canonical LAI.46 work-slot
+        // contract, not by this legacy inspector cap.
+        | BuildingType::Cookhouse
+        | BuildingType::FishingHut
         | BuildingType::Field => 1,
         BuildingType::Den
         | BuildingType::FoodStorage
@@ -387,6 +392,8 @@ pub const fn building_staff_cap(building_type: BuildingType) -> u32 {
         | BuildingType::HerbGarden
         | BuildingType::Nursery
         | BuildingType::ElderCorner
+        | BuildingType::FamilyHome
+        | BuildingType::ElderLodge
         | BuildingType::Walls
         | BuildingType::Shrine
         | BuildingType::Barracks => 0,
@@ -453,11 +460,18 @@ pub const fn building_output_label(building_type: BuildingType) -> Option<&'stat
         | BuildingType::HerbGarden
         | BuildingType::Nursery
         | BuildingType::ElderCorner
+        | BuildingType::FamilyHome
+        | BuildingType::ElderLodge
         | BuildingType::Walls
         | BuildingType::Shrine
         | BuildingType::Barracks
         | BuildingType::ResearchHut
         | BuildingType::School
+        // The LAI.46 stations produce typed physical food lots through the
+        // canonical cookhouse/fishing authorities, never a scalar legacy
+        // resource, so they report no legacy production label.
+        | BuildingType::Cookhouse
+        | BuildingType::FishingHut
         | BuildingType::AccountingTent => None,
     }
 }

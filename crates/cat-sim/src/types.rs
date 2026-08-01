@@ -136,6 +136,18 @@ define_wire_enum! {
         // world_tick::research_workforce exactly like a ResearchHut; the node's own
         // ResearchRateMult effect (applied in phase_24_research) then scales the total.
         School => "school",
+        // Plan 2 family institutions are appended so the stable iteration
+        // order of every pre-existing building remains unchanged.
+        FamilyHome => "family_home",
+        ElderLodge => "elder_lodge",
+        // LAI.46 Plan 1 stations. Both are appended after every pre-existing
+        // variant so no earlier wire literal, iteration index, or persisted
+        // ordering changes. The Cookhouse is the 3x3 cooking/baking/preserving
+        // station; the Fishing Hut is the 3x3 land station whose oriented dock
+        // and reserved water attachment are owned by `fishing::
+        // fishing_hut_footprint`, not by this size table.
+        Cookhouse => "cookhouse",
+        FishingHut => "fishing_hut",
     }
 }
 
@@ -323,6 +335,10 @@ mod tests {
             (BuildingType::Mill, "mill"),
             (BuildingType::Sawmill, "sawmill"),
             (BuildingType::School, "school"),
+            (BuildingType::FamilyHome, "family_home"),
+            (BuildingType::ElderLodge, "elder_lodge"),
+            (BuildingType::Cookhouse, "cookhouse"),
+            (BuildingType::FishingHut, "fishing_hut"),
         ];
 
         assert_wire_round_trip(&cases, BuildingType::as_str);

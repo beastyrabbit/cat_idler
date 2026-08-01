@@ -173,7 +173,7 @@ pub fn player_id_for_session(session_id: &str) -> String {
     )
 }
 
-fn session_issued_at(session_id: &str) -> Option<i64> {
+pub(crate) fn session_issued_at(session_id: &str) -> Option<i64> {
     let rest = session_id.strip_prefix("session_")?;
     let (version, rest) = rest.split_once('_')?;
     if !matches!(version, "v1" | "v2") {

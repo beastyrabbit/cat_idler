@@ -4,14 +4,39 @@
 
 Idle Cat Forest is developed and distributed solely as a non-commercial game project.
 
+## Colony intelligence
+
+The colony is intentionally capable but imperfect. A deterministic founding Leader plans across
+survival, families/housing, staged construction/storage, food/production, an endlessly hungry Hole,
+two-lane research, defense, diplomacy, and material barter from
+beliefs and officer reports—not hidden world truth. Experienced officers shorten review cadence,
+improve estimates, and expose richer information; weak or absent officers can omit work, react
+late, or select a locally bad resource such as scarce food for a Hole feed and then send many cats
+to recover the deficit. The player-god receives the same report-safe view, so regeneration rates
+remain unknown until an effective level-4 report makes them knowable.
+
+Plans become real spatial work. A Hunt belongs to its cave, a Water job to its source and
+bank/delivery endpoint, and a Workshop job highlights and reserves the entire canonical 3×3
+footprint. The Hole's repeated physical feed pipeline and Void Insight are a main progression
+engine alongside growing the village; physical scholar work creates Research Notes for ordinary
+research. Families, care, governance, construction, storage, diplomacy, barter, and future systems use the
+same plan/report/reservation/action architecture. The complete maintained contract lives in
+[`leader-ai-overhaul/`](leader-ai-overhaul/README.md).
+
+The LAI.34 cutover is historical baseline. The LAI.35–70 integration removes the utility director,
+Shrine/Favor/Blessings, generic stored Food/Fish/Preserves, scholar Insight, coins, direct routine
+control, semantic gameplay migration, and the old research/navigation surfaces. Progress and exact
+remaining runtime/wire/persistence/client/art/acceptance work are recorded on the
+[overhaul board](leader-ai-overhaul/BOARD.md).
+
 ## Pillars
 1. **Top-down, single level.** A flat 2D grid world (no isometric, no z-layers). Read
    the map like DF: everything is a *place* — tiles, workshops, stockpiles, cats.
 2. **Manual → automated via roles.** Early game you direct the colony by hand (what to
    build, who hauls what, where the stockpiles go). As the colony grows you unlock and
    assign **leadership roles / officers**, each of which *automates a whole category of
-   work* — turning the game idle. The current single **Leader** (the utility-AI director)
-   is role #1; the evolution is **more specialized roles**:
+   work* — turning the game idle. The founding **Leader** owns cross-domain strategy and delegates
+   through **specialized roles**:
    - **Steward** — hauling + stockpile management (what goes where).
    - **Accountant** — physical stockpile rounds and reported inventory freshness.
    - **Forester** — wood: felling, replanting, lumber.
@@ -19,7 +44,9 @@ Idle Cat Forest is developed and distributed solely as a non-commercial game pro
    - **Captain** — warriors, defense, raids.
    - **Loremaster/Ritualist** — research labor/building automation + shrine/rituals.
    - **Cloth Leader** — fibre, thread, hide, cloth, leather, and clothing stations.
-   The always-present founding Leader retains a narrow, deficit-scaled safety floor: at the
+   The following bounded safety-floor description is the historical P12 baseline that the new
+   persistent cross-domain planner supersedes: the always-present founding Leader retains a
+   narrow, deficit-scaled safety floor. At the
    15-cat founding population, at most six primitive hunters, two emergency water fetchers, and
    one scout; those ceilings scale proportionally as the population changes. Specialist
    vacancies still make farming, production,
@@ -44,7 +71,12 @@ Idle Cat Forest is developed and distributed solely as a non-commercial game pro
    automation and rituals remain Loremaster-owned, while the Leader retains the daily strategic
    study choice described below.
 
-## What already exists in the sim (reuse, don't rebuild)
+## Historical P12 inventory (reuse, don't rebuild)
+
+This section records the pre-overhaul product baseline. Where it says “utility-AI leader
+director,” read it as migration history; new planning work follows
+[`leader-ai-overhaul/`](leader-ai-overhaul/README.md).
+
 - Utility-AI **leader director** (one overseer that automates) — the seed of the role system.
 - **Jobs/labors**, **workshops** (workshop/smithy/field/research_hut/school/barracks),
   **hauling** (cats carry yields in trips), **storage** capacities, **movement/pathfinding**,
@@ -108,10 +140,12 @@ unvisited or unreachable piles remain visibly stale.
   **escalating resources**, so expansion is the long-game economy: build → unlock a role →
   automate → free paws → build the next thing. Wood Cutter, Stone Prep, Woodworking, and
   Research Hut are explicit founding-placement exceptions that establish the first physical chains.
-- Research uses a full-page dependency tree with about **500 data-driven nodes**: at least
-  one third building-related unlocks and one third recipes/new resources, with the rest
-  covering movement, labor, storage, defense, and similar upgrades. A player may buy any
-  affordable nodes. The Leader may autonomously choose at most one node per rolling real-life day.
+- Research uses one validated graph whose finite total is derived from canonical content,
+  fourteen curated tracks at levels 1–10, repeatable level 11+, and real AND/convergence junctions.
+  The God lane queues and physically researches ordinary Notes-funded or Hole-axis Void-funded
+  studies; the free instant Leader lane uses a persisted rolling-seven-day quota, normally avoids
+  the God target, and may collide only for critical need or the exact bounded mistake band.
+  Building studies grant permits; the Leader still starts the timed physical upgrade.
 
 ### Founding, housing, breeding, and migration
 - A new village starts with **15 adult cats and three early Dens**; each Den provides exactly
@@ -134,7 +168,7 @@ unvisited or unreachable piles remain visibly stale.
   leaders and healers receive the same 20% extension and begin at **288 game-hours**. This is a
   deliberate current-design replacement for the archived web prototype's 48/57.6-hour values.
 
-## Post-cutover completion status
+## Platform/P12–P19 completion status
 
 The Rust/Bevy cutover and maintained P12–P19 design are complete. Skills, seven specialist roles,
 spatial stockpiles and physical Accountant rounds, visible exterior farms, all ten processor types,
@@ -142,6 +176,12 @@ spatial stockpiles and physical Accountant rounds, visible exterior farms, all t
 physical trade, the 487-study research graph, housing/migration pressure, and native/WASM player
 paths are implemented. The focused and generalized acceptance evidence lives in
 `docs/IMPLEMENTATION_AUDIT.md` and `docs/FIX_LOG.md`; the integrated correction gate is verified.
+
+That statement closes the Rust/Bevy platform migration and P12–P19 baseline. The subsequent
+leader-intelligence cutover expanded the catalog to 531 studies and replaced the bounded director,
+legacy currencies, and old offering/action model as described above. Its integrated evidence is
+recorded on the [overhaul board](leader-ai-overhaul/BOARD.md); only the deliberately external
+release matrix and publication shards remain to run before a release is published.
 
 P9–P19 remain useful historical delivery groupings, not an active backlog. The integrated
 correction set in `docs/FIX_LOG.md` passed its generalized passive, player-guided, persistence,

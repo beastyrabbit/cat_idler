@@ -35,15 +35,17 @@ use bevy::window::CustomCursorImage;
 use bevy::window::CustomCursorUrl;
 use bevy::window::{CursorIcon, CustomCursor, PrimaryWindow};
 use cat_protocol::{
-    ActionResult, BridgeAxis, BuildingSnapshot, BuildingType, CarryingKind, CatActivity,
+    ActionProtocolVersion, ActionResult, AuthenticatedPlayerId, BoundedActionId,
+    BoundedVillageName, BridgeAxis, BuildingSnapshot, BuildingType, CarryingKind, CatActivity,
     CatHousingStatus, CatNeeds, CatSnapshot, ClientAction, ColonySnapshot, CropKind, EventSnapshot,
-    FarmSnapshot, FarmStage, FootprintSize, GateSide, GatherSpotPurpose, ItemInstanceSnapshot,
-    ItemLocation, ItemStackSnapshot, JobKind, Labor, OfferingResource, OfficerRole,
-    PROTOCOL_VERSION, ProductionQueueEdit, QueueMoveDirection, RaiderStatus, ResourceAmounts,
-    ResourceCapacities, ResourceKind, ResourceStackSnapshot, RoleXp, ScoutMission, ScoutResource,
-    Specialization, StationCompartment, StockpileSnapshot, TilePoint, TraderBuyOffer,
-    TraderSellOffer, TraderSnapshot, TraderVisitState, TransportMode, VillageKind, VillageScale,
-    VillageTradeCaravanPhase, WorldSnapshot, ZoneKind,
+    ExpectedStateVersions, FarmSnapshot, FarmStage, FootprintSize, GateSide, GatherSpotPurpose,
+    ItemInstanceSnapshot, ItemLocation, ItemStackSnapshot, JobKind, Labor, LeaderAiActionEnvelope,
+    LeaderAiActionPayload, OfficerRole, PROTOCOL_VERSION, ProductionQueueEdit, QueueMoveDirection,
+    RaiderStatus, ResourceAmounts, ResourceCapacities, ResourceKind, ResourceStackSnapshot, RoleXp,
+    ScoutMission, ScoutResource, SelectedColonyId, Specialization, StationCompartment,
+    StockpileSnapshot, TilePoint, TraderBuyOffer, TraderSellOffer, TraderSnapshot,
+    TraderVisitState, TransportMode, VillageKind, VillageScale, VillageTradeCaravanPhase,
+    WorldSnapshot, ZoneKind,
 };
 use cat_sim::climate::{Biome, ResourceHint};
 use cat_sim::terrain_gen::{
@@ -63,9 +65,118 @@ use std::{
     path::{Path, PathBuf},
 };
 
-mod research_ui;
+/// Reusable deterministic composition primitives for layered world sprites.
+///
+/// Renderer owners opt in from their own bounded modules; this export does not
+/// register systems or wire any particular world visual.
+pub mod layered_sprite;
+pub mod leader_ai_canonical_live;
+mod leader_ai_live;
+pub mod leader_ai_ui;
+pub use leader_ai_canonical_live::{
+    CanonicalLiveConnectionState, CanonicalLiveFeedback, CanonicalLiveRefreshState,
+    CanonicalLiveTransport, CanonicalLiveTransportPlugin, CanonicalLiveWireError,
+    CanonicalLiveWireMessage, looks_like_canonical_frame,
+};
+pub use leader_ai_live::{
+    LeaderAiConnectionState, LeaderAiFeedback, LeaderAiLiveState, LeaderAiSelectedColonyResource,
+    LeaderAiVersionResource, LeaderAiWireMessage, apply_leader_ai_frame, decode_leader_ai_frame,
+    leader_ai_snapshot_decode_error, looks_like_leader_ai_frame, mark_leader_ai_reconnecting,
+    queue_authenticated_leader_ai_action,
+};
+pub use leader_ai_ui::{
+    ACCESSIBLE_CAT_CARE_PANEL_LABEL, AcquiredTraitBadgeList, ActiveCareTaskReferenceList,
+    CAT_CARE_BODY_PART_TEST_ID_PREFIX, CAT_CARE_CONTROL_TEST_ID_PREFIX,
+    CAT_CARE_PANEL_TEST_ID_PREFIX, CAT_CARE_TASK_REF_TEST_ID_PREFIX, CareConsentActionButton,
+    CareItemCargoIdentityConservationGuard, CareRefusalAcknowledgeButton,
+    CareTaskCargoReferenceLabel, CareTaskFitterOrMedicRef, CareTaskSiteRefLabel,
+    CareTaskTreatmentPatientRef, CareTaskWorkshopRepairRef, CareTreatmentActionButton,
+    CatAnatomyPanel, CatCareActionConflictRefresh, CatCareBoundedEligibilityReason,
+    CatCareControlDisabledReason, CatCareMultiColonyPrivacyGuard,
+    CatCareNoHiddenRegenerationProjection, CatCareNoHiddenTruthWillingnessRecompute,
+    CatCarePanelPlugin, CatCarePanelRoot, CatCareReportSafeProjectionOnly,
+    CatCareSelectedColonyFilter, CatCareSelfPreservationOverrideBadge, CatCareStableCatId,
+    CatCareTypedBlockReason, CatCareTypedFeedbackToast, CatCareVersionMismatchRefreshHandler,
+    CatInjuryTreatmentState, CatProstheticPanel, CatRefusalStateBadge, CatStressRecoveryMeter,
+    CatWillingnessReasonList, DuplicateCareReplayUsesOriginalResult, ExpectedCatCareVersion,
+    FittedProstheticDurabilityHours, FittedProstheticRestorationPercent, FittedProstheticSideLabel,
+    FittedProstheticStableItemId, FittedProstheticTypeLabel, FittedProstheticWearProgress,
+    FourPawTwoEyeTailAnatomyGrid, LearnedSkillAndOfficeExperienceBreakdown, LeftEyeStateLabel,
+    LeftFrontPawStateLabel, LeftRearPawStateLabel, MigratedInnateAttributeBreakdown,
+    PLAYWRIGHT_CAT_CARE_LOCATOR_MANIFEST, PersonalityAxisBreakdown, PreserveCareDraftAfterRefresh,
+    PreserveSelectedCatAfterRefresh, ProstheticAdaptationProgress, ProstheticFitActionButton,
+    ProstheticRemoveActionButton, ProstheticRepairActionButton, ProstheticRestorationCapLabel,
+    RemovedCatSelectionClearsSafely, RightEyeStateLabel, RightFrontPawStateLabel,
+    RightRearPawStateLabel, TailStateLabel, TreatmentHoursRemainingLabel,
+    VISIBLE_BROWSER_CHECKPOINT_LAI30_CAT_PANEL,
+    VISIBLE_BROWSER_CHECKPOINT_LAI30_STALE_REFRESH_PRIVACY,
+    VISIBLE_BROWSER_CHECKPOINT_LAI30_TREATMENT_PROSTHETIC, build_cat_care_action_envelope,
+};
+pub use leader_ai_ui::{
+    ACCESSIBLE_DIPLOMACY_PANEL_LABEL, ACCESSIBLE_DIVINE_BOOST_PANEL_LABEL,
+    ACCESSIBLE_FAVOR_LEDGER_PANEL_LABEL, ACCESSIBLE_RESEARCH_FRONTIER_PANEL_LABEL,
+    ACCESSIBLE_SHRINE_OFFERING_PANEL_LABEL, ACCESSIBLE_TRADE_CONTRACTS_PANEL_LABEL,
+    AllianceApprovalControl, AutomaticQuotaUsedLimitLabel, AutomaticSevenDayQuotaWindow,
+    BoostBountifulLaborControl, BoostCostMicroFavorLabel, BoostDurationPicker,
+    BoostEffectStageLabel, BoostExpiryTickLabel, BoostFleetPawsControl, BoostInspiredWorkControl,
+    BoostRestorativeGraceControl, ConsentRequiredTradeAcceptButton,
+    ConsentRequiredTradeRejectButton, DiplomacyBoundedConflictFeedback,
+    DiplomacyExpectedVersionAction, DiplomacyPanel, DivineBoostPanel, EndlessOfferingStatusRow,
+    ExactMicroFavorBalance, FavorConflictBoundedFeedback, FavorDebitCreditOnceMarker,
+    FavorEventLedgerList, FavorIsNotInventoryCargoEscrowOrResearchPoints, FavorLedgerSummaryPanel,
+    FavorLedgerVersionLabel, ForeignPrivateStateRedactionGuard, ImmediateBlockControl,
+    InsightBalanceLabel, MultiColonyProgressionPrivacyGuard,
+    NoHiddenStockOrRegenerationInOfferingUi, NoLeaderBoostActionGuard,
+    NoMirroredFavorCurrencyGuard, OfferingBeliefRationale, OfferingCargoDispositionLabel,
+    OfferingHaulStageLabel, OfferingOmissionBlockReason, OfferingPackageBadge,
+    OfferingReportProvenanceList, OfferingRitualStageLabel, OfferingSourceStageLabel,
+    PLAYWRIGHT_PROGRESSIONS_NO_DOM_STATE_INJECTION, PROGRESSION_ROW_TEST_ID_PREFIX,
+    PinnedShrineEndpointLabel, PlayerPreparationDiscount25Percent, PrerequisiteReadyFrontierList,
+    ProgressionAuthenticatedPlayerIdentity, ProgressionDuplicateReplayFeedback,
+    ProgressionExpectedDiplomacyVersion, ProgressionExpectedPlannerVersion,
+    ProgressionExpectedResourceVersion, ProgressionExpectedTradeVersion,
+    ProgressionMalformedPayloadFeedback, ProgressionPanelPlugin, ProgressionPanelRoot,
+    ProgressionStableIdempotencyId, ProgressionStaleRefreshHandler, RelationshipConsentStateLabel,
+    ResearchFrontierPanel, ResearchPrerequisiteChip, ResearchPurchaseCommittedPriceLabel,
+    SameTypeActiveBoostDisabledReason, ScholarPreparationPanel, ScholarReassignmentControl,
+    ShrineOfferingPanel, StudyManifestCount531, TradeBeliefValuationConfidence,
+    TradeCargoStageLabel, TradeContractsPanel, TradeEscrowSummary, TradeProposalValueReportRefs,
+    TradeRecoveryStateLabel, TradeRouteBlockBoundedFeedback, TradeRouteEndpointLabel,
+    VISIBLE_BROWSER_CHECKPOINT_LAI31_DIPLOMACY_TRADE,
+    VISIBLE_BROWSER_CHECKPOINT_LAI31_OFFERING_RESTART,
+    VISIBLE_BROWSER_CHECKPOINT_LAI31_RESEARCH_BOOST, build_progression_action_envelope,
+};
+pub use leader_ai_ui::{
+    ACCESSIBLE_PLANS_PANEL_LABEL, ACCESSIBLE_STANDING_ORDERS_PANEL_LABEL,
+    AdministrationSlotLimitReached, AdministrationSlotMeter, AuthenticatedPlayerIdentity,
+    BoundedPlanConflictToast, CurrentPlanningEpochOnly, DespawnsUnknownPlanRows,
+    DeterministicPlanRowOrder, DismissPlanButton, DomainNudgeControl,
+    DuplicateReplayUsesOriginalResult, EffectiveReportLevelGate, EqualNudgesDoNotStack,
+    EstimateRange, ExpectedDomainVersion, ExpectedPlannerVersion, ExpectedReservationVersion,
+    ExpectedResourceVersion, ExpectedVersionBundle, LeaderAiPlanNudgeAction,
+    LeaderAiStandingOrderAction, LeaderResponsibleActorBadge, MovePlanDownButton, MovePlanUpButton,
+    NoClientRegenerationFallback, NoStalePlanControlReuse, OFFICER_REPORT_TEST_ID_PREFIX,
+    OfficerAuthorityBadge, OfficerReportPanel, OfficerReportTestId, OfficerRequestReasonList,
+    OfficerVacancySlot, OppositeNudgeReplacesPrior, PLAN_CONTROL_TEST_ID_PREFIX,
+    PLAN_NUDGE_DOWN_DELTA_BP_NEG_1500, PLAN_NUDGE_UP_DELTA_BP_1500, PLAN_ROW_TEST_ID_PREFIX,
+    PLAYWRIGHT_NO_DOM_STATE_INJECTION, PlanActionBuildError, PlanActionConflictRefresh,
+    PlanBoundedRationale, PlanControlDisabledReason, PlanDependencyList, PlanLifecycleStatusLabel,
+    PlanReportAgeBadge, PlanReportProvenanceList, PlanResponsibleActorLabel, PlanRowRenderModel,
+    PlanRowStableId, PlanScoreConfidenceRange, PlanUrgency, PlansNoHiddenTruthGuard,
+    PlansPanelPlugin, PlansPanelProjection, PlansPanelRoot, PlansRefreshState,
+    PreservePlansPanelFocusAfterRefresh, PreserveStandingOrderDraftAfterRefresh,
+    RegenerationUnavailableBelowReportLevel4, RemovedPlanControlsAreDisabled,
+    ReportSafeUnavailableState, STANDING_ORDER_ROW_TEST_ID_PREFIX, StableIdempotencyId,
+    StablePlanTieBreakKey, StandingOrderBoundedFeedback, StandingOrderCreateButton,
+    StandingOrderDoesNotBypassKnowledgeOrPhysicalRules, StandingOrderDraft,
+    StandingOrderDraftPatch, StandingOrderEditButton, StandingOrderPolicyDomainPicker,
+    StandingOrderRemoveButton, StandingOrdersPanel, VISIBLE_BROWSER_CHECKPOINT_PLANS_TOP_EIGHT,
+    VersionMismatchRefreshHandler, accessibility_label_dismiss_plan,
+    accessibility_label_move_plan_down, accessibility_label_move_plan_up,
+    build_leader_ai_action_envelope, build_standing_order_action_envelope,
+    render_authoritative_top_eight_plans, send_expected_version_action,
+};
 mod station_layout;
-use research_ui::UpgradeTreeUi;
 use station_layout::{
     BuildingVisual, PropPlacement, ResidentialFacade, StationFloor, StationLayout, StationProp,
     building_visual,
@@ -574,7 +685,13 @@ struct StartScreen {
     player_name: String,
     village_name: String,
     pending_foundation: bool,
+    pending_target_colony_id: Option<String>,
+    pending_action_id: Option<String>,
     error: Option<String>,
+    /// Set only by the LAI.54 presentation charter after an explicit action.
+    /// The established start flow consumes it on the next update, so rendering
+    /// the off-map showcase can never enter or create a colony by itself.
+    submit_requested: bool,
 }
 
 impl Default for StartScreen {
@@ -586,7 +703,10 @@ impl Default for StartScreen {
             player_name: String::new(),
             village_name: String::new(),
             pending_foundation: false,
+            pending_target_colony_id: None,
+            pending_action_id: None,
             error: None,
+            submit_requested: false,
         }
     }
 }
@@ -628,6 +748,21 @@ struct ConnectionState {
 #[derive(Resource, Default)]
 struct HelpUi {
     visible: bool,
+}
+
+/// Compatibility modal gate retained while the surrounding world-input
+/// systems are simplified. The retired 487-node scalar research screen is no
+/// longer spawned; LAI's report-safe 531-study progression surface is the only
+/// production research UI.
+#[derive(Resource, Default)]
+struct UpgradeTreeUi {
+    visible: bool,
+}
+
+impl UpgradeTreeUi {
+    const fn captures_text_input(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -765,7 +900,10 @@ struct MinimapUi {
 
 impl Default for MinimapUi {
     fn default() -> Self {
-        Self { visible: true }
+        // LAI.54 removes the legacy Map opener. World navigation remains
+        // available through the new Center Village action, while the old
+        // minimap renderer stays dormant until its replacement cutover.
+        Self { visible: false }
     }
 }
 
@@ -865,14 +1003,6 @@ fn officer_role_name(role: OfficerRole) -> &'static str {
 /// `boosted` flag. Off invites the player to prioritise the cat; on shows the
 /// god-power is active and how to release it. The leading star matches the
 /// on-map marker so the two read as the same affordance.
-fn boost_button_label(boosted: bool) -> &'static str {
-    if boosted {
-        "★ Boosted (click to clear)"
-    } else {
-        "★ Boost"
-    }
-}
-
 /// Active map tool, any in-progress drag, and the accept-type the next stockpile
 /// will be designated with.
 #[derive(Resource)]
@@ -1574,7 +1704,6 @@ fn hud_resource_grid_height() -> f32 {
 struct AdventureUiArt {
     panel: Handle<Image>,
     panel_dark: Handle<Image>,
-    panel_ornate: Handle<Image>,
     button: Handle<Image>,
     button_active: Handle<Image>,
     button_disabled: Handle<Image>,
@@ -1602,7 +1731,6 @@ impl AdventureUiArt {
         Self {
             panel: assets.load("public/images/game/ui/panel.png"),
             panel_dark: assets.load("public/images/game/ui/panel-dark.png"),
-            panel_ornate: assets.load("public/images/game/ui/panel-ornate.png"),
             button: assets.load("public/images/game/ui/button.png"),
             button_active: assets.load("public/images/game/ui/button-active.png"),
             button_disabled: assets.load("public/images/game/ui/button-disabled.png"),
@@ -1663,7 +1791,6 @@ fn button_slicer() -> TextureSlicer {
 enum AdventurePanel {
     Paper,
     Dark,
-    Ornate,
 }
 
 /// Assign image handles after spawn so common UI builders stay usable by
@@ -1676,7 +1803,6 @@ fn skin_adventure_panels(
         image.image = match style {
             AdventurePanel::Paper => art.panel.clone(),
             AdventurePanel::Dark => art.panel_dark.clone(),
-            AdventurePanel::Ornate => art.panel_ornate.clone(),
         };
         image.image_mode = NodeImageMode::Sliced(panel_slicer());
         image.visual_box = VisualBox::BorderBox;
@@ -1899,7 +2025,6 @@ enum TabKind {
     Log,
     Goods,
     Census,
-    Tree,
 }
 
 /// Light the top-bar tab whose panel is currently open.
@@ -1907,7 +2032,6 @@ fn sync_tab_toggles(
     ann: Res<AnnouncementsUi>,
     goods: Res<GoodsUi>,
     census: Res<CensusUi>,
-    tree: Res<UpgradeTreeUi>,
     mut tabs: Query<(&TabKind, &mut KitToggle)>,
 ) {
     for (kind, mut toggle) in &mut tabs {
@@ -1915,7 +2039,6 @@ fn sync_tab_toggles(
             TabKind::Log => ann.visible,
             TabKind::Goods => goods.visible,
             TabKind::Census => census.visible,
-            TabKind::Tree => tree.visible,
         };
     }
 }
@@ -2457,6 +2580,10 @@ struct OrdersPanel;
 /// Compact event log hidden while the wide manual-orders sheet owns its lane.
 #[derive(Component)]
 struct DispatchesPanel;
+#[derive(Component)]
+struct LegacyColonyHudPanel;
+#[derive(Component)]
+struct LegacyBottomCommandBar;
 #[derive(Component, Clone, Copy)]
 struct OrderButton(OrderAction);
 #[derive(Component)]
@@ -2482,13 +2609,6 @@ struct VacateButton(OfficerRole);
 /// "Appoint <role>" button in the cat inspector.
 #[derive(Component, Clone, Copy)]
 struct AppointButton(OfficerRole);
-/// The cat-inspector "Boost" toggle button (flips the selected cat's priority
-/// flag via `BoostCat`).
-#[derive(Component)]
-struct BoostButton;
-/// The label text inside the boost button, repainted live from `boosted`.
-#[derive(Component)]
-struct BoostButtonText;
 #[derive(Component)]
 struct CycleLaborPreference;
 #[derive(Component)]
@@ -2744,8 +2864,6 @@ struct CensusLine(usize);
 #[derive(Component)]
 struct CensusButton;
 /// The HUD button that toggles the upgrade-tree panel.
-#[derive(Component)]
-struct TreeButton;
 /// Marker for the trade-menu panel node.
 #[derive(Component)]
 struct TradeMenuPanel;
@@ -3739,10 +3857,6 @@ enum OrderAction {
     ForageFibre,
     ExpandVillage,
     Ritual,
-    OfferTithe,
-    OfferFood,
-    OfferHerbs,
-    OfferMaterials,
     HaulSelected,
     PlanBuilding,
     StaffSelected,
@@ -3753,7 +3867,7 @@ enum OrderAction {
 
 impl OrderAction {
     #[cfg(test)]
-    const ALL: [Self; 19] = [
+    const ALL: [Self; 15] = [
         Self::Hunt,
         Self::Fish,
         Self::FetchWater,
@@ -3763,10 +3877,6 @@ impl OrderAction {
         Self::ForageFibre,
         Self::ExpandVillage,
         Self::Ritual,
-        Self::OfferTithe,
-        Self::OfferFood,
-        Self::OfferHerbs,
-        Self::OfferMaterials,
         Self::HaulSelected,
         Self::PlanBuilding,
         Self::StaffSelected,
@@ -3785,11 +3895,7 @@ impl OrderAction {
         Self::ExpandVillage,
         Self::Ritual,
     ];
-    const TARGETS: [Self; 9] = [
-        Self::OfferTithe,
-        Self::OfferFood,
-        Self::OfferHerbs,
-        Self::OfferMaterials,
+    const TARGETS: [Self; 5] = [
         Self::HaulSelected,
         Self::StaffSelected,
         Self::UnstaffSelected,
@@ -3808,10 +3914,6 @@ impl OrderAction {
             Self::ForageFibre => "Forage fibre",
             Self::ExpandVillage => "Expand village",
             Self::Ritual => "Request ritual",
-            Self::OfferTithe => "Offer tithe",
-            Self::OfferFood => "Offer food",
-            Self::OfferHerbs => "Offer herbs",
-            Self::OfferMaterials => "Offer materials",
             Self::HaulSelected => "Haul selected pile",
             Self::PlanBuilding => "Plan building",
             Self::StaffSelected => "Staff selected",
@@ -3822,7 +3924,7 @@ impl OrderAction {
     }
 }
 
-const PLANNABLE_BUILDINGS: [BuildingType; 24] = [
+const PLANNABLE_BUILDINGS: [BuildingType; 26] = [
     BuildingType::Den,
     BuildingType::FoodStorage,
     BuildingType::WaterBowl,
@@ -3830,6 +3932,8 @@ const PLANNABLE_BUILDINGS: [BuildingType; 24] = [
     BuildingType::HerbGarden,
     BuildingType::Nursery,
     BuildingType::ElderCorner,
+    BuildingType::FamilyHome,
+    BuildingType::ElderLodge,
     BuildingType::Walls,
     BuildingType::MouseFarm,
     BuildingType::Workshop,
@@ -3918,6 +4022,10 @@ pub fn run() {
                 }),
         )
         .add_plugins(BrpDevPlugin)
+        .add_plugins(leader_ai_ui::LeaderAiUiFoundationPlugin)
+        .add_plugins(leader_ai_ui::lai54::bevy_shell::Lai54LiveShellPlugin)
+        .add_plugins(CanonicalLiveTransportPlugin)
+        .init_resource::<LeaderAiLiveState>()
         .insert_resource(LatestSnapshot::default())
         .insert_resource(Session::default())
         .insert_resource(VillageSelection::default())
@@ -4002,15 +4110,12 @@ pub fn run() {
                 (
                     (
                         handle_start_screen,
-                        toggle_pause_menu.before(close_inspectors_on_esc),
-                        handle_pause_menu.after(toggle_pause_menu),
                         apply_text_layout_defaults,
                         apply_text_scale,
                     ),
-                    camera_controls.after(research_ui::toggle_upgrade_tree),
+                    camera_controls,
                     select_cat,
                     select_building,
-                    close_inspectors_on_esc,
                     (
                         update_building_inspector,
                         update_station_queue_controls.after(update_building_inspector),
@@ -4031,9 +4136,7 @@ pub fn run() {
                         update_kit_buttons
                             .after(sync_action_button_availability)
                             .after(handle_tool_buttons)
-                            .after(sync_tab_toggles)
-                            .after(research_ui::update_research_filter)
-                            .after(research_ui::update_research_inspector),
+                            .after(sync_tab_toggles),
                         sync_tab_toggles,
                         skin_adventure_panels,
                         update_adventure_cursor.after(update_kit_buttons),
@@ -4048,11 +4151,7 @@ pub fn run() {
                         handle_village_trade_buttons,
                     ),
                     update_event_log,
-                    (
-                        update_client_feedback,
-                        update_connection_status,
-                        handle_help_overlay,
-                    ),
+                    (update_client_feedback, update_connection_status),
                     handle_buttons,
                     (
                         toggle_officers,
@@ -4072,33 +4171,14 @@ pub fn run() {
                 // announcements / event log + goods + trade + boost + minimap
                 (
                     cycle_stacked_selection,
-                    toggle_announcements,
-                    update_announcements,
-                    toggle_goods,
                     update_goods,
                     handle_goods_repair_buttons,
                     update_trade_menu,
                     handle_trade_buttons,
-                    update_boost_button,
-                    handle_boost_button,
                     (update_equipment_controls, handle_equipment_controls),
                     update_labor_preference_controls,
                     handle_labor_preference_buttons,
-                    toggle_census,
                     update_census,
-                    (
-                        research_ui::toggle_upgrade_tree,
-                        research_ui::update_research_shell,
-                        research_ui::handle_research_controls,
-                        research_ui::research_keyboard_input,
-                        research_ui::navigate_research_canvas,
-                        research_ui::update_research_transform,
-                        research_ui::update_research_filter,
-                        research_ui::update_research_snapshot,
-                        research_ui::update_research_inspector,
-                        research_ui::handle_research_purchase,
-                    ),
-                    toggle_minimap,
                     update_minimap,
                     update_minimap_viewport,
                     minimap_click_to_pan,
@@ -4870,6 +4950,7 @@ fn setup(
                 ..ui_panel_node(Val::Px(HUD_PANEL_WIDTH))
             },
             ui_panel_frame(),
+            LegacyColonyHudPanel,
             WorldInputBlocker,
         ))
         .with_children(|panel| {
@@ -4953,6 +5034,7 @@ fn setup(
                 left: Val::Px(10.0),
                 // Clear the two-row command bar at 768px-high windows.
                 bottom: Val::Px(BOTTOM_OVERLAY_CLEARANCE),
+                display: Display::None,
                 ..ui_panel_node(Val::Px(430.0))
             },
             ui_panel_frame(),
@@ -5049,6 +5131,7 @@ fn setup(
                 padding: UiRect::horizontal(Val::Px(UI_PAD)),
                 border: UiRect::all(Val::Px(UI_BORDER_W)),
                 border_radius: BorderRadius::all(Val::Px(UI_RADIUS)),
+                display: Display::None,
                 ..default()
             },
             GlobalZIndex(60),
@@ -5099,13 +5182,6 @@ fn setup(
                 TabKind::Census,
                 KitToggle::default(),
                 children![ui_text("Census [C]", FS_BODY, UI_INK)],
-            ));
-            bar.spawn((
-                ui_button(),
-                TreeButton,
-                TabKind::Tree,
-                KitToggle::default(),
-                children![ui_text("Tree [U]", FS_BODY, UI_INK)],
             ));
             bar.spawn((
                 ui_button(),
@@ -5183,7 +5259,7 @@ fn setup(
                     UI_MUTED,
                 ));
                 body.spawn(ui_text(
-                    "PANELS  L Log · G Stores · C Census · U Research Tree · O Officers · P Orders · M Map",
+                    "PANELS  L Log · G Stores · C Census · O Officers · P Orders · M Map · live Plans/Research reports",
                     FS_SMALL,
                     UI_MUTED,
                 ));
@@ -5293,11 +5369,8 @@ fn setup(
             });
         });
 
-    // (Log/Goods/Census/Tree toggles now live in the top command bar above.)
-
-    // Research is a full-page ledger, not another cramped centre popover. Its
-    // 500 cards and dependency connectors are spawned once and updated in place.
-    research_ui::spawn_research_ui(&mut commands);
+    // The retired scalar research ledger is deliberately not spawned. The
+    // report-safe LAI Research/Favor surface below is the production UI.
 
     // Stores / inventory panel (centre, shares the slot with announcements — the
     // two are mutually exclusive), hidden until toggled.
@@ -5568,15 +5641,6 @@ fn setup(
                         ));
                     });
                 }
-                // God-power: mark this cat a priority pick for the leader's matcher.
-                body.spawn((
-                    ui_button(),
-                    BoostButton,
-                    children![(
-                        ui_text(boost_button_label(false), FS_SMALL, UI_INK),
-                        BoostButtonText,
-                    )],
-                ));
                 body.spawn(ui_text("Preferred labor:", FS_SMALL, UI_MUTED));
                 body.spawn(bottom_bar_row_node()).with_children(|row| {
                     row.spawn((
@@ -5876,14 +5940,17 @@ fn bottom_bar_row_node() -> Node {
 
 fn spawn_bottom_bar(commands: &mut Commands) {
     commands
-        .spawn(Node {
-            position_type: PositionType::Absolute,
-            bottom: Val::Px(10.0),
-            left: Val::Px(0.0),
-            width: Val::Percent(100.0),
-            justify_content: JustifyContent::Center,
-            ..default()
-        })
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                bottom: Val::Px(10.0),
+                left: Val::Px(0.0),
+                width: Val::Percent(100.0),
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            LegacyBottomCommandBar,
+        ))
         .with_children(|center| {
             center
                 .spawn((bottom_bar_panel_node(), ui_panel_frame(), WorldInputBlocker))
@@ -6064,6 +6131,17 @@ fn append_input_text(target: &mut String, text: &str, max_chars: usize) {
     }
 }
 
+/// Browser automation and some WASM input methods populate the logical
+/// character while leaving winit's optional composed-text field empty. Both
+/// represent the same printable key for non-IME input, so accept the logical
+/// character as a fallback without synthesizing text from physical key codes.
+fn keyboard_input_text(event: &KeyboardInput) -> Option<&str> {
+    event.text.as_deref().or_else(|| match &event.logical_key {
+        bevy::input::keyboard::Key::Character(character) => Some(character.as_str()),
+        _ => None,
+    })
+}
+
 fn start_input_label(value: &str, placeholder: &str, focused: bool) -> String {
     match (value.is_empty(), focused) {
         (true, true) => format!("▌ {placeholder}"),
@@ -6078,9 +6156,9 @@ fn handle_start_screen(
     mut keyboard: MessageReader<KeyboardInput>,
     mut start: ResMut<StartScreen>,
     mut session: ResMut<Session>,
-    mut latest: ResMut<LatestSnapshot>,
     mut selection: ResMut<VillageSelection>,
     mut outgoing: ResMut<OutgoingActions>,
+    mut leader_ai: ResMut<LeaderAiLiveState>,
     mut ui: StartScreenUi,
 ) {
     let Ok(mut root) = ui.root.single_mut() else {
@@ -6132,10 +6210,11 @@ fn handle_start_screen(
         start.error = None;
     }
 
-    let mut submit = ui
-        .continue_button
-        .iter()
-        .any(|interaction| *interaction == Interaction::Pressed);
+    let mut submit = std::mem::take(&mut start.submit_requested)
+        || ui
+            .continue_button
+            .iter()
+            .any(|interaction| *interaction == Interaction::Pressed);
     for event in keyboard.read() {
         if event.state != ButtonState::Pressed {
             continue;
@@ -6159,7 +6238,7 @@ fn handle_start_screen(
             }
             KeyCode::Enter | KeyCode::NumpadEnter => submit = true,
             _ => {
-                if let Some(text) = event.text.as_deref() {
+                if let Some(text) = keyboard_input_text(event) {
                     match start.focused_input {
                         StartInput::PlayerName => {
                             append_input_text(&mut start.player_name, text, PLAYER_NAME_MAX_CHARS)
@@ -6173,16 +6252,61 @@ fn handle_start_screen(
         }
     }
 
-    let owned_personal = latest.0.as_ref().and_then(|snapshot| {
+    let owned_personal = leader_ai.snapshot.as_ref().and_then(|snapshot| {
         snapshot
-            .colonies
+            .public_villages
             .iter()
-            .find(|colony| colony.kind == VillageKind::Personal && colony.capabilities.is_owner)
-            .map(|colony| colony.id.clone())
+            .find(|colony| colony.capabilities.is_owner)
+            .map(|colony| colony.colony_id.as_str().to_owned())
     });
+    let selected_colony = leader_ai.selected_colony_id.clone();
+    let selected_is_owned_personal = selected_colony
+        .as_deref()
+        .is_some_and(|selected| owned_personal.as_deref() == Some(selected));
+    if start.pending_foundation && selected_is_owned_personal {
+        selection.selected_id.clone_from(&selected_colony);
+        selection.join_required = false;
+        start.pending_foundation = false;
+        start.pending_action_id = None;
+        start.visible = false;
+        start.error = None;
+    }
+    if start
+        .pending_target_colony_id
+        .as_deref()
+        .is_some_and(|target| selected_colony.as_deref() == Some(target))
+    {
+        selection.selected_id.clone_from(&selected_colony);
+        selection.join_required = false;
+        start.pending_target_colony_id = None;
+        start.pending_action_id = None;
+        start.visible = false;
+        start.error = None;
+    }
+    if let Some(action_id) = start.pending_action_id.as_deref()
+        && leader_ai.feedback.iter().rev().any(|feedback| {
+            matches!(
+                feedback,
+                LeaderAiFeedback::Rejected { idempotency_id, .. }
+                    if idempotency_id == action_id
+            )
+        })
+    {
+        start.pending_foundation = false;
+        start.pending_target_colony_id = None;
+        start.pending_action_id = None;
+        start.error = Some(
+            "Die Siedlungsauswahl wurde abgelehnt. Bitte aktualisiere die Welt und versuche es erneut."
+                .to_owned(),
+        );
+    }
     let needs_village_name = start.mode == Some(StartMode::Personal) && owned_personal.is_none();
 
-    if submit && !start.pending_foundation {
+    if submit
+        && !start.pending_foundation
+        && start.pending_target_colony_id.is_none()
+        && start.pending_action_id.is_none()
+    {
         let result = (|| -> Result<(), String> {
             let nickname =
                 normalized_required_name(&start.player_name, "Dein Name", PLAYER_NAME_MAX_CHARS)?;
@@ -6192,9 +6316,9 @@ fn handle_start_screen(
             if !session.ready {
                 return Err("Die Verbindung wird noch hergestellt …".to_owned());
             }
-            let snapshot = latest
-                .0
-                .as_mut()
+            let snapshot = leader_ai
+                .snapshot
+                .as_ref()
                 .ok_or_else(|| "Die Spielwelt wird noch geladen …".to_owned())?;
             session.nickname = nickname;
             // Presence is also the authenticated display-name handshake. Queue
@@ -6204,38 +6328,71 @@ fn handle_start_screen(
             match mode {
                 StartMode::Global => {
                     let global_id = snapshot
-                        .colonies
+                        .public_villages
                         .iter()
-                        .find(|colony| colony.kind == VillageKind::Global)
-                        .map(|colony| colony.id.clone())
+                        .find(|colony| {
+                            colony.capabilities.can_control && !colony.capabilities.is_owner
+                        })
+                        .map(|colony| colony.colony_id.as_str().to_owned())
                         .ok_or_else(|| "Die globale Siedlung ist nicht verfügbar.".to_owned())?;
-                    if let Some(action) =
-                        choose_village(&global_id, snapshot, &mut selection, &session)
-                    {
-                        outgoing.0.push(action);
+                    if leader_ai.selected_colony_id.as_deref() == Some(global_id.as_str()) {
+                        selection.selected_id = Some(global_id);
+                        selection.join_required = false;
+                        start.visible = false;
+                    } else {
+                        let action = start_screen_action_envelope(
+                            &leader_ai,
+                            "select-global",
+                            LeaderAiActionPayload::SelectColony {
+                                target_colony_id: SelectedColonyId::new(global_id.clone())
+                                    .map_err(|error| error.to_string())?,
+                            },
+                        )?;
+                        start.pending_action_id = Some(action.idempotency_id.as_str().to_owned());
+                        start.pending_target_colony_id = Some(global_id);
+                        queue_authenticated_leader_ai_action(&mut leader_ai, action)
+                            .map_err(str::to_owned)?;
                     }
-                    start.visible = false;
                 }
                 StartMode::Personal => {
                     if let Some(personal_id) = owned_personal.as_deref() {
-                        if let Some(action) =
-                            choose_village(personal_id, snapshot, &mut selection, &session)
-                        {
-                            outgoing.0.push(action);
+                        if leader_ai.selected_colony_id.as_deref() == Some(personal_id) {
+                            selection.selected_id = Some(personal_id.to_owned());
+                            selection.join_required = false;
+                            start.visible = false;
+                        } else {
+                            let action = start_screen_action_envelope(
+                                &leader_ai,
+                                "select-personal",
+                                LeaderAiActionPayload::SelectColony {
+                                    target_colony_id: SelectedColonyId::new(personal_id.to_owned())
+                                        .map_err(|error| error.to_string())?,
+                                },
+                            )?;
+                            start.pending_action_id =
+                                Some(action.idempotency_id.as_str().to_owned());
+                            start.pending_target_colony_id = Some(personal_id.to_owned());
+                            queue_authenticated_leader_ai_action(&mut leader_ai, action)
+                                .map_err(str::to_owned)?;
                         }
-                        start.visible = false;
                     } else {
                         let name = normalized_required_name(
                             &start.village_name,
                             "Der Siedlungsname",
                             VILLAGE_NAME_MAX_CHARS,
                         )?;
-                        outgoing.0.push(ClientAction::FoundVillage {
-                            name,
-                            session_id: session.session_id.clone(),
-                            sig: Some(session.sig.clone()),
-                        });
+                        let action = start_screen_action_envelope(
+                            &leader_ai,
+                            "found-personal",
+                            LeaderAiActionPayload::FoundVillage {
+                                display_name: BoundedVillageName::new(name)
+                                    .map_err(|error| error.to_string())?,
+                            },
+                        )?;
+                        start.pending_action_id = Some(action.idempotency_id.as_str().to_owned());
                         start.pending_foundation = true;
+                        queue_authenticated_leader_ai_action(&mut leader_ai, action)
+                            .map_err(str::to_owned)?;
                     }
                 }
             }
@@ -6268,7 +6425,7 @@ fn handle_start_screen(
         );
     }
     if let Ok(mut text) = ui.continue_text.single_mut() {
-        text.0 = if start.pending_foundation {
+        text.0 = if start.pending_foundation || start.pending_target_colony_id.is_some() {
             "Siedlung wird gegründet …"
         } else {
             match (start.mode, owned_personal.is_some()) {
@@ -6327,7 +6484,7 @@ fn handle_start_screen(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(dead_code, clippy::too_many_arguments)]
 fn toggle_pause_menu(
     keys: Res<ButtonInput<KeyCode>>,
     start: Res<StartScreen>,
@@ -6367,7 +6524,7 @@ fn toggle_pause_menu(
     }
 }
 
-#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+#[allow(dead_code, clippy::too_many_arguments, clippy::type_complexity)]
 fn handle_pause_menu(
     mut pause: ResMut<PauseMenu>,
     mut session: ResMut<Session>,
@@ -6557,6 +6714,11 @@ fn poll_ws(world: &mut World) {
                     state.retry_attempt = 0;
                     state.retry_remaining_secs = 0.0;
                 }
+                world.resource_mut::<LeaderAiLiveState>().connection =
+                    LeaderAiConnectionState::Connected;
+                world
+                    .resource_mut::<CanonicalLiveTransport>()
+                    .set_connecting();
                 set_feedback(
                     world,
                     if was_retry {
@@ -6567,102 +6729,135 @@ fn poll_ws(world: &mut World) {
                     FeedbackLevel::Info,
                 );
             }
-            WsEvent::Message(WsMessage::Text(text)) => match parse_server_message(&text) {
-                Ok(ServerPayload::Snapshot(mut snapshot)) => {
-                    let allow_missing_fallback = world.resource::<Session>().ready;
-                    let fallback = {
-                        let mut selection = world.resource_mut::<VillageSelection>();
-                        reconcile_village_selection(
-                            &mut snapshot,
-                            &mut selection,
-                            allow_missing_fallback,
-                        )
-                    };
-                    world.resource_mut::<LatestSnapshot>().0 = Some(snapshot);
-                    if let Some((missing, fallback)) = fallback {
-                        let persist_error = {
-                            let session = world.resource::<Session>();
-                            let selection = world.resource::<VillageSelection>();
-                            persist_session(session, selection).err()
+            WsEvent::Message(WsMessage::Text(text)) => {
+                if looks_like_canonical_frame(&text) {
+                    let result = world
+                        .resource_mut::<CanonicalLiveTransport>()
+                        .receive_text(&text);
+                    if let Err(error) = result {
+                        warn!("bad canonical ws message: {error}");
+                        world
+                            .resource_mut::<CanonicalLiveTransport>()
+                            .record_transport_error(error.to_string());
+                    }
+                    continue;
+                }
+                if looks_like_leader_ai_frame(&text) {
+                    apply_leader_ai_frame(
+                        world.resource_mut::<LeaderAiLiveState>().as_mut(),
+                        &text,
+                    );
+                    continue;
+                }
+                match parse_server_message(&text) {
+                    Ok(ServerPayload::Snapshot(mut snapshot)) => {
+                        let allow_missing_fallback = world.resource::<Session>().ready;
+                        let fallback = {
+                            let mut selection = world.resource_mut::<VillageSelection>();
+                            reconcile_village_selection(
+                                &mut snapshot,
+                                &mut selection,
+                                allow_missing_fallback,
+                            )
                         };
-                        if let Some(err) = persist_error {
-                            warn!("could not persist fallback village: {err}");
-                        }
-                        let message = format!(
-                            "Village {missing} is no longer available; showing {fallback}."
-                        );
-                        push_client_alert(world, message.clone());
-                        set_feedback(world, message, FeedbackLevel::Info);
-                    }
-                }
-                Ok(ServerPayload::Action {
-                    result,
-                    signed_session,
-                }) => {
-                    if let Some((session_id, sig)) = signed_session {
-                        {
-                            let mut session = world.resource_mut::<Session>();
-                            session.session_id = session_id;
-                            session.sig = sig;
-                            session.ready = true;
-                        }
-                        let session = world.resource::<Session>();
-                        let selection = world.resource::<VillageSelection>();
-                        let persist_error = persist_session(session, selection).err();
-                        if let Some(err) = persist_error {
-                            warn!("could not persist player session: {err}");
-                        }
-                    }
-                    let founding_pending = world.resource::<StartScreen>().pending_foundation;
-                    if founding_pending && result.ok {
-                        if let Some(colony_id) = result.colony_id.clone() {
-                            {
-                                let mut selection = world.resource_mut::<VillageSelection>();
-                                selection.selected_id = Some(colony_id);
-                                selection.join_required = false;
+                        world.resource_mut::<LatestSnapshot>().0 = Some(snapshot);
+                        if let Some((missing, fallback)) = fallback {
+                            let persist_error = {
+                                let session = world.resource::<Session>();
+                                let selection = world.resource::<VillageSelection>();
+                                persist_session(session, selection).err()
+                            };
+                            if let Some(err) = persist_error {
+                                warn!("could not persist fallback village: {err}");
                             }
+                            let message = format!(
+                                "Village {missing} is no longer available; showing {fallback}."
+                            );
+                            push_client_alert(world, message.clone());
+                            set_feedback(world, message, FeedbackLevel::Info);
+                        }
+                    }
+                    Ok(ServerPayload::Action {
+                        result,
+                        signed_session,
+                    }) => {
+                        if let Some((session_id, sig, player_id)) = signed_session {
                             {
-                                let mut start = world.resource_mut::<StartScreen>();
-                                start.pending_foundation = false;
-                                start.visible = false;
-                                start.error = None;
+                                let mut session = world.resource_mut::<Session>();
+                                session.session_id = session_id;
+                                session.sig = sig;
+                                session.ready = true;
+                            }
+                            world
+                                .resource_mut::<LeaderAiLiveState>()
+                                .authenticated_player_id = Some(player_id.clone());
+                            match cat_protocol::lai64::StableId::new(player_id) {
+                                Ok(player_id) => world
+                                    .resource_mut::<CanonicalLiveTransport>()
+                                    .authenticate(player_id),
+                                Err(error) => warn!(
+                                    "authenticated player identity is not canonical-wire safe: {error}"
+                                ),
                             }
                             let session = world.resource::<Session>();
                             let selection = world.resource::<VillageSelection>();
-                            if let Err(err) = persist_session(session, selection) {
-                                warn!("could not persist founded village: {err}");
+                            let persist_error = persist_session(session, selection).err();
+                            if let Some(err) = persist_error {
+                                warn!("could not persist player session: {err}");
                             }
                         }
-                    } else if founding_pending && !result.ok {
-                        let message = result.message.clone().unwrap_or_else(|| {
-                            "Die Siedlung konnte nicht gegründet werden.".to_owned()
-                        });
-                        let mut start = world.resource_mut::<StartScreen>();
-                        start.pending_foundation = false;
-                        start.error = Some(message);
+                        let founding_pending = world.resource::<StartScreen>().pending_foundation;
+                        if founding_pending && result.ok {
+                            if let Some(colony_id) = result.colony_id.clone() {
+                                {
+                                    let mut selection = world.resource_mut::<VillageSelection>();
+                                    selection.selected_id = Some(colony_id);
+                                    selection.join_required = false;
+                                }
+                                {
+                                    let mut start = world.resource_mut::<StartScreen>();
+                                    start.pending_foundation = false;
+                                    start.visible = false;
+                                    start.error = None;
+                                }
+                                let session = world.resource::<Session>();
+                                let selection = world.resource::<VillageSelection>();
+                                if let Err(err) = persist_session(session, selection) {
+                                    warn!("could not persist founded village: {err}");
+                                }
+                            }
+                        } else if founding_pending && !result.ok {
+                            let message = result.message.clone().unwrap_or_else(|| {
+                                "Die Siedlung konnte nicht gegründet werden.".to_owned()
+                            });
+                            let mut start = world.resource_mut::<StartScreen>();
+                            start.pending_foundation = false;
+                            start.error = Some(message);
+                        }
+                        if !result.ok {
+                            let message = result
+                                .message
+                                .unwrap_or_else(|| "The server rejected that action.".to_string());
+                            let visible = format!("Action failed: {message}");
+                            push_client_alert(world, visible.clone());
+                            set_feedback(world, visible, FeedbackLevel::Error);
+                        } else if let Some(message) = result.message {
+                            set_feedback(world, message, FeedbackLevel::Info);
+                        }
                     }
-                    if !result.ok {
-                        let message = result
-                            .message
-                            .unwrap_or_else(|| "The server rejected that action.".to_string());
-                        let visible = format!("Action failed: {message}");
-                        push_client_alert(world, visible.clone());
-                        set_feedback(world, visible, FeedbackLevel::Error);
-                    } else if let Some(message) = result.message {
-                        set_feedback(world, message, FeedbackLevel::Info);
+                    Err(err) if err.starts_with("unsupported protocol version") => {
+                        let already_reported = world.resource::<ConnectionState>().phase
+                            == ConnectionPhase::Incompatible;
+                        world.resource_mut::<ConnectionState>().phase =
+                            ConnectionPhase::Incompatible;
+                        if !already_reported {
+                            push_client_alert(world, err.clone());
+                            set_feedback(world, err, FeedbackLevel::Error);
+                        }
                     }
+                    Err(err) => warn!("bad ws message: {err}"),
                 }
-                Err(err) if err.starts_with("unsupported protocol version") => {
-                    let already_reported =
-                        world.resource::<ConnectionState>().phase == ConnectionPhase::Incompatible;
-                    world.resource_mut::<ConnectionState>().phase = ConnectionPhase::Incompatible;
-                    if !already_reported {
-                        push_client_alert(world, err.clone());
-                        set_feedback(world, err, FeedbackLevel::Error);
-                    }
-                }
-                Err(err) => warn!("bad ws message: {err}"),
-            },
+            }
             WsEvent::Message(_) => {}
             WsEvent::Error(err) => {
                 schedule_reconnect(world, format!("Connection error: {err}"));
@@ -6681,7 +6876,7 @@ enum ServerPayload {
     Snapshot(WorldSnapshot),
     Action {
         result: ActionResult,
-        signed_session: Option<(String, String)>,
+        signed_session: Option<(String, String, String)>,
     },
 }
 
@@ -6706,7 +6901,10 @@ fn parse_server_message(text: &str) -> Result<ServerPayload, String> {
         return Err("message was neither a snapshot nor an action result".to_owned());
     }
     let result = serde_json::from_str::<ActionResult>(text).map_err(|err| err.to_string())?;
-    let signed_session = json_string_field(text, "sessionId").zip(json_string_field(text, "sig"));
+    let signed_session = json_string_field(text, "sessionId")
+        .zip(json_string_field(text, "sig"))
+        .zip(json_string_field(text, "playerId"))
+        .map(|((session_id, sig), player_id)| (session_id, sig, player_id));
     Ok(ServerPayload::Action {
         result,
         signed_session,
@@ -6868,6 +7066,10 @@ fn reconnect_delay_secs(attempt: u32) -> f32 {
 
 fn schedule_reconnect(world: &mut World, reason: String) {
     world.remove_non_send::<WsConn>();
+    mark_leader_ai_reconnecting(world.resource_mut::<LeaderAiLiveState>().as_mut());
+    world
+        .resource_mut::<CanonicalLiveTransport>()
+        .mark_reconnecting();
     {
         let mut session = world.resource_mut::<Session>();
         session.presence_sent = false;
@@ -6953,6 +7155,110 @@ fn presence_action(session: &Session) -> ClientAction {
         nickname: session.nickname.trim().to_owned(),
         sig: (!session.sig.is_empty()).then(|| session.sig.clone()),
     }
+}
+
+fn start_screen_action_envelope(
+    state: &LeaderAiLiveState,
+    action_key: &str,
+    payload: LeaderAiActionPayload,
+) -> Result<LeaderAiActionEnvelope, String> {
+    live_action_envelope(state, action_key, payload)
+}
+
+/// Build every production leader/officer/progression mutation from the exact
+/// version lanes in the selected report-safe snapshot.
+fn live_action_envelope(
+    state: &LeaderAiLiveState,
+    action_key: &str,
+    payload: LeaderAiActionPayload,
+) -> Result<LeaderAiActionEnvelope, String> {
+    let snapshot = state
+        .snapshot
+        .as_ref()
+        .ok_or_else(|| "Die Spielwelt wird noch geladen …".to_owned())?;
+    let selected_colony_id = state
+        .selected_colony_id
+        .as_deref()
+        .ok_or_else(|| "Die Siedlungsauswahl ist noch nicht verfügbar.".to_owned())?;
+    let colony = snapshot
+        .colonies
+        .iter()
+        .find(|colony| colony.colony_id.as_str() == selected_colony_id)
+        .ok_or_else(|| "Der aktuelle Siedlungsbericht fehlt.".to_owned())?;
+    let player_id = state
+        .authenticated_player_id
+        .as_deref()
+        .ok_or_else(|| "Die Spieleridentität wird noch bestätigt …".to_owned())?;
+    let payload_json =
+        serde_json::to_string(&payload).map_err(|_| "Aktion konnte nicht kodiert werden.")?;
+    let idempotency_id = start_screen_action_id(
+        action_key,
+        player_id,
+        selected_colony_id,
+        colony.state_version,
+        &payload_json,
+    );
+    Ok(LeaderAiActionEnvelope {
+        protocol_version: ActionProtocolVersion::current(),
+        idempotency_id: BoundedActionId::new(idempotency_id).map_err(|error| error.to_string())?,
+        colony_id: SelectedColonyId::new(selected_colony_id.to_owned())
+            .map_err(|error| error.to_string())?,
+        player_id: AuthenticatedPlayerId::new(player_id.to_owned())
+            .map_err(|error| error.to_string())?,
+        expected_versions: ExpectedStateVersions {
+            expected_planner_version: colony
+                .action_versions
+                .planner_version
+                .ok_or_else(|| "Die Planversion fehlt im Bericht.".to_owned())?,
+            expected_domain_version: colony
+                .action_versions
+                .domain_version
+                .ok_or_else(|| "Die Bereichsversion fehlt im Bericht.".to_owned())?,
+            expected_resource_version: colony
+                .action_versions
+                .resource_version
+                .ok_or_else(|| "Die Ressourcenversion fehlt im Bericht.".to_owned())?,
+            expected_spatial_version: colony.action_versions.spatial_version,
+            expected_reservation_version: colony.action_versions.reservation_version,
+            expected_research_version: colony.action_versions.research_version,
+            expected_scholar_version: colony.action_versions.scholar_version,
+            expected_boost_version: colony.action_versions.boost_version,
+            expected_diplomacy_version: colony.action_versions.diplomacy_version,
+            expected_trade_version: colony.action_versions.trade_version,
+            expected_prosthetic_version: colony.action_versions.prosthetic_version,
+            expected_care_version: colony.action_versions.care_version,
+            expected_officer_version: colony.action_versions.officer_version,
+            expected_standing_order_version: colony.action_versions.standing_order_version,
+        },
+        payload,
+    })
+}
+
+fn start_screen_action_id(
+    action_key: &str,
+    player_id: &str,
+    colony_id: &str,
+    state_version: u64,
+    payload_json: &str,
+) -> String {
+    // Stable FNV-1a is sufficient here: the server still authenticates the
+    // socket and rejects one id reused with a different payload. Hashing keeps
+    // principal IDs and village names out of report-safe receipts/log labels.
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    let state_version = state_version.to_string();
+    for part in [
+        action_key,
+        player_id,
+        colony_id,
+        state_version.as_str(),
+        payload_json,
+    ] {
+        for byte in part.bytes().chain([0]) {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+    format!("start-{action_key}-{hash:016x}")
 }
 
 /// Restore the persisted village on a fresh socket after Presence supplies its
@@ -8832,28 +9138,6 @@ fn build_order_action(
         OrderAction::ForageFibre => request(JobKind::ForageFibre),
         OrderAction::ExpandVillage => request(JobKind::ExpandVillage),
         OrderAction::Ritual => request(JobKind::Ritual),
-        OrderAction::OfferTithe => ClientAction::OfferTithe {
-            session_id,
-            nickname,
-            sig,
-        },
-        OrderAction::OfferFood => ClientAction::OfferResource {
-            session_id,
-            nickname,
-            sig,
-            resource: OfferingResource::Food,
-        },
-        OrderAction::OfferHerbs => ClientAction::OfferResource {
-            session_id,
-            nickname,
-            sig,
-            resource: OfferingResource::Herbs,
-        },
-        OrderAction::OfferMaterials => ClientAction::OfferMaterials {
-            session_id,
-            nickname,
-            sig,
-        },
         OrderAction::HaulSelected => ClientAction::HaulGatherSpot {
             session_id,
             nickname,
@@ -8950,64 +9234,36 @@ fn handle_order_buttons(
 
 /// Appoint the selected cat to a role when an "Appoint <role>" button is clicked.
 fn handle_appoint_buttons(
-    session: Res<Session>,
     selection: Res<Selection>,
-    mut outgoing: ResMut<OutgoingActions>,
+    mut leader_ai: ResMut<LeaderAiLiveState>,
+    mut feedback: ResMut<ClientFeedback>,
     buttons: Query<(&Interaction, &AppointButton), Changed<Interaction>>,
 ) {
     for (interaction, appoint) in &buttons {
         if *interaction == Interaction::Pressed
-            && let (Some(cat), true) = (selection.selected.clone(), session.ready)
+            && let Some(cat) = selection.selected.clone()
         {
-            outgoing.0.push(ClientAction::AssignOfficer {
-                session_id: session.session_id.clone(),
-                nickname: session.nickname().to_owned(),
-                sig: session.sig.clone(),
-                role: appoint.0,
-                cat_id: cat,
-            });
-        }
-    }
-}
-
-/// Repaint the boost button's label from the selected cat's live `boosted`
-/// flag, so the toggle round-trips visibly once the stream echoes the change.
-fn update_boost_button(
-    latest: Res<LatestSnapshot>,
-    selection: Res<Selection>,
-    mut text: Query<&mut Text, With<BoostButtonText>>,
-) {
-    if !latest.is_changed() && !selection.is_changed() {
-        return;
-    }
-    let Ok(mut text) = text.single_mut() else {
-        return;
-    };
-    let boosted = selected_cat(&latest, &selection).is_some_and(|c| c.boosted);
-    text.0 = boost_button_label(boosted).to_string();
-}
-
-/// Toggle the selected cat's priority flag when the Boost button is clicked,
-/// flipping off the cat's current `boosted` state read from the live snapshot.
-fn handle_boost_button(
-    session: Res<Session>,
-    selection: Res<Selection>,
-    latest: Res<LatestSnapshot>,
-    mut outgoing: ResMut<OutgoingActions>,
-    buttons: Query<&Interaction, (Changed<Interaction>, With<BoostButton>)>,
-) {
-    for interaction in &buttons {
-        if *interaction == Interaction::Pressed
-            && let (Some(cat_id), true) = (selection.selected.clone(), session.ready)
-        {
-            let current = selected_cat(&latest, &selection).is_some_and(|c| c.boosted);
-            outgoing.0.push(ClientAction::BoostCat {
-                session_id: session.session_id.clone(),
-                nickname: session.nickname().to_owned(),
-                sig: session.sig.clone(),
-                cat_id,
-                boosted: !current,
-            });
+            let result = cat_protocol::BoundedEntityId::new(cat)
+                .map_err(|error| error.to_string())
+                .and_then(|cat_id| {
+                    live_action_envelope(
+                        &leader_ai,
+                        "appoint-officer",
+                        LeaderAiActionPayload::AppointOfficer {
+                            role: appoint.0,
+                            cat_id,
+                        },
+                    )
+                })
+                .and_then(|action| {
+                    queue_authenticated_leader_ai_action(&mut leader_ai, action)
+                        .map_err(str::to_owned)
+                });
+            if let Err(message) = result {
+                feedback.message = Some(message);
+                feedback.level = FeedbackLevel::Error;
+                feedback.remaining_secs = 8.0;
+            }
         }
     }
 }
@@ -9289,10 +9545,7 @@ fn update_station_queue_controls(
     let add_recipe = building
         .available_recipes
         .get(ui.recipe_selected)
-        .map_or_else(
-            || "recipe".to_owned(),
-            |recipe| research_ui::recipe_display_name(recipe),
-        );
+        .map_or_else(|| "recipe".to_owned(), |recipe| recipe_display_name(recipe));
     let worker_label = slot.map_or_else(
         || "legacy slot".to_owned(),
         |slot| {
@@ -9325,6 +9578,36 @@ fn update_station_queue_controls(
             if entry.repeat { " (repeat)" } else { " (once)" },
             if paused { "paused" } else { "running" },
         );
+    }
+}
+
+fn recipe_display_name(recipe_id: &str) -> String {
+    match recipe_id {
+        "grain_to_flour" => "Grain grinding".to_owned(),
+        "flour_to_food" => "Food baking".to_owned(),
+        "logs_to_lumber" => "Lumber cutting".to_owned(),
+        "materials_to_refined" => "Refined materials".to_owned(),
+        "ore_to_metal" => "Metal smelting".to_owned(),
+        "fibre_to_thread" => "Thread spinning".to_owned(),
+        "fibre_to_cloth" => "Cloth weaving".to_owned(),
+        "bone_mug" => "Bone mug carving".to_owned(),
+        "stone_mug" => "Stone mug carving".to_owned(),
+        "metal_mug" => "Metal mug forging".to_owned(),
+        "hide_to_leather" => "Leather tanning".to_owned(),
+        "smithy_weapon" => "Weapon forging".to_owned(),
+        "smithy_tool" => "Tool forging".to_owned(),
+        "smithy_armor" => "Armor forging".to_owned(),
+        _ => recipe_id
+            .split('_')
+            .filter(|part| !part.is_empty())
+            .map(|part| {
+                let mut chars = part.chars();
+                chars.next().map_or_else(String::new, |first| {
+                    first.to_uppercase().collect::<String>() + chars.as_str()
+                })
+            })
+            .collect::<Vec<_>>()
+            .join(" "),
     }
 }
 
@@ -9495,18 +9778,25 @@ fn selected_cat<'a>(latest: &'a LatestSnapshot, selection: &Selection) -> Option
 
 /// Vacate a role when its "x" button is clicked.
 fn handle_vacate_buttons(
-    session: Res<Session>,
-    mut outgoing: ResMut<OutgoingActions>,
+    mut leader_ai: ResMut<LeaderAiLiveState>,
+    mut feedback: ResMut<ClientFeedback>,
     buttons: Query<(&Interaction, &VacateButton), Changed<Interaction>>,
 ) {
     for (interaction, vacate) in &buttons {
-        if *interaction == Interaction::Pressed && session.ready {
-            outgoing.0.push(ClientAction::UnassignOfficer {
-                session_id: session.session_id.clone(),
-                nickname: session.nickname().to_owned(),
-                sig: session.sig.clone(),
-                role: vacate.0,
+        if *interaction == Interaction::Pressed {
+            let result = live_action_envelope(
+                &leader_ai,
+                "unappoint-officer",
+                LeaderAiActionPayload::UnappointOfficer { role: vacate.0 },
+            )
+            .and_then(|action| {
+                queue_authenticated_leader_ai_action(&mut leader_ai, action).map_err(str::to_owned)
             });
+            if let Err(message) = result {
+                feedback.message = Some(message);
+                feedback.level = FeedbackLevel::Error;
+                feedback.remaining_secs = 8.0;
+            }
         }
     }
 }
@@ -10413,7 +10703,7 @@ fn update_inspector(
 /// Esc closes any open inspector (cat card / building panel / stockpile remove).
 /// Click-away already clears selection via the pick systems; this is the keyboard
 /// escape hatch.
-#[allow(clippy::too_many_arguments)]
+#[allow(dead_code, clippy::too_many_arguments)]
 fn close_inspectors_on_esc(
     keys: Res<ButtonInput<KeyCode>>,
     mut cat: ResMut<Selection>,
@@ -12059,6 +12349,7 @@ fn production_stores_text(resources: &ResourceAmounts) -> String {
 
 /// Toggle the announcements panel via the `L` key or the Log HUD button (closes
 /// the goods panel, which shares the centre slot).
+#[allow(dead_code)]
 fn toggle_announcements(
     keys: Res<ButtonInput<KeyCode>>,
     button: Query<&Interaction, (Changed<Interaction>, With<AnnouncementsButton>)>,
@@ -12081,7 +12372,7 @@ fn toggle_announcements(
 
 /// Toggle the goods panel via the `G` key or the Goods HUD button (closes the
 /// announcements + census panels, which share the centre slot).
-#[allow(clippy::too_many_arguments)]
+#[allow(dead_code, clippy::too_many_arguments)]
 fn toggle_goods(
     keys: Res<ButtonInput<KeyCode>>,
     button: Query<&Interaction, (Changed<Interaction>, With<GoodsButton>)>,
@@ -12104,7 +12395,7 @@ fn toggle_goods(
 
 /// Toggle the census panel via the `C` key or the Census HUD button (closes the
 /// goods + announcements panels, which share the centre slot).
-#[allow(clippy::too_many_arguments)]
+#[allow(dead_code, clippy::too_many_arguments)]
 fn toggle_census(
     keys: Res<ButtonInput<KeyCode>>,
     button: Query<&Interaction, (Changed<Interaction>, With<CensusButton>)>,
@@ -12508,7 +12799,7 @@ fn handle_trade_buttons(
 
 /// Show/hide the announcements panel and repaint its colour-coded lines
 /// newest-first, plus the HUD "latest announcement" ticker.
-#[allow(clippy::type_complexity)]
+#[allow(dead_code, clippy::type_complexity)]
 fn update_announcements(
     latest: Res<LatestSnapshot>,
     ui: Res<AnnouncementsUi>,
@@ -12561,6 +12852,7 @@ fn update_announcements(
 }
 
 /// Toggle the corner minimap with the `M` key.
+#[allow(dead_code)]
 fn toggle_minimap(
     keys: Res<ButtonInput<KeyCode>>,
     tree: Res<UpgradeTreeUi>,
@@ -12848,10 +13140,12 @@ fn update_connection_status(
     }
 }
 
+#[allow(dead_code)]
 fn help_toggle_requested(h: bool, slash: bool, shift: bool) -> bool {
     h || (slash && shift)
 }
 
+#[allow(dead_code)]
 fn handle_help_overlay(
     keys: Res<ButtonInput<KeyCode>>,
     tree: Res<UpgradeTreeUi>,
@@ -13019,21 +13313,66 @@ fn build_action(action: ButtonAction, session: &Session) -> Option<ClientAction>
 }
 
 /// Send any queued actions over the socket.
+fn legacy_shell_action_allowed(action: &ClientAction) -> bool {
+    matches!(
+        action,
+        ClientAction::Presence { .. }
+            | ClientAction::Ensure
+            | ClientAction::FoundVillage { .. }
+            | ClientAction::JoinVillage { .. }
+    )
+}
+
 fn flush_outgoing(
     conn: Option<NonSendMut<WsConn>>,
     state: Res<ConnectionState>,
     mut outgoing: ResMut<OutgoingActions>,
+    mut leader_ai: ResMut<LeaderAiLiveState>,
+    mut canonical: ResMut<CanonicalLiveTransport>,
+    mut feedback: ResMut<ClientFeedback>,
 ) {
     let Some(mut conn) = conn else {
         return;
     };
-    if state.phase != ConnectionPhase::Connected || outgoing.0.is_empty() {
+    if state.phase != ConnectionPhase::Connected
+        || (outgoing.0.is_empty() && leader_ai.outbound.is_empty() && canonical.outbound.is_empty())
+    {
         return;
     }
+    let mut retired_actions = 0_usize;
     for action in outgoing.0.drain(..) {
-        if let Ok(json) = serde_json::to_string(&action) {
+        if legacy_shell_action_allowed(&action)
+            && let Ok(json) = serde_json::to_string(&action)
+        {
             conn.sender.send(WsMessage::Text(json));
+        } else {
+            retired_actions = retired_actions.saturating_add(1);
         }
+    }
+    retired_actions = retired_actions.saturating_add(leader_ai.outbound.len());
+    leader_ai.outbound.clear();
+    if retired_actions > 0 {
+        feedback.message = Some(
+            "That retired direct control is unavailable; use the canonical Council report."
+                .to_owned(),
+        );
+        feedback.level = FeedbackLevel::Error;
+        feedback.remaining_secs = 8.0;
+    }
+    loop {
+        let json = match canonical.next_outbound_json() {
+            Ok(Some(json)) => json,
+            Ok(None) => break,
+            Err(error) => {
+                canonical.record_transport_error(error.to_string());
+                break;
+            }
+        };
+        // ewebsock's sender has no synchronous failure return. Once the frame
+        // is accepted by its open socket queue, move the stable ID in-flight;
+        // reconnects retain only actions that were never accepted here.
+        conn.sender.send(WsMessage::Text(json));
+        canonical.acknowledge_outbound_send();
     }
 }
 
@@ -13893,6 +14232,8 @@ fn building_sprite_color(building: BuildingType, complete: bool) -> Color {
         BuildingType::Beds => Color::srgb(0.78, 0.88, 1.0),
         BuildingType::Nursery => Color::srgb(1.0, 0.83, 0.86),
         BuildingType::ElderCorner => Color::srgb(0.82, 0.78, 0.72),
+        BuildingType::FamilyHome => Color::srgb(0.94, 0.78, 0.64),
+        BuildingType::ElderLodge => Color::srgb(0.66, 0.61, 0.56),
         _ => Color::WHITE,
     }
 }
@@ -13907,6 +14248,8 @@ fn building_label(building: BuildingType) -> &'static str {
         BuildingType::HerbGarden => "herbs",
         BuildingType::Nursery => "nursery",
         BuildingType::ElderCorner => "elders",
+        BuildingType::FamilyHome => "family home",
+        BuildingType::ElderLodge => "elder lodge",
         BuildingType::Walls => "walls",
         BuildingType::MouseFarm => "mousefarm",
         BuildingType::Workshop => "workshop",
@@ -14214,28 +14557,6 @@ mod tests {
                 nickname: session.nickname().to_owned(),
                 sig: "signed".to_owned(),
                 kind: JobKind::Ritual,
-            },
-            ClientAction::OfferTithe {
-                session_id: "session-1".to_owned(),
-                nickname: session.nickname().to_owned(),
-                sig: "signed".to_owned(),
-            },
-            ClientAction::OfferResource {
-                session_id: "session-1".to_owned(),
-                nickname: session.nickname().to_owned(),
-                sig: "signed".to_owned(),
-                resource: OfferingResource::Food,
-            },
-            ClientAction::OfferResource {
-                session_id: "session-1".to_owned(),
-                nickname: session.nickname().to_owned(),
-                sig: "signed".to_owned(),
-                resource: OfferingResource::Herbs,
-            },
-            ClientAction::OfferMaterials {
-                session_id: "session-1".to_owned(),
-                nickname: session.nickname().to_owned(),
-                sig: "signed".to_owned(),
             },
             ClientAction::HaulGatherSpot {
                 session_id: "session-1".to_owned(),
@@ -15138,6 +15459,30 @@ mod tests {
     }
 
     #[test]
+    fn wasm_start_input_falls_back_to_the_logical_character() {
+        let logical_only = KeyboardInput {
+            key_code: KeyCode::KeyB,
+            logical_key: bevy::input::keyboard::Key::Character("b".into()),
+            state: ButtonState::Pressed,
+            text: None,
+            repeat: false,
+            window: Entity::PLACEHOLDER,
+        };
+        assert_eq!(keyboard_input_text(&logical_only), Some("b"));
+
+        let composed = KeyboardInput {
+            text: Some("é".into()),
+            logical_key: bevy::input::keyboard::Key::Character("e".into()),
+            ..logical_only
+        };
+        assert_eq!(
+            keyboard_input_text(&composed),
+            Some("é"),
+            "composed text remains authoritative when the platform supplies it"
+        );
+    }
+
+    #[test]
     fn startup_restore_marks_the_persisted_village_for_authenticated_rejoin() {
         let mut session = Session::default();
         let mut selection = VillageSelection::default();
@@ -15815,15 +16160,6 @@ mod tests {
     }
 
     #[test]
-    fn boost_button_label_reflects_boosted_state() {
-        assert_eq!(boost_button_label(false), "★ Boost");
-        assert_eq!(boost_button_label(true), "★ Boosted (click to clear)");
-        // The star prefix ties the button to the on-map marker in both states.
-        assert!(boost_button_label(false).starts_with('★'));
-        assert!(boost_button_label(true).starts_with('★'));
-    }
-
-    #[test]
     fn cat_labor_control_builds_exact_signed_toggle_from_snapshot_state() {
         let session = signed_session("labor-session");
         let mut cat = census_cat(30.0, None, false);
@@ -16195,7 +16531,11 @@ mod tests {
         assert!(result.ok);
         assert_eq!(
             signed_session,
-            Some(("session-1".to_string(), "signed-token".to_string()))
+            Some((
+                "session-1".to_string(),
+                "signed-token".to_string(),
+                "p1".to_string()
+            ))
         );
         assert!(parse_server_message(r#"{"message":"missing discriminator"}"#).is_err());
         let future = format!(

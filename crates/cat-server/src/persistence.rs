@@ -1,11 +1,22 @@
 //! SQLite persistence for `cat-server`, mirroring the relevant tables from
 //! `db/schema.ts`.
+//!
+//! Leader-AI persistence is a strict fresh-schema boundary. The outer world
+//! tables remain here while `leader_ai_persistence` owns one canonical runtime
+//! row per colony plus the schema marker, action replay receipts, Hole click
+//! limiter rows, authenticated-session metadata, and signed test-reset rows.
+//! There is deliberately no Shrine/Favor or other semantic conversion path:
+//! a stored world without the exact canonical marker/aggregate is rejected and
+//! must be recreated during this pre-production cutover. Canonical mutations
+//! use `save_world_with_canonical_boundary` so the world, replay receipt, rate
+//! state, and session record commit in one SQLite transaction.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::Path,
 };
 
+use crate::leader_ai_persistence;
 use cat_sim::{
     biomes::MaxResources,
     entities::{Carrying, Cat, CatActivity, ColonyStatus, Position, Resources, RoleXp},
@@ -301,6 +312,7 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
         );
         "#,
     )?;
+    leader_ai_persistence::init_schema(conn)?;
     migrate_add_missing_columns(conn)?;
     conn.execute_batch(
         "CREATE UNIQUE INDEX IF NOT EXISTS colonies_one_global
@@ -613,6 +625,26 @@ fn column_exists(conn: &Connection, table: &str, column: &str) -> rusqlite::Resu
 }
 
 pub fn save_world(conn: &Connection, world: &WorldState) -> rusqlite::Result<()> {
+    let transaction = leader_ai_persistence::begin_lai26_world_migration_transaction(conn)?;
+    replace_world_rows(&transaction, world)?;
+    leader_ai_persistence::commit_lai26_world_migration_transaction(transaction)
+}
+
+pub fn save_world_with_canonical_boundary(
+    conn: &Connection,
+    world: &WorldState,
+    batch: &crate::lai65::CanonicalAtomicPersistenceBatch,
+) -> rusqlite::Result<()> {
+    batch.validate().map_err(|_| {
+        rusqlite::Error::InvalidParameterName("invalid canonical boundary batch".to_owned())
+    })?;
+    let transaction = leader_ai_persistence::begin_lai26_world_migration_transaction(conn)?;
+    replace_world_rows(&transaction, world)?;
+    leader_ai_persistence::save_canonical_boundary_batch(&transaction, batch)?;
+    leader_ai_persistence::commit_lai26_world_migration_transaction(transaction)
+}
+
+fn replace_world_rows(conn: &Connection, world: &WorldState) -> rusqlite::Result<()> {
     let global_count = world
         .colonies
         .iter()
@@ -643,16 +675,14 @@ pub fn save_world(conn: &Connection, world: &WorldState) -> rusqlite::Result<()>
             VillageKind::Global => {}
         }
     }
-    // Replacing a world touches every persistence table. Keep the destructive
-    // deletes and the complete replacement in one transaction so a failed row
-    // can never strand the live database empty or partially written.
-    let transaction = conn.unchecked_transaction()?;
+    let _leader_ai_rows =
+        leader_ai_persistence::validate_world_leader_ai_state(world.world_seed, &world.colonies)?;
     let mut canonical = world.clone();
     if canonical.shared_spatial.tiles.is_empty() && !canonical.colonies.is_empty() {
         canonical.shared_spatial.rules_version = 0;
     }
     ensure_shared_spatial_authority(&mut canonical);
-    transaction.execute_batch(
+    conn.execute_batch(
         "DELETE FROM raiders;
          DELETE FROM votes;
          DELETE FROM elections;
@@ -663,10 +693,11 @@ pub fn save_world(conn: &Connection, world: &WorldState) -> rusqlite::Result<()>
          DELETE FROM jobs;
          DELETE FROM cats;
          DELETE FROM colonies;
+         DELETE FROM leader_ai_colony_runtime;
          DELETE FROM shared_world_tiles;
          DELETE FROM world;",
     )?;
-    transaction.execute(
+    conn.execute(
         "INSERT INTO world (
             id, worldSeed, sharedSpatialRulesVersion, sharedFishHabitats
          ) VALUES (1, ?1, ?2, ?3)",
@@ -686,13 +717,17 @@ pub fn save_world(conn: &Connection, world: &WorldState) -> rusqlite::Result<()>
     )?;
 
     for tile in canonical.shared_spatial.tiles.values() {
-        save_shared_world_tile(&transaction, tile)?;
+        save_shared_world_tile(conn, tile)?;
     }
     for colony in &canonical.colonies {
-        save_colony(&transaction, canonical.world_seed, colony)?;
+        save_colony(conn, canonical.world_seed, colony)?;
     }
-
-    transaction.commit()
+    leader_ai_persistence::save_world_leader_ai_state(
+        conn,
+        canonical.world_seed,
+        &canonical.colonies,
+    )?;
+    Ok(())
 }
 
 pub fn load_world(conn: &Connection) -> rusqlite::Result<Option<WorldState>> {
@@ -714,9 +749,11 @@ pub fn load_world(conn: &Connection) -> rusqlite::Result<Option<WorldState>> {
     let Some((world_seed, shared_rules_version, shared_fish_json)) = world_row else {
         return Ok(None);
     };
+    let lai26_marker_state = leader_ai_persistence::validate_lai26_marker(conn)?;
 
-    let mut stmt = conn.prepare(
-        "SELECT id, name, leaderId, status, resources, createdAt, lastTick,
+    let mut colonies = {
+        let mut stmt = conn.prepare(
+            "SELECT id, name, leaderId, status, resources, createdAt, lastTick,
                 worldSeed, isGlobal, foundingScale, ownerPlayerId, runNumber, runStartedAt, lastPlayerActivityAt,
                 lastLoremasterUnlockAt, lastTitheAt, lastOfferingAt,
                 automationTier, globalUpgradePoints, upgradeTree, recipeEntitlementRulesVersion, upgradeLevels,
@@ -730,12 +767,18 @@ pub fn load_world(conn: &Connection) -> rusqlite::Result<Option<WorldState>> {
                 finiteEquipmentRulesVersion, transportState
          FROM colonies
          ORDER BY rowid",
+        )?;
+        let mut rows = stmt.query([])?;
+        let mut colonies = Vec::new();
+        while let Some(row) = rows.next()? {
+            colonies.push(load_colony(conn, row)?);
+        }
+        colonies
+    };
+    leader_ai_persistence::validate_lai26_no_dangling_runtime_rows(
+        conn,
+        colonies.iter().map(|colony| colony.id.as_str()),
     )?;
-    let mut rows = stmt.query([])?;
-    let mut colonies = Vec::new();
-    while let Some(row) = rows.next()? {
-        colonies.push(load_colony(conn, row)?);
-    }
 
     if !colonies
         .iter()
@@ -779,6 +822,12 @@ pub fn load_world(conn: &Connection) -> rusqlite::Result<Option<WorldState>> {
     };
     ensure_shared_spatial_authority(&mut world);
     sync_all_colonies_from_shared(&mut world);
+    if lai26_marker_state == leader_ai_persistence::Lai26MarkerState::MissingPrefeatureBoundary
+        && !world.colonies.is_empty()
+    {
+        leader_ai_persistence::migrate_lai26_legacy_world(conn, world.world_seed, &mut world)?;
+        save_world(conn, &world)?;
+    }
     Ok(Some(world))
 }
 
@@ -915,6 +964,7 @@ fn save_colony(conn: &Connection, world_seed: u32, colony: &ColonyRuntime) -> ru
 
 fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRuntime> {
     let id: String = row.get("id")?;
+    let colony_world_seed = row.get::<_, Option<u32>>("worldSeed")?.unwrap_or(0);
     let resources_json: String = row.get("resources")?;
     let upgrade_tree_json: Option<String> = row.get("upgradeTree")?;
     let upgrade_levels_json: Option<String> = row.get("upgradeLevels")?;
@@ -949,6 +999,9 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
     } else {
         founding_revealed_tiles(anchor, &claimed_tiles)
     };
+    let cats = load_cats(conn, &id)?;
+    let (leader_ai_runtime, _persisted_leader_ai_restart_validated) =
+        leader_ai_persistence::load_lai26_colony_runtime(conn, &id, colony_world_seed, &cats)?;
 
     let mut colony = ColonyRuntime {
         id: id.clone(),
@@ -979,7 +1032,7 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
         leader_id: row.get("leaderId")?,
         status: parse_colony_status(&row.get::<_, String>("status")?)?,
         resources: parse_json_at::<Resources>(&resources_json, "colonies", &id, "resources")?,
-        cats: load_cats(conn, &id)?,
+        cats,
         jobs: load_jobs(conn, &id)?,
         buildings: load_buildings(conn, &id)?,
         events: load_events(conn, &id)?,
@@ -1136,6 +1189,11 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
             .get::<_, Option<i64>>("testCriticalMsOverride")?
             .unwrap_or(5 * 60 * 1000),
         test_rng_seed: row.get::<_, Option<u32>>("testRngSeed")?,
+        // LAI.26 stores the aggregate exactly, but restart validation remains
+        // process-local: the first authoritative tick must revalidate loaded
+        // task/reservation/site state before treating it as live.
+        leader_ai_runtime,
+        leader_ai_restart_validated: false,
         // Derived exclusively from `(world_seed, chunk)` and deliberately not
         // serialized. Loading cold avoids stale terrain data while preserving exact
         // gameplay state; movement warms the required chunks on demand.
@@ -2611,6 +2669,108 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn pre_cutover_legacy_currency_save_fixture_converts_exact_migration_inputs() {
+        let contract: Value = serde_json::from_str(include_str!(
+            "../../../docs/leader-ai-overhaul/fixtures/lai1_acceptance_contract.json"
+        ))
+        .expect("LAI.1 acceptance contract");
+        let shrine_favor = &contract["shrineFavor"];
+        let legacy_global = shrine_favor["legacyGlobalUpgradePoints"]
+            .as_f64()
+            .expect("legacy global points fixture");
+        let legacy_research = shrine_favor["legacyUnspentResearchPoints"]
+            .as_f64()
+            .expect("legacy research points fixture");
+        let expected_favor = shrine_favor["expectedFavor"]
+            .as_f64()
+            .expect("expected Favor fixture");
+
+        let conn = Connection::open_in_memory().expect("open sqlite");
+        init_schema(&conn).expect("init schema");
+        let mut world = new_world(20_260_722);
+        let mut colony =
+            found_global_colony(world.world_seed, "leader-ai-migration-input", 1_000_000, 42);
+        colony.global_upgrade_points = legacy_global;
+        colony.upgrade_tree.research_points = legacy_research;
+        world.colonies.push(colony);
+
+        save_world(&conn, &world).expect("save legacy migration input");
+        conn.execute("DELETE FROM leader_ai_migration_marker", [])
+            .expect("simulate pre-LAI.26 marker");
+        conn.execute("DELETE FROM leader_ai_colony_runtime", [])
+            .expect("simulate pre-LAI.26 runtime");
+        let first = load_world(&conn)
+            .expect("load legacy migration input")
+            .expect("world exists");
+        let second = load_world(&conn)
+            .expect("reload legacy migration input")
+            .expect("world exists");
+
+        for loaded in [&first.colonies[0], &second.colonies[0]] {
+            assert_eq!(
+                loaded.global_upgrade_points, 0.0,
+                "LAI.26 retires legacy upgrade currency after conversion"
+            );
+            assert_eq!(
+                loaded.upgrade_tree.research_points, 0.0,
+                "LAI.26 retires legacy research currency after conversion"
+            );
+            assert_eq!(
+                loaded
+                    .leader_ai_runtime
+                    .shrine_favor
+                    .favor
+                    .balance
+                    .micro_favor(),
+                (expected_favor * 1_000_000.0).round() as u64,
+                "LAI.26 must consume these exact values once without duplicate credit"
+            );
+        }
+    }
+
+    #[test]
+    fn pre_cutover_malformed_hunt_site_fixture_is_blocked_for_lai26_migration() {
+        let conn = Connection::open_in_memory().expect("open sqlite");
+        init_schema(&conn).expect("init schema");
+        let mut world = new_world(20_260_722);
+        let mut colony = found_global_colony(
+            world.world_seed,
+            "leader-ai-malformed-site-input",
+            1_000_000,
+            43,
+        );
+        let assigned_cat = colony.cats[0].id.clone();
+        colony.jobs.push(JobRuntime {
+            id: "legacy-hunt-without-site".to_owned(),
+            kind: JobKind::HuntExpedition,
+            status: JobStatus::Active,
+            assigned_cat: Some(assigned_cat.clone()),
+            created_at: 999_000,
+            started_at: Some(1_000_000),
+            metadata: JobMetadata::None,
+            ..JobRuntime::default()
+        });
+        world.colonies.push(colony);
+
+        save_world(&conn, &world).expect("save malformed legacy site input");
+        conn.execute("DELETE FROM leader_ai_migration_marker", [])
+            .expect("simulate pre-LAI.26 marker");
+        conn.execute("DELETE FROM leader_ai_colony_runtime", [])
+            .expect("simulate pre-LAI.26 runtime");
+        let err = load_world(&conn).expect_err("malformed legacy site input is rejected");
+        assert!(
+            err.to_string()
+                .contains("block_lai26_invalid_legacy_site_metadata")
+        );
+        let quarantine_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM leader_ai_quarantine", [], |row| {
+                row.get(0)
+            })
+            .expect("quarantine row count");
+        assert_eq!(quarantine_count, 1);
+    }
 
     #[test]
     fn corrupt_colony_resource_blob_reports_row_and_column() {
@@ -5837,8 +5997,13 @@ mod tests {
         colony.leader_id = Some(colony.cats[0].id.clone());
         colony.upgrade_tree.research_points = 100.0;
         colony.last_leader_research_choice_at = Some(chosen_at);
+        colony.last_tick = boundary - 2 * 60_000;
         world.colonies.push(colony);
-        save_world(&conn, &world).expect("save at T");
+        save_world(&conn, &world).expect("save legacy fixture at T");
+        conn.execute("DELETE FROM leader_ai_colony_runtime", [])
+            .expect("remove post-cutover aggregate from legacy fixture");
+        conn.execute("DELETE FROM leader_ai_migration_marker", [])
+            .expect("remove post-cutover marker from legacy fixture");
 
         let stored: Option<i64> = conn
             .query_row(
@@ -5852,32 +6017,95 @@ mod tests {
         let mut before = load_world(&conn).unwrap().unwrap();
         let _ = world_tick(&mut before, boundary - 1);
         assert!(before.colonies[0].upgrade_tree.owned_node_ids.is_empty());
+        assert!(
+            before.colonies[0]
+                .leader_ai_runtime
+                .research
+                .purchases
+                .owned_studies
+                .is_empty()
+        );
+        assert_eq!(before.colonies[0].upgrade_tree.research_points, 0.0);
+        assert_eq!(
+            before.colonies[0]
+                .leader_ai_runtime
+                .shrine_favor
+                .favor
+                .balance
+                .micro_favor(),
+            100_000_000
+        );
         assert_eq!(
             before.colonies[0].last_leader_research_choice_at,
             Some(chosen_at)
         );
+        save_world(&conn, &before).expect("save one millisecond before legacy boundary");
 
         let mut exact = load_world(&conn).unwrap().unwrap();
+        assert_eq!(
+            exact.colonies[0]
+                .leader_ai_runtime
+                .research
+                .purchases
+                .automatic_quota
+                .legacy_not_before_tick,
+            Some(24 * 60)
+        );
         let _ = world_tick(&mut exact, boundary);
         assert_eq!(
-            exact.colonies[0].upgrade_tree.owned_node_ids,
-            ["research_hut"]
+            exact.colonies[0]
+                .leader_ai_runtime
+                .research
+                .purchases
+                .automatic_quota
+                .legacy_not_before_tick,
+            None
+        );
+        assert!(exact.colonies[0].upgrade_tree.owned_node_ids.is_empty());
+        assert_eq!(
+            exact.colonies[0]
+                .leader_ai_runtime
+                .research
+                .purchases
+                .owned_studies
+                .len(),
+            1
         );
         assert_eq!(
             exact.colonies[0].last_leader_research_choice_at,
-            Some(boundary)
+            Some(chosen_at),
+            "legacy timestamp remains read-only migration evidence"
+        );
+        let favor_events = exact.colonies[0]
+            .leader_ai_runtime
+            .shrine_favor
+            .favor
+            .event_count();
+        assert_eq!(
+            favor_events, 2,
+            "one migration credit plus one purchase debit"
         );
         save_world(&conn, &exact).expect("save exact-boundary result");
 
         let mut immediate = load_world(&conn).unwrap().unwrap();
         let _ = world_tick(&mut immediate, boundary + 1_000);
+        assert!(immediate.colonies[0].upgrade_tree.owned_node_ids.is_empty());
         assert_eq!(
-            immediate.colonies[0].upgrade_tree.owned_node_ids,
-            ["research_hut"]
+            immediate.colonies[0]
+                .leader_ai_runtime
+                .research
+                .purchases
+                .owned_studies
+                .len(),
+            1
         );
         assert_eq!(
-            immediate.colonies[0].last_leader_research_choice_at,
-            Some(boundary)
+            immediate.colonies[0]
+                .leader_ai_runtime
+                .shrine_favor
+                .favor
+                .event_count(),
+            favor_events
         );
     }
 
@@ -6911,8 +7139,8 @@ mod tests {
             world.colonies[1]
                 .jobs
                 .iter()
-                .any(|job| global_job_ids.contains(job.id.as_str())),
-            "simultaneous colony-local queues intentionally reuse runtime ids"
+                .all(|job| !global_job_ids.contains(job.id.as_str())),
+            "post-cutover runtime ids must remain colony-scoped"
         );
         save_world(&conn, &world).expect("colony-scoped ids must not collide in SQLite");
         let loaded = load_world(&conn).expect("load world").expect("world");

@@ -1,0 +1,59 @@
+{
+  "authoritativeRoutes": [
+    "snapshot",
+    "lai25_action",
+    "sqlite_migration"
+  ],
+  "browserScenarios": {
+    "care": [
+      "treatment",
+      "prosthetic_fitting"
+    ],
+    "diplomacyRelationships": 1,
+    "favorEvents": 1,
+    "researchFrontier": true,
+    "shrinePipeline": true,
+    "spatialTasks": [
+      "hunt",
+      "fetch_water",
+      "workshop_work"
+    ],
+    "tradeContracts": 1,
+    "workshopFootprintCells": 9
+  },
+  "colonies": [
+    "global",
+    "colony-fresh-a",
+    "colony-migrated-a",
+    "colony-foreign-b"
+  ],
+  "expected": {
+    "colonyIds": [
+      "global",
+      "colony-fresh-a",
+      "colony-migrated-a",
+      "colony-foreign-b"
+    ],
+    "ticks": [
+      0,
+      15,
+      60,
+      300,
+      900,
+      7200
+    ],
+    "versions": {
+      "persistence": 1,
+      "protocol": 2
+    },
+    "worldId": "world-lai33-sys"
+  },
+  "fixture": {
+    "sqlitePath": "docs/leader-ai-overhaul/fixtures/lai33a/authoritative.sqlite3",
+    "sqliteSha256After": "7d2a41bf6c9ed496eca7dc1f3c682978f851db16fb11dd14903b067b82283928",
+    "sqliteSha256Before": "7d2a41bf6c9ed496eca7dc1f3c682978f851db16fb11dd14903b067b82283928"
+  },
+  "freshSeed": 1395892225,
+  "migratedSeed": 1395892226,
+  "schema": "lai33-signed-system-journey-v1"
+}

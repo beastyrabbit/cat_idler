@@ -5,6 +5,10 @@ current evidence lives in `docs/IMPLEMENTATION_AUDIT.md`; dated card counts belo
 the state at each slice boundary, not current backlog. Original plan:
 `~/.claude/plans/ok-then-lets-close-polished-quokka.md`.
 
+The separate leader-intelligence overhaul is tracked only in
+[`docs/leader-ai-overhaul/BOARD.md`](../leader-ai-overhaul/BOARD.md); do not copy its card inventory
+into this historical migration board.
+
 ## Personas (see `codex/personas/*.md`)
 `scrum-master` (decompose) · `researcher` (port specs) · `test-engineer` (tests first) ·
 `developer` (implement to green) · `qa` (independent verify) · `integrator` (merge).
@@ -830,6 +834,25 @@ These cards preserve dated slice boundaries. Intermediate recipe/future counts a
 | P16.R2 — shared mutable spatial authority | done | `WorldState` owns canonical mutable tiles and Fish ecology; colony maps are compatibility/view caches hydrated and published at signed-action/tick boundaries. Overlapping roads, wear, source depletion/regrowth, and habitat stock agree immediately; ecology ages once per coordinate, while fog/contact remain private and terrain overlay snapshots require committed reveal. Deterministic legacy merge, transactional SQLite whole-world persistence, restart replay, and signed overlap coverage are verified. |
 | P12.R3 — one-third building research | done | The eleven stable `construction_*` studies are data-classified as Building research because their existing positive `constructionSpeed` payloads already drive authoritative physical-scaffold timing. The 487-node graph is 165 Building / 167 RecipeResource / 155 Upgrade without restoring inert stores, changing IDs or dependencies, or reducing recipe/resource breadth. All 165 Building studies are purchasable and have an authoritative consumer; sim and client guardrails require both product categories to remain at least one third. |
 
+### LAI.24C / LAI.27G strict runtime schema evidence (2026-07-23)
+
+The selected-colony snapshot now carries report-safe officer institution metadata (all seven offices,
+appointment IDs, personal/effective expertise, cadence, and durable vacancies), canonical standing
+orders, and bounded refresh hints. Scholar research persists an explicit optional insight-week start
+tick and weekly generated Insight; diplomacy persists external colony IDs with backward-compatible
+legacy decoding plus mutation timestamps; and injury anatomy persists the causal incident ID and
+completion tick used by the injury resolver. The server projection consumes these runtime fields and
+no longer sums lifetime Insight or emits a fabricated scholar-week timestamp, while protocol/client
+constructors and UI labels handle an unstarted week explicitly.
+
+Focused evidence: anatomy injuries 9/9, diplomacy state 13/13 (including JSON restart and external-ID
+round-trip), scholar research 10/10, LAI.24 protocol round-trip 6/6, LAI.27 server contract 8/8, and
+cat-client test compilation passed. The complete cat-server Nextest inventory ran 240 tests with
+232 passed, 6 known pre-existing failures (four LAI.33 red-contract checks, one legacy Accountant
+float-equality check, and one migrant-twin timing check), and 2 skipped. Strict Clippy passes for
+cat-sim, cat-protocol, and cat-server; LAI.27 remains **todo** because the production snapshot
+inventory and legacy route audit are not yet complete.
+
 ### Also shipped alongside P12–P19 (not tagged to a phase in commit subjects)
 - **Multi-village founding and contact**: one larger durable communal global village (30 adults,
   six Dens, 19×19 core, doubled production/runway, civic buildings); exact deterministic distant
@@ -857,3 +880,58 @@ These cards preserve dated slice boundaries. Intermediate recipe/future counts a
   button on affordable nodes (`f8f9822`, `678a289`).
 - Two founding-economy death-spiral fixes: the leader never fetching water due to a
   veto/finder mismatch (`addb9a7`), and the same bug's twin in quarry assignment (`bde92d5`).
+
+### LAI.33 signed journey harness foundation (2026-07-23)
+
+`cat-server::leader_ai_journey::Lai33SignedSystemJourneyHarness` now provides deterministic
+fresh/migrated seeds (`0x5333A001`/`0x5333A002`), production HMAC session/action envelopes,
+selected-colony ownership isolation, idempotency receipt replay, and a route-only campaign manifest.
+The executable LAI.33 contract passes 7/7 tests: startup determinism, signed action order and
+foreign isolation, replay plus old-client UPDATE_REQUIRED ordering, manifest bounds, typed stale
+refresh with zero commit, live selected-colony projection/redaction, and exact save/reload checksum
+plus malformed-row quarantine.
+The authoritative SQLite fixture is generated through `persistence::init_schema`/`save_world` by
+`cargo run -p cat-server --example lai33_fixture -- <db> <manifest>` and checked by
+`scripts/leader-ai-browser-fixture.sh --check` at
+`docs/leader-ai-overhaul/fixtures/lai33a/authoritative.sqlite3` with its manifest alongside it.
+The fixture is intentionally pre-start setup only; post-start mutations remain on the production
+LAI.25 route. Existing LAI.26/27 focused contracts cover the broader domain payload matrix and
+atomic duplicate-effect guards; no world-tick or migrant timing behavior was changed here.
+
+### LAI.33F direct signed-domain journey authoring (2026-07-23)
+
+The executable contract now includes a real signed envelope for every LAI.25 domain payload:
+standing-order create/update/delete, intent dismissal, officer appointment/authority, care and
+prosthetics, Shrine/Favor research and scholar preparation, divine boosts, diplomacy, and trade.
+It also records a production idempotency receipt and atomic Favor/reservation/cargo duplicate guard
+journey. These additions are authored but await the serialized Cargo test slot; the smallest focused
+command is `cargo test -p cat-server --test lai33_signed_system_journey_contract --no-fail-fast`.
+
+Serialized-slot evidence: `TMPDIR=/var/tmp cargo test -p cat-server --test
+lai33_signed_system_journey_contract --no-fail-fast` completed compilation in 25.33s and ran for
+1.64s; all 9 tests passed, with 0 failures, 0 ignored, and 0 filtered. The named executable
+journeys cover deterministic startup, signed ownership/action ordering, every LAI.25 domain payload,
+typed stale refresh, old-client UPDATE_REQUIRED, idempotent replay and no-duplicate Favor/
+reservation/cargo effects, selected-colony projection/redaction, and exact save/reload checksum plus
+malformed-row quarantine. The earlier full-inventory residuals remain open and unchanged: steward
+physical-pile setup, Hunt/tannery delivery, organic-arrival deadline restart (lib/bin), and the
+LAI.32G migrant timing case.
+
+### LAI.33C production browser accessibility recovery (2026-07-23)
+
+The client now layers production AccessKit semantics onto the existing typed leader-AI ID contract,
+with report-safe panel/row/status/alert nodes, focusable action and selection controls, keyboard and
+AccessKit routing, task-footprint selection, focus restoration, typed stale/reconnect feedback, and
+a shipped reload control. Authenticated mutations are connected-only LAI.25 envelopes with exact
+expected versions and bounded action-specific idempotency IDs; no hidden DOM controls, fabricated
+snapshot state, private endpoint, auth bypass, or hidden regeneration/stock/private belief labels
+were added.
+
+The authoritative `lai33a` manifest/SQLite pair is now the launcher default and checksum-valid, and
+the launcher runs only a temporary database copy through named Portless routes. The final serialized
+focused run, `TMPDIR=/var/tmp cargo test -p cat-client --test lai33c_accessibility
+--no-fail-fast`, passed 4/4 in 34.40 seconds; standalone Rustfmt, shell syntax, diff, and whitespace
+checks are clean. Final Clippy/WASM reruns and Playwright discovery remain queued because the
+single heavy-test slot was closed; browser screen-reader exposure specifically awaits a web adapter
+above `accesskit_winit 0.32.2`'s current null `wasm32` implementation, with documented fixed
+production canvas checkpoints retained as the permitted fallback.

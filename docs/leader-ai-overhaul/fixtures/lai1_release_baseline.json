@@ -1,0 +1,75 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-07-22T19:49:39+02:00",
+  "gitCommit": "dfb5600da913e6e0db6bc55e733a6205cba320a6",
+  "purpose": "LAI.1 pre-overhaul performance baseline; functional acceptance remains a separate hard gate",
+  "fixture": {
+    "binary": "target/release/examples/playtest",
+    "cargoProfile": "release",
+    "seed": 20240712,
+    "village": "personal",
+    "gameHours": 720,
+    "gameDays": 30,
+    "cadenceMs": 900000,
+    "expectedFeatures": "none",
+    "strictFunctionalExit": false,
+    "liveProvidersCalled": false
+  },
+  "buildCommand": "cargo build --release -p cat-sim --example playtest",
+  "measurementCommand": "SEED=20240712 HOURS=720 CADENCE_MS=900000 EXPECT_FEATURES=none STRICT=0 VERIFY_DETERMINISM=0 target/release/examples/playtest",
+  "measurementTool": "zsh time with TIMEFMT %E/%U/%S/%M; max RSS is reported in KiB",
+  "host": {
+    "kernel": "Linux 7.1.3-arch1-3",
+    "architecture": "x86_64",
+    "cpu": "Intel(R) Core(TM) Ultra 7 265KF",
+    "logicalCpus": 20,
+    "cores": 20,
+    "memoryBytes": 67010859008,
+    "rustc": "1.96.1 (31fca3adb 2026-06-26)",
+    "llvm": "22.1.2",
+    "cargo": "1.96.1 (356927216 2026-06-26)"
+  },
+  "samples": [
+    {
+      "wallSeconds": 18.77,
+      "userSeconds": 15.09,
+      "systemSeconds": 0.09,
+      "peakRssKiB": 11660
+    },
+    {
+      "wallSeconds": 14.30,
+      "userSeconds": 12.59,
+      "systemSeconds": 0.03,
+      "peakRssKiB": 12060
+    },
+    {
+      "wallSeconds": 19.01,
+      "userSeconds": 16.46,
+      "systemSeconds": 0.04,
+      "peakRssKiB": 11960
+    }
+  ],
+  "medianWallSeconds": 18.77,
+  "medianPeakRssKiB": 11960,
+  "singleRunOutputSha256": "1b32379d47794b3302e1d9f54b840f2e7e12e47b16603e3ffbe644a8ced75b5f",
+  "determinismVerification": {
+    "verifyDeterminism": true,
+    "result": "identical",
+    "combinedWallSeconds": 28.80,
+    "peakRssKiB": 12408,
+    "outputSha256": "bf5303dff7c488f1d90bf9b499a99c2f7d6912eba3b67ee57507fa7d5d123fbb"
+  },
+  "legacyOutcomeCharacterization": {
+    "minimumPopulation": 1,
+    "maximumPopulation": 15,
+    "births": 30,
+    "deaths": 30,
+    "resets": 2,
+    "resetHoursApproximate": [292, 571],
+    "finalCompletedBuildings": 7,
+    "finalResearchNodes": 0,
+    "finalBlessings": 0,
+    "finalRevealedTiles": 1037
+  },
+  "allowedRegressionPercent": 25
+}

@@ -37,6 +37,30 @@ pub fn life_seed(seed: u32) -> u32 {
     seed.wrapping_add(2_000_003)
 }
 
+/// Derive a restart-safe life-simulation fork for one semantic game-time boundary.
+///
+/// The original fork offset isolates life rolls from movement and raids, but reusing
+/// that bare root on every world tick repeats the same conception decision forever.
+/// Length-prefixed FNV mixing keeps the project LCG while making different colonies,
+/// reset runs, and game seconds independent without storing call-order state.
+#[must_use]
+pub fn keyed_life_seed(seed: u32, colony_id: &str, run_number: u32, game_second: u64) -> u32 {
+    const FNV_PRIME: u32 = 16_777_619;
+
+    let mut hash = life_seed(seed) ^ 2_166_136_261;
+    for bytes in [
+        colony_id.as_bytes(),
+        &run_number.to_le_bytes(),
+        &game_second.to_le_bytes(),
+    ] {
+        for byte in (bytes.len() as u64).to_le_bytes().iter().chain(bytes) {
+            hash ^= u32::from(*byte);
+            hash = hash.wrapping_mul(FNV_PRIME);
+        }
+    }
+    hash.max(1)
+}
+
 pub fn raid_seed(seed: u32) -> u32 {
     seed.wrapping_add(3_000_003)
 }
@@ -130,5 +154,14 @@ mod tests {
         assert_eq!(movement_seed(u32::MAX), 1_000_002);
         assert_eq!(life_seed(u32::MAX), 2_000_002);
         assert_eq!(raid_seed(u32::MAX), 3_000_002);
+    }
+
+    #[test]
+    fn keyed_life_forks_are_stable_and_change_across_semantic_boundaries() {
+        let first = keyed_life_seed(42, "colony-1", 1, 3_600);
+        assert_eq!(first, keyed_life_seed(42, "colony-1", 1, 3_600));
+        assert_ne!(first, keyed_life_seed(42, "colony-2", 1, 3_600));
+        assert_ne!(first, keyed_life_seed(42, "colony-1", 2, 3_600));
+        assert_ne!(first, keyed_life_seed(42, "colony-1", 1, 3_601));
     }
 }
