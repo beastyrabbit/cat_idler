@@ -3,11 +3,15 @@ name: Debug WASM job steps
 on:
   workflow_dispatch:
 
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_BUILD_JOBS: 2
+
 jobs:
   debug:
     name: Reproduce browser-client setup
     runs-on: personal
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -34,11 +38,27 @@ jobs:
           export PATH="$HOME/.cargo/bin:$PATH"
           cargo install trunk --locked --version 0.21.14
 
-      - name: Report versions
+      - name: Restore Cargo cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: wasm-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: wasm-${{ runner.os }}-
+
+      - name: Build release browser bundle
         run: |
           set -euxo pipefail
           export PATH="$HOME/.cargo/bin:$PATH"
+          scripts/build-web.sh
+
+      - name: Report versions
+        if: always()
+        run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
           cargo --version
           rustc --version
-          trunk --version
-          wasm-opt --version
+          trunk --version || true
+          wasm-opt --version || true
