@@ -207,7 +207,8 @@ jobs:
           set -euo pipefail
           apt-get update
           apt-get install -y --no-install-recommends \
-            ca-certificates curl build-essential pkg-config binaryen
+            ca-certificates curl build-essential pkg-config libssl-dev \
+            binaryen
 
       - name: Install Rust, WASM target, and Trunk
         run: |
@@ -216,7 +217,9 @@ jobs:
             | sh -s -- -y --profile minimal --default-toolchain 1.96
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
           "$HOME/.cargo/bin/rustup" target add wasm32-unknown-unknown
-          cargo install trunk --locked
+          # Pinned: unpinned installs resolve to latest, which can require a
+          # newer rustc than the toolchain above and fail during resolution.
+          cargo install trunk --locked --version 0.21.14
 
       - name: Restore Cargo cache
         uses: actions/cache@v5
