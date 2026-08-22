@@ -21,7 +21,9 @@ jobs:
   quick:
     name: Quick Rust gate
     runs-on: personal
-    timeout-minutes: 15
+    # A cold Cargo cache rebuilds the whole workspace under clippy; 15 minutes
+    # was exceeded on the first run of a new lockfile hash.
+    timeout-minutes: 45
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
