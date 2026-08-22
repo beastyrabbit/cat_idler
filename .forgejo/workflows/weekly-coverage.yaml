@@ -41,6 +41,7 @@ jobs:
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
             | sh -s -- -y --profile minimal --default-toolchain 1.96
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.cargo/bin:$PATH"
           "$HOME/.cargo/bin/rustup" component add llvm-tools-preview
           curl -LsSf https://get.nexte.st/latest/linux \
             | tar zxf - -C "$HOME/.cargo/bin"

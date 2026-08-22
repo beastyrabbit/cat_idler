@@ -216,6 +216,7 @@ jobs:
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
             | sh -s -- -y --profile minimal --default-toolchain 1.96
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.cargo/bin:$PATH"
           "$HOME/.cargo/bin/rustup" target add wasm32-unknown-unknown
           # Pinned: unpinned installs resolve to latest, which can require a
           # newer rustc than the toolchain above and fail during resolution.
