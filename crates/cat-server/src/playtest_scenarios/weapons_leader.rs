@@ -552,10 +552,17 @@ mod websocket_journeys {
         let colony = &mut world.colonies[0];
         colony.resources.ore = 10.0;
         colony.resources.metal = 0.0;
-        colony
-            .upgrade_tree
-            .owned_node_ids
-            .extend(["basic_tools", "metallurgy_preparation", "weaponsmithing"].map(str::to_owned));
+        colony.upgrade_tree.owned_node_ids.extend(
+            [
+                "basic_tools",
+                "metallurgy_preparation",
+                "weaponsmithing",
+                // The Captain office only survives the officer-pruning gate
+                // with its prerequisite study and completed Barracks.
+                "barracks",
+            ]
+            .map(str::to_owned),
+        );
         let occupied = colony
             .buildings
             .iter()
@@ -597,11 +604,28 @@ mod websocket_journeys {
             .find(|cat| cat.id == actors.warrior_id)
             .expect("forge warrior remains in fixture")
             .specialization = Some(CatSpecialization::Warrior);
+        // The founding blueprint can carry its own warriors; the demand journey
+        // contracts on ONE exact recipient, so strip rival specializations or
+        // auto-issue may legitimately arm a different unarmed warrior first.
+        for cat in colony.cats.iter_mut() {
+            if cat.id != actors.warrior_id && cat.specialization == Some(CatSpecialization::Warrior)
+            {
+                cat.specialization = None;
+            }
+        }
 
         if captain_driven {
             colony
                 .officers
                 .insert(OfficerRole::Captain, free_ids[3].clone());
+            add_station(
+                world,
+                "playtest-captain-barracks",
+                BuildingType::Barracks,
+                14,
+                Vec::new(),
+                false,
+            );
         }
 
         let (smelter_id, smithy_id) = if captain_driven {

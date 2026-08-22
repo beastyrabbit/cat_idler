@@ -424,23 +424,29 @@ fn prepare_building(world: &mut WorldState, building_type: BuildingType) {
                 colony.claimed_tiles.push(tile);
             }
             colony.revealed_tiles.insert(tile);
-            colony.world_tiles.entry(tile).or_insert(WorldTileRuntime {
-                pos: tile,
-                tile_type: TileType::Meadow,
-                resources: TileResources {
-                    food: 0,
-                    herbs: 0,
-                    water: 0,
-                    gem: 0,
-                    clay: 0,
-                    sand: 0,
+            // The parcel must be deterministic building ground: overwrite any
+            // generated terrain so leftover trees, rocks, or water cannot
+            // reject every probed field site.
+            colony.world_tiles.insert(
+                tile,
+                WorldTileRuntime {
+                    pos: tile,
+                    tile_type: TileType::Meadow,
+                    resources: TileResources {
+                        food: 0,
+                        herbs: 0,
+                        water: 0,
+                        gem: 0,
+                        clay: 0,
+                        sand: 0,
+                    },
+                    max_resources: MaxResources { food: 0, herbs: 0 },
+                    danger_level: 0.0,
+                    path_wear: 0,
+                    last_depleted: 1,
+                    overlay_feature: None,
                 },
-                max_resources: MaxResources { food: 0, herbs: 0 },
-                danger_level: 0.0,
-                path_wear: 0,
-                last_depleted: 1,
-                overlay_feature: None,
-            });
+            );
         }
     }
     for index in 0..24 {

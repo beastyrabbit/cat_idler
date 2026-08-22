@@ -46,6 +46,26 @@ Ranking is by player impact; sizes are S (<1 day), M (~1–3 days), L (>3 days).
 9. **Remaining crafted-goods glyphs** [S] — replace the last generic `goods` fallbacks
    (`docs/assets/items_ui.md`).
 
+## Known red: playtest scenario journeys (full suite only)
+
+The `cat-server` real-socket scenario harness (nightly / full-suite tier) has deterministic
+reds on `main`. The merge-gating quick profile is green; these are exhaustive-inventory
+failures, several seeded only under `CAT_PLAYTEST_SEED_TIER=high-risk`. Fixture bugs found and
+fixed in this pass: the field parcel now clears generated terrain, and the Captain fixture owns
+the Barracks prerequisite plus an exclusive exact warrior. What remains open is one shared sim
+gap plus per-journey tails:
+
+- **Station-local output haul starves (top priority, player-facing).** Farms and stations
+  harvest/produce into their local output pile ("awaiting physical haulage") and the
+  local-output → storehouse haul leg never runs under a full 30-cat leader-directed world —
+  the director keeps spending paws on explore/hunt while deliveries starve. This silently
+  eats real player yields. Affects crop-yield and Captain-weapon journeys alike.
+- **Auto-issue requires credited items** — an uncredited delivered weapon is invisible to
+  both projection and issue, so any haul starvation above cascades into "never equipped".
+- **High-risk-seed tails** to re-triage after the haul fix: scouting shrine-return restart
+  windows, Loremaster automation effect, trader visit-2 restock variety, village contact flag,
+  migration arrival milestone, and two `world_tick` campaign seeds.
+
 ## Infrastructure / project health
 
 - **First green CI run** — the new serialized gates are live; confirm the first full
