@@ -1,0 +1,44 @@
+name: Debug WASM job steps
+
+on:
+  workflow_dispatch:
+
+jobs:
+  debug:
+    name: Reproduce browser-client setup
+    runs-on: personal
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Apt install
+        run: |
+          set -euxo pipefail
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates curl build-essential pkg-config libssl-dev \
+            binaryen
+
+      - name: Rust toolchain
+        run: |
+          set -euxo pipefail
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --profile minimal --default-toolchain 1.96
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          "$HOME/.cargo/bin/rustup" target add wasm32-unknown-unknown
+
+      - name: Install trunk
+        run: |
+          set -euxo pipefail
+          export PATH="$HOME/.cargo/bin:$PATH"
+          cargo install trunk --locked --version 0.21.14
+
+      - name: Report versions
+        run: |
+          set -euxo pipefail
+          export PATH="$HOME/.cargo/bin:$PATH"
+          cargo --version
+          rustc --version
+          trunk --version
+          wasm-opt --version
