@@ -1,7 +1,8 @@
 > **Historical / superseded (P11 cutover, 2026-07-11).** This records the engine-selection
 > spike that chose Bevy. It is not a current implementation plan. The shipped architecture is
 > documented in `docs/ARCHITECTURE.md`; live gaps are tracked in
-> `docs/IMPLEMENTATION_AUDIT.md`.
+> `docs/IMPLEMENTATION_AUDIT.md`. The vendored Godot/Love2D MCP servers were removed after
+> cutover; the Bevy MCP remains configured.
 
 # Engine + MCP evaluation (2026-07-09)
 
@@ -10,8 +11,8 @@ Comparing the three engine spikes (`engine/bevy-port`, `engine/godot-port`,
 **more-performant browser build**, and **AI-agent-driven development**.
 
 Every MCP server below was actually installed and exercised against a real
-engine on this machine — not asserted from docs. Config lives in the repo-root
-`.mcp.json`; servers are vendored under `mcp-servers/`.
+engine on this machine — not asserted from docs. At evaluation time, config lived
+in the repo-root `.mcp.json` and the Node servers were vendored under `mcp-servers/`.
 
 ## Render parity (consistent starting point)
 
@@ -88,5 +89,4 @@ for the autonomous agent loops this project already runs.
 ## Reproduce
 - Bevy BRP proof: `scratchpad/brp-test/` — `cargo run`, then
   `curl -X POST :15702 -d '{"jsonrpc":"2.0","id":1,"method":"bevy/query",...}'`.
-- MCP servers: `mcp-servers/` (+ `mcp-servers/README.md`). Rebuild Node servers
-  with `npm install && npm run build`.
+- The historical Godot/Love2D MCP server sources are no longer kept in this tree.

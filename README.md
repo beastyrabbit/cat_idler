@@ -190,11 +190,11 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --all -- --check
 ```
 
-The full workspace suite is intentionally a Forgejo responsibility: four `personal` runner jobs
-execute deterministic Nextest hash partitions in parallel, so long simulation campaigns do not
-consume the development workstation. The smoke profile is not a replacement for focused tests;
-run the relevant module or regression test locally, then let the pushed Forgejo workflow provide
-complete coverage.
+The full workspace suite is intentionally a Forgejo responsibility: one resource-capped
+`cat-idler-heavy` runner executes the complete Nextest inventory with two dynamically scheduled
+test threads, so long simulation campaigns do not consume the development workstation or swamp the
+homelab. The smoke profile is not a replacement for focused tests; run the relevant module or
+regression test locally, then let the pushed Forgejo workflow provide complete coverage.
 
 Where a Rust module ports TS behavior, it's checked against **golden-master fixtures**
 generated from the original TypeScript sim under `docs/migration/fixtures/` (seed → N ticks →

@@ -3,106 +3,141 @@
 This document defines the maintained Rust/Bevy test workflow. The former TypeScript/Vitest game
 is frozen on `archive/web-game`; do not use its test commands on `main`.
 
+## Behavior-change discipline
+
+Every production behavior change starts with the smallest focused failing test. Record the red
+result, implement the behavior, make the focused test green, and then add or update the composed
+chain that owns the user-visible consequence. Never delete, ignore, weaken, or broaden an assertion
+to accommodate broken behavior. Test-only infrastructure, documentation, and CI maintenance do not
+need a preceding behavioral red test, but still need proportional validation.
+
 ## Test tiers
 
-Testing is deliberately split so development stays responsive while every pushed revision still
-receives complete coverage.
+### Focused regression — local
 
-### 1. Focused regression test — local
-
-Run the smallest test that proves the behavior being changed. Prefer one exact test name or one
-integration-test binary instead of an entire crate:
+Run one exact test or integration binary while developing:
 
 ```bash
 cargo nextest run -p cat-client focused_start_input_has_a_visible_cursor
+cargo nextest run -p cat-client visible_command_registry_emits_the_expected_protocol_manifest_slice
 cargo nextest run -p cat-sim regular_cat_walking_permanently_reveals_a_three_by_three_trail
-cargo nextest run -p cat-server player_name_history_is_global_and_updates_last_seen
+cargo nextest run -p cat-server real_socket_auth_tick_save_restart_and_reconnect_is_deterministic
+cargo nextest run -p cat-server real_socket_rate_limit_rejects_the_bounded_burst_and_recovers
 ```
 
-New behavior still follows TDD: reproduce the bug or boundary in a failing focused test, implement
-the change, then make that test green. Deterministic simulation changes need a deterministic twin
-or exact boundary assertion where appropriate.
+Simulation changes also need a deterministic twin, conservation invariant, or exact boundary
+assertion where appropriate.
 
-### 2. Smoke profile — local before commit
-
-Run the maintained cross-crate smoke profile before committing Rust changes:
+### Stable smoke profile — local before commit
 
 ```bash
 cargo nextest run --workspace --profile smoke
-```
-
-The profile lives in `.config/nextest.toml`. It covers protocol compatibility plus selected client,
-server, persistence, movement, road, fog, and scout regressions. It is capped at two test threads
-to keep the workstation usable. `lefthook` runs the same smoke profile on pre-push.
-
-Also run formatting and strict Clippy for the crates touched by the change:
-
-```bash
+cargo clippy -p <touched-crate> --all-targets -- -D warnings
 cargo fmt --all -- --check
-cargo clippy -p <crate> --all-targets -- -D warnings
 ```
 
-Do not run `cargo nextest run --workspace` locally as a routine gate. The long simulation campaigns
-belong to the remote tier. A local full-suite run should happen only when a user explicitly requests
-it or when diagnosing a failure that cannot be reproduced with a focused test.
+The smoke filter in `.config/nextest.toml` is intentionally small and runs with two test threads.
+Do not routinely run the full workspace suite locally. Long simulation campaigns, catalog sweeps,
+and multi-seed playtests belong to the capped remote tier. When Forgejo reports a failure, reproduce
+that exact test locally.
 
-### 3. Complete suite — Forgejo after push
+### Quick Forgejo gate — generic runner
 
-Every pushed commit triggers `.forgejo/workflows/quality.yaml`. Forgejo performs the exhaustive gate
-on the Kubernetes runner pool:
+For each push or pull request, `.forgejo/workflows/quality.yaml` cancels an obsolete run for the
+same ref. Its `personal` quick job targets 15 minutes and uses `CARGO_BUILD_JOBS=2` for formatting,
+dependency policy, workspace Clippy, complete test-inventory compilation, and the stable smoke
+profile. The browser/WASM build begins after quick succeeds and is independent of whole-game
+expectation failures.
+The WASM job also enforces the maintained 10 MiB gzip transfer ceiling and uploads its measured
+bundle size.
 
-- formatting, the dependency-policy check, and workspace Clippy run serially in the first job;
-- the test suite is compiled once into a Nextest archive only after that quality job passes;
-- the four test shards download that same archive instead of compiling the Rust/Bevy workspace
-  four times;
-- the complete workspace Nextest inventory is divided into four deterministic hash partitions;
-- at most two `personal` runner jobs execute at once, with one test thread each, so the shared
-  Kubernetes nodes stay responsive even though the complete suite takes longer;
-- Cargo compilation is capped at two jobs per runner;
-- the four partitions must contain every test exactly once;
-- the browser/WASM build starts only after every Rust shard passes, so it cannot compete with the
-  test stages for cluster capacity.
+### Complete Forgejo gate — dedicated capped runner
 
-The archive build and the command used by shard `N` are:
+After quick succeeds, one `cat-idler-heavy` job runs:
 
 ```bash
-cargo nextest archive --workspace --archive-file target/nextest-archive.tar.zst
-cargo nextest run --archive-file target/nextest-archive.tar.zst --profile ci --partition "hash:N/4"
+cargo nextest run --workspace --profile ci
 ```
 
-The workflow, not the local smoke profile, is the release-quality source of truth. A change is not
-fully verified until all four remote test shards and the other required Forgejo jobs are green.
+There are no test archives or static hash shards. Nextest dynamically schedules one complete,
+unpartitioned inventory with `test-threads=2` and `fail-fast=false`. Framebuffer/singleton tests use
+the `singleton` serial group instead of forcing every test to one thread. The Kubernetes runner has
+capacity one; its job containers are capped at 2 CPUs and 5 GiB, and the backing DinD sidecar at
+2 CPUs and 6 GiB. The job timeout is 150 minutes.
+
+The complete run always uploads JUnit, timing output, peak process-resource measurements, and
+`target/playtest-traces/*.json`. A failing
+scenario trace identifies its stable scenario/seed, last completed milestone, simulated time,
+observed action results, projected cats/jobs/inventory/fog/events, and any restart difference.
+Gameplay expectation tests remain normal, unignored tests: a missing behavior may leave the full
+gate red, while infrastructure and catalog-discovery tests must stay green.
+
+## Whole-game playtest contract
+
+`cat-server` has a test-only `WsGameHarness` that binds the real Axum app to `127.0.0.1:0`, uses a
+temporary SQLite database and normal HMAC/presence/session handling, disables the automatic ticker,
+and advances deterministic monotonic time through the authoritative tick path. Fixture mutation is
+allowed only before the listener starts. Once live, scenarios use WebSocket actions, action results,
+ticks, and projected snapshots. The harness supports explicit save, shutdown, restart, reconnect,
+and persistence comparison. Tick advancement drains any older action-triggered projection before
+returning, so a milestone can never mistake a queued pre-tick snapshot for the tick it requested.
+
+`playtest_scenarios` records stable IDs, design-document anchors, setup, trigger, ordered bounded
+milestones, allowed chance outcomes, horizons, seed tiers, and persistence checkpoints. Catalog
+sweeps aggregate errors so one bad option does not hide later entries. The catalogs and the `Full
+playtest matrix` in `docs/IMPLEMENTATION_AUDIT.md` are the coverage contract; raw test count is not.
+The current executable guards cover all 24 constructible buildings, 108 station recipes, three
+crops, six finite-deposit/biome pairs, 32 resource kinds, 450 item kind/material/quality variants,
+20 job kinds, 487 research studies, and 19 worker skills. Count assertions deliberately fail when a
+typed catalog changes without corresponding journey coverage.
+The action contract sends every public variant, every malformed counterpart, and every
+invalid-authentication counterpart through a real socket without discarding rejected results.
+Production queue and exact work-slot operations are likewise applied and checked in projected
+state. The client command-registry guard serializes every visible non-inspect dock command and
+compares the resulting action-tag set with its maintained protocol slice.
+
+Direct integration contracts additionally pin the communal 30-adult workforce assignment after a
+real world tick, physical survival-maintenance completion and renewal, and a signed shrine ritual
+through blessing delivery and restart. Client tests exercise production right-click hit detection
+across a building's entire footprint, deterministic cycling through stacked world targets, Den
+roof/floor composition, and the actual animation-atlas frames selected for multiple moving cats.
+These are ordinary expectations: a production gap is reported as a failing test, never ignored.
+
+Seed cohorts are fixed:
+
+- primary: `4242`;
+- high risk: `7`, `42`, `99`, `4242`, `0xCA97_A111`;
+- nightly: `0..=27`, `42`, `99`, `4242`, `0xCA97_A111`.
+
+Lifecycle and conservation invariants apply to every selected seed. Chance-driven journeys assert
+an explicit allowed result set and bounded physical completion, not one lucky outcome or an exact
+completion tick.
+
+## Scheduled and manual workflows
+
+- Nightly at `08:30 UTC`: the 32-seed scenario cohort, 180-minute limit.
+- Sunday at `10:30 UTC`: LLVM coverage, 230-minute limit.
+- Manual dispatch: `quality.yaml` for normal full, `nightly-playtests.yaml` for the extended cohort,
+  and `weekly-coverage.yaml` for coverage.
+
+The one-capacity heavy runner serializes scheduled and manual work. Coverage always publishes JSON,
+LCOV, HTML, JUnit, timing, and traces, even after test failures. The first measured run establishes
+cached per-crate line baselines; later runs fail when a crate regresses by more than 0.5 percentage
+points.
 
 ## Normal development sequence
 
-1. Add or identify one focused regression test.
-2. Run that focused test locally.
-3. Implement the change and rerun the focused test.
-4. Run the local smoke profile, formatting, and touched-crate Clippy.
-5. Commit and push.
-6. Let Forgejo compile the test archive once, then run the complete suite in four low-concurrency
-   shards.
-7. If a shard fails, reproduce only the reported test locally; do not rerun the whole workspace.
-8. Push the fix and require a clean Forgejo run.
+1. Add the smallest focused failing test and retain its red result.
+2. Implement the behavior and make that test green.
+3. Add or update the composed causal-chain test.
+4. Run focused tests, the smoke profile, touched-crate Clippy, and formatting locally.
+5. Push and let the newest-ref quick/full/WASM workflow run remotely.
+6. Reproduce only reported failures locally; preserve all assertions and push the correction.
 
-## Adding tests to a tier
-
-- Every new behavior belongs in its owning crate regardless of tier.
-- Add a test to the smoke filter only when it protects a short, foundational cross-cutting contract.
-- Keep long-horizon economy, population, research, persistence, and campaign tests out of smoke;
-  they remain part of the complete remote suite automatically.
-- Never weaken or skip a long test merely to shorten CI. Optimize the test or rebalance shards if
-  remote duration becomes unacceptable.
-
-## Useful inspection commands
-
-These commands list tests without executing them:
+## Inspection commands
 
 ```bash
 cargo nextest list --workspace
 cargo nextest list --workspace --profile smoke
-cargo nextest list --workspace --partition "hash:1/4"
+fj actions tasks -R origin
 ```
-
-Use `fj actions tasks -R origin` to inspect the current Forgejo run. Avoid continuous local polling;
-the work is remote and can be checked when a result is needed.

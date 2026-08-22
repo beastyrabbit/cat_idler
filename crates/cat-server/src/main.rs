@@ -38,10 +38,9 @@ use cat_sim::{
     },
 };
 use hosting::ServerConfig;
-use identity::{
-    SignedSession, issue_session, renew_session_at, signed_session, verify_session,
-    verify_session_at,
-};
+#[cfg(test)]
+use identity::verify_session;
+use identity::{SignedSession, issue_session, renew_session_at, signed_session, verify_session_at};
 use persistence::{load_world, open_database_from_env, save_world};
 use rate_limit::RateLimiter;
 use rusqlite::Connection;
@@ -53,11 +52,15 @@ use tower_http::{
 use tracing::{debug, error, info, warn};
 
 #[cfg(test)]
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicI64, AtomicU64};
 
 mod hosting;
 mod identity;
 mod persistence;
+#[cfg(test)]
+mod playtest_harness;
+#[cfg(test)]
+mod playtest_scenarios;
 mod rate_limit;
 
 const WORLD_SEED: u32 = 20_240_703;
@@ -101,6 +104,9 @@ struct AppState {
     consecutive_save_failures: Arc<AtomicU32>,
     session_secret: Arc<String>,
     allow_test_actions: bool,
+    /// Deterministic action clock used only by in-process and real-socket tests.
+    #[cfg(test)]
+    action_now_ms: Option<Arc<AtomicI64>>,
 }
 
 #[derive(Debug)]
@@ -468,6 +474,8 @@ fn build_state_from_world(
         consecutive_save_failures: Arc::new(AtomicU32::new(0)),
         session_secret: Arc::new(session_secret),
         allow_test_actions,
+        #[cfg(test)]
+        action_now_ms: None,
     }
 }
 
@@ -1059,7 +1067,13 @@ async fn handle_client_text(
         return ServerActionResult::fail("Invalid action.");
     };
 
+    #[cfg(not(test))]
     let now = now_ms();
+    #[cfg(test)]
+    let now = state
+        .action_now_ms
+        .as_ref()
+        .map_or_else(now_ms, |clock| clock.load(Ordering::SeqCst));
     let peer_limiter_key = connection.peer_limiter_key();
     {
         let mut limiter = state.ip_rate_limiter.lock().await;
@@ -1154,7 +1168,7 @@ async fn handle_client_text(
         ActionAuthentication::Presence { .. } => unreachable!("handled above"),
         ActionAuthentication::Signed { session_id, sig } => {
             if session_id != identity.session_id
-                || !verify_session(session_id, Some(sig), state.session_secret.as_str())
+                || !verify_session_at(session_id, Some(sig), state.session_secret.as_str(), now)
             {
                 return ServerActionResult::fail(
                     "Session signature missing or invalid. Refresh to re-establish your session."

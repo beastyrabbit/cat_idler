@@ -4,22 +4,6 @@
       "command": "/home/beasty/.cargo/bin/bevy_brp_mcp",
       "args": [],
       "env": {}
-    },
-    "godot": {
-      "command": "node",
-      "args": [
-        "/mnt/storage/workspace/projects/cat_idler/mcp-servers/godot-mcp/build/index.js"
-      ],
-      "env": {
-        "GODOT_PATH": "/usr/bin/godot"
-      }
-    },
-    "love2d": {
-      "command": "node",
-      "args": [
-        "/mnt/storage/workspace/projects/cat_idler/mcp-servers/love2d-mcp/build/index.js"
-      ],
-      "env": {}
     }
   }
 }

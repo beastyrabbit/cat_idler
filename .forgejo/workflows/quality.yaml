@@ -1,4 +1,4 @@
-name: Rust and WASM quality gates
+name: Rust, playtest, and WASM quality gates
 
 on:
   push:
@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: quality-${{ forgejo.ref }}
+  group: cat-idler-quality-${{ forgejo.ref }}
   cancel-in-progress: true
 
 env:
@@ -18,10 +18,10 @@ env:
   CARGO_BUILD_JOBS: 2
 
 jobs:
-  rust-quality:
-    name: Rust format and Clippy
+  quick:
+    name: Quick Rust gate
     runs-on: personal
-    timeout-minutes: 90
+    timeout-minutes: 15
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -35,13 +35,20 @@ jobs:
             libasound2-dev libudev-dev libx11-dev libxcursor-dev libxi-dev \
             libxrandr-dev libwayland-dev libxkbcommon-dev libvulkan-dev
 
-      - name: Install Rust
+      - name: Install Rust and test tools
         run: |
           set -euo pipefail
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
             | sh -s -- -y --profile minimal --default-toolchain 1.96
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
           "$HOME/.cargo/bin/rustup" component add clippy rustfmt
+          curl -LsSf https://get.nexte.st/latest/linux \
+            | tar zxf - -C "$HOME/.cargo/bin"
+          deny_install_dir="$(mktemp -d)"
+          curl -LsSf \
+            https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/cargo-deny-0.20.2-x86_64-unknown-linux-musl.tar.gz \
+            | tar zxf - --strip-components=1 -C "$deny_install_dir"
+          install -m 0755 "$deny_install_dir/cargo-deny" /usr/local/bin/cargo-deny
 
       - name: Restore Cargo cache
         uses: actions/cache@v5
@@ -53,29 +60,53 @@ jobs:
           key: rust-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: rust-${{ runner.os }}-
 
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
-      - name: Install cargo-deny
+      - name: Check formatting and dependency policy
         run: |
           set -euo pipefail
-          deny_install_dir="$(mktemp -d)"
-          curl -LsSf \
-            https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/cargo-deny-0.20.2-x86_64-unknown-linux-musl.tar.gz \
-            | tar zxf - --strip-components=1 -C "$deny_install_dir"
-          install -m 0755 "$deny_install_dir/cargo-deny" /usr/local/bin/cargo-deny
-
-      - name: Check advisories, bans, and dependency sources
-        run: cargo-deny check advisories bans sources
+          cargo fmt --all -- --check
+          cargo-deny check advisories bans sources
 
       - name: Deny Clippy warnings
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-  rust-test-build:
-    name: Build test archive once
-    needs: rust-quality
-    runs-on: personal
-    timeout-minutes: 90
+      - name: Compile complete test inventory
+        run: cargo nextest list --workspace --message-format human > target/nextest-list.txt
+
+      - name: Run stable smoke profile
+        run: |
+          set -o pipefail
+          mkdir -p target/nextest/smoke
+          cargo nextest run --workspace --profile smoke 2>&1 \
+            | tee target/nextest/smoke/timing.log
+
+      - name: Publish quick reports
+        if: always()
+        uses: https://data.forgejo.org/forgejo/upload-artifact@v4
+        with:
+          name: quick-reports
+          path: |
+            target/nextest-list.txt
+            target/nextest/smoke/
+          if-no-files-found: warn
+
+      - name: Summarize quick gate
+        if: always()
+        run: |
+          {
+            echo '## Quick gate'
+            echo '- Runner class: `personal`'
+            echo '- Build jobs: `2`'
+            echo '- Inventory, smoke JUnit, and timing log: `quick-reports` artifact'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  full:
+    name: Complete deterministic workspace suite
+    needs: quick
+    runs-on: cat-idler-heavy
+    timeout-minutes: 150
+    env:
+      CAT_PLAYTEST_SEED_TIER: high-risk
+      CAT_PLAYTEST_TRACE_DIR: target/playtest-traces
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -85,16 +116,18 @@ jobs:
           set -euo pipefail
           apt-get update
           apt-get install -y --no-install-recommends \
-            ca-certificates curl build-essential pkg-config libssl-dev \
+            ca-certificates curl build-essential pkg-config libssl-dev time \
             libasound2-dev libudev-dev libx11-dev libxcursor-dev libxi-dev \
             libxrandr-dev libwayland-dev libxkbcommon-dev libvulkan-dev
 
-      - name: Install Rust
+      - name: Install Rust and Nextest
         run: |
           set -euo pipefail
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
             | sh -s -- -y --profile minimal --default-toolchain 1.96
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          curl -LsSf https://get.nexte.st/latest/linux \
+            | tar zxf - -C "$HOME/.cargo/bin"
 
       - name: Restore Cargo cache
         uses: actions/cache@v5
@@ -106,66 +139,63 @@ jobs:
           key: rust-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: rust-${{ runner.os }}-
 
-      - name: Install cargo-nextest
+      - name: Verify effective job resource ceilings
         run: |
           set -euo pipefail
-          curl -LsSf https://get.nexte.st/latest/linux \
-            | tar zxf - -C "$HOME/.cargo/bin"
+          mkdir -p target/nextest/ci
+          read -r cpu_quota cpu_period < /sys/fs/cgroup/cpu.max
+          memory_limit="$(cat /sys/fs/cgroup/memory.max)"
+          if [ "$cpu_quota" = max ] || [ "$memory_limit" = max ]; then
+            echo 'Heavy job is missing an effective CPU or memory ceiling.' >&2
+            exit 1
+          fi
+          cpu_millis="$((cpu_quota * 1000 / cpu_period))"
+          printf 'cpu_millis=%s\nmemory_bytes=%s\n' "$cpu_millis" "$memory_limit" \
+            | tee target/nextest/ci/cgroup-limits.txt
+          test "$cpu_millis" -le 2000
+          test "$memory_limit" -le $((5 * 1024 * 1024 * 1024))
 
-      - name: Build workspace test archive
-        run: cargo nextest archive --workspace --archive-file target/nextest-archive.tar.zst
+      - name: Run complete suite without fail-fast
+        id: full-suite
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          rm -rf target/playtest-traces
+          mkdir -p target/nextest/ci target/playtest-traces
+          /usr/bin/time -v -o target/nextest/ci/resources.txt \
+            cargo nextest run --workspace --profile ci 2>&1 \
+            | tee target/nextest/ci/timing.log
 
-      - name: Upload workspace test archive
+      - name: Publish complete-suite reports
+        if: always()
         uses: https://data.forgejo.org/forgejo/upload-artifact@v4
         with:
-          name: workspace-nextest-archive
-          path: target/nextest-archive.tar.zst
-          retention-days: 1
+          name: complete-suite-reports
+          path: |
+            target/nextest/ci/
+            target/playtest-traces/
+          if-no-files-found: warn
 
-  rust-tests:
-    name: Rust tests (shard ${{ matrix.shard }}/4)
-    needs: rust-test-build
-    runs-on: personal
-    timeout-minutes: 90
-    strategy:
-      fail-fast: false
-      max-parallel: 2
-      matrix:
-        shard: [1, 2, 3, 4]
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-
-      - name: Install native runtime dependencies
+      - name: Summarize complete suite
+        if: always()
         run: |
-          set -euo pipefail
-          apt-get update
-          apt-get install -y --no-install-recommends \
-            ca-certificates curl libssl3 libasound2 libudev1 libx11-6 libxcursor1 libxi6 \
-            libxrandr2 libwayland-client0 libxkbcommon0 libvulkan1
+          {
+            echo '## Complete deterministic suite'
+            echo '- Runner class: `cat-idler-heavy` (2 CPU / 5 GiB job cap)'
+            echo '- Scheduling: one unpartitioned Nextest run, two test threads, fail-fast disabled'
+            echo '- Result: `${{ steps.full-suite.outcome }}`'
+            echo '- JUnit, timing, and per-scenario traces: `complete-suite-reports` artifact'
+          } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Install cargo-nextest
-        run: |
-          set -euo pipefail
-          mkdir -p "$HOME/.cargo/bin"
-          curl -LsSf https://get.nexte.st/latest/linux \
-            | tar zxf - -C "$HOME/.cargo/bin"
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-
-      - name: Download workspace test archive
-        uses: https://data.forgejo.org/forgejo/download-artifact@v4
-        with:
-          name: workspace-nextest-archive
-          path: target
-
-      - name: Run workspace test shard
-        run: cargo nextest run --archive-file target/nextest-archive.tar.zst --profile ci --partition "hash:${{ matrix.shard }}/4"
+      - name: Enforce complete-suite result
+        if: steps.full-suite.outcome != 'success'
+        run: exit 1
 
   wasm:
     name: Build browser client
-    needs: rust-tests
+    needs: quick
     runs-on: personal
-    timeout-minutes: 90
+    timeout-minutes: 45
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -177,13 +207,14 @@ jobs:
           apt-get install -y --no-install-recommends \
             ca-certificates curl build-essential pkg-config binaryen
 
-      - name: Install Rust and WASM target
+      - name: Install Rust, WASM target, and Trunk
         run: |
           set -euo pipefail
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
             | sh -s -- -y --profile minimal --default-toolchain 1.96
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
           "$HOME/.cargo/bin/rustup" target add wasm32-unknown-unknown
+          cargo install trunk --locked
 
       - name: Restore Cargo cache
         uses: actions/cache@v5
@@ -195,13 +226,38 @@ jobs:
           key: wasm-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: wasm-${{ runner.os }}-
 
-      - name: Install Trunk
-        run: cargo install trunk --locked
-
       - name: Build release browser bundle
         run: scripts/build-web.sh
 
-      - name: Report transfer size
+      - name: Enforce browser transfer budget
         run: |
           set -euo pipefail
-          du -ah crates/cat-web/dist | sort -h | tail -20
+          mkdir -p target/wasm-report
+          transfer_bytes="$(tar -C crates/cat-web/dist -cf - . | gzip -9 | wc -c)"
+          budget_bytes="$((10 * 1024 * 1024))"
+          printf 'gzip_transfer_bytes=%s\nbudget_bytes=%s\n' \
+            "$transfer_bytes" "$budget_bytes" | tee target/wasm-report/transfer.txt
+          if [ "$transfer_bytes" -gt "$budget_bytes" ]; then
+            echo "WASM bundle exceeds the 10 MiB gzip transfer budget" >&2
+            exit 1
+          fi
+
+      - name: Publish browser bundle report
+        if: always()
+        uses: https://data.forgejo.org/forgejo/upload-artifact@v4
+        with:
+          name: wasm-bundle-report
+          path: target/wasm-report/
+          if-no-files-found: warn
+
+      - name: Summarize browser bundle
+        run: |
+          {
+            echo '## WASM build'
+            echo '- Runs after the quick gate and independently of whole-game expectation failures.'
+            echo '- Enforced gzip transfer budget: `10 MiB`.'
+            echo '- Largest transfer artifacts:'
+            echo '```text'
+            du -ah crates/cat-web/dist | sort -h | tail -20
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -83,7 +83,7 @@ for a player-established economy; they must dispatch real `ClientAction`s from o
 ## NEXT STEPS
 
 1. **Keep the tiered test workflow healthy.** Run focused regressions and the two-thread smoke
-   profile locally; every push must leave the four full Forgejo test shards green. See
+   profile locally; every push must leave the single capped Forgejo full-suite job green. See
    `docs/TESTING.md`.
 2. **Optionally tune WASM transfer weight.** Browser boot, reconnect, action feedback, responsive
    layout, caching, and the production image are verified. Further bundle-size/thread work is an
@@ -111,9 +111,9 @@ implementation. Do not resurrect completed work from the historical migration bo
 - **Commits:** hooks are Rust-only. End commit bodies with
   `Powered by human calories and mass GPU cycles.`
 - **Quality gate:** run the focused regression, the local smoke profile, strict touched-crate
-  Clippy, and `cargo fmt --all -- --check`. The complete workspace suite runs only after push in
-  four parallel Forgejo shards. Documentation-only changes require targeted link/content scans and
-  whitespace validation. See `docs/TESTING.md`.
+  Clippy, and `cargo fmt --all -- --check`. The complete workspace suite runs only after push on
+  the resource-capped `cat-idler-heavy` runner. Documentation-only changes require targeted
+  link/content scans and whitespace validation. See `docs/TESTING.md`.
 
 ## RUN / VERIFY
 

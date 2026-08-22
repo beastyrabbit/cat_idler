@@ -5,7 +5,7 @@ current evidence lives in `docs/IMPLEMENTATION_AUDIT.md`; dated card counts belo
 the state at each slice boundary, not current backlog. Original plan:
 `~/.claude/plans/ok-then-lets-close-polished-quokka.md`.
 
-## Personas (see `codex/personas/*.md`)
+## Historical personas (retired after cutover)
 `scrum-master` (decompose) · `researcher` (port specs) · `test-engineer` (tests first) ·
 `developer` (implement to green) · `qa` (independent verify) · `integrator` (merge).
 
@@ -69,8 +69,8 @@ steps (fmt on pre-commit; clippy + nextest on pre-push); write this board;
 refresh the stale bevy README.
 ### P0.6 Stand up codex persona org   [status: done]
 persona: orchestrator
-scope: `codex/personas/*.md`, per-persona codex profiles, repo `AGENTS.md`, MCP
-wired into codex, one end-to-end smoke card.
+scope: the now-retired persona prompts and profiles, repo `AGENTS.md`, MCP wired
+into codex, and one end-to-end smoke card.
 ### P0.7 Golden-master fixture generator   [status: done (execution deferred to P7)]
 persona: orchestrator
 scope: `scripts/gen-golden.ts` drives the TS sim headlessly (pinned Math.random +
@@ -321,7 +321,7 @@ notes: TS source `lib/game/worldGen.ts`; fixture
 `docs/migration/fixtures/p2/world_coords.json`; parity criterion is exact
 `Math.floor` chunk mapping, especially for negative coordinates.
 
-### P2.12 Legacy world overlay generation   [status: skipped — dead code: worldGen.generateChunk (Voronoi) is superseded by terrainWorld.generateWorldChunk; server/worldMap.ts uses the latter]
+### P2.12 Legacy world overlay generation   [status: closed (skipped as dead code) — dead code: worldGen.generateChunk (Voronoi) is superseded by terrainWorld.generateWorldChunk; server/worldMap.ts uses the latter]
 persona: test-engineer -> developer -> qa            depends_on: [P2.2, P2.3, P2.5, P2.11]        parallel_group: P2-world-legacy
 scope: Port the overlay-generation slice of `lib/game/worldGen.ts` into
 `world_gen.rs`: Voronoi cell generation, nearest-cell lookup, biome-boundary
@@ -550,9 +550,9 @@ scope: HISTORICAL P9 acceptance — flat top-down terrain regenerated from world
 scope: WASD/arrow pan, middle-drag pan, wheel zoom, R reset — centred on the village anchor. (tool modes/selection inspector deferred.)
 ### P9.4 dashboard + action buttons   [status: done]
 scope: HUD dashboard (resources w/ caps, status, leader, pop/housing, threat, jobs) + event-log panel from the snapshot; toolbar buttons (Supply food/water, Plan hunt, Found village) -> ClientAction over WS after a Presence handshake issues the signed session. Round-trip framebuffer-verified (Supply food -> supply_food job appears next snapshot).
-### P9.5 bevy_brp_extras + polish   [status: todo — superseded, see P9 table note]
+### P9.5 bevy_brp_extras + polish   [status: closed — superseded (manual framebuffer capture became the verification method; see P9 table note)]
 scope: add BrpExtrasPlugin (brp_status green + screenshot/input MCP tools); life-stage cat scale, hats/crown/badges.
-### P9.gate   [status: todo — superseded, see P9 table note]
+### P9.gate   [status: closed — superseded (live round-trip was framebuffer-verified in P9.4; see P9 table note)]
 scope: client connects to cat-server, renders the live world, an action round-trips; screenshot via bevy_brp_mcp.
 
 ---
@@ -831,6 +831,12 @@ These cards preserve dated slice boundaries. Intermediate recipe/future counts a
 | P12.R3 — one-third building research | done | The eleven stable `construction_*` studies are data-classified as Building research because their existing positive `constructionSpeed` payloads already drive authoritative physical-scaffold timing. The 487-node graph is 165 Building / 167 RecipeResource / 155 Upgrade without restoring inert stores, changing IDs or dependencies, or reducing recipe/resource breadth. All 165 Building studies are purchasable and have an authoritative consumer; sim and client guardrails require both product categories to remain at least one third. |
 
 ### Also shipped alongside P12–P19 (not tagged to a phase in commit subjects)
+- **Deterministic whole-game playtests and capped CI**: a real loopback WebSocket/SQLite/HMAC
+  harness, stable scenario and catalog manifests, fixed primary/high-risk/nightly seed cohorts,
+  bounded milestone traces, a one-capacity `cat-idler-heavy` runner, dynamically scheduled
+  two-thread complete Nextest runs, nightly scenarios, and weekly regression-gated LLVM coverage.
+  Gameplay expectations remain ordinary tests and may stay red when they expose an implementation
+  gap; this infrastructure card does not repair gameplay behavior.
 - **Multi-village founding and contact**: one larger durable communal global village (30 adults,
   six Dens, 19×19 core, doubled production/runway, civic buildings); exact deterministic distant
   owner-only personal sites; restart-persistent secure socket routing; explicit returned-scout

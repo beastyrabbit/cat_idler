@@ -67,7 +67,7 @@ except ImportError:
 # =============================================================================
 
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
-OPENROUTER_API_KEY = "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"
+OPENROUTER_API_KEY = ""
 MODEL = "google/gemini-2.5-flash-image-preview"  # Image generation model (native image output)
 
 # Tile dimensions
@@ -847,4 +847,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

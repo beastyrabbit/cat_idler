@@ -1884,13 +1884,30 @@ fn run_action_campaign() -> WorldState {
         bank_tile.pos = bank;
         bank_tile.tile_type = TileType::Meadow;
         bank_tile.resources.water = 0;
-        bank_tile.overlay_feature = None;
+        bank_tile.max_resources = MaxResources { food: 0, herbs: 0 };
+        bank_tile.overlay_feature = Some("stump".to_owned());
         bank_tile.last_depleted = 1;
         world.colonies[0].world_tiles.insert(bank, bank_tile);
         world.colonies[0].revealed_tiles.insert(bank);
     }
     world.colonies[0].revealed_tiles.insert(bridge_pos);
     publish_colony_spatial(&mut world.shared_spatial, &world.colonies[0]);
+    for bank in [
+        TilePos {
+            x: bridge_pos.x - 1,
+            y: bridge_pos.y,
+        },
+        TilePos {
+            x: bridge_pos.x + 1,
+            y: bridge_pos.y,
+        },
+    ] {
+        assert_eq!(
+            road_placement_error(&world.colonies[0], bank, world.world_seed),
+            None,
+            "synthetic bridge bank {bank:?} must be walkable"
+        );
+    }
     world.colonies[0].resources.materials = 1_000.0;
     reset_workers(&mut world);
     let (session_id, nickname, sig) = signed_fields();

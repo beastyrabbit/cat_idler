@@ -66,6 +66,7 @@ pub fn sign_session(session_id: &str, secret: &str) -> String {
 }
 
 #[must_use]
+#[cfg(test)]
 pub fn verify_session(session_id: &str, sig: Option<&str>, secret: &str) -> bool {
     verify_session_at(session_id, sig, secret, crate::now_ms())
 }

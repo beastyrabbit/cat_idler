@@ -5,12 +5,18 @@
 //! action layer. Long live-cadence evidence is produced by the matching playtest example;
 //! these checked-in proxy twins keep the same 48/200 game-hour horizons affordable in CI.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use cat_protocol as proto;
 use cat_sim::{
     actions::{ActionCtx, apply_action},
     labor_pressure::{LaborPressureSample, observe_labor_pressure},
+    officers::{OfficerRole, prerequisite_for},
     types::{JobKind, JobStatus},
-    world_tick::{WorldState, found_colony, found_global_colony, new_world, world_tick},
+    world_tick::{
+        BuildingRuntime, TilePos, WorldState, found_colony, found_global_colony, new_world,
+        reconcile_colony_stockpiles, world_tick,
+    },
 };
 
 const START: i64 = 10_000;
@@ -122,6 +128,335 @@ fn guide_longitudinal(world: &mut WorldState, now_ms: i64, game_hour: i64) -> us
         accepted += 1;
     }
     accepted
+}
+
+fn physical_work_owners(world: &WorldState) -> BTreeMap<String, Vec<String>> {
+    let colony = &world.colonies[0];
+    let mut owners = BTreeMap::<String, Vec<String>>::new();
+    let mut claim = |cat_id: &str, owner: String| {
+        owners.entry(cat_id.to_owned()).or_default().push(owner);
+    };
+
+    for job in colony
+        .jobs
+        .iter()
+        .filter(|job| matches!(job.status, JobStatus::Queued | JobStatus::Active))
+    {
+        if let Some(cat_id) = job.assigned_cat.as_deref() {
+            claim(cat_id, format!("job:{}:{:?}", job.id, job.kind));
+        }
+    }
+    for building in &colony.buildings {
+        if let Some(cat_id) = building.assigned_cat.as_deref() {
+            claim(
+                cat_id,
+                format!(
+                    "building:{}:{:?}:primary",
+                    building.id, building.building_type
+                ),
+            );
+        }
+        for (index, slot) in building.additional_work_slots.iter().enumerate() {
+            if !slot.assigned_cat.is_empty() {
+                claim(
+                    &slot.assigned_cat,
+                    format!(
+                        "building:{}:{:?}:slot-{index}",
+                        building.id, building.building_type
+                    ),
+                );
+            }
+        }
+    }
+    for farm in &colony.farms {
+        if let Some(cat_id) = farm.worker_id.as_deref() {
+            claim(cat_id, format!("farm:{}", farm.id));
+        }
+    }
+    for (project_id, project) in &colony.transport.projects {
+        claim(
+            &project.assigned_cat_id,
+            format!("transport-project:{project_id}"),
+        );
+    }
+    for (route_id, route) in &colony.transport.routes {
+        claim(
+            &route.assigned_cat_id,
+            format!("transport-route:{route_id}"),
+        );
+    }
+    owners
+}
+
+fn establish_communal_office_fixture(world: &mut WorldState) {
+    let colony = &mut world.colonies[0];
+    let officer_ids = colony
+        .cats
+        .iter()
+        .take(OfficerRole::ALL.len())
+        .map(|cat| cat.id.clone())
+        .collect::<Vec<_>>();
+    let fixture_sites = [
+        (-7, -7),
+        (-3, -7),
+        (1, -7),
+        (5, -7),
+        (-7, -3),
+        (-3, -3),
+        (1, -3),
+    ];
+    for ((role, cat_id), (dx, dy)) in OfficerRole::ALL
+        .iter()
+        .copied()
+        .zip(officer_ids)
+        .zip(fixture_sites)
+    {
+        let prerequisite = prerequisite_for(role);
+        if !colony
+            .upgrade_tree
+            .owned_node_ids
+            .iter()
+            .any(|id| id == prerequisite.upgrade_node)
+        {
+            colony
+                .upgrade_tree
+                .owned_node_ids
+                .push(prerequisite.upgrade_node.to_owned());
+        }
+        if !colony.buildings.iter().any(|building| {
+            building.building_type == prerequisite.building && building.construction_progress >= 100
+        }) {
+            colony.buildings.push(BuildingRuntime {
+                id: format!("communal-office-{role:?}").to_lowercase(),
+                building_type: prerequisite.building,
+                position: TilePos {
+                    x: colony.anchor.x + dx,
+                    y: colony.anchor.y + dy,
+                },
+                is_complete: true,
+                construction_progress: 100,
+                ..BuildingRuntime::default()
+            });
+        }
+        colony.officers.insert(role, cat_id);
+    }
+}
+
+#[test]
+fn one_communal_world_tick_gives_all_thirty_adults_one_meaningful_owner_or_office() {
+    let mut world = new_campaign_world(4_242, true);
+    establish_communal_office_fixture(&mut world);
+
+    let reports = world_tick(&mut world, START + 60_000);
+    assert_eq!(reports[0].reset_reason, None);
+
+    let colony = &world.colonies[0];
+    let adult_ids = colony
+        .cats
+        .iter()
+        .filter(|cat| cat.death_time.is_none())
+        .map(|cat| cat.id.clone())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        adult_ids.len(),
+        30,
+        "communal fixture must exercise 30 adults"
+    );
+
+    let owners = physical_work_owners(&world);
+    let duplicate_owners = owners
+        .iter()
+        .filter(|(_, claims)| claims.len() != 1)
+        .map(|(cat_id, claims)| (cat_id.clone(), claims.clone()))
+        .collect::<Vec<_>>();
+    let sample = observe_labor_pressure(colony);
+    let covered = owners
+        .keys()
+        .cloned()
+        .chain(colony.officers.values().cloned())
+        .collect::<BTreeSet<_>>();
+    let uncovered = adult_ids.difference(&covered).cloned().collect::<Vec<_>>();
+    let mut failures = Vec::new();
+    if !duplicate_owners.is_empty() {
+        failures.push(format!("double-booked owners: {duplicate_owners:?}"));
+    }
+    if sample.useful_assigned_cats != owners.len() {
+        failures.push(format!(
+            "{} physical owners have no sourced/reachable work",
+            owners.len().saturating_sub(sample.useful_assigned_cats)
+        ));
+    }
+    if !uncovered.is_empty() {
+        failures.push(format!(
+            "adults with neither meaningful physical work nor an office: {uncovered:?}"
+        ));
+    }
+    assert!(
+        failures.is_empty(),
+        "communal workforce assignment failures (all checks ran): {failures:#?}; \
+         sample={sample:?}, owners={owners:?}, officers={:?}",
+        colony.officers
+    );
+}
+
+#[derive(Debug)]
+struct RenewalEvidence {
+    kind: JobKind,
+    first_job_id: Option<String>,
+    first_completed_at: Option<i64>,
+    first_worker_moved: bool,
+    renewed_job_id: Option<String>,
+    renewed_worker_moved: bool,
+    last_now_ms: i64,
+}
+
+impl RenewalEvidence {
+    fn failure(&self) -> Option<String> {
+        let missing = [
+            (self.first_job_id.is_none(), "initial dispatch"),
+            (self.first_completed_at.is_none(), "initial completion"),
+            (!self.first_worker_moved, "initial physical movement"),
+            (self.renewed_job_id.is_none(), "post-completion renewal"),
+            (!self.renewed_worker_moved, "renewed physical movement"),
+        ]
+        .into_iter()
+        .filter_map(|(failed, label)| failed.then_some(label))
+        .collect::<Vec<_>>();
+        (!missing.is_empty()).then(|| {
+            format!(
+                "{:?} missing {} by simulated time {}",
+                self.kind,
+                missing.join(", "),
+                self.last_now_ms
+            )
+        })
+    }
+}
+
+fn observe_maintenance_renewal(kind: JobKind) -> RenewalEvidence {
+    const STEP_MS: i64 = 60_000;
+    const HORIZON_STEPS: i64 = 12 * 60;
+
+    let mut world = new_campaign_world(4_242, false);
+    let colony = &mut world.colonies[0];
+    colony.test_resource_decay_multiplier = 0.0;
+    match kind {
+        JobKind::HuntExpedition => {
+            colony.resources.food = 0.0;
+            colony.resources.fish = 0.0;
+            for pile in &mut colony.stockpiles {
+                pile.contents.food = 0.0;
+                pile.contents.fish = 0.0;
+            }
+        }
+        JobKind::FetchWater => {
+            colony.resources.water = 0.0;
+            for pile in &mut colony.stockpiles {
+                pile.contents.water = 0.0;
+            }
+        }
+        _ => panic!("maintenance renewal fixture does not cover {kind:?}"),
+    }
+    reconcile_colony_stockpiles(colony);
+
+    let mut first_job_id = None;
+    let mut first_completed_at = None;
+    let mut first_worker_moved = false;
+    let mut renewed_job_id = None;
+    let mut renewed_worker_start = None;
+    let mut renewed_worker_moved = false;
+    let mut job_motion = BTreeMap::new();
+    let mut last_now_ms = START;
+
+    for step in 1..=HORIZON_STEPS {
+        last_now_ms = START + step * STEP_MS;
+        let reports = world_tick(&mut world, last_now_ms);
+        assert_eq!(
+            reports[0].reset_reason, None,
+            "{kind:?} renewal fixture reset at {last_now_ms}"
+        );
+        let colony = &world.colonies[0];
+
+        for job in colony.jobs.iter().filter(|job| job.kind == kind) {
+            let Some(cat_id) = job.assigned_cat.as_deref() else {
+                continue;
+            };
+            let Some(worker) = colony.cats.iter().find(|cat| cat.id == cat_id) else {
+                continue;
+            };
+            let (_, start, moved) = job_motion
+                .entry(job.id.clone())
+                .or_insert_with(|| (cat_id.to_owned(), worker.position, false));
+            *moved |= worker.position != *start;
+        }
+
+        if first_completed_at.is_none()
+            && let Some((job, completed_at)) = colony
+                .jobs
+                .iter()
+                .filter(|job| job.kind == kind && job.status == JobStatus::Completed)
+                .filter_map(|job| job.completed_at.map(|completed_at| (job, completed_at)))
+                .filter(|(job, _)| job_motion.get(&job.id).is_some_and(|(_, _, moved)| *moved))
+                .min_by_key(|(_, completed_at)| *completed_at)
+        {
+            first_job_id = Some(job.id.clone());
+            first_completed_at = Some(completed_at);
+            first_worker_moved = true;
+        }
+
+        if renewed_job_id.is_none()
+            && let Some(completed_at) = first_completed_at
+            && let Some(job) = colony.jobs.iter().find(|job| {
+                job.kind == kind
+                    && Some(job.id.as_str()) != first_job_id.as_deref()
+                    && job.created_at >= completed_at
+                    && matches!(job.status, JobStatus::Queued | JobStatus::Active)
+            })
+        {
+            renewed_job_id = Some(job.id.clone());
+            renewed_worker_start = job.assigned_cat.as_deref().and_then(|cat_id| {
+                colony
+                    .cats
+                    .iter()
+                    .find(|cat| cat.id == cat_id)
+                    .map(|cat| (cat_id.to_owned(), cat.position))
+            });
+        }
+        if let Some((worker_id, start)) = renewed_worker_start.as_ref()
+            && let Some(worker) = colony.cats.iter().find(|cat| cat.id == *worker_id)
+        {
+            renewed_worker_moved |= worker.position != *start;
+        }
+        if renewed_worker_moved {
+            break;
+        }
+    }
+
+    RenewalEvidence {
+        kind,
+        first_job_id,
+        first_completed_at,
+        first_worker_moved,
+        renewed_job_id,
+        renewed_worker_moved,
+        last_now_ms,
+    }
+}
+
+#[test]
+fn survival_maintenance_jobs_complete_renew_and_repeat_their_physical_route() {
+    let evidence = [
+        observe_maintenance_renewal(JobKind::HuntExpedition),
+        observe_maintenance_renewal(JobKind::FetchWater),
+    ];
+    let failures = evidence
+        .iter()
+        .filter_map(RenewalEvidence::failure)
+        .collect::<Vec<_>>();
+    assert!(
+        failures.is_empty(),
+        "maintenance lifecycle failures (all cases still ran): {failures:#?}; full evidence={evidence:#?}"
+    );
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

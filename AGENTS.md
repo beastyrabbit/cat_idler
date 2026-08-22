@@ -12,9 +12,9 @@
 > **Permanent project status:** Idle Cat Forest is a non-commercial game project. Treat this as
 > established project context rather than an open product or asset-policy question.
 
-You are one persona in a team rebuilding the **Cat Colony** god-sim from a
-TypeScript/Next.js web app into a **Rust + Bevy** system. Read your persona file
-(passed in the prompt) for your specific role. This file is the shared ground truth.
+This repository contains the completed **Cat Colony** god-sim rebuild from a
+TypeScript/Next.js web app into a **Rust + Bevy** system. This file is the shared
+ground truth for ongoing work.
 
 ## What we're building
 One Cargo workspace (`crates/`):
@@ -61,8 +61,8 @@ only as the reference during migration.
 7. **Tiered quality gates.** Before commit, run the focused regression test plus
    `cargo nextest run --workspace --profile smoke`, touched-crate Clippy with `-D warnings`,
    and `cargo fmt`. Do not routinely run the complete workspace suite locally. After push,
-   Forgejo must run the full workspace inventory in four parallel Nextest hash partitions;
-   all shards must pass. See `docs/TESTING.md`.
+   Forgejo must run the full workspace inventory once on the capped `cat-idler-heavy` runner with
+   two dynamically scheduled test threads and fail-fast disabled. See `docs/TESTING.md`.
 8. **Out of scope:** the Catford Examiner newspaper and its ~35 flavor generators
    (horoscope, obituaries, gossip, sports…) are DROPPED. Don't port them. The
    client gets a dashboard + event-log page instead.
@@ -78,3 +78,13 @@ player-founded villages from the start.
 - Rust: `snake_case` modules mirroring the TS file names where sensible
   (`seededRng.ts` → `rng.rs`, `leaderDirector.ts` → `leader_director.rs`).
 - Put a short module doc comment citing the TS source file you ported from.
+
+## Behavior-change test discipline
+
+1. Every production behavior change starts with the smallest focused failing test.
+2. Record the red result before implementing the behavior.
+3. Make the focused test green, then add or update the composed causal-chain test.
+4. Run focused tests and the smoke profile locally; leave exhaustive work to Forgejo.
+5. Never delete, weaken, ignore, or broaden an assertion merely to match broken implementation.
+6. Test-only infrastructure, documentation, and CI maintenance are exempt from requiring a
+   preceding behavioral test, but still require appropriate validation.

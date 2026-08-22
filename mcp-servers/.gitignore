@@ -1,4 +1,0 @@
-# vendored MCP servers: ignore build artifacts and deps, keep source + our README
-*/node_modules/
-*/build/
-*/.git/

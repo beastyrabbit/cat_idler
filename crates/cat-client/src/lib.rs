@@ -43,7 +43,7 @@ use cat_protocol::{
     ResourceCapacities, ResourceKind, ResourceStackSnapshot, RoleXp, ScoutMission, ScoutResource,
     Specialization, StationCompartment, StockpileSnapshot, TilePoint, TraderBuyOffer,
     TraderSellOffer, TraderSnapshot, TraderVisitState, TransportMode, VillageKind, VillageScale,
-    VillageTradeCaravanPhase, WorldSnapshot, ZoneKind,
+    VillageTradeCaravanPhase, WorldSnapshot, ZoneKind, ZoneSnapshot,
 };
 use cat_sim::climate::{Biome, ResourceHint};
 use cat_sim::terrain_gen::{
@@ -650,6 +650,35 @@ struct ClientFeedback {
 #[derive(Resource, Default)]
 struct ClientAlerts(VecDeque<String>);
 
+/// Dedup state for proactive snapshot alerts: event fingerprints already
+/// toasted, cats whose critical-need warning is still active, and whether the
+/// first post-connect snapshot has been seen (its history is marked without
+/// toasting so reconnects do not replay old alarms).
+#[derive(Resource, Default)]
+struct AlertWatch {
+    primed: bool,
+    seen_events: HashSet<u64>,
+    seen_elections: HashSet<String>,
+    starving: HashSet<String>,
+    dehydrating: HashSet<String>,
+}
+
+/// Below this hunger/thirst a cat earns one persistent warning toast; it
+/// clears once the need recovers to [`CRITICAL_NEED_RECOVERED`] or the cat dies.
+const CRITICAL_NEED_THRESHOLD: f64 = 15.0;
+const CRITICAL_NEED_RECOVERED: f64 = 30.0;
+
+/// Stable-enough fingerprint for an event so the rolling snapshot window does
+/// not double-toast the same line (FNV-1a over the identity fields).
+fn event_fingerprint(event: &EventSnapshot) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in format!("{}|{}|{}", event.timestamp, event.kind, event.message).bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
 /// Outbound action queue drained onto the socket by [`flush_outgoing`].
 #[derive(Resource, Default)]
 struct OutgoingActions(Vec<ClientAction>);
@@ -661,10 +690,12 @@ struct Selection {
 }
 
 /// The currently selected (non-shrine) stockpile id, for the remove affordance.
+/// Shares one panel lane with farms and painted zones.
 #[derive(Resource, Default)]
 struct StockpileSelection {
     selected: Option<String>,
     selected_farm: Option<String>,
+    selected_zone: Option<String>,
 }
 
 /// The currently inspected building id (middle-click).
@@ -720,6 +751,74 @@ fn cycle_stacked_pick<'a>(
         .and_then(|c| stack.iter().position(|p| p.id == c))
         .map_or(0, |i| (i + 1) % stack.len());
     stack.get(idx)
+}
+
+/// Whether the building is selectable at this world-space cursor position.
+///
+/// A hit covers every tile of the footprint (tile centres sit at integer grid
+/// coordinates, so a cell spans ±0.5 around its centre), not just the anchor
+/// tile. Kept shared by ordinary right-click and stacked selection so both
+/// input paths exercise exactly the same footprint contract.
+fn point_hits_building(world: Vec2, building: &BuildingSnapshot) -> bool {
+    let fx = world.x / TILE;
+    let fy = -world.y / TILE;
+    let anchor_x = building.world_position.x as f32;
+    let anchor_y = building.world_position.y as f32;
+    fx >= anchor_x - 0.5
+        && fx < anchor_x + building.footprint.width as f32 - 0.5
+        && fy >= anchor_y - 0.5
+        && fy < anchor_y + building.footprint.height as f32 - 0.5
+}
+
+fn pick_building_id(world: Vec2, buildings: &[BuildingSnapshot]) -> Option<String> {
+    buildings
+        .iter()
+        .filter(|building| building_visual(building.building_type).is_map_building())
+        .filter(|building| point_hits_building(world, building))
+        .min_by(|a, b| {
+            let origin = |b: &BuildingSnapshot| {
+                grid_to_world(b.world_position.x, b.world_position.y).distance_squared(world)
+            };
+            origin(a).total_cmp(&origin(b))
+        })
+        .map(|building| building.id.clone())
+}
+
+fn stacked_pick_candidates(world: Vec2, colony: &ColonySnapshot) -> Vec<PickCandidate> {
+    let tile = world_to_tile(world);
+    let mut stack = Vec::new();
+    for cat in colony.cats.iter().filter(|cat| cat.death_time.is_none()) {
+        let position = grid_to_world(cat.position.x, cat.position.y);
+        if position.distance_squared(world) <= (TILE * 0.5).powi(2) {
+            stack.push(PickCandidate {
+                id: cat.id.clone(),
+                kind: PickKind::Cat,
+            });
+        }
+    }
+    for building in colony
+        .buildings
+        .iter()
+        .filter(|building| building_visual(building.building_type).is_map_building())
+        .filter(|building| point_hits_building(world, building))
+    {
+        stack.push(PickCandidate {
+            id: building.id.clone(),
+            kind: PickKind::Building,
+        });
+    }
+    for pile in colony
+        .stockpiles
+        .iter()
+        .filter(|pile| !is_seeded_store(&pile.id) && point_in_stockpile(tile, pile))
+    {
+        stack.push(PickCandidate {
+            id: pile.id.clone(),
+            kind: PickKind::Stockpile,
+        });
+    }
+    stack.sort_by(|left, right| (left.kind as u8, &left.id).cmp(&(right.kind as u8, &right.id)));
+    stack
 }
 
 /// Legacy shrine store id plus the current finite seeded village storehouse id.
@@ -2440,6 +2539,9 @@ struct RemovePanelText;
 /// Marker for the "Remove stockpile" button.
 #[derive(Component)]
 struct RemoveStockpileButton;
+/// Marker for the remove panel's dynamic title text.
+#[derive(Component)]
+struct RemovePanelTitleText;
 #[derive(Component)]
 struct CycleFarmCrop;
 #[derive(Component)]
@@ -2560,6 +2662,11 @@ struct FogTile {
 /// Prominent action/connection feedback panel and its text child.
 #[derive(Component)]
 struct ClientFeedbackPanel;
+/// Persistent raid-alarm banner shown while a warband is advancing.
+#[derive(Component)]
+struct RaidBanner;
+#[derive(Component)]
+struct RaidBannerText;
 #[derive(Component)]
 struct ClientFeedbackText;
 /// Persistent transport truth. Unlike a toast, this never expires while the
@@ -4052,6 +4159,7 @@ pub fn run() {
                         update_client_feedback,
                         update_connection_status,
                         handle_help_overlay,
+                        update_raid_banner,
                     ),
                     handle_buttons,
                     (
@@ -4105,6 +4213,9 @@ pub fn run() {
                 ),
             ),
         )
+        // Proactive raid/crisis/election/critical-need toasts, ahead of the
+        // event log so the same frame shows both.
+        .add_systems(Update, push_snapshot_alerts.before(update_event_log))
         .run();
 }
 
@@ -4859,6 +4970,36 @@ fn setup(
             ));
         });
 
+    // Raid alarm: while any raider is Advancing the player must see it without
+    // opening the log or spotting small sprites. Sits above the feedback
+    // banner's lane so both can show at once during an attack.
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Percent(30.0),
+                top: Val::Px(12.0),
+                width: Val::Percent(40.0),
+                min_height: Val::Px(30.0),
+                padding: UiRect::axes(Val::Px(UI_PAD), Val::Px(UI_GAP)),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                display: Display::None,
+                ..default()
+            },
+            GlobalZIndex(101),
+            ui_panel_frame(),
+            RaidBanner,
+            WorldInputBlocker,
+        ))
+        .with_children(|panel| {
+            panel.spawn((
+                ui_text("", FS_BODY, UI_INK),
+                TextLayout::justify(Justify::Center),
+                RaidBannerText,
+            ));
+        });
+
     // Compact always-on colony card. Only the four stores which can turn into
     // an immediate survival crisis stay pinned over the map; the complete
     // ledger lives in Stores [G].
@@ -5189,6 +5330,11 @@ fn setup(
                 ));
                 body.spawn(ui_text(
                     "CAMERA  WASD/arrows pan · wheel zoom · R reset · H or ? help · Esc close",
+                    FS_SMALL,
+                    UI_MUTED,
+                ));
+                body.spawn(ui_text(
+                    "INSPECT  Click a cat/stockpile/farm/zone to inspect it; painted zones offer \"Remove designation\" so mistakes are undoable",
                     FS_SMALL,
                     UI_MUTED,
                 ));
@@ -5644,7 +5790,24 @@ fn setup(
             WorldInputBlocker,
         ))
         .with_children(|panel| {
-            panel.spawn(ui_title_bar("Stockpile"));
+            panel
+                .spawn((
+                    Node {
+                        width: Val::Percent(100.0),
+                        padding: UiRect::axes(Val::Px(UI_PAD), Val::Px(7.0)),
+                        align_items: AlignItems::Center,
+                        ..default()
+                    },
+                    BackgroundColor(UI_HEADER),
+                    ImageNode::default(),
+                    AdventurePanel::Dark,
+                ))
+                .with_children(|title| {
+                    title.spawn((
+                        ui_text("Stockpile", FS_TITLE, UI_TITLE_INK),
+                        RemovePanelTitleText,
+                    ));
+                });
             panel.spawn(ui_panel_body()).with_children(|body| {
                 body.spawn((ui_text("", FS_BODY, UI_INK), RemovePanelText));
                 body.spawn((
@@ -7831,14 +7994,8 @@ fn render_buildings(
         match building_visual(building.building_type) {
             BuildingVisual::Infrastructure => {}
             BuildingVisual::Roofed(facade) => {
-                spawn_station_floor(
-                    &mut commands,
-                    &art,
-                    building.world_position,
-                    building.footprint,
-                    StationFloor::Wood,
-                    complete,
-                );
+                // A roofed residence shows only its facade; the tiled
+                // open-station floor would read as a workplace, not a home.
                 let layout = building_render_layout(building.world_position, building.footprint);
                 commands.spawn((
                     Sprite {
@@ -8333,6 +8490,7 @@ fn update_remove_panel(
     mut selection: ResMut<StockpileSelection>,
     mut panel: Query<&mut Node, With<RemovePanel>>,
     mut text: Query<&mut Text, With<RemovePanelText>>,
+    mut title: Query<&mut Text, (With<RemovePanelTitleText>, Without<RemovePanelText>)>,
     mut remove_button: Query<&mut Node, (With<RemoveStockpileButton>, Without<RemovePanel>)>,
 ) {
     if !latest.is_changed() && !selection.is_changed() {
@@ -8343,6 +8501,9 @@ fn update_remove_panel(
         text.single_mut(),
         remove_button.single_mut(),
     ) else {
+        return;
+    };
+    let Ok(mut title) = title.single_mut() else {
         return;
     };
     let colony = latest.0.as_ref().and_then(|w| w.colonies.first());
@@ -8357,7 +8518,7 @@ fn update_remove_panel(
     match (pile, farm) {
         (Some(pile), _) => {
             node.display = Display::Flex;
-            let title = match (
+            let kind_label = match (
                 pile.steward_managed.as_ref(),
                 pile.gather_spot.as_ref().map(|spot| spot.purpose),
             ) {
@@ -8375,15 +8536,20 @@ fn update_remove_panel(
                 (_, Some(GatherSpotPurpose::General)) => "Gather spot".to_owned(),
                 (_, None) => "Stockpile".to_owned(),
             };
+            title.0 = match pile.gather_spot.as_ref().map(|spot| spot.purpose) {
+                Some(GatherSpotPurpose::Fishing) => "Fishing shore".to_owned(),
+                Some(GatherSpotPurpose::General) => "Gather spot".to_owned(),
+                _ => "Stockpile".to_owned(),
+            };
             let mut detail = pile
                 .gather_spot
                 .as_ref()
                 .and_then(|spot| spot.fish_population)
                 .map_or_else(
-                    || format!("{title}\n{}", reported_pile_contents(pile)),
+                    || format!("{kind_label}\n{}", reported_pile_contents(pile)),
                     |population| {
                         format!(
-                            "{title}\n{}\nhabitat {:.1} / {:.0}",
+                            "{kind_label}\n{}\nhabitat {:.1} / {:.0}",
                             reported_pile_contents(pile),
                             population.stock,
                             population.capacity
@@ -8430,6 +8596,7 @@ fn update_remove_panel(
             };
         }
         (_, Some(farm)) => {
+            title.0 = "Farm plot".to_owned();
             node.display = Display::Flex;
             remove_button.display = Display::Flex;
             let worker = farm.worker_id.as_deref().unwrap_or("none");
@@ -8464,19 +8631,48 @@ fn update_remove_panel(
             );
         }
         (None, None) => {
-            node.display = Display::None;
-            remove_button.display = Display::None;
-            if selection.selected.is_some() {
-                selection.selected = None;
-            }
-            if selection.selected_farm.is_some() {
-                selection.selected_farm = None;
+            let zone = selection
+                .selected_zone
+                .as_deref()
+                .and_then(|id| colony.and_then(|c| c.zones.iter().find(|z| z.id == id)));
+            match zone {
+                Some(zone) => {
+                    title.0 = "Zone".to_owned();
+                    node.display = Display::Flex;
+                    remove_button.display = Display::Flex;
+                    text.0 = format!(
+                        "{} zone\ntiles {},{} – {},{}\nexpires at tick {}",
+                        match zone.kind {
+                            ZoneKind::Avoid => "Avoid",
+                            ZoneKind::Gather => "Gather",
+                        },
+                        zone.x1.min(zone.x2),
+                        zone.y1.min(zone.y2),
+                        zone.x1.max(zone.x2),
+                        zone.y1.max(zone.y2),
+                        zone.expires_at,
+                    );
+                }
+                None => {
+                    node.display = Display::None;
+                    remove_button.display = Display::None;
+                    if selection.selected.is_some() {
+                        selection.selected = None;
+                    }
+                    if selection.selected_farm.is_some() {
+                        selection.selected_farm = None;
+                    }
+                    if selection.selected_zone.is_some() {
+                        selection.selected_zone = None;
+                    }
+                }
             }
         }
     }
 }
 
-/// Send RemoveStockpile when the remove button is clicked.
+/// Send RemoveStockpile / ClearFarm / RemoveZone when the remove button is
+/// clicked.
 fn handle_remove_button(
     session: Res<Session>,
     latest: Res<LatestSnapshot>,
@@ -8488,7 +8684,21 @@ fn handle_remove_button(
         if *interaction != Interaction::Pressed || !session.ready {
             continue;
         }
-        if let Some(plot_id) = selection.selected_farm.take() {
+        if let Some(zone_id) = selection.selected_zone.take() {
+            let known = latest
+                .0
+                .as_ref()
+                .and_then(|world| world.colonies.first())
+                .is_some_and(|colony| colony.zones.iter().any(|zone| zone.id == zone_id));
+            if known {
+                outgoing.0.push(ClientAction::RemoveZone {
+                    session_id: session.session_id.clone(),
+                    nickname: session.nickname().to_owned(),
+                    sig: session.sig.clone(),
+                    zone_id,
+                });
+            }
+        } else if let Some(plot_id) = selection.selected_farm.take() {
             outgoing
                 .0
                 .push(build_remove_action(&session, Some(plot_id), None, false));
@@ -10047,13 +10257,20 @@ fn follow_overlays(
 }
 
 /// Cycle the walk frames of moving sheet-animated sprites (~8fps); idle sprites
-/// hold frame 0. Client-only eye-candy — not synced to the sim.
-fn animate_sprites(time: Res<Time>, mut sprites: Query<(&AnimSprite, &mut Sprite)>) {
-    let frame = (time.elapsed_secs() * 8.0) as usize % 4;
-    for (anim, mut sprite) in &mut sprites {
-        if let Some(atlas) = sprite.texture_atlas.as_mut() {
-            atlas.index = atlas_index(anim.group, if anim.moving { frame } else { 0 });
-        }
+/// hold frame 0. Phase is staggered per entity so a crowd does not march in
+/// lockstep. Client-only eye-candy — not synced to the sim.
+fn animate_sprites(time: Res<Time>, mut sprites: Query<(Entity, &AnimSprite, &mut Sprite)>) {
+    let elapsed = time.elapsed_secs();
+    for (entity, anim, mut sprite) in &mut sprites {
+        let Some(atlas) = sprite.texture_atlas.as_mut() else {
+            continue;
+        };
+        let frame = if anim.moving {
+            (elapsed * 8.0) as usize + (entity.to_bits() % 4) as usize
+        } else {
+            0
+        };
+        atlas.index = atlas_index(anim.group, frame % 4);
     }
 }
 
@@ -10103,6 +10320,7 @@ fn select_cat(
         // A cat wins the click; drop any stockpile selection.
         stockpile_selection.selected = None;
         stockpile_selection.selected_farm = None;
+        stockpile_selection.selected_zone = None;
         selection.selected = toggle_selection(selection.selected.as_deref(), picked);
         return;
     }
@@ -10115,6 +10333,7 @@ fn select_cat(
     selection.selected = None;
     if let Some(pile) = pile {
         stockpile_selection.selected_farm = None;
+        stockpile_selection.selected_zone = None;
         stockpile_selection.selected = toggle_selection(
             stockpile_selection.selected.as_deref(),
             Some(pile.id.clone()),
@@ -10122,10 +10341,23 @@ fn select_cat(
     } else {
         let farm = colony.farms.iter().find(|farm| point_in_farm(tile, farm));
         stockpile_selection.selected = None;
-        stockpile_selection.selected_farm = toggle_selection(
-            stockpile_selection.selected_farm.as_deref(),
-            farm.map(|farm| farm.id.clone()),
-        );
+        if let Some(farm) = farm {
+            stockpile_selection.selected_zone = None;
+            stockpile_selection.selected_farm = toggle_selection(
+                stockpile_selection.selected_farm.as_deref(),
+                Some(farm.id.clone()),
+            );
+        } else {
+            // Painted zones are the last inspectable layer: select one for
+            // removal so a mis-painted avoid zone does not have to outlive its
+            // 30-minute TTL.
+            let zone = colony.zones.iter().find(|zone| point_in_zone(tile, zone));
+            stockpile_selection.selected_farm = None;
+            stockpile_selection.selected_zone = toggle_selection(
+                stockpile_selection.selected_zone.as_deref(),
+                zone.map(|z| z.id.clone()),
+            );
+        }
     }
 }
 
@@ -10166,18 +10398,7 @@ fn select_building(
         return;
     };
     // Skip Walls (rendered as the palisade, not a point marker).
-    let buildings: Vec<(String, Vec2)> = colony
-        .buildings
-        .iter()
-        .filter(|b| building_visual(b.building_type).is_map_building())
-        .map(|b| {
-            (
-                b.id.clone(),
-                grid_to_world(b.world_position.x, b.world_position.y),
-            )
-        })
-        .collect();
-    let picked = nearest_id(world, &buildings, TILE * 0.9);
+    let picked = pick_building_id(world, &colony.buildings);
     selection.selected = toggle_selection(selection.selected.as_deref(), picked);
 }
 
@@ -10216,45 +10437,9 @@ fn cycle_stacked_selection(
     let Some(colony) = latest.0.as_ref().and_then(|w| w.colonies.first()) else {
         return;
     };
-    // Collect everything under the cursor, using the same hit radii as the
-    // single-click picks so "stacked" means the same thing.
-    let tile = world_to_tile(world);
-    let mut stack: Vec<PickCandidate> = Vec::new();
-    for cat in colony.cats.iter().filter(|c| c.death_time.is_none()) {
-        let p = grid_to_world(cat.position.x, cat.position.y);
-        if p.distance_squared(world) <= (TILE * 0.5).powi(2) {
-            stack.push(PickCandidate {
-                id: cat.id.clone(),
-                kind: PickKind::Cat,
-            });
-        }
-    }
-    for b in colony
-        .buildings
-        .iter()
-        .filter(|b| building_visual(b.building_type).is_map_building())
-    {
-        let p = grid_to_world(b.world_position.x, b.world_position.y);
-        if p.distance_squared(world) <= (TILE * 0.9).powi(2) {
-            stack.push(PickCandidate {
-                id: b.id.clone(),
-                kind: PickKind::Building,
-            });
-        }
-    }
-    for pile in colony
-        .stockpiles
-        .iter()
-        .filter(|s| !is_seeded_store(&s.id) && point_in_stockpile(tile, s))
-    {
-        stack.push(PickCandidate {
-            id: pile.id.clone(),
-            kind: PickKind::Stockpile,
-        });
-    }
-    // Stable cycle order (cats, then buildings, then stockpiles; by id within a
-    // kind) so the sequence doesn't shuffle between clicks at a fixed cursor.
-    stack.sort_by(|a, b| (a.kind as u8, &a.id).cmp(&(b.kind as u8, &b.id)));
+    // Collect everything under the cursor using the same building hit contract
+    // as the ordinary right-click path.
+    let stack = stacked_pick_candidates(world, colony);
 
     let current = cat_sel
         .selected
@@ -10268,6 +10453,7 @@ fn cycle_stacked_selection(
     building_sel.selected = None;
     pile_sel.selected = None;
     pile_sel.selected_farm = None;
+    pile_sel.selected_zone = None;
     match next.kind {
         PickKind::Cat => cat_sel.selected = Some(next.id),
         PickKind::Building => building_sel.selected = Some(next.id),
@@ -10433,6 +10619,7 @@ fn close_inspectors_on_esc(
         building.selected = None;
         stockpile.selected = None;
         stockpile.selected_farm = None;
+        stockpile.selected_zone = None;
         announcements.visible = false;
         goods.visible = false;
         census.visible = false;
@@ -10883,6 +11070,75 @@ fn next_gather_kind(kind: ResourceKind) -> ResourceKind {
     GATHER_KINDS[(index + 1) % GATHER_KINDS.len()]
 }
 
+fn build_paint_action(
+    kind: PaintKind,
+    session: &Session,
+    a: TilePoint,
+    b: TilePoint,
+    accept: AcceptChoice,
+    crop: CropKind,
+    gather_kind: ResourceKind,
+) -> ClientAction {
+    match kind {
+        PaintKind::Avoid | PaintKind::Gather => ClientAction::CreateZone {
+            session_id: session.session_id.clone(),
+            nickname: session.nickname().to_owned(),
+            sig: session.sig.clone(),
+            kind: if kind == PaintKind::Avoid {
+                ZoneKind::Avoid
+            } else {
+                ZoneKind::Gather
+            },
+            a,
+            b,
+            duration_ms: ZONE_DURATION_MS,
+        },
+        PaintKind::Stockpile => ClientAction::DesignateStockpile {
+            session_id: session.session_id.clone(),
+            nickname: session.nickname().to_owned(),
+            sig: session.sig.clone(),
+            a,
+            b,
+            accepts: accept.kinds(),
+        },
+        PaintKind::Farm => ClientAction::DesignateFarm {
+            session_id: session.session_id.clone(),
+            nickname: session.nickname().to_owned(),
+            sig: session.sig.clone(),
+            a,
+            b,
+            crop,
+        },
+        PaintKind::GatherSpot => ClientAction::DesignateGatherSpot {
+            session_id: session.session_id.clone(),
+            nickname: session.nickname().to_owned(),
+            sig: session.sig.clone(),
+            a,
+            b,
+            kind: gather_kind,
+        },
+        PaintKind::FishingSpot => ClientAction::DesignateFishingSpot {
+            session_id: session.session_id.clone(),
+            nickname: session.nickname().to_owned(),
+            sig: session.sig.clone(),
+            at: a,
+        },
+        PaintKind::Road => ClientAction::BuildRoad {
+            session_id: session.session_id.clone(),
+            nickname: session.nickname().to_owned(),
+            sig: session.sig.clone(),
+            a,
+            b,
+        },
+        PaintKind::Bridge => ClientAction::BuildBridge {
+            session_id: session.session_id.clone(),
+            nickname: session.nickname().to_owned(),
+            sig: session.sig.clone(),
+            at: a,
+        },
+    }
+}
+
 fn handle_gather_kind_button(
     mut tools: ResMut<Tools>,
     buttons: Query<&Interaction, (Changed<Interaction>, With<CycleGatherKind>)>,
@@ -10963,64 +11219,15 @@ fn zone_paint(
         }
         let a = TilePoint { x: min.0, y: min.1 };
         let b = TilePoint { x: max.0, y: max.1 };
-        outgoing.0.push(match kind {
-            PaintKind::Avoid | PaintKind::Gather => ClientAction::CreateZone {
-                session_id: session.session_id.clone(),
-                nickname: session.nickname().to_owned(),
-                sig: session.sig.clone(),
-                kind: if kind == PaintKind::Avoid {
-                    ZoneKind::Avoid
-                } else {
-                    ZoneKind::Gather
-                },
-                a,
-                b,
-                duration_ms: ZONE_DURATION_MS,
-            },
-            PaintKind::Stockpile => ClientAction::DesignateStockpile {
-                session_id: session.session_id.clone(),
-                nickname: session.nickname().to_owned(),
-                sig: session.sig.clone(),
-                a,
-                b,
-                accepts: accept.kinds(),
-            },
-            PaintKind::Farm => ClientAction::DesignateFarm {
-                session_id: session.session_id.clone(),
-                nickname: session.nickname().to_owned(),
-                sig: session.sig.clone(),
-                a,
-                b,
-                crop,
-            },
-            PaintKind::GatherSpot => ClientAction::DesignateGatherSpot {
-                session_id: session.session_id.clone(),
-                nickname: session.nickname().to_owned(),
-                sig: session.sig.clone(),
-                a,
-                b,
-                kind: gather_kind,
-            },
-            PaintKind::FishingSpot => ClientAction::DesignateFishingSpot {
-                session_id: session.session_id.clone(),
-                nickname: session.nickname().to_owned(),
-                sig: session.sig.clone(),
-                at: a,
-            },
-            PaintKind::Road => ClientAction::BuildRoad {
-                session_id: session.session_id.clone(),
-                nickname: session.nickname().to_owned(),
-                sig: session.sig.clone(),
-                a,
-                b,
-            },
-            PaintKind::Bridge => ClientAction::BuildBridge {
-                session_id: session.session_id.clone(),
-                nickname: session.nickname().to_owned(),
-                sig: session.sig.clone(),
-                at: a,
-            },
-        });
+        outgoing.0.push(build_paint_action(
+            kind,
+            &session,
+            a,
+            b,
+            accept,
+            crop,
+            gather_kind,
+        ));
     }
 }
 
@@ -12798,6 +13005,46 @@ fn update_client_feedback(
     }
 }
 
+/// Keep the raid alarm visible for the whole approach and fight: any raider in
+/// the snapshot means an unresolved raid, so the banner shows a live count and
+/// points at the defend control.
+fn update_raid_banner(
+    latest: Res<LatestSnapshot>,
+    mut panel: Query<
+        (
+            &mut Node,
+            &mut BackgroundColor,
+            &mut BorderColor,
+            &mut ImageNode,
+        ),
+        With<RaidBanner>,
+    >,
+    mut label: Query<&mut Text, (With<RaidBannerText>, Without<ClientFeedbackText>)>,
+) {
+    let (Ok((mut node, mut background, mut border, mut image)), Ok(mut text)) =
+        (panel.single_mut(), label.single_mut())
+    else {
+        return;
+    };
+    let Some(colony) = latest.0.as_ref().and_then(|world| world.colonies.first()) else {
+        node.display = Display::None;
+        return;
+    };
+    let raiders = colony.raiders.len();
+    if raiders == 0 {
+        node.display = Display::None;
+        return;
+    }
+    *background = BackgroundColor(UI_BG);
+    *border = BorderColor::all(UI_WARNING);
+    image.color = Color::srgb(1.0, 0.72, 0.68);
+    node.display = Display::Flex;
+    text.0 = format!(
+        "Raid! {raiders} raid{} advancing — \"Defend raid\" is in Orders [P]",
+        if raiders == 1 { "er" } else { "ers" }
+    );
+}
+
 fn connection_status_label(state: &ConnectionState, has_snapshot: bool) -> (String, bool) {
     match state.phase {
         ConnectionPhase::Connected => ("LIVE".to_owned(), false),
@@ -12907,7 +13154,7 @@ fn update_event_log(
     let mut lines: Vec<String> = alerts
         .0
         .iter()
-        .take(4)
+        .take(6)
         .map(|message| format!("! {message}"))
         .collect();
     if let Some(colony) = latest.0.as_ref().and_then(|w| w.colonies.first()) {
@@ -12917,7 +13164,7 @@ fn update_event_log(
             events
                 .iter()
                 .rev()
-                .take(4_usize.saturating_sub(lines.len()))
+                .take(6_usize.saturating_sub(lines.len()))
                 .map(|event| format!("- {}", attributed_event_message(event))),
         );
     }
@@ -12933,6 +13180,80 @@ fn attributed_event_message(event: &EventSnapshot) -> String {
         || event.message.clone(),
         |name| format!("{name}: {}", event.message),
     )
+}
+
+/// Proactively toast urgent snapshot state: new raid/crisis/election events and
+/// cats whose hunger or thirst has gone critical. Without this the only signal
+/// is the passive event log, so a raid can arrive unseen while the player is
+/// zoomed into a corner.
+fn push_snapshot_alerts(
+    latest: Res<LatestSnapshot>,
+    mut watch: ResMut<AlertWatch>,
+    mut alerts: ResMut<ClientAlerts>,
+) {
+    if !latest.is_changed() {
+        return;
+    }
+    let Some(colony) = latest.0.as_ref().and_then(|w| w.colonies.first()) else {
+        return;
+    };
+    let mut messages: Vec<String> = Vec::new();
+    let mut events = colony.events.clone();
+    events.sort_by_key(|event| event.timestamp);
+    let mut current_fingerprints = HashSet::with_capacity(events.len());
+    for event in &events {
+        let fingerprint = event_fingerprint(event);
+        current_fingerprints.insert(fingerprint);
+        if !watch.primed || !watch.seen_events.insert(fingerprint) {
+            continue;
+        }
+        match event_kind_of(&event.kind) {
+            EventKind::Raid => messages.push(format!("Raid! {}", event.message)),
+            EventKind::Crisis => messages.push(format!("Crisis: {}", event.message)),
+            EventKind::Election => messages.push(format!("Election: {}", event.message)),
+            EventKind::Death => messages.push(event.message.clone()),
+            _ => {}
+        }
+    }
+    // Keep only fingerprints still inside the rolling window so the set cannot
+    // grow without bound across a long session.
+    watch
+        .seen_events
+        .retain(|fp| current_fingerprints.contains(fp));
+    for cat in &colony.cats {
+        if cat.death_time.is_some() {
+            watch.starving.remove(&cat.id);
+            watch.dehydrating.remove(&cat.id);
+            continue;
+        }
+        if cat.needs.hunger < CRITICAL_NEED_THRESHOLD {
+            if watch.starving.insert(cat.id.clone()) && watch.primed {
+                messages.push(format!("{} is starving", cat.name));
+            }
+        } else if cat.needs.hunger >= CRITICAL_NEED_RECOVERED {
+            watch.starving.remove(&cat.id);
+        }
+        if cat.needs.thirst < CRITICAL_NEED_THRESHOLD {
+            if watch.dehydrating.insert(cat.id.clone()) && watch.primed {
+                messages.push(format!("{} is dehydrating", cat.name));
+            }
+        } else if cat.needs.thirst >= CRITICAL_NEED_RECOVERED {
+            watch.dehydrating.remove(&cat.id);
+        }
+    }
+    // An open election is only useful while it is open: toast once per
+    // election id so the vote UI gets seen before the term closes.
+    if let Some(election) = &colony.election
+        && watch.seen_elections.insert(election.id.clone())
+        && watch.primed
+    {
+        messages.push("Election is open — pick the next leader in Governance".to_owned());
+    }
+    watch.primed = true;
+    for message in messages {
+        alerts.0.push_front(message);
+    }
+    alerts.0.truncate(CLIENT_ALERT_CAP);
 }
 
 /// React to toolbar clicks: tint the button and enqueue its action.
@@ -13561,6 +13882,12 @@ fn point_in_stockpile(tile: (i32, i32), pile: &StockpileSnapshot) -> bool {
     (x0..=x1).contains(&tile.0) && (y0..=y1).contains(&tile.1)
 }
 
+fn point_in_zone(tile: (i32, i32), zone: &ZoneSnapshot) -> bool {
+    let (x0, x1) = (zone.x1.min(zone.x2), zone.x1.max(zone.x2));
+    let (y0, y1) = (zone.y1.min(zone.y2), zone.y1.max(zone.y2));
+    (x0..=x1).contains(&tile.0) && (y0..=y1).contains(&tile.1)
+}
+
 fn point_in_farm(tile: (i32, i32), farm: &FarmSnapshot) -> bool {
     let (x0, x1) = (farm.x1.min(farm.x2), farm.x1.max(farm.x2));
     let (y0, y1) = (farm.y1.min(farm.y2), farm.y1.max(farm.y2));
@@ -14083,7 +14410,9 @@ fn zone_color(kind: ZoneKind) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cat_protocol::{CatStats, MapName, MapPosition, WorldSnapshot};
+    use cat_protocol::{
+        CatStats, ElectionSnapshot, MapName, MapPosition, RaiderSnapshot, WorldSnapshot,
+    };
     use cat_sim::terrain_gen::BiomeRole;
 
     fn ready_session() -> Session {
@@ -14819,6 +15148,72 @@ mod tests {
         assert_eq!(
             actions.iter().copied().collect::<HashSet<_>>(),
             expected_actions.into_iter().collect::<HashSet<_>>()
+        );
+    }
+
+    #[test]
+    fn visible_command_registry_emits_the_expected_protocol_manifest_slice() {
+        fn wire_tag(action: ClientAction) -> String {
+            serde_json::to_value(action)
+                .expect("visible command serializes")
+                .get("action")
+                .and_then(serde_json::Value::as_str)
+                .expect("ClientAction carries its wire tag")
+                .to_owned()
+        }
+
+        let session = ready_session();
+        let a = TilePoint { x: 6, y: 6 };
+        let b = TilePoint { x: 7, y: 7 };
+        let mut emitted = Vec::new();
+        for tool in DockCategory::ALL.into_iter().flat_map(DockCategory::tools) {
+            let action = match tool {
+                ToolMode::Inspect => None,
+                ToolMode::Building => {
+                    Some(build_exact_building_action(&session, BuildingType::Den, a))
+                }
+                _ => Some(build_paint_action(
+                    tool.paint_kind().expect("non-inspect paint tool"),
+                    &session,
+                    a,
+                    b,
+                    AcceptChoice::General,
+                    CropKind::Catnip,
+                    ResourceKind::Food,
+                )),
+            };
+            if let Some(action) = action {
+                emitted.push(wire_tag(action));
+            }
+        }
+        for action in DockCategory::ALL
+            .into_iter()
+            .flat_map(DockCategory::actions)
+        {
+            emitted.push(wire_tag(
+                build_action(*action, &session).expect("ready quick action emits a command"),
+            ));
+        }
+
+        assert_eq!(emitted.len(), 18, "every visible non-inspect command emits");
+        assert_eq!(
+            emitted.into_iter().collect::<HashSet<_>>(),
+            [
+                "buildBridge",
+                "buildRoad",
+                "createZone",
+                "designateFarm",
+                "designateFishingSpot",
+                "designateGatherSpot",
+                "designateStockpile",
+                "dispatchScout",
+                "foundVillage",
+                "planBuilding",
+                "requestJob",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<HashSet<_>>()
         );
     }
 
@@ -15700,6 +16095,106 @@ mod tests {
     }
 
     #[test]
+    fn full_footprint_right_click_hits_every_building_tile() {
+        let building = BuildingSnapshot {
+            id: "workshop".to_owned(),
+            building_type: BuildingType::Workshop,
+            world_position: TilePoint { x: 6, y: 6 },
+            position: TilePoint { x: 6, y: 6 },
+            footprint: FootprintSize {
+                width: 3,
+                height: 2,
+            },
+            ..default()
+        };
+
+        for y in 6..=7 {
+            for x in 6..=8 {
+                let cursor = grid_to_world(x, y);
+                assert!(
+                    point_hits_building(cursor, &building),
+                    "right-click missed workshop footprint tile ({x},{y})"
+                );
+                assert_eq!(
+                    pick_building_id(cursor, std::slice::from_ref(&building)).as_deref(),
+                    Some("workshop"),
+                    "right-click did not select the workshop from footprint tile ({x},{y})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn stacked_selection_collects_and_cycles_actual_world_targets() {
+        let mut snapshot = village_world(&["alpha"]);
+        let colony = &mut snapshot.colonies[0];
+        let mut cat = census_cat(30.0, None, false);
+        cat.id = "cat-on-workshop".to_owned();
+        cat.position = MapPosition {
+            map: MapName::Colony,
+            x: 6,
+            y: 6,
+        };
+        colony.cats.push(cat);
+        colony.buildings.push(BuildingSnapshot {
+            id: "workshop".to_owned(),
+            building_type: BuildingType::Workshop,
+            world_position: TilePoint { x: 6, y: 6 },
+            position: TilePoint { x: 6, y: 6 },
+            footprint: FootprintSize {
+                width: 2,
+                height: 2,
+            },
+            ..default()
+        });
+        colony.stockpiles.push(StockpileSnapshot {
+            id: "pile-on-workshop".to_owned(),
+            x1: 6,
+            y1: 6,
+            x2: 6,
+            y2: 6,
+            accepts: vec![],
+            contents: amounts(0.0, 0.0, 0.0),
+            report: None,
+            gather_spot: None,
+            steward_managed: None,
+        });
+
+        let stack = stacked_pick_candidates(grid_to_world(6, 6), colony);
+        assert_eq!(
+            stack,
+            [
+                PickCandidate {
+                    id: "cat-on-workshop".to_owned(),
+                    kind: PickKind::Cat,
+                },
+                PickCandidate {
+                    id: "workshop".to_owned(),
+                    kind: PickKind::Building,
+                },
+                PickCandidate {
+                    id: "pile-on-workshop".to_owned(),
+                    kind: PickKind::Stockpile,
+                },
+            ]
+        );
+        assert_eq!(
+            cycle_stacked_pick(&stack, Some("cat-on-workshop"))
+                .map(|candidate| candidate.id.as_str()),
+            Some("workshop")
+        );
+        assert_eq!(
+            cycle_stacked_pick(&stack, Some("workshop")).map(|candidate| candidate.id.as_str()),
+            Some("pile-on-workshop")
+        );
+        assert_eq!(
+            cycle_stacked_pick(&stack, Some("pile-on-workshop"))
+                .map(|candidate| candidate.id.as_str()),
+            Some("cat-on-workshop")
+        );
+    }
+
+    #[test]
     fn census_tallies_stages_specs_and_vitals() {
         let mut cats = vec![
             census_cat(3.0, None, false),                         // kitten, unspec
@@ -16279,6 +16774,48 @@ mod tests {
         }
     }
 
+    #[test]
+    fn moving_cat_entities_do_not_share_the_same_actual_animation_frame() {
+        let mut app = App::new();
+        app.init_resource::<Time>()
+            .add_systems(Update, animate_sprites);
+        for id in ["moss", "fern"] {
+            app.world_mut().spawn((
+                CatBody(id.to_owned()),
+                AnimSprite {
+                    group: 0,
+                    moving: true,
+                },
+                Sprite {
+                    texture_atlas: Some(TextureAtlas {
+                        layout: Handle::default(),
+                        index: usize::MAX,
+                    }),
+                    ..default()
+                },
+            ));
+        }
+
+        app.update();
+
+        let world = app.world_mut();
+        let mut query = world.query::<(&CatBody, &Sprite)>();
+        let frames = query
+            .iter(world)
+            .map(|(body, sprite)| {
+                (
+                    body.0.as_str(),
+                    sprite.texture_atlas.as_ref().expect("cat atlas").index,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(frames.len(), 2);
+        assert_ne!(
+            frames[0].1, frames[1].1,
+            "moving cats must have per-cat animation phase instead of marching in lockstep: {frames:?}"
+        );
+    }
+
     fn png_dimensions(path: &std::path::Path) -> (u32, u32) {
         let bytes = std::fs::read(path).expect("tracked sprite sheet");
         assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
@@ -16767,6 +17304,40 @@ mod tests {
         );
         let mut labels = world.query_filtered::<Entity, (With<BuildingSprite>, With<Text2d>)>();
         assert_eq!(labels.iter(world).count(), 0);
+    }
+
+    #[test]
+    fn den_renderer_has_a_roof_but_no_wooden_floor_tiles() {
+        let mut snapshot = village_world(&["alpha"]);
+        snapshot.colonies[0].buildings.push(BuildingSnapshot {
+            id: "den".to_owned(),
+            building_type: BuildingType::Den,
+            level: 1,
+            construction_progress: 100.0,
+            world_position: TilePoint { x: 6, y: 6 },
+            position: TilePoint { x: 6, y: 6 },
+            footprint: FootprintSize {
+                width: 2,
+                height: 2,
+            },
+            ..default()
+        });
+
+        let mut app = App::new();
+        app.insert_resource(LatestSnapshot(Some(snapshot)))
+            .insert_resource(BuildingArt::default())
+            .add_systems(Update, render_buildings);
+        app.update();
+
+        let world = app.world_mut();
+        let mut roofs = world.query_filtered::<Entity, With<RoofedBuildingSprite>>();
+        assert_eq!(roofs.iter(world).count(), 1, "den needs its roof facade");
+        let mut floors = world.query_filtered::<Entity, With<StationFloorSprite>>();
+        assert_eq!(
+            floors.iter(world).count(),
+            0,
+            "a roofed den must not render the open-station wooden floor"
+        );
     }
 
     #[test]
@@ -19162,5 +19733,248 @@ mod tests {
         assert!(minimap_panel_visible(true, true, false));
         assert!(!minimap_panel_visible(true, true, true));
         assert!(!minimap_panel_visible(false, false, false));
+    }
+
+    fn alert_world_with(events: Vec<EventSnapshot>, cats: Vec<CatSnapshot>) -> WorldSnapshot {
+        let mut snapshot = village_world(&["alpha"]);
+        let colony = &mut snapshot.colonies[0];
+        colony.events = events;
+        colony.cats = cats;
+        snapshot
+    }
+
+    #[test]
+    fn snapshot_alerts_toast_new_raids_and_critical_needs_exactly_once() {
+        let mut app = App::new();
+        app.insert_resource(LatestSnapshot(Some(village_world(&["alpha"]))))
+            .insert_resource(AlertWatch::default())
+            .insert_resource(ClientAlerts::default())
+            .add_systems(Update, push_snapshot_alerts);
+        // First snapshot after connect primes history without replaying it.
+        app.update();
+        assert!(app.world().resource::<ClientAlerts>().0.is_empty());
+
+        let mut starving = census_cat(30.0, None, false);
+        starving.id = "moss".to_owned();
+        starving.name = "Mossfur".to_owned();
+        starving.needs.hunger = 10.0;
+        starving.needs.thirst = 80.0;
+        app.insert_resource(LatestSnapshot(Some(alert_world_with(
+            vec![EventSnapshot {
+                message: "Raiders approach from the east!".to_owned(),
+                timestamp: 5,
+                kind: "raid_started".to_owned(),
+                actor_name: None,
+            }],
+            vec![starving],
+        ))));
+        app.update();
+
+        let alerts = &app.world().resource::<ClientAlerts>().0;
+        assert_eq!(
+            alerts.len(),
+            2,
+            "raid + starvation should both toast, got {alerts:?}"
+        );
+        assert!(alerts.iter().any(|m| m.contains("Raid!")));
+        assert!(alerts.iter().any(|m| m.contains("Mossfur is starving")));
+
+        // The unchanged snapshot must not re-toast.
+        app.update();
+        assert_eq!(app.world().resource::<ClientAlerts>().0.len(), 2);
+
+        // Recovery clears the latch; the next dip re-alerts.
+        let mut recovered = census_cat(30.0, None, false);
+        recovered.id = "moss".to_owned();
+        recovered.name = "Mossfur".to_owned();
+        recovered.needs.hunger = 80.0;
+        recovered.needs.thirst = 80.0;
+        app.insert_resource(LatestSnapshot(Some(alert_world_with(
+            vec![EventSnapshot {
+                message: "Raiders approach from the east!".to_owned(),
+                timestamp: 6,
+                kind: "raid_started".to_owned(),
+                actor_name: None,
+            }],
+            vec![recovered.clone()],
+        ))));
+        app.update();
+        assert_eq!(app.world().resource::<ClientAlerts>().0.len(), 3);
+
+        let mut starving_again = recovered;
+        starving_again.needs.hunger = 12.0;
+        app.insert_resource(LatestSnapshot(Some(alert_world_with(
+            vec![],
+            vec![starving_again],
+        ))));
+        app.update();
+        assert_eq!(app.world().resource::<ClientAlerts>().0.len(), 4);
+        assert!(
+            app.world()
+                .resource::<ClientAlerts>()
+                .0
+                .front()
+                .is_some_and(|m| m.contains("Mossfur is starving"))
+        );
+    }
+
+    #[test]
+    fn election_toasts_once_per_election_and_not_on_reconnect() {
+        let election = || ElectionSnapshot {
+            id: "election-open-on-connect".to_owned(),
+            ends_at: 100,
+            tally: BTreeMap::new(),
+            total_ballots: 0,
+            candidates: vec![],
+        };
+        let mut next_election = election();
+        next_election.id = "election-fresh".to_owned();
+        let mut app = App::new();
+        app.insert_resource(LatestSnapshot(Some(village_world(&["alpha"]))))
+            .insert_resource(AlertWatch::default())
+            .insert_resource(ClientAlerts::default())
+            .add_systems(Update, push_snapshot_alerts);
+        // Priming run: an election already open on connect must not toast.
+        app.world_mut()
+            .resource_scope(|_world, mut latest: Mut<LatestSnapshot>| {
+                if let Some(snapshot) = latest.0.as_mut() {
+                    snapshot.colonies[0].election = Some(election());
+                }
+            });
+        app.update();
+        assert!(app.world().resource::<ClientAlerts>().0.is_empty());
+
+        // A newly appearing election toasts exactly once.
+        let mut next = village_world(&["alpha"]);
+        next.colonies[0].election = Some(next_election);
+        app.insert_resource(LatestSnapshot(Some(next)));
+        app.update();
+        assert_eq!(app.world().resource::<ClientAlerts>().0.len(), 1);
+        assert!(
+            app.world()
+                .resource::<ClientAlerts>()
+                .0
+                .front()
+                .is_some_and(|m| m.contains("Election is open"))
+        );
+
+        // The same open election does not re-toast on later snapshots.
+        app.insert_resource(LatestSnapshot(Some(village_world(&["alpha"]))));
+        app.update();
+        assert_eq!(app.world().resource::<ClientAlerts>().0.len(), 1);
+    }
+
+    #[test]
+    fn raid_banner_tracks_the_live_warband_count() {
+        let mut app = App::new();
+        app.insert_resource(LatestSnapshot(None))
+            .add_systems(Update, update_raid_banner);
+        let banner = app
+            .world_mut()
+            .spawn((
+                Node {
+                    display: Display::None,
+                    ..default()
+                },
+                BackgroundColor(UI_BG),
+                BorderColor::all(Color::NONE),
+                ImageNode::default(),
+                RaidBanner,
+            ))
+            .with_children(|panel| {
+                panel.spawn((ui_text("", FS_BODY, UI_INK), RaidBannerText));
+            })
+            .id();
+        app.update();
+        let display = |world: &mut World| {
+            world
+                .entity(banner)
+                .get::<Node>()
+                .expect("banner node")
+                .display
+        };
+        assert_eq!(display(app.world_mut()), Display::None);
+
+        let mut raiding = village_world(&["alpha"]);
+        raiding.colonies[0].raiders.push(RaiderSnapshot {
+            id: "raider-1".to_owned(),
+            position: TilePoint { x: 3, y: 4 },
+            hp: 5.0,
+            strength: 2.0,
+            status: RaiderStatus::Advancing,
+        });
+        app.insert_resource(LatestSnapshot(Some(raiding)));
+        app.update();
+        assert_eq!(display(app.world_mut()), Display::Flex);
+        let text = app
+            .world_mut()
+            .query_filtered::<&Text, With<RaidBannerText>>()
+            .single(app.world())
+            .expect("banner text")
+            .clone();
+        assert!(text.0.contains("1 raider"), "{text:?}");
+        assert!(text.0.contains("Defend raid"));
+
+        app.insert_resource(LatestSnapshot(Some(village_world(&["alpha"]))));
+        app.update();
+        assert_eq!(display(app.world_mut()), Display::None);
+        drop(text);
+    }
+
+    #[test]
+    fn point_in_zone_matches_unordered_rect_bounds() {
+        let zone = ZoneSnapshot {
+            id: "zone-0".to_owned(),
+            kind: ZoneKind::Avoid,
+            x1: 2,
+            y1: 5,
+            x2: 4,
+            y2: 3, // deliberately unordered
+            expires_at: 100,
+        };
+        assert!(point_in_zone((3, 4), &zone));
+        assert!(point_in_zone((2, 3), &zone));
+        assert!(point_in_zone((4, 5), &zone));
+        assert!(!point_in_zone((1, 4), &zone));
+        assert!(!point_in_zone((3, 6), &zone));
+    }
+
+    #[test]
+    fn remove_button_dispatches_remove_zone_for_a_selected_zone() {
+        let mut snapshot = village_world(&["alpha"]);
+        snapshot.colonies[0].zones.push(ZoneSnapshot {
+            id: "zone-0".to_owned(),
+            kind: ZoneKind::Avoid,
+            x1: 1,
+            y1: 1,
+            x2: 3,
+            y2: 3,
+            expires_at: 100,
+        });
+        let mut app = App::new();
+        app.insert_resource(signed_session("zone-session"))
+            .insert_resource(LatestSnapshot(Some(snapshot)))
+            .insert_resource(StockpileSelection {
+                selected_zone: Some("zone-0".to_owned()),
+                ..default()
+            })
+            .insert_resource(OutgoingActions::default())
+            .add_systems(Update, handle_remove_button);
+        app.world_mut()
+            .spawn((Interaction::Pressed, RemoveStockpileButton));
+        app.update();
+
+        assert!(matches!(
+            app.world().resource::<OutgoingActions>().0.as_slice(),
+            [ClientAction::RemoveZone { session_id, zone_id, sig, .. }]
+                if session_id == "zone-session" && zone_id == "zone-0" && sig == "signed"
+        ));
+        // The selection is consumed so a stale zone id cannot be re-sent.
+        assert!(
+            app.world()
+                .resource::<StockpileSelection>()
+                .selected_zone
+                .is_none()
+        );
     }
 }

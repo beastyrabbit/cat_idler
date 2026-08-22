@@ -152,7 +152,8 @@ ledger is `docs/IMPLEMENTATION_AUDIT.md`; the migration board retains dated impl
   corrections pass their generalized native visual and guided-play gate.
 - **Deployment.** The same-origin, non-root production image serves the client, assets, probes, and
   WebSocket with compression and Origin checks. Local verification uses focused regressions and
-  the smoke profile; Forgejo owns the complete four-shard workspace suite.
+  the smoke profile; Forgejo owns one dynamically scheduled complete suite on the resource-capped
+  `cat-idler-heavy` runner.
 
 ### Maintained founding and life pacing
 
@@ -230,6 +231,11 @@ retains the last frame as stale, and shows `UPDATE REQUIRED`. Legacy snapshots d
 - **Production host** can serve the Trunk SPA and tracked images from the same process, with
   Brotli/gzip, cache headers, exact WebSocket Origin checks, and SPA fallback. The repository
   `Dockerfile` packages that mode as a non-root image.
+- **Whole-game test host** is compiled only for tests. It binds the real Axum router to an
+  ephemeral loopback port, uses temporary SQLite plus normal HMAC/presence handling, replaces the
+  automatic ticker with deterministic monotonic advancement through `run_tick_once`, and supports
+  save/shutdown/restart/reconnect. Scenario code cannot mutate fixtures after the listener starts;
+  it observes only WebSocket action results and per-socket projected snapshots.
 
 Core env vars: `BIND_ADDR` (default `127.0.0.1`), `PORT` (default `8787`),
 `GAME_DB_PATH` (default `data/cat.db`), and `SESSION_HMAC_SECRET`. Static production mode adds
@@ -298,20 +304,32 @@ attaching a fresh client to a stale, pre-rebuild server.
   the exact gate that supported that evidence, but this architecture document does not freeze a
   workspace count that becomes false on the next integrated slice.
 - **`cat-protocol`**: serde round-trip tests (serialize → deserialize → equal).
-- **`cat-server`**: integration tests spin up the axum app in-process (no real socket needed)
-  and drive it through `ClientAction` JSON, e.g. founding a village and asserting the shared
-  snapshot updates.
+- **`cat-server`**: focused transport tests may call the app in-process. Whole-game scenarios use
+  the real loopback WebSocket harness, deterministic ticks, SQLite restart, HMAC reconnect, bounded
+  milestones, and JSON failure traces. Data-driven manifests tie each scenario to the design audit
+  and fixed seed tier; typed catalog sweeps aggregate every mismatch across buildings, recipes,
+  crops, finite biome deposits, resources, item/material/quality variants, jobs, research, and
+  worker skills. The public-action contract
+  exercises valid, malformed, and invalid-authentication forms over real sockets, while queue and
+  exact work-slot edits assert their projected behavioral state.
 - **`cat-client`**: logic/UI-shape tests supplement manual visual checks. Rendering is verified
   by capturing the client's own framebuffer to a PNG and reading it back (method documented in
-  `docs/HANDOFF.md`), since "it compiles" has previously hidden a black-screen regression.
+  `docs/HANDOFF.md`), since "it compiles" has previously hidden a black-screen regression. A
+  command-registry guard also serializes every visible dock command and pins its protocol action
+  tags. Direct renderer/input contracts cover complete building-footprint hit detection, stacked
+  target cycling, Den roof-without-floor composition, and distinct actual atlas frames for moving
+  cats.
 
 Local quality gate before any commit (per `AGENTS.md`): the focused test for touched behavior,
 `cargo nextest run --workspace --profile smoke`,
 `cargo clippy -p <crate> --all-targets -- -D warnings`, and `cargo fmt`. Lefthook wires formatting
-on pre-commit and Clippy plus the smoke profile on pre-push (`lefthook.yml`). Forgejo is the
-exhaustive gate: the full workspace suite is split into four deterministic Nextest hash partitions
-across the personal runner pool. The JS lint/typecheck/test hooks that used to gate the TypeScript
-game are no longer relevant.
+on pre-commit and Clippy plus the smoke profile on pre-push (`lefthook.yml`). Forgejo first runs the
+same stable gate on a generic runner, then runs one unpartitioned `profile ci` inventory with two
+test threads on the one-capacity `cat-idler-heavy` runner. Singleton/framebuffer tests use a serial
+Nextest group. Nightly fixed-seed playtests and weekly LLVM coverage share that runner and therefore
+queue rather than competing for homelab resources. Heavy jobs publish peak resource measurements,
+and the WASM gate enforces the maintained 10 MiB gzip transfer ceiling. The JS lint/typecheck/test hooks that used to
+gate the TypeScript game are no longer relevant.
 
 ## Maintained follow-ups
 
