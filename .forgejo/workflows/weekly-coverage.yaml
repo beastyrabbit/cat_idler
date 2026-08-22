@@ -45,7 +45,7 @@ jobs:
           "$HOME/.cargo/bin/rustup" component add llvm-tools-preview
           curl -LsSf https://get.nexte.st/latest/linux \
             | tar zxf - -C "$HOME/.cargo/bin"
-          cargo install cargo-llvm-cov --locked
+          "$HOME/.cargo/bin/cargo" install cargo-llvm-cov --locked
 
       - name: Restore Cargo cache
         uses: actions/cache@v5
