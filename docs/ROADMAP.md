@@ -52,19 +52,22 @@ The `cat-server` real-socket scenario harness (nightly / full-suite tier) has de
 reds on `main`. The merge-gating quick profile is green; these are exhaustive-inventory
 failures, several seeded only under `CAT_PLAYTEST_SEED_TIER=high-risk`. Fixture bugs found and
 fixed in this pass: the field parcel now clears generated terrain, and the Captain fixture owns
-the Barracks prerequisite plus an exclusive exact warrior. What remains open is one shared sim
-gap plus per-journey tails:
+the Barracks prerequisite plus an exclusive exact warrior. The shared haul bug is fixed (see
+Done); what remains open is per-journey tails:
 
-- **Station-local output haul starves (top priority, player-facing).** Farms and stations
-  harvest/produce into their local output pile ("awaiting physical haulage") and the
-  local-output → storehouse haul leg never runs under a full 30-cat leader-directed world —
-  the director keeps spending paws on explore/hunt while deliveries starve. This silently
-  eats real player yields. Affects crop-yield and Captain-weapon journeys alike.
-- **Auto-issue requires credited items** — an uncredited delivered weapon is invisible to
-  both projection and issue, so any haul starvation above cascades into "never equipped".
-- **High-risk-seed tails** to re-triage after the haul fix: scouting shrine-return restart
-  windows, Loremaster automation effect, trader visit-2 restock variety, village contact flag,
-  migration arrival milestone, and two `world_tick` campaign seeds.
+- **FIXED: station-output haul starvation** — HaulGatherSpot jobs carried a queue-time
+  `ends_at` stamp and were force-completed by the generic due-jobs phase while the mover was
+  still walking, so any handoff farther than one job-duration never delivered. Crops rotted in
+  farm handoffs ("awaiting physical haulage" forever). Now excluded from deadline completion
+  like CarryOffering; the crop-yield journey is green again.
+- **Captain weapon last mile** — ore→smelter→smithy→weapon all work; the final station-output
+  → credited-stockpile → auto-issue-to-warrior leg still does not land within horizon.
+- **ReplantTree stump reachability** — on some seeds a legal felled stump is rejected as
+  unreachable (`worker_catalog` sweep).
+- **System-journey tails** (each its own investigation): poor-guidance runs lack bounded
+  visible consequences; prosperous migration produces no physical arrival; an appointed
+  Loremaster shows no owned automation effect; trader visit 2 restocks identically to visit 1;
+  peer-shrine contact flag never sets after a completed scout exchange.
 
 ## Infrastructure / project health
 

@@ -23016,6 +23016,10 @@ fn due_active_jobs(colony: &ColonyRuntime, gate: TickGate) -> Vec<JobRuntime> {
                 // conserved cargo touches the shrine; a wall-clock deadline from an
                 // old save or compatibility constructor must never teleport it.
                 && job.kind != JobKind::CarryOffering
+                // A gather-spot mover is the same kind of physical route: its
+                // queue-time duration stamp must never end a haul whose mover is
+                // still walking. Pickup and delivery complete it instead.
+                && job.kind != JobKind::HaulGatherSpot
                 && (job.kind != JobKind::Explore
                     || matches!(job.metadata, JobMetadata::Scout { found: true, .. }))
                 && job
@@ -34402,6 +34406,83 @@ mod tests {
             "never routed back into the gather spot"
         );
         assert_eq!(colony.resources.food, 12.0, "never double-credited");
+    }
+
+    #[test]
+    fn en_route_gather_haul_is_not_completed_by_its_stamped_deadline() {
+        // A long-distance HaulGatherSpot is physical work: the mover must walk to
+        // the handoff before anything can be picked up. The queue-time duration
+        // stamp is bookkeeping, not a completion contract — only the physical
+        // pickup/delivery lifecycle ends the job.
+        let gather_at = WorldPos { x: 30.0, y: 30.0 };
+        let mut colony = ColonyRuntime {
+            id: "colony-1".to_owned(),
+            cats: vec![{
+                let mut cat = adult_idle_cat("mover", "colony-1");
+                // Still walking: parked well short of the gather spot.
+                cat.activity = CatActivity::Traveling;
+                cat.position = position_from_world(WorldPos { x: 8.0, y: 8.0 });
+                cat
+            }],
+            ..ColonyRuntime::default()
+        };
+        reconcile_colony_stockpiles(&mut colony);
+        let mut source = designated_pile("gather-1", tile_rect(30, 30), &[ResourceKind::Food]);
+        source.contents.food = 10.0;
+        colony.stockpiles.push(source);
+        colony.resources.food = colony
+            .stockpiles
+            .iter()
+            .map(|pile| pile.contents.food)
+            .sum();
+        colony.gather_spots.push(GatherSpot {
+            stockpile_id: "gather-1".to_owned(),
+            kind: ResourceKind::Food,
+            expires_at_ms: 1_000_000,
+            purpose: GatherSpotPurpose::General,
+        });
+        colony.jobs.push(JobRuntime {
+            id: "walking-mover".to_owned(),
+            kind: JobKind::HaulGatherSpot,
+            status: JobStatus::Active,
+            assigned_cat: Some("mover".to_owned()),
+            started_at: Some(1_000),
+            ends_at: Some(2_000),
+            metadata: JobMetadata::GatherHaul {
+                stockpile_id: "gather-1".to_owned(),
+                site: Some(world_pos_to_tile(gather_at)),
+                accepted: true,
+            },
+            ..JobRuntime::default()
+        });
+
+        phase_30_due_completion_build_ritual_training_return_mark_done(
+            &mut colony,
+            production_gate(6, 6_000),
+        );
+
+        let job = colony
+            .jobs
+            .iter()
+            .find(|job| job.id == "walking-mover")
+            .expect("the en-route haul still exists");
+        assert_eq!(
+            job.status,
+            JobStatus::Active,
+            "an en-route gather haul must not be completed by its queue-time deadline"
+        );
+        assert_eq!(colony.cats[0].carrying, None);
+        assert_eq!(
+            colony
+                .stockpiles
+                .iter()
+                .find(|pile| pile.id == "gather-1")
+                .unwrap()
+                .contents
+                .food,
+            10.0,
+            "nothing was picked up yet"
+        );
     }
 
     #[test]
