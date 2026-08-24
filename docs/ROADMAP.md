@@ -60,8 +60,18 @@ Done); what remains open is per-journey tails:
   still walking, so any handoff farther than one job-duration never delivered. Crops rotted in
   farm handoffs ("awaiting physical haulage" forever). Now excluded from deadline completion
   like CarryOffering; the crop-yield journey is green again.
-- **Captain weapon last mile** — ore→smelter→smithy→weapon all work; the final station-output
-  → credited-stockpile → auto-issue-to-warrior leg still does not land within horizon.
+- **Captain weapon last mile — root-caused, needs a design decision.** The physical journey
+  is proven correct end-to-end (instrumented runs: ore→metal→weapon crafted, hauled, credited,
+  and `Equipped { cat-28 }` within ~40 min sim time, stable for hours). What fails is
+  *observation*: the socket privacy projection (`redact_exact_functional_equipment`) strips
+  tool/weapon/armor identities unless the Accountant's ledger is exactly current at the instant
+  a snapshot is built, and the leader director's constant hunting mutates food faster than any
+  observer can catch an accurate window. Resolution options: (a) let the fixture world go quiet
+  after the credit (suppress hunts), (b) expose exact equipment to the colony's controlling
+  player whenever their own session caused the change, or (c) observe through a server-side
+  attestation instead of the wire. Pick one, then the scenario goes green without weakening it.
+  Fixture prerequisites landed meanwhile: Barracks (Captain office survival) and a staffed
+  Accounting Tent (required for any exposure at all).
 - **ReplantTree stump reachability** — on some seeds a legal felled stump is rejected as
   unreachable (`worker_catalog` sweep).
 - **System-journey tails** (each its own investigation): poor-guidance runs lack bounded

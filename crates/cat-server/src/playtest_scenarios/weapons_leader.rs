@@ -585,9 +585,9 @@ mod websocket_journeys {
             .rev()
             .filter(|cat| !occupied.contains(cat.id.as_str()))
             .map(|cat| cat.id.clone())
-            .take(4)
+            .take(5)
             .collect::<Vec<_>>();
-        assert_eq!(free_ids.len(), 4, "forge fixture needs four idle cats");
+        assert_eq!(free_ids.len(), 5, "forge fixture needs five idle cats");
         let actors = ForgeActors {
             smelter_worker_id: free_ids[0].clone(),
             smithy_worker_id: free_ids[1].clone(),
@@ -618,14 +618,6 @@ mod websocket_journeys {
             colony
                 .officers
                 .insert(OfficerRole::Captain, free_ids[3].clone());
-            add_station(
-                world,
-                "playtest-captain-barracks",
-                BuildingType::Barracks,
-                14,
-                Vec::new(),
-                false,
-            );
         }
 
         let (smelter_id, smithy_id) = if captain_driven {
@@ -679,7 +671,42 @@ mod websocket_journeys {
             tent.automated_by = Some(OfficerRole::Accountant);
         }
 
+        if captain_driven {
+            // The Captain office needs its prerequisite Barracks to survive the
+            // officer-pruning gate.
+            add_station(
+                world,
+                "playtest-captain-barracks",
+                BuildingType::Barracks,
+                14,
+                Vec::new(),
+                false,
+            );
+            add_station(
+                world,
+                "playtest-captain-accounting",
+                BuildingType::AccountingTent,
+                18,
+                Vec::new(),
+                false,
+            );
+        }
         let colony = &mut world.colonies[0];
+        if captain_driven {
+            // The socket projection redacts exact equipment identities unless a
+            // staffed Accounting Tent keeps the stock ledger exact — and this
+            // journey is observed through that projection, so it needs a clerk.
+            colony
+                .officers
+                .insert(OfficerRole::Accountant, free_ids[4].clone());
+            let tent = colony
+                .buildings
+                .iter_mut()
+                .find(|building| building.id == "playtest-captain-accounting")
+                .expect("captain accounting fixture");
+            tent.assigned_cat = Some(free_ids[4].clone());
+            tent.automated_by = Some(OfficerRole::Accountant);
+        }
         reconcile_colony_stockpiles(colony);
         colony.stock_ledger = StockLedger::counted_with_piles(
             &colony.resources,
