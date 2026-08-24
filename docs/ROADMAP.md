@@ -72,8 +72,13 @@ Done); what remains open is per-journey tails:
   attestation instead of the wire. Pick one, then the scenario goes green without weakening it.
   Fixture prerequisites landed meanwhile: Barracks (Captain office survival) and a staffed
   Accounting Tent (required for any exposure at all).
-- **ReplantTree stump reachability** — on some seeds a legal felled stump is rejected as
-  unreachable (`worker_catalog` sweep).
+- **ReplantTree stump reachability — partially fixed.** The static A* reachability pre-filter
+  on replant sites flapped while walls staged and the claimed ring grew, rejecting stumps the
+  colony itself had just felled; it is removed in favour of logging's contract (movers route,
+  validation doesn't path-probe). Residual: with the director's near-total employment fill,
+  eager `RequestJob` worker assignment races single-tick idle windows ("No available worker"
+  despite a just-idle cat). Options: queue player jobs unassigned until a worker frees up, or
+  widen `select_best_cat` to traveling-but-taskless cats.
 - **System-journey tails** (each its own investigation): poor-guidance runs lack bounded
   visible consequences; prosperous migration produces no physical arrival; an appointed
   Loremaster shows no owned automation effect; trader visit 2 restocks identically to visit 1;

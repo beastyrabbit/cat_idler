@@ -21709,11 +21709,12 @@ fn replant_sites_near_village(colony: &ColonyRuntime, world_seed: u32) -> Vec<Wo
         .filter(|&site| tree_regrowth_footprint_is_clear(colony, site, &occupancy))
         .collect::<Vec<_>>();
     sites.sort_by_key(|site| (cheb_from_anchor(colony.anchor, *site), site.y, site.x));
-    sites
-        .into_iter()
-        .filter(|&site| is_reachable_work_site(colony, site, world_seed))
-        .map(tile_pos_to_world)
-        .collect()
+    // No static A* pre-filter here, mirroring `logging_sites_near_village`: a
+    // stump the colony just felled was demonstrably workable ground, and a
+    // point-in-time path probe flaps while walls stage and the claimed ring
+    // grows. Destination routing stays the mover system's job, exactly as for
+    // fresh logging sites.
+    sites.into_iter().map(tile_pos_to_world).collect()
 }
 
 /// Whether one persisted stump/root stock can satisfy a fresh manual or Forester
