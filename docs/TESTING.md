@@ -44,11 +44,11 @@ that exact test locally.
 ### Quick Forgejo gate — generic runner
 
 For each push or pull request, `.forgejo/workflows/quality.yaml` cancels an obsolete run for the
-same ref. Its `personal` quick job targets 15 minutes and uses `CARGO_BUILD_JOBS=2` for formatting,
+same ref. Its `personal` quick job has a 45-minute timeout and uses `CARGO_BUILD_JOBS=2` for formatting,
 dependency policy, workspace Clippy, complete test-inventory compilation, and the stable smoke
 profile. The browser/WASM build begins after quick succeeds and is independent of whole-game
 expectation failures.
-The WASM job also enforces the maintained 10 MiB gzip transfer ceiling and uploads its measured
+The WASM job also enforces the maintained 12 MiB gzip transfer ceiling and uploads its measured
 bundle size.
 
 ### Complete Forgejo gate — dedicated capped runner
@@ -63,14 +63,15 @@ There are no test archives or static hash shards. Nextest dynamically schedules 
 unpartitioned inventory with `test-threads=2` and `fail-fast=false`. Framebuffer/singleton tests use
 the `singleton` serial group instead of forcing every test to one thread. The Kubernetes runner has
 capacity one; its job containers are capped at 2 CPUs and 5 GiB, and the backing DinD sidecar at
-2 CPUs and 6 GiB. The job timeout is 150 minutes.
+2 CPUs and 6 GiB. The job timeout is 150 minutes, while the `ci` profile terminates any single test
+that runs for 30 minutes.
 
 The complete run always uploads JUnit, timing output, peak process-resource measurements, and
 `target/playtest-traces/*.json`. A failing
 scenario trace identifies its stable scenario/seed, last completed milestone, simulated time,
 observed action results, projected cats/jobs/inventory/fog/events, and any restart difference.
-Gameplay expectation tests remain normal, unignored tests: a missing behavior may leave the full
-gate red, while infrastructure and catalog-discovery tests must stay green.
+Gameplay expectation tests remain normal, unignored tests and must pass with the rest of the full
+gate. A red journey is a regression to diagnose, not an accepted baseline.
 
 ## Whole-game playtest contract
 
@@ -115,13 +116,15 @@ completion tick.
 
 ## Scheduled and manual workflows
 
-- Nightly at `08:30 UTC`: the 32-seed scenario cohort, 180-minute limit.
+- Nightly at `08:30 UTC`: the 32-seed scenario cohort under `--profile nightly`, with a 180-minute
+  job limit and a 120-minute per-test cap.
 - Sunday at `10:30 UTC`: LLVM coverage, 230-minute limit.
 - Manual dispatch: `quality.yaml` for normal full, `nightly-playtests.yaml` for the extended cohort,
   and `weekly-coverage.yaml` for coverage.
 
-The one-capacity heavy runner serializes scheduled and manual work. Coverage always publishes JSON,
-LCOV, HTML, JUnit, timing, and traces, even after test failures. The first measured run establishes
+The one-capacity heavy runner serializes scheduled and manual work. Nightly and coverage runs keep
+separate JUnit directories. Coverage always publishes JSON, LCOV, HTML, JUnit, timing, and traces,
+even after test failures. The first measured run establishes
 cached per-crate line baselines; later runs fail when a crate regresses by more than 0.5 percentage
 points.
 

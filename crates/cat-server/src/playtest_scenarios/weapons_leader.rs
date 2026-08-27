@@ -585,9 +585,9 @@ mod websocket_journeys {
             .rev()
             .filter(|cat| !occupied.contains(cat.id.as_str()))
             .map(|cat| cat.id.clone())
-            .take(5)
+            .take(4)
             .collect::<Vec<_>>();
-        assert_eq!(free_ids.len(), 5, "forge fixture needs five idle cats");
+        assert_eq!(free_ids.len(), 4, "forge fixture needs four idle cats");
         let actors = ForgeActors {
             smelter_worker_id: free_ids[0].clone(),
             smithy_worker_id: free_ids[1].clone(),
@@ -682,31 +682,8 @@ mod websocket_journeys {
                 Vec::new(),
                 false,
             );
-            add_station(
-                world,
-                "playtest-captain-accounting",
-                BuildingType::AccountingTent,
-                18,
-                Vec::new(),
-                false,
-            );
         }
         let colony = &mut world.colonies[0];
-        if captain_driven {
-            // The socket projection redacts exact equipment identities unless a
-            // staffed Accounting Tent keeps the stock ledger exact — and this
-            // journey is observed through that projection, so it needs a clerk.
-            colony
-                .officers
-                .insert(OfficerRole::Accountant, free_ids[4].clone());
-            let tent = colony
-                .buildings
-                .iter_mut()
-                .find(|building| building.id == "playtest-captain-accounting")
-                .expect("captain accounting fixture");
-            tent.assigned_cat = Some(free_ids[4].clone());
-            tent.automated_by = Some(OfficerRole::Accountant);
-        }
         reconcile_colony_stockpiles(colony);
         colony.stock_ledger = StockLedger::counted_with_piles(
             &colony.resources,
@@ -942,20 +919,15 @@ mod websocket_journeys {
 
         let mut evidence = WeaponRouteEvidence::default();
         harness
-            .eventually(
-                &mut client,
-                SCENARIOS[1].horizon_ms,
-                TICK_CADENCE_MS,
-                |snapshot| {
-                    evidence.observe(
-                        snapshot,
-                        CAPTAIN_SMELTER_ID,
-                        CAPTAIN_SMITHY_ID,
-                        &actors.warrior_id,
-                    );
-                    evidence.equipment_complete()
-                },
-            )
+            .eventually(&mut client, SCENARIOS[1].horizon_ms, 60_000, |snapshot| {
+                evidence.observe(
+                    snapshot,
+                    CAPTAIN_SMELTER_ID,
+                    CAPTAIN_SMITHY_ID,
+                    &actors.warrior_id,
+                );
+                evidence.equipment_complete()
+            })
             .await
             .map_err(|error| {
                 traced_error(

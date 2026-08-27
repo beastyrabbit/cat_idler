@@ -2092,11 +2092,13 @@ fn job_metadata_json(metadata: &JobMetadata) -> Value {
             stockpile_id,
             site,
             accepted,
+            last_progress_at,
         } => json!({
             "kind": "gatherHaul",
             "stockpileId": stockpile_id,
             "site": site.as_ref().map(tile_pos_json),
             "accepted": accepted,
+            "lastProgressAt": last_progress_at,
         }),
         JobMetadata::StockpileHaul {
             source_stockpile_id,
@@ -2266,6 +2268,7 @@ fn parse_job_metadata(raw: Option<String>) -> rusqlite::Result<JobMetadata> {
                 .get("accepted")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
+            last_progress_at: value.get("lastProgressAt").and_then(Value::as_i64),
         }),
         Some("stockpileHaul") => Ok(JobMetadata::StockpileHaul {
             source_stockpile_id: value
@@ -6175,6 +6178,7 @@ mod tests {
                 stockpile_id: "gather-1".to_owned(),
                 site: Some(TilePos { x: 30, y: 30 }),
                 accepted: true,
+                last_progress_at: Some(1_000_000),
             },
             ..JobRuntime::default()
         });
@@ -7423,6 +7427,7 @@ mod tests {
                 stockpile_id: "gather-audit".to_owned(),
                 site: Some(TilePos { x: 30, y: 30 }),
                 accepted: true,
+                last_progress_at: Some(1_000_000),
             },
             ..JobRuntime::default()
         });
@@ -7731,7 +7736,11 @@ mod tests {
         )
         .expect("mark legacy world");
         let migrated = load_world(&conn).expect("legacy load").expect("world");
-        assert_eq!(migrated.shared_spatial.rules_version, 1);
+        assert_eq!(
+            migrated.shared_spatial.rules_version,
+            cat_sim::world_tick::CURRENT_SHARED_SPATIAL_RULES_VERSION
+        );
+        assert_eq!(migrated.shared_spatial.rules_version, 2);
         assert_eq!(
             migrated.shared_spatial.tiles[&shared_tile]
                 .overlay_feature

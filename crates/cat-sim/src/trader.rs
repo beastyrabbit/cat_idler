@@ -79,17 +79,17 @@ pub enum TraderState {
     Departing,
 }
 
-/// Deterministic finite resource manifest for one visit. The visit number rotates
-/// quantities by one or two units so a new caravan is visibly a fresh manifest while
-/// identical histories remain byte-identical. No tick or action ever calls this again
-/// for an in-progress visit.
+/// Deterministic finite resource manifest for one visit. Paired quantities encode the
+/// visit as a base-three counter while keeping each pair's weight constant. A new
+/// caravan is visibly different without exceeding the wagon's reserved item headroom.
+/// No tick or action ever calls this again for an in-progress visit.
 #[must_use]
 pub fn stock_for_visit(
     world_seed: u32,
     colony_id: &str,
     visit_number: u64,
 ) -> BTreeMap<ResourceKind, f64> {
-    let mut manifest_seed = u64::from(world_seed) ^ visit_number.rotate_left(17);
+    let mut manifest_seed = u64::from(world_seed);
     for byte in b"idle-cat-forest/trader-manifest/v1"
         .iter()
         .chain(colony_id.as_bytes())
@@ -97,17 +97,25 @@ pub fn stock_for_visit(
         manifest_seed ^= u64::from(*byte);
         manifest_seed = manifest_seed.wrapping_mul(1_099_511_628_211);
     }
-    ResourceKind::ALL
+    let stocked = ResourceKind::ALL
         .iter()
         .copied()
         .filter(|kind| resource_unit_price(*kind).is_some())
+        .collect::<Vec<_>>();
+    stocked
+        .into_iter()
         .enumerate()
         .map(|(index, kind)| {
-            let rotation = manifest_seed
-                .wrapping_add(index as u64 * 2)
-                .rotate_left((index % 63) as u32)
+            let pair = index / 2;
+            let place = 3_u64.saturating_pow(pair as u32);
+            let counter_digit = visit_number.saturating_sub(1) / place % 3;
+            let base_digit = manifest_seed
+                .wrapping_add(pair as u64 * 2)
+                .rotate_left((pair % 63) as u32)
                 % 3;
-            (kind, 3.0 + rotation as f64)
+            let digit = (base_digit + counter_digit) % 3;
+            let amount = if index % 2 == 0 { 3 + digit } else { 5 - digit };
+            (kind, amount as f64)
         })
         .collect()
 }
@@ -205,6 +213,7 @@ pub fn trader_sell_price(kind: ResourceKind, amount: f64) -> Option<f64> {
 mod tests {
     use super::*;
     use crate::items::{ItemKind, Material};
+    use std::collections::BTreeSet;
 
     #[test]
     fn trader_buy_price_is_a_flat_percent_of_item_value() {
@@ -252,10 +261,26 @@ mod tests {
     fn every_manifest_in_a_seed_colony_visit_matrix_has_a_full_sale_load_of_headroom() {
         for world_seed in [0, 1, 99, 0xdead_beef, u32::MAX] {
             for colony_id in ["colony-1", "global", "personal-far-away"] {
+                let mut previous = None;
+                let mut seen = BTreeSet::new();
                 for visit in 1..=1_024 {
                     let left = stock_for_visit(world_seed, colony_id, visit);
                     let right = stock_for_visit(world_seed, colony_id, visit);
                     assert_eq!(left, right);
+                    if let Some(previous) = previous.replace(left.clone()) {
+                        assert_ne!(
+                            previous, left,
+                            "adjacent trader visits must restock visibly: seed={world_seed} colony={colony_id} visit={visit}"
+                        );
+                    }
+                    let signature = left
+                        .values()
+                        .map(|amount| amount.to_bits())
+                        .collect::<Vec<_>>();
+                    assert!(
+                        seen.insert(signature),
+                        "visit manifests must not enter a short cycle: seed={world_seed} colony={colony_id} visit={visit}"
+                    );
                     assert!(
                         left.values()
                             .all(|amount| amount.is_finite() && *amount > 0.0)

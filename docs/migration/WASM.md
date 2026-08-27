@@ -111,7 +111,7 @@ restricted exactly. See `docs/DEPLOYMENT.md` for the build/run/reverse-proxy rec
 
 ## Remaining optional optimization
 
-- **Transfer weight** — 9.1 MB gzip / 5.4 MB Brotli is heavy for a game; atlasing or an asset
+- **Transfer weight** — the bundle remains heavy for a game; atlasing or an asset
   manifest would cut the ~40-PNG fetch count. Optional optimization, not a
   blocker.
 - **Threads / atomics** — we run single-threaded on wasm (no `multi_threaded`);

@@ -57,7 +57,7 @@ jobs:
       - name: Verify effective job resource ceilings
         run: |
           set -euo pipefail
-          mkdir -p target/nextest/ci
+          mkdir -p target/nextest/nightly
           read -r cpu_quota cpu_period < /sys/fs/cgroup/cpu.max
           memory_limit="$(cat /sys/fs/cgroup/memory.max)"
           if [ "$cpu_quota" = max ] || [ "$memory_limit" = max ]; then
@@ -66,7 +66,7 @@ jobs:
           fi
           cpu_millis="$((cpu_quota * 1000 / cpu_period))"
           printf 'cpu_millis=%s\nmemory_bytes=%s\n' "$cpu_millis" "$memory_limit" \
-            | tee target/nextest/ci/cgroup-limits.txt
+            | tee target/nextest/nightly/cgroup-limits.txt
           test "$cpu_millis" -le 2000
           test "$memory_limit" -le $((5 * 1024 * 1024 * 1024))
 
@@ -76,11 +76,11 @@ jobs:
         run: |
           set -o pipefail
           rm -rf target/playtest-traces
-          mkdir -p target/nextest/ci target/playtest-traces
-          /usr/bin/time -v -o target/nextest/ci/nightly-resources.txt \
-            cargo nextest run -p cat-server --profile ci \
+          mkdir -p target/nextest/nightly target/playtest-traces
+          /usr/bin/time -v -o target/nextest/nightly/nightly-resources.txt \
+            cargo nextest run -p cat-server --profile nightly \
             -E 'test(/playtest_scenarios/)' 2>&1 \
-            | tee target/nextest/ci/nightly-timing.log
+            | tee target/nextest/nightly/nightly-timing.log
 
       - name: Publish nightly evidence
         if: always()
@@ -88,7 +88,7 @@ jobs:
         with:
           name: nightly-playtest-reports
           path: |
-            target/nextest/ci/
+            target/nextest/nightly/
             target/playtest-traces/
           if-no-files-found: warn
 

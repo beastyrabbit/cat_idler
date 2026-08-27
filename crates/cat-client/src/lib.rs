@@ -13204,7 +13204,8 @@ fn push_snapshot_alerts(
     for event in &events {
         let fingerprint = event_fingerprint(event);
         current_fingerprints.insert(fingerprint);
-        if !watch.primed || !watch.seen_events.insert(fingerprint) {
+        let first_seen = watch.seen_events.insert(fingerprint);
+        if !watch.primed || !first_seen {
             continue;
         }
         match event_kind_of(&event.kind) {
@@ -19815,6 +19816,37 @@ mod tests {
                 .0
                 .front()
                 .is_some_and(|m| m.contains("Mossfur is starving"))
+        );
+    }
+
+    #[test]
+    fn snapshot_alerts_do_not_replay_history_seen_on_connect() {
+        let old_raid = EventSnapshot {
+            message: "Raiders already withdrew.".to_owned(),
+            timestamp: 5,
+            kind: "raid_ended".to_owned(),
+            actor_name: None,
+        };
+        let mut app = App::new();
+        app.insert_resource(LatestSnapshot(Some(alert_world_with(
+            vec![old_raid.clone()],
+            Vec::new(),
+        ))))
+        .insert_resource(AlertWatch::default())
+        .insert_resource(ClientAlerts::default())
+        .add_systems(Update, push_snapshot_alerts);
+
+        app.update();
+        assert!(app.world().resource::<ClientAlerts>().0.is_empty());
+
+        app.insert_resource(LatestSnapshot(Some(alert_world_with(
+            vec![old_raid],
+            Vec::new(),
+        ))));
+        app.update();
+        assert!(
+            app.world().resource::<ClientAlerts>().0.is_empty(),
+            "an event already present on the priming snapshot must stay deduplicated"
         );
     }
 

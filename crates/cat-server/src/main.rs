@@ -798,10 +798,7 @@ fn project_snapshot(
     for colony in &mut snapshot.colonies {
         let expose_exact_equipment = selected.as_deref() == Some(colony.id.as_str())
             && colony.capabilities.can_control
-            && colony
-                .stock_ledger
-                .as_ref()
-                .is_some_and(|ledger| ledger.accurate);
+            && equipment_reports_are_accurate(colony);
         project_reported_stock(colony, expose_exact_equipment);
     }
 
@@ -866,6 +863,25 @@ fn project_snapshot(
     }
 }
 
+fn equipment_reports_are_accurate(colony: &cat_protocol::ColonySnapshot) -> bool {
+    colony.stock_ledger.as_ref().is_some_and(|ledger| {
+        ledger.reported.tools == colony.resources.tools
+            && ledger.reported.weapons == colony.resources.weapons
+            && ledger.reported.armor == colony.resources.armor
+            && colony
+                .stockpiles
+                .iter()
+                .filter(|pile| !cat_sim::stockpiles::id_is_station_local(&pile.id))
+                .all(|pile| {
+                    pile.report.as_ref().is_some_and(|report| {
+                        report.reported.tools == pile.contents.tools
+                            && report.reported.weapons == pile.contents.weapons
+                            && report.reported.armor == pile.contents.armor
+                    })
+                })
+    })
+}
+
 /// Remove authoritative stock from the only snapshot shape allowed to cross a socket.
 /// The completed snapshot cache deliberately remains exact for trusted server work. A socket
 /// receives only the Accountant's aggregate and per-pile reports. Divine blessings are not
@@ -921,7 +937,8 @@ fn project_reported_stock(colony: &mut cat_protocol::ColonySnapshot, expose_exac
 
 /// Functional equipment is finite, so its stack count, unit locations, loadout ids, and
 /// carried ids are all authoritative stock facts. Only the selected colony's signed controller
-/// may receive those facts, and only while the Accountant's canonical report is still exact.
+/// may receive those facts, and only while equipment totals and every visible-pile equipment
+/// report are exact. Station-local equipment is outside the visible-pile proof.
 /// Reported scalar tool/weapon/armor totals remain available through `resources`.
 fn redact_exact_functional_equipment(colony: &mut cat_protocol::ColonySnapshot) {
     colony
@@ -2436,6 +2453,22 @@ mod tests {
         let private_id = "wire-secret-private-tool";
         seed_secret_equipment(&mut canonical.colonies[0], global_id);
         seed_secret_equipment(&mut canonical.colonies[1], private_id);
+        canonical.colonies[0].resources.tools = 1.0;
+        canonical.colonies[0]
+            .stock_ledger
+            .as_mut()
+            .expect("global canonical stock ledger")
+            .reported
+            .tools = 1.0;
+        canonical.colonies[1].resources.tools = 1.0;
+        canonical.colonies[1].resources.food = 8.0;
+        let private_ledger = canonical.colonies[1]
+            .stock_ledger
+            .as_mut()
+            .expect("private canonical stock ledger");
+        private_ledger.reported.tools = 1.0;
+        private_ledger.reported.food = 7.0;
+        private_ledger.accurate = false;
 
         let public = project_snapshot(canonical.clone(), &directory, None, STARTER_COLONY_ID);
         assert_eq!(public.colonies.len(), 1);
@@ -2471,11 +2504,40 @@ mod tests {
             .expect("owner's personal colony remains visible");
         assert_secret_redacted(unselected_private, private_id);
 
+        let mut stale_location_books = canonical.clone();
+        let private = stale_location_books
+            .colonies
+            .iter_mut()
+            .find(|colony| colony.id == "exact-equipment-private")
+            .expect("private canonical colony");
+        private.resources.tools = 2.0;
+        private
+            .stock_ledger
+            .as_mut()
+            .expect("private canonical stock ledger")
+            .reported
+            .tools = 2.0;
+        private
+            .stockpiles
+            .iter_mut()
+            .find(|pile| pile.report.is_some())
+            .expect("reported private pile")
+            .contents
+            .tools = 1.0;
+        let stale_location_projection = project_snapshot(
+            stale_location_books,
+            &directory,
+            Some(&signed),
+            "exact-equipment-private",
+        );
+        assert_secret_redacted(&stale_location_projection.colonies[0], private_id);
+
         canonical.colonies[1]
             .stock_ledger
             .as_mut()
             .expect("private canonical stock ledger")
-            .accurate = false;
+            .reported
+            .tools = 0.0;
         let stale_private = project_snapshot(
             canonical,
             &directory,

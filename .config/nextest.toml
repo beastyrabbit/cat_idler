@@ -14,9 +14,17 @@ path = "target/nextest/smoke/junit.xml"
 [profile.ci]
 fail-fast = false
 test-threads = 2
+slow-timeout = { period = "300s", terminate-after = 6 }
 
 [profile.ci.junit]
 path = "target/nextest/ci/junit.xml"
+
+[profile.nightly]
+inherits = "ci"
+slow-timeout = { period = "300s", terminate-after = 24 }
+
+[profile.nightly.junit]
+path = "target/nextest/nightly/junit.xml"
 
 [test-groups]
 singleton = { max-threads = 1 }

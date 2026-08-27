@@ -101,7 +101,7 @@ jobs:
 
       - name: Check per-crate coverage regression
         id: baseline
-        if: always()
+        if: always() && steps.coverage-tests.outcome == 'success'
         run: |
           set -euo pipefail
           jq '
@@ -139,7 +139,7 @@ jobs:
           fi
 
       - name: Save first measured per-crate baseline
-        if: always() && steps.baseline.outcome == 'success' && steps.coverage-baseline-cache.outputs.cache-hit != 'true'
+        if: always() && steps.coverage-tests.outcome == 'success' && steps.baseline.outcome == 'success' && steps.coverage-baseline-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v5
         with:
           path: target/coverage-baseline.json

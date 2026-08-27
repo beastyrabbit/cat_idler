@@ -150,6 +150,9 @@ pub struct MigrationState {
     /// the newest cohort bucket that actually produced an arrival, not a failed
     /// prosperity sample: a healthy colony gets the whole interval to qualify.
     pub last_evaluated_cohort_bucket: Option<u64>,
+    /// Cohort whose physical arrival is currently blocked at the village gate.
+    /// This scopes the diagnostic dedup to one episode instead of event-log history.
+    pub deferred_cohort_bucket: Option<u64>,
     pub probationary_migrants: Vec<ProbationaryMigrant>,
 }
 

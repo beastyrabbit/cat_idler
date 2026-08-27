@@ -457,59 +457,98 @@ fn classify_outcome(message: &str) -> Option<&'static str> {
     .find_map(|(needle, outcome)| message.contains(needle).then_some(outcome))
 }
 
-#[tokio::test]
-async fn real_websocket_scouting_matrix_aggregates_every_mission_and_seed() {
+async fn run_requested_seed_tier(case: ScoutScenarioCase) {
     let mut failures = Vec::new();
     for &seed in super::requested_seed_tier().seeds() {
-        for &case in CASES {
-            let mut harness = match WsGameHarness::start(seed).await {
-                Ok(harness) => harness,
-                Err(error) => {
-                    failures.push(format!(
-                        "{} seed {seed}: harness start: {error}",
-                        case.spec.id
-                    ));
-                    continue;
-                }
-            };
-            let session = format!("{}-{seed}", case.spec.id);
-            let (client, actor) = match harness
-                .connect_authenticated(session, "Deterministic Scout")
-                .await
-            {
-                Ok(connection) => connection,
-                Err(error) => {
-                    failures.push(format!(
-                        "{} seed {seed}: authentication: {error}",
-                        case.spec.id
-                    ));
-                    continue;
-                }
-            };
-
-            if let Err(failure) = run_scout_scenario(&mut harness, client, &actor, case, seed).await
-            {
-                let trace = failure.write_trace();
+        let mut harness = match WsGameHarness::start(seed).await {
+            Ok(harness) => harness,
+            Err(error) => {
                 failures.push(format!(
-                    "{} seed {seed}, after {:?} at {}ms: {}; trace={trace:?}",
-                    failure.scenario_id,
-                    failure.last_completed_milestone,
-                    failure.simulated_ms,
-                    failure.reason,
+                    "{} seed {seed}: harness start: {error}",
+                    case.spec.id
                 ));
+                continue;
             }
+        };
+        let session = format!("{}-{seed}", case.spec.id);
+        let (client, actor) = match harness
+            .connect_authenticated(session, "Deterministic Scout")
+            .await
+        {
+            Ok(connection) => connection,
+            Err(error) => {
+                failures.push(format!(
+                    "{} seed {seed}: authentication: {error}",
+                    case.spec.id
+                ));
+                continue;
+            }
+        };
+
+        if let Err(failure) = run_scout_scenario(&mut harness, client, &actor, case, seed).await {
+            let trace = failure.write_trace();
+            failures.push(format!(
+                "{} seed {seed}, after {:?} at {}ms: {}; trace={trace:?}",
+                failure.scenario_id,
+                failure.last_completed_milestone,
+                failure.simulated_ms,
+                failure.reason,
+            ));
         }
     }
 
     assert!(
         failures.is_empty(),
-        "scouting matrix failures (all cases ran):\n{}",
+        "scouting journey failures for {}:\n{}",
+        case.spec.id,
         failures.join("\n")
     );
 }
 
+macro_rules! scouting_journey_tests {
+    ($(($test_name:ident, $scenario_id:literal)),+ $(,)?) => {
+        const GENERATED_SCOUTING_SCENARIO_IDS: &[&str] = &[$($scenario_id),+];
+
+        $(
+            #[tokio::test]
+            async fn $test_name() {
+                let case = CASES
+                    .iter()
+                    .copied()
+                    .find(|case| case.spec.id == $scenario_id)
+                    .expect("named scouting journey must have an executable case");
+                run_requested_seed_tier(case).await;
+            }
+        )+
+    };
+}
+
+scouting_journey_tests!(
+    (
+        real_websocket_scout_explore_shrine_return,
+        "scout-explore-shrine-return"
+    ),
+    (
+        real_websocket_scout_wood_shrine_return,
+        "scout-wood-shrine-return"
+    ),
+    (
+        real_websocket_scout_food_shrine_return,
+        "scout-food-shrine-return"
+    ),
+    (
+        real_websocket_scout_water_shrine_return,
+        "scout-water-shrine-return"
+    ),
+    (
+        real_websocket_scout_stone_shrine_return,
+        "scout-stone-shrine-return"
+    ),
+);
+
 #[test]
 fn scouting_manifest_covers_every_mission_and_outcome_family() {
+    assert_eq!(GENERATED_SCOUTING_SCENARIO_IDS, EXECUTABLE_SCENARIO_IDS);
     assert_eq!(
         SCENARIOS.len(),
         5,

@@ -328,7 +328,7 @@ same stable gate on a generic runner, then runs one unpartitioned `profile ci` i
 test threads on the one-capacity `cat-idler-heavy` runner. Singleton/framebuffer tests use a serial
 Nextest group. Nightly fixed-seed playtests and weekly LLVM coverage share that runner and therefore
 queue rather than competing for homelab resources. Heavy jobs publish peak resource measurements,
-and the WASM gate enforces the maintained 10 MiB gzip transfer ceiling. The JS lint/typecheck/test hooks that used to
+and the WASM gate enforces the transfer ceiling documented in `docs/TESTING.md`. The JS lint/typecheck/test hooks that used to
 gate the TypeScript game are no longer relevant.
 
 ## Maintained follow-ups

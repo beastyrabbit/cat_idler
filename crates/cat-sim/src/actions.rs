@@ -706,6 +706,9 @@ fn boost_job(colony: &mut ColonyRuntime, job_id: &str, ctx: &ActionCtx) -> proto
     if !matches!(job.status, JobStatus::Active | JobStatus::Queued) {
         return fail("This job cannot be boosted.");
     }
+    if job.kind == JobKind::HaulGatherSpot {
+        return fail("This job cannot be boosted.");
+    }
 
     let reduce_seconds = idle_engine::apply_click_boost_seconds(
         f64::from(job.click_count + 1),
@@ -1201,7 +1204,7 @@ fn haul_gather_spot(
         else {
             return fail("That cat is not available.");
         };
-        if !cat_can_take_assignment(colony, index) {
+        if !cat_can_take_assignment(colony, index, false) {
             return fail("That cat is busy.");
         }
         cat_id.to_owned()
@@ -1222,6 +1225,7 @@ fn haul_gather_spot(
             stockpile_id: stockpile_id.to_owned(),
             site: None,
             accepted: false,
+            last_progress_at: Some(ctx.now_ms),
         },
     );
     colony.last_player_activity_at = Some(ctx.now_ms);
@@ -1251,10 +1255,6 @@ fn assign_worker(
         return ok();
     }
 
-    if !cat_can_take_assignment(colony, cat_index) {
-        return fail("That cat is busy.");
-    }
-
     let building_id = building_id.unwrap_or_default();
     let Some(building_index) = colony.buildings.iter().position(|building| {
         building.id == building_id
@@ -1265,6 +1265,9 @@ fn assign_worker(
     };
     if colony.buildings[building_index].has_worker(cat_id) {
         return ok();
+    }
+    if !cat_can_take_assignment(colony, cat_index, true) {
+        return fail("That cat is busy.");
     }
     if colony.buildings[building_index].worker_count()
         >= crate::world_tick::building_staff_cap(colony, &colony.buildings[building_index]) as usize
@@ -2443,38 +2446,6 @@ fn repair_item(colony: &mut ColonyRuntime, item_id: &str, ctx: &ActionCtx) -> pr
     ok()
 }
 
-fn accountant_books_are_exact(colony: &ColonyRuntime) -> bool {
-    colony.stock_ledger.is_accurate(&colony.resources)
-        && colony
-            .stock_ledger
-            .visible_piles_are_accurate(&colony.stockpiles)
-}
-
-/// A signed equipment action is itself player-known information. If every book was exact
-/// before the action, update only the physically affected pile report after the move so the
-/// response does not redact the id the player just manipulated. Stale books remain untouched,
-/// and the original count timestamp is preserved because this is not an Accountant visit.
-fn record_known_equipment_pile_move(
-    colony: &mut ColonyRuntime,
-    books_were_exact: bool,
-    stockpile_id: &str,
-) {
-    if !books_were_exact {
-        return;
-    }
-    let Some(contents) = colony
-        .stockpiles
-        .iter()
-        .find(|pile| pile.id == stockpile_id && !pile.is_station_local())
-        .map(|pile| pile.contents.clone())
-    else {
-        return;
-    };
-    if let Some(report) = colony.stock_ledger.pile_reports.get_mut(stockpile_id) {
-        report.reported = contents;
-    }
-}
-
 fn equip_item(
     colony: &mut ColonyRuntime,
     cat_id: &str,
@@ -2522,7 +2493,9 @@ fn equip_item(
     {
         return fail("That equipment slot is already occupied.");
     }
-    let books_were_exact = accountant_books_are_exact(colony);
+    let resource_kind = functional_resource_for_item(instance.item)
+        .expect("validated functional equipment has a stock resource");
+    let books_were_exact = crate::world_tick::equipment_books_are_exact(colony);
     let source_stockpile_id = match &instance.location {
         ItemLocation::LegacyTreasury => stockpiles::GENERAL_STOREHOUSE_ID.to_owned(),
         ItemLocation::Stockpile { stockpile_id } => stockpile_id.clone(),
@@ -2545,7 +2518,12 @@ fn equip_item(
         format!("{cat_id} equipped {item_id}."),
     );
     reconcile_colony_stockpiles(colony);
-    record_known_equipment_pile_move(colony, books_were_exact, &source_stockpile_id);
+    crate::world_tick::record_known_equipment_pile_move(
+        colony,
+        books_were_exact,
+        &source_stockpile_id,
+        resource_kind,
+    );
     ok()
 }
 
@@ -2583,7 +2561,9 @@ fn unequip_item(
     let Some(destination) = destination else {
         return fail("No village stockpile has room for that equipment.");
     };
-    let books_were_exact = accountant_books_are_exact(colony);
+    let resource_kind = functional_resource_for_item(instance.item)
+        .expect("equipped functional item has a stock resource");
+    let books_were_exact = crate::world_tick::equipment_books_are_exact(colony);
     let ItemLocation::Stockpile {
         stockpile_id: destination_stockpile_id,
     } = &destination
@@ -2601,7 +2581,12 @@ fn unequip_item(
         format!("{cat_id} returned {item_id} to storage."),
     );
     reconcile_colony_stockpiles(colony);
-    record_known_equipment_pile_move(colony, books_were_exact, &destination_stockpile_id);
+    crate::world_tick::record_known_equipment_pile_move(
+        colony,
+        books_were_exact,
+        &destination_stockpile_id,
+        resource_kind,
+    );
     ok()
 }
 
@@ -2891,13 +2876,17 @@ fn transport_cat_available(colony: &ColonyRuntime, cat_id: &str) -> bool {
                 matches!(job.status, JobStatus::Queued | JobStatus::Active)
                     && job.assigned_cat.as_deref() == Some(cat_id)
             })
-    }) && !colony.transport.projects.values().any(|project| {
+    }) && !cat_has_active_transport_assignment(colony, cat_id)
+}
+
+fn cat_has_active_transport_assignment(colony: &ColonyRuntime, cat_id: &str) -> bool {
+    colony.transport.projects.values().any(|project| {
         project.assigned_cat_id == cat_id
             && !matches!(
                 project.phase,
                 ProjectPhase::Complete | ProjectPhase::Cancelled
             )
-    }) && !colony.transport.routes.values().any(|route| {
+    }) || colony.transport.routes.values().any(|route| {
         route.assigned_cat_id == cat_id
             && !matches!(route.phase, RoutePhase::Complete | RoutePhase::Cancelled)
     })
@@ -3259,12 +3248,7 @@ fn create_transport_route(
         ctx.now_ms,
         colony.transport.routes.len() + 1
     );
-    let source = source.clone();
-    let destination = destination.clone();
-    colony.stock_ledger.record_known_resource(&source, resource);
-    colony
-        .stock_ledger
-        .record_known_resource(&destination, resource);
+    let destination_id = destination.id.clone();
     let position = path[0];
     colony.transport.routes.insert(
         route_id.clone(),
@@ -3272,7 +3256,7 @@ fn create_transport_route(
             id: route_id.clone(),
             mode,
             source_stockpile_id: source_stockpile_id.to_owned(),
-            destination_stockpile_id: destination.id,
+            destination_stockpile_id: destination_id,
             resource,
             amount,
             assigned_cat_id: cat_id.to_owned(),
@@ -5767,7 +5751,8 @@ fn queue_job(
         click_count: 0,
         created_at: now_ms,
         started_at: (kind != JobKind::ReplantTree).then_some(now_ms),
-        ends_at: (kind != JobKind::ReplantTree).then_some(now_ms + duration_ms),
+        ends_at: (!matches!(kind, JobKind::ReplantTree | JobKind::HaulGatherSpot))
+            .then_some(now_ms + duration_ms),
         completed_at: None,
         metadata,
     });
@@ -5840,12 +5825,13 @@ fn select_best_cat_for_labor(
         .filter(|cat| {
             cat.death_time.is_none()
                 && can_work(get_life_stage(cat.age_hours))
+                && !cat_is_spatial_migrant(colony, &cat.id)
+                && !cat_has_active_transport_assignment(colony, &cat.id)
                 && !busy.contains(cat.id.as_str())
                 && !assigned.contains(cat.id.as_str())
-                && cat.activity == CatActivity::Idle
+                && matches!(cat.activity, CatActivity::Idle | CatActivity::Traveling)
                 && cat.current_task.is_none()
                 && cat.carrying.is_none()
-                && cat.destination.is_none()
         })
         .collect::<Vec<_>>();
     let preferred = pool
@@ -5907,17 +5893,23 @@ fn select_best_scout(colony: &ColonyRuntime) -> Option<String> {
         .map(|cat| cat.id.clone())
 }
 
-fn cat_can_take_assignment(colony: &ColonyRuntime, cat_index: usize) -> bool {
+fn cat_can_take_assignment(
+    colony: &ColonyRuntime,
+    cat_index: usize,
+    allow_existing_building_worker: bool,
+) -> bool {
     let cat = &colony.cats[cat_index];
     let busy = busy_cat_ids(colony);
+    let assigned = assigned_building_cat_ids(colony);
     cat.death_time.is_none()
         && !cat_is_spatial_migrant(colony, &cat.id)
+        && !cat_has_active_transport_assignment(colony, &cat.id)
         && can_work(get_life_stage(cat.age_hours))
-        && cat.activity == CatActivity::Idle
+        && !busy.contains(cat.id.as_str())
+        && (allow_existing_building_worker || !assigned.contains(cat.id.as_str()))
+        && matches!(cat.activity, CatActivity::Idle | CatActivity::Traveling)
         && cat.current_task.is_none()
         && cat.carrying.is_none()
-        && cat.destination.is_none()
-        && !busy.contains(cat.id.as_str())
 }
 
 fn cat_is_spatial_migrant(colony: &ColonyRuntime, cat_id: &str) -> bool {
@@ -6935,18 +6927,20 @@ mod tests {
         let result = apply_action(&mut world, &action, &ctx());
         assert!(result.ok, "guided route failed: {:?}", result.message);
         assert_eq!(
-            world.colonies[0].stock_ledger.pile_reports["rail-source"]
-                .reported
-                .food,
-            10.0,
-            "planning a signed route makes its validated source cargo observable"
+            world.colonies[0]
+                .stock_ledger
+                .pile_reports
+                .get("rail-source"),
+            None,
+            "planning a route must not create a source report before physical loading"
         );
         assert_eq!(
-            world.colonies[0].stock_ledger.pile_reports["rail-destination"]
-                .reported
-                .food,
-            0.0,
-            "planning a signed route establishes its destination report"
+            world.colonies[0]
+                .stock_ledger
+                .pile_reports
+                .get("rail-destination"),
+            None,
+            "planning a route must not create a destination report before physical unloading"
         );
         let route = world.colonies[0].transport.routes.values().next().unwrap();
         assert_eq!(route.assigned_cat_id, cat_id);
@@ -6962,6 +6956,68 @@ mod tests {
         assert_eq!(
             snapshot.colonies[0].transport.vehicles[0].crew_cat_id,
             Some(cat_id)
+        );
+    }
+
+    #[test]
+    fn active_transport_crews_cannot_be_recruited_for_labor() {
+        let mut world = world_with_one_colony();
+        let colony = &mut world.colonies[0];
+        colony.jobs.clear();
+        let crew_id = colony.cats[0].id.clone();
+        for cat in &mut colony.cats {
+            cat.activity = CatActivity::Working;
+            cat.current_task = Some(TaskType::Rest);
+            cat.destination = None;
+            cat.carrying = None;
+        }
+        let crew = &mut colony.cats[0];
+        crew.activity = CatActivity::Idle;
+        crew.current_task = None;
+
+        colony.transport.routes.insert(
+            "active-route".to_owned(),
+            TransportRoute {
+                id: "active-route".to_owned(),
+                mode: transport::TransportMode::Rail,
+                source_stockpile_id: "source".to_owned(),
+                destination_stockpile_id: "destination".to_owned(),
+                resource: stockpiles::ResourceKind::Food,
+                amount: 1.0,
+                assigned_cat_id: crew_id.clone(),
+                phase: RoutePhase::Boarding,
+                path: vec![TilePos { x: 0, y: 0 }],
+                path_index: 0,
+                segment_progress: 0.0,
+                cargo_loaded: 0.0,
+                vehicle_id: "wagon".to_owned(),
+                position: TilePos { x: 0, y: 0 },
+                repeat: false,
+            },
+        );
+        assert_eq!(select_best_cat_for_labor(colony, None, None), None);
+
+        colony.transport.routes.clear();
+        colony.transport.projects.insert(
+            "active-project".to_owned(),
+            InfrastructureProject {
+                id: "active-project".to_owned(),
+                kind: InfrastructureKind::Track,
+                tiles: vec![TilePos { x: 0, y: 0 }],
+                assigned_cat_id: crew_id.clone(),
+                phase: ProjectPhase::Fetching,
+                reservations: Vec::new(),
+                delivered: BTreeMap::new(),
+                work_done_seconds: 0.0,
+                required_work_seconds: 30.0,
+            },
+        );
+        assert_eq!(select_best_cat_for_labor(colony, None, None), None);
+
+        colony.transport.projects.clear();
+        assert_eq!(
+            select_best_cat_for_labor(colony, None, None).as_deref(),
+            Some(crew_id.as_str())
         );
     }
 
@@ -7935,6 +7991,21 @@ mod tests {
                 .contains_key(&OfficerRole::Forester)
         );
 
+        let wandering_id = world.colonies[0].cats[0].id.clone();
+        for cat in &mut world.colonies[0].cats {
+            cat.activity = CatActivity::Working;
+            cat.current_task = Some(TaskType::Rest);
+            cat.destination = None;
+        }
+        let wandering = &mut world.colonies[0].cats[0];
+        wandering.activity = CatActivity::Traveling;
+        wandering.current_task = None;
+        wandering.destination = Some(Position {
+            x: 2.0,
+            y: 2.0,
+            ..Position::default()
+        });
+
         let action = proto::ClientAction::RequestJob {
             session_id: "sess_1".to_owned(),
             nickname: "Tester".to_owned(),
@@ -7946,8 +8017,16 @@ mod tests {
         let job = world.colonies[0].jobs.last().expect("replant queued");
         assert_eq!(job.kind, JobKind::ReplantTree);
         assert_eq!(job.requested_by, JobRequester::Player);
-        assert!(job.assigned_cat.is_some());
+        assert_eq!(job.assigned_cat.as_deref(), Some(wandering_id.as_str()));
         assert_eq!(job.started_at, None, "work clock begins only on arrival");
+        let wandering = world.colonies[0]
+            .cats
+            .iter()
+            .find(|cat| cat.id == wandering_id)
+            .expect("wandering worker remains in the colony");
+        assert_eq!(wandering.activity, CatActivity::Idle);
+        assert_eq!(wandering.current_task, Some(TaskType::Build));
+        assert_eq!(wandering.destination, None, "the wander target was cleared");
 
         world.colonies[0].jobs.clear();
         world.colonies[0]
@@ -9193,9 +9272,15 @@ mod tests {
         ]);
         world.colonies[0].upgrade_tree.research_points = 100.0;
 
-        let storage_before = build_snapshot(&world, 1_000_000, 1).colonies[0]
-            .storage
-            .capacities;
+        let snapshot_before = build_snapshot(&world, 1_000_000, 1);
+        let storage_before = snapshot_before.colonies[0].storage.capacities;
+        let mill_before = snapshot_before.colonies[0]
+            .buildings
+            .iter()
+            .find(|building| building.id == mill_id)
+            .expect("guided Mill snapshot before capacity research");
+        assert_eq!(mill_before.input_capacity, 12.0);
+        assert_eq!(mill_before.output_capacity, 12.0);
         let purchase = proto::ClientAction::ResearchNode {
             session_id: "sess_1".to_owned(),
             nickname: "Player".to_owned(),
@@ -9209,8 +9294,8 @@ mod tests {
             .iter()
             .find(|building| building.id == mill_id)
             .expect("guided Mill snapshot");
-        assert_eq!(mill.input_capacity, 12.0);
-        assert_eq!(mill.output_capacity, 12.0);
+        assert_eq!(mill.input_capacity, 12.0 * 1.2);
+        assert_eq!(mill.output_capacity, 12.0 * 1.2);
         assert_eq!(snapshot.colonies[0].storage.capacities, storage_before);
 
         // SQLite persists these two physical authorities independently: research
@@ -9230,8 +9315,8 @@ mod tests {
             .iter()
             .find(|building| building.id == mill_id)
             .expect("restored Mill snapshot");
-        assert_eq!(restored_mill.input_capacity, 12.0);
-        assert_eq!(restored_mill.output_capacity, 12.0);
+        assert_eq!(restored_mill.input_capacity, 12.0 * 1.2);
+        assert_eq!(restored_mill.output_capacity, 12.0 * 1.2);
         assert_eq!(restored, world, "signed campaign persistence twin");
     }
 
@@ -9430,6 +9515,160 @@ mod tests {
             .unwrap();
         assert_eq!(building.assigned_cat.as_deref(), Some(cat_id.as_str()));
         assert_eq!(building.automated_by, None);
+    }
+
+    #[test]
+    fn signed_manual_assignment_accepts_an_idle_wandering_cat() {
+        let mut world = world_with_one_colony();
+        let colony = &mut world.colonies[0];
+        let cat_id = colony.cats[0].id.clone();
+        let building_id = "wandering-cat-sawmill".to_owned();
+        let cat = &mut colony.cats[0];
+        cat.activity = CatActivity::Idle;
+        cat.current_task = None;
+        cat.destination = Some(Position {
+            map: MapType::World,
+            x: 14.0,
+            y: 14.0,
+        });
+        cat.carrying = None;
+        colony.buildings.push(crate::world_tick::BuildingRuntime {
+            id: building_id.clone(),
+            building_type: BuildingType::Sawmill,
+            level: 1,
+            position: TilePos { x: 18, y: 18 },
+            is_complete: true,
+            construction_progress: 100,
+            ..crate::world_tick::BuildingRuntime::default()
+        });
+
+        let result = apply_action(
+            &mut world,
+            &proto::ClientAction::AssignWorker {
+                session_id: "sess_1".to_owned(),
+                nickname: "Guest".to_owned(),
+                sig: "signed".to_owned(),
+                cat_id: cat_id.clone(),
+                building_id: Some(building_id.clone()),
+            },
+            &ctx(),
+        );
+
+        assert!(result.ok, "wandering cat was rejected: {result:?}");
+        let colony = &world.colonies[0];
+        let building = colony
+            .buildings
+            .iter()
+            .find(|building| building.id == building_id)
+            .expect("sawmill remains present");
+        assert_eq!(building.assigned_cat.as_deref(), Some(cat_id.as_str()));
+    }
+
+    #[test]
+    fn signed_manual_assignment_is_idempotent_for_the_current_building() {
+        let mut world = world_with_one_colony();
+        let colony = &mut world.colonies[0];
+        let cat_id = colony.cats[0].id.clone();
+        let building_id = "idempotent-sawmill".to_owned();
+        colony.cats[0].age_hours = 24.0;
+        colony.cats[0].activity = CatActivity::Idle;
+        colony.cats[0].current_task = None;
+        colony.buildings.push(crate::world_tick::BuildingRuntime {
+            id: building_id.clone(),
+            building_type: BuildingType::Sawmill,
+            level: 1,
+            position: TilePos { x: 18, y: 18 },
+            is_complete: true,
+            construction_progress: 100,
+            assigned_cat: Some(cat_id.clone()),
+            ..crate::world_tick::BuildingRuntime::default()
+        });
+
+        let result = apply_action(
+            &mut world,
+            &proto::ClientAction::AssignWorker {
+                session_id: "sess_1".to_owned(),
+                nickname: "Guest".to_owned(),
+                sig: "signed".to_owned(),
+                cat_id: cat_id.clone(),
+                building_id: Some(building_id.clone()),
+            },
+            &ctx(),
+        );
+
+        assert!(
+            result.ok,
+            "repeating the current assignment failed: {result:?}"
+        );
+        assert!(
+            world.colonies[0]
+                .buildings
+                .iter()
+                .find(|building| building.id == building_id)
+                .is_some_and(|building| building.assigned_cat.as_deref() == Some(cat_id.as_str()))
+        );
+    }
+
+    #[test]
+    fn signed_manual_assignment_moves_an_existing_building_worker() {
+        let mut world = world_with_one_colony();
+        let colony = &mut world.colonies[0];
+        let cat_id = colony.cats[0].id.clone();
+        let source_id = "transfer-source-sawmill".to_owned();
+        let target_id = "transfer-target-workshop".to_owned();
+        colony.cats[0].age_hours = 24.0;
+        colony.cats[0].activity = CatActivity::Idle;
+        colony.cats[0].current_task = None;
+        colony.buildings.extend([
+            crate::world_tick::BuildingRuntime {
+                id: source_id.clone(),
+                building_type: BuildingType::Sawmill,
+                level: 1,
+                position: TilePos { x: 18, y: 18 },
+                is_complete: true,
+                construction_progress: 100,
+                assigned_cat: Some(cat_id.clone()),
+                ..crate::world_tick::BuildingRuntime::default()
+            },
+            crate::world_tick::BuildingRuntime {
+                id: target_id.clone(),
+                building_type: BuildingType::Workshop,
+                level: 1,
+                position: TilePos { x: 22, y: 18 },
+                is_complete: true,
+                construction_progress: 100,
+                ..crate::world_tick::BuildingRuntime::default()
+            },
+        ]);
+
+        let result = apply_action(
+            &mut world,
+            &proto::ClientAction::AssignWorker {
+                session_id: "sess_1".to_owned(),
+                nickname: "Guest".to_owned(),
+                sig: "signed".to_owned(),
+                cat_id: cat_id.clone(),
+                building_id: Some(target_id.clone()),
+            },
+            &ctx(),
+        );
+
+        assert!(result.ok, "building transfer failed: {result:?}");
+        let colony = &world.colonies[0];
+        assert!(
+            colony
+                .buildings
+                .iter()
+                .find(|building| building.id == source_id)
+                .is_some_and(|building| !building.has_worker(&cat_id))
+        );
+        assert!(
+            colony
+                .buildings
+                .iter()
+                .find(|building| building.id == target_id)
+                .is_some_and(|building| building.has_worker(&cat_id))
+        );
     }
 
     #[test]
@@ -10796,6 +11035,67 @@ mod tests {
     }
 
     #[test]
+    fn queued_gather_haul_has_no_deadline_and_rejects_boosts() {
+        let mut world = world_with_one_colony();
+        let point = open_gather_point(&world);
+        let designated = apply_action(
+            &mut world,
+            &designate_gather_action(point, point, proto::ResourceKind::Food),
+            &ctx(),
+        );
+        assert!(designated.ok, "{designated:?}");
+
+        let spot_id = world.colonies[0].gather_spots[0].stockpile_id.clone();
+        let pile = world.colonies[0]
+            .stockpiles
+            .iter_mut()
+            .find(|pile| pile.id == spot_id)
+            .expect("designated gather pile exists");
+        pile.contents.food = 4.0;
+        world.colonies[0].resources.food += 4.0;
+
+        let queued = apply_action(
+            &mut world,
+            &proto::ClientAction::HaulGatherSpot {
+                session_id: "sess_1".to_owned(),
+                nickname: "Guest".to_owned(),
+                sig: "sig".to_owned(),
+                stockpile_id: spot_id,
+                cat_id: None,
+            },
+            &ctx(),
+        );
+        assert!(queued.ok, "{queued:?}");
+
+        let job = world.colonies[0].jobs.last().expect("gather haul queued");
+        assert_eq!(job.kind, JobKind::HaulGatherSpot);
+        assert_eq!(job.status, JobStatus::Queued);
+        assert_eq!(job.ends_at, None, "physical travel has no timer deadline");
+        let job_id = job.id.clone();
+        let before = job.clone();
+
+        let boosted = apply_action(
+            &mut world,
+            &proto::ClientAction::Boost {
+                session_id: "sess_1".to_owned(),
+                nickname: "Guest".to_owned(),
+                sig: "sig".to_owned(),
+                job_id: job_id.clone(),
+            },
+            &ctx(),
+        );
+        assert!(!boosted.ok, "physical gather haul accepted a timer boost");
+        assert_eq!(
+            world.colonies[0]
+                .jobs
+                .iter()
+                .find(|job| job.id == job_id)
+                .expect("rejected boost preserves the job"),
+            &before,
+        );
+    }
+
+    #[test]
     fn remove_gather_spot_folds_contents_back_and_cancels_its_mover() {
         let mut world = world_with_one_colony();
         let point = open_gather_point(&world);
@@ -10828,6 +11128,7 @@ mod tests {
                         y: point.y,
                     }),
                     accepted: true,
+                    last_progress_at: None,
                 },
                 ..JobRuntime::default()
             });

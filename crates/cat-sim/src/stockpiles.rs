@@ -41,6 +41,22 @@ pub const CONSTRUCTION_INPUT_PREFIX: &str = "construction-input:";
 pub const CONSTRUCTION_TRANSIT_PREFIX: &str = "construction-transit:";
 pub const STATION_LOCAL_CAPACITY: f64 = 10.0;
 
+/// Whether a persisted pile id names processor-local or construction-local storage.
+/// Keep this centralized so snapshot privacy and physical ledger routing classify the
+/// same compartments when new prefixes are introduced.
+#[must_use]
+pub fn id_is_station_local(id: &str) -> bool {
+    [
+        STATION_INPUT_PREFIX,
+        STATION_OUTPUT_PREFIX,
+        STATION_TRANSIT_PREFIX,
+        CONSTRUCTION_INPUT_PREFIX,
+        CONSTRUCTION_TRANSIT_PREFIX,
+    ]
+    .iter()
+    .any(|prefix| id.starts_with(prefix))
+}
+
 /// Per-tile capacity of a *designated* (player) stockpile, per resource.
 pub const STOCKPILE_TILE_CAPACITY: f64 = 40.0;
 
@@ -345,10 +361,7 @@ impl Stockpile {
 
     #[must_use]
     pub fn is_station_local(&self) -> bool {
-        self.is_station_input()
-            || self.is_station_output()
-            || self.is_station_transit()
-            || self.is_construction_local()
+        id_is_station_local(&self.id)
     }
 
     /// Tile count of the (inclusive-edge) footprint.

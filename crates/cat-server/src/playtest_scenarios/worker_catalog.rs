@@ -371,6 +371,7 @@ impl Failures {
 
 #[test]
 fn worker_manifest_covers_all_nineteen_skills_and_scout_threshold() {
+    assert_eq!(GENERATED_WORKER_SCENARIO_IDS, EXECUTABLE_SCENARIO_IDS);
     let mut failures = Failures::default();
     failures.check(SCENARIOS.len() == 19, || {
         format!("expected 19 worker scenarios, got {}", SCENARIOS.len())
@@ -2435,7 +2436,13 @@ async fn every_job_kind_crosses_real_websocket_with_valid_behavior() {
                             .iter()
                             .any(|job| job.kind == ProtocolJobKind::GatherLogs)
                         && snapshot.colonies[0].cats.iter().any(|cat| {
-                            cat.activity == cat_protocol::CatActivity::Idle && cat.age_hours >= 12.0
+                            cat.activity == cat_protocol::CatActivity::Idle
+                                && cat.age_hours >= 12.0
+                                && cat.current_task.is_none()
+                                && cat.carrying.is_none()
+                                && cat.assigned_building_id.is_none()
+                                && cat.migration_status
+                                    == cat_protocol::CatMigrationStatus::Resident
                         })
                 })
                 .await
@@ -2489,7 +2496,32 @@ async fn every_job_kind_crosses_real_websocket_with_valid_behavior() {
                         if kind == ProtocolJobKind::ReplantTree {
                             format!(
                                 "legal ReplantTree RequestJob rejected after exact causal stump \
-                                 proof {intended_replant_site:?}: {observed:?}"
+                                 proof {intended_replant_site:?}: {observed:?}; cats={:?}; jobs={:?}; buildings={:?}",
+                                client.snapshot().colonies[0]
+                                    .cats
+                                    .iter()
+                                    .map(|cat| (
+                                        &cat.id,
+                                        cat.age_hours,
+                                        cat.activity,
+                                        &cat.current_task,
+                                        &cat.destination,
+                                        &cat.carrying,
+                                        &cat.assigned_building_id,
+                                        cat.migration_status,
+                                        cat.death_time,
+                                    ))
+                                    .collect::<Vec<_>>(),
+                                client.snapshot().colonies[0]
+                                    .jobs
+                                    .iter()
+                                    .map(|job| (&job.id, job.kind, job.status, &job.assigned_cat_name))
+                                    .collect::<Vec<_>>(),
+                                client.snapshot().colonies[0]
+                                    .buildings
+                                    .iter()
+                                    .map(|building| (&building.id, building.staff_count))
+                                    .collect::<Vec<_>>()
                             )
                         } else {
                             format!("legal {kind:?} RequestJob rejected: {observed:?}")
@@ -4485,28 +4517,76 @@ async fn run_executable_worker_case(case: ExecutableWorkerCase, seed: u32) -> Re
     Ok(())
 }
 
-#[tokio::test]
-async fn real_websocket_worker_progression_runs_every_manifest_case_and_aggregates_reds() {
+async fn run_requested_seed_tier(case: ExecutableWorkerCase) {
     assert_eq!(EXECUTABLE_CASES.len(), 19);
     assert_eq!(EXECUTABLE_SCENARIO_IDS.len(), 19);
     let mut failures = Vec::new();
-    let requested_tier = super::requested_seed_tier();
-    for case in EXECUTABLE_CASES {
-        SCENARIOS
-            .iter()
-            .find(|scenario| scenario.id == case.scenario_id)
-            .expect("executable case must have a manifest entry");
-        let seeds = requested_tier.seeds();
-        for seed in seeds {
-            if let Err(error) = run_executable_worker_case(*case, *seed).await {
-                failures.push(format!("{} seed {}: {error}", case.scenario_id, seed));
-            }
+    SCENARIOS
+        .iter()
+        .find(|scenario| scenario.id == case.scenario_id)
+        .expect("executable case must have a manifest entry");
+    for &seed in super::requested_seed_tier().seeds() {
+        if let Err(error) = run_executable_worker_case(case, seed).await {
+            failures.push(format!("{} seed {seed}: {error}", case.scenario_id));
         }
     }
     assert!(
         failures.is_empty(),
-        "worker WebSocket scenario failures ({}):\n{}",
+        "worker WebSocket scenario failures for {} ({}):\n{}",
+        case.scenario_id,
         failures.len(),
         failures.join("\n")
     );
 }
+
+macro_rules! worker_journey_tests {
+    ($(($test_name:ident, $scenario_id:literal)),+ $(,)?) => {
+        const GENERATED_WORKER_SCENARIO_IDS: &[&str] = &[$($scenario_id),+];
+
+        $(
+            #[tokio::test]
+            async fn $test_name() {
+                let case = EXECUTABLE_CASES
+                    .iter()
+                    .copied()
+                    .find(|case| case.scenario_id == $scenario_id)
+                    .expect("named worker journey must have an executable case");
+                run_requested_seed_tier(case).await;
+            }
+        )+
+    };
+}
+
+worker_journey_tests!(
+    (real_websocket_worker_skill_hunt, "worker-skill-hunt"),
+    (real_websocket_worker_skill_fishing, "worker-skill-fishing"),
+    (real_websocket_worker_skill_build, "worker-skill-build"),
+    (real_websocket_worker_skill_ritual, "worker-skill-ritual"),
+    (real_websocket_worker_skill_fight, "worker-skill-fight"),
+    (real_websocket_worker_skill_train, "worker-skill-train"),
+    (real_websocket_worker_skill_quarry, "worker-skill-quarry"),
+    (real_websocket_worker_skill_woodcut, "worker-skill-woodcut"),
+    (real_websocket_worker_skill_forage, "worker-skill-forage"),
+    (
+        real_websocket_worker_skill_fetch_water,
+        "worker-skill-fetch-water"
+    ),
+    (real_websocket_worker_skill_mill, "worker-skill-mill"),
+    (real_websocket_worker_skill_process, "worker-skill-process"),
+    (real_websocket_worker_skill_craft, "worker-skill-craft"),
+    (real_websocket_worker_skill_textile, "worker-skill-textile"),
+    (
+        real_websocket_worker_skill_metalwork,
+        "worker-skill-metalwork"
+    ),
+    (real_websocket_worker_skill_farm, "worker-skill-farm"),
+    (real_websocket_worker_skill_haul, "worker-skill-haul"),
+    (
+        real_websocket_worker_skill_research,
+        "worker-skill-research"
+    ),
+    (
+        real_websocket_worker_skill_scout_vision_4_to_5,
+        "worker-skill-scout-vision-4-to-5"
+    ),
+);

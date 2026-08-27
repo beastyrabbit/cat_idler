@@ -167,8 +167,9 @@ pub struct WorldState {
     pub shared_spatial: SharedSpatialState,
 }
 
-/// Save-rule version for the first world-scoped mutable spatial authority.
-pub const CURRENT_SHARED_SPATIAL_RULES_VERSION: u32 = 1;
+/// Save-rule version for world-scoped mutable spatial authority and the one-time
+/// communal gate-approach repair for saves created before physical migration.
+pub const CURRENT_SHARED_SPATIAL_RULES_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SharedSpatialState {
@@ -530,6 +531,9 @@ pub enum JobMetadata {
         stockpile_id: String,
         site: Option<TilePos>,
         accepted: bool,
+        /// Persisted time of the most recent physical step. This is separate from
+        /// `JobRuntime::ends_at`, whose public meaning remains a completion time.
+        last_progress_at: Option<i64>,
     },
     /// A Steward-dispatched physical transfer between two visible stockpiles. Cargo
     /// moves through `transit_id`, a hidden persisted physical store, so rearranging
@@ -2193,6 +2197,7 @@ pub enum EventKind {
     MigrationArrived,
     MigrationRetained,
     MigrationDeparted,
+    MigrationDeferred,
     VillageExpanded,
     WarriorTrained,
     ForestChopped,
@@ -2245,6 +2250,7 @@ impl EventKind {
             EventKind::MigrationArrived => "migration_arrived".to_owned(),
             EventKind::MigrationRetained => "migration_retained".to_owned(),
             EventKind::MigrationDeparted => "migration_departed".to_owned(),
+            EventKind::MigrationDeferred => "migration_deferred".to_owned(),
             EventKind::VillageExpanded => "village_expanded".to_owned(),
             EventKind::WarriorTrained => "warrior_trained".to_owned(),
             EventKind::ForestChopped => "forest_chopped".to_owned(),
@@ -2308,6 +2314,7 @@ impl EventKind {
             "migration_arrived" => EventKind::MigrationArrived,
             "migration_retained" => EventKind::MigrationRetained,
             "migration_departed" => EventKind::MigrationDeparted,
+            "migration_deferred" => EventKind::MigrationDeferred,
             "village_expanded" => EventKind::VillageExpanded,
             "warrior_trained" => EventKind::WarriorTrained,
             "forest_chopped" => EventKind::ForestChopped,
@@ -2556,6 +2563,8 @@ const FOUNDING_WATER: u32 = 999;
 /// Migrants materialize far enough beyond the one south gate that arrival and
 /// departure are visible journeys, while staying inside the generated local map.
 const MIGRANT_EXTERIOR_DISTANCE_TILES: i32 = 6;
+const MIGRATION_DEFERRED_MESSAGE: &str =
+    "Migration was deferred because no usable gate approach reaches the village.";
 /// Hard upper bound on A* probes while selecting a visiting merchant's exterior.
 /// Candidate order is deterministic and biased toward the current gate; a pathological
 /// expanded map cannot turn one scheduled visit into an unbounded route search.
@@ -2907,6 +2916,86 @@ fn reconcile_finite_equipment_projections(colony: &mut ColonyRuntime) {
     colony.resources.armor = f64::from(colony.items.credited_count(ItemKind::Armor));
 }
 
+/// Exact equipment reports are independent of ordinary food, water, and material
+/// bookkeeping. Automatic equipment moves may preserve this already-known aggregate
+/// slice, but must never turn stale equipment books into an authoritative count.
+pub(crate) fn equipment_books_are_exact(colony: &ColonyRuntime) -> bool {
+    let kinds = [
+        ResourceKind::Tools,
+        ResourceKind::Weapons,
+        ResourceKind::Armor,
+    ];
+    let aggregate_is_exact = kinds.iter().all(|&kind| {
+        stockpiles::resource_amount(&colony.stock_ledger.reported, kind)
+            == stockpiles::resource_amount(&colony.resources, kind)
+    });
+    aggregate_is_exact
+        && colony
+            .stockpiles
+            .iter()
+            .filter(|pile| !pile.is_station_local())
+            .all(|pile| {
+                colony
+                    .stock_ledger
+                    .pile_reports
+                    .get(&pile.id)
+                    .is_some_and(|report| {
+                        kinds.iter().all(|&kind| {
+                            stockpiles::resource_amount(&report.reported, kind)
+                                == stockpiles::resource_amount(&pile.contents, kind)
+                        })
+                    })
+            })
+}
+
+/// Keep one affected pile exact after already-owned equipment moves into or out
+/// of storage. The aggregate is deliberately preserved because carried and equipped
+/// identities remain colony-owned.
+pub(crate) fn record_known_equipment_pile_move(
+    colony: &mut ColonyRuntime,
+    books_were_exact: bool,
+    stockpile_id: &str,
+    kind: ResourceKind,
+) {
+    if !books_were_exact {
+        return;
+    }
+    let Some(pile) = colony
+        .stockpiles
+        .iter()
+        .find(|pile| pile.id == stockpile_id && !pile.is_station_local())
+        .cloned()
+    else {
+        return;
+    };
+    let aggregate = stockpiles::resource_amount(&colony.stock_ledger.reported, kind);
+    colony.stock_ledger.record_known_resource(&pile, kind);
+    stockpiles::set_resource(&mut colony.stock_ledger.reported, kind, aggregate);
+}
+
+/// A completed station delivery credits a newly owned equipment identity and the
+/// destination pile together. When the equipment books were exact before delivery,
+/// the observed physical handoff advances both reports by the same unit.
+fn record_known_equipment_credit(
+    colony: &mut ColonyRuntime,
+    books_were_exact: bool,
+    stockpile_id: &str,
+    kind: ResourceKind,
+) {
+    if !books_were_exact {
+        return;
+    }
+    let Some(pile) = colony
+        .stockpiles
+        .iter()
+        .find(|pile| pile.id == stockpile_id && !pile.is_station_local())
+        .cloned()
+    else {
+        return;
+    };
+    colony.stock_ledger.record_known_resource(&pile, kind);
+}
+
 pub(crate) fn cat_usable_tool_stock(colony: &ColonyRuntime, cat_id: &str) -> f64 {
     if colony
         .items
@@ -3006,13 +3095,14 @@ fn recover_item_to_capacity_or_spill(colony: &mut ColonyRuntime, item_id: &str, 
     let Some(resource) = functional_resource_for_kind(instance.item.kind) else {
         return;
     };
+    let books_were_exact = equipment_books_are_exact(colony);
     reconcile_finite_equipment_projections(colony);
     let pile_id = accepting_equipment_pile(colony, resource)
         .unwrap_or_else(|| ensure_equipment_spill_pile(colony, item_id, resource, at));
     let moved = colony.items.relocate(
         item_id,
         ItemLocation::Stockpile {
-            stockpile_id: pile_id,
+            stockpile_id: pile_id.clone(),
         },
     );
     debug_assert!(moved);
@@ -3021,6 +3111,7 @@ fn recover_item_to_capacity_or_spill(colony: &mut ColonyRuntime, item_id: &str, 
         instance.active_job_id = None;
     }
     reconcile_finite_equipment_projections(colony);
+    record_known_equipment_pile_move(colony, books_were_exact, &pile_id, resource);
 }
 
 fn release_equipped_items(colony: &mut ColonyRuntime, cat_id: &str, at: WorldPos) {
@@ -3068,6 +3159,8 @@ fn complete_equipment_retrieval(colony: &mut ColonyRuntime, cat_id: &str, item_i
         .into_iter()
         .any(|job| job.assigned_cat.as_deref() == Some(cat_id));
     let item = colony.items.instance(item_id).cloned();
+    let books_were_exact = equipment_books_are_exact(colony);
+    let mut returned_to_pile = None;
     if let Some(instance) = item {
         let expected = ItemLocation::Carrier {
             cat_id: cat_id.to_owned(),
@@ -3090,6 +3183,8 @@ fn complete_equipment_retrieval(colony: &mut ColonyRuntime, cat_id: &str, item_i
         } else if instance.location == expected {
             let moved = colony.items.relocate(item_id, ItemLocation::LegacyTreasury);
             debug_assert!(moved);
+            returned_to_pile = functional_resource_for_kind(instance.item.kind)
+                .map(|kind| (stockpiles::GENERAL_STOREHOUSE_ID.to_owned(), kind));
         }
     }
     if let Some(cat) = colony.cats.iter_mut().find(|cat| cat.id == cat_id) {
@@ -3102,6 +3197,10 @@ fn complete_equipment_retrieval(colony: &mut ColonyRuntime, cat_id: &str, item_i
             cat.destination = None;
             cat.activity = CatActivity::Idle;
         }
+    }
+    reconcile_finite_equipment_projections(colony);
+    if let Some((pile_id, kind)) = returned_to_pile {
+        record_known_equipment_pile_move(colony, books_were_exact, &pile_id, kind);
     }
 }
 
@@ -3132,6 +3231,7 @@ fn complete_equipment_return(
     {
         return false;
     }
+    let books_were_exact = equipment_books_are_exact(colony);
     let moved = colony.items.relocate(
         item_id,
         ItemLocation::Stockpile {
@@ -3147,6 +3247,7 @@ fn complete_equipment_return(
         cat.activity = CatActivity::Idle;
     }
     reconcile_finite_equipment_projections(colony);
+    record_known_equipment_pile_move(colony, books_were_exact, stockpile_id, resource);
     true
 }
 
@@ -3532,12 +3633,16 @@ fn retrieve_automatic_functional_equipment(colony: &mut ColonyRuntime, now_ms: i
         let Some(carrying_kind) = functional_carrying_kind(kind) else {
             continue;
         };
+        let Some(resource) = functional_resource_for_kind(kind) else {
+            continue;
+        };
         let destination =
             if matches!(kind, ItemKind::Weapon | ItemKind::Armor) && colony.active_raid.is_none() {
                 source
             } else {
                 automatic_equipment_destination(colony, &cat_id, kind)
             };
+        let books_were_exact = equipment_books_are_exact(colony);
         let moved = colony.items.relocate(
             &item_id,
             ItemLocation::Carrier {
@@ -3553,6 +3658,8 @@ fn retrieve_automatic_functional_equipment(colony: &mut ColonyRuntime, now_ms: i
         });
         colony.cats[cat_index].destination = Some(position_from_world(destination));
         colony.cats[cat_index].activity = CatActivity::Returning;
+        reconcile_finite_equipment_projections(colony);
+        record_known_equipment_pile_move(colony, books_were_exact, &source_pile_id, resource);
     }
 }
 
@@ -4230,19 +4337,24 @@ fn clear_founding_interior(colony: &mut ColonyRuntime) {
 /// The communal claim extends one tile beyond terrain generation's guaranteed founding
 /// plateau. Carve a short south-gate approach so an unlucky mountain or river band cannot
 /// seal the shared hub before its first migrant, trader, or scout has mountain travel.
-fn clear_communal_gate_approach(colony: &mut ColonyRuntime) {
+fn communal_gate_approach_positions(colony: &ColonyRuntime) -> Vec<TilePos> {
     if colony.scale != VillageScale::Communal {
-        return;
+        return Vec::new();
     }
     let Some(gate) = retained_area_gate(colony) else {
-        return;
+        return Vec::new();
     };
     let delta = side_delta(gate.side);
-    for distance in 1..=MIGRANT_EXTERIOR_DISTANCE_TILES + 1 {
-        let pos = TilePos {
+    (1..=MIGRANT_EXTERIOR_DISTANCE_TILES + 1)
+        .map(|distance| TilePos {
             x: gate.x + delta.x * distance,
             y: gate.y + delta.y * distance,
-        };
+        })
+        .collect()
+}
+
+fn clear_communal_gate_approach(colony: &mut ColonyRuntime) {
+    for pos in communal_gate_approach_positions(colony) {
         let tile = colony
             .world_tiles
             .entry(pos)
@@ -4262,6 +4374,44 @@ fn clear_communal_gate_approach(colony: &mut ColonyRuntime) {
         tile.last_depleted = colony.created_at;
         tile.overlay_feature = Some("road_built".to_owned());
     }
+}
+
+/// Repair only terrain that blocks a pre-v2 communal gate route. Existing passable
+/// tiles remain byte-identical, including finite resources and authored overlays.
+/// Water keeps its source stock and becomes a bridge; mountains keep their resource
+/// payload while their impassable surface is lowered to meadow.
+fn repair_legacy_communal_gate_approach(colony: &mut ColonyRuntime) -> Vec<TilePos> {
+    let positions = communal_gate_approach_positions(colony);
+    let Some(gate) = retained_area_gate(colony) else {
+        return Vec::new();
+    };
+    let delta = side_delta(gate.side);
+    let bridge = if delta.x == 0 {
+        "bridge_built_v"
+    } else {
+        "bridge_built_h"
+    };
+    let mut repaired = Vec::new();
+    for pos in positions {
+        let Some(tile) = colony.world_tiles.get_mut(&pos) else {
+            continue;
+        };
+        let water = tile.tile_type == TileType::River
+            || tile.overlay_feature.as_deref() == Some("river")
+            || tile.resources.water > 0;
+        let mountain = tile.tile_type == TileType::Mountains;
+        if !water && !mountain {
+            continue;
+        }
+        if mountain {
+            tile.tile_type = TileType::Meadow;
+        }
+        if water {
+            tile.overlay_feature = Some(bridge.to_owned());
+        }
+        repaired.push(pos);
+    }
+    repaired
 }
 
 /// Convert a world tile to plain walkable meadow ground (used to clear water from under
@@ -4380,38 +4530,59 @@ pub fn ensure_shared_spatial_authority(state: &mut WorldState) {
         return;
     }
 
-    let mut order = (0..state.colonies.len()).collect::<Vec<_>>();
-    order.sort_by(|left, right| state.colonies[*left].id.cmp(&state.colonies[*right].id));
-    let mut shared = SharedSpatialState::current();
-    for index in order {
-        let colony = &state.colonies[index];
-        for (&pos, candidate) in &colony.world_tiles {
-            match shared.tiles.entry(pos) {
-                std::collections::btree_map::Entry::Vacant(entry) => {
-                    entry.insert(candidate.clone());
+    if state.shared_spatial.rules_version == 0 {
+        let mut order = (0..state.colonies.len()).collect::<Vec<_>>();
+        order.sort_by(|left, right| state.colonies[*left].id.cmp(&state.colonies[*right].id));
+        let mut shared = SharedSpatialState::current();
+        shared.rules_version = 1;
+        for index in order {
+            let colony = &state.colonies[index];
+            for (&pos, candidate) in &colony.world_tiles {
+                match shared.tiles.entry(pos) {
+                    std::collections::btree_map::Entry::Vacant(entry) => {
+                        entry.insert(candidate.clone());
+                    }
+                    std::collections::btree_map::Entry::Occupied(mut entry) => {
+                        merge_legacy_world_tile(entry.get_mut(), candidate);
+                    }
                 }
-                std::collections::btree_map::Entry::Occupied(mut entry) => {
-                    merge_legacy_world_tile(entry.get_mut(), candidate);
+            }
+            for (&pos, candidate) in &colony.fish_habitats {
+                match shared.fish_habitats.entry(pos) {
+                    std::collections::btree_map::Entry::Vacant(entry) => {
+                        entry.insert(*candidate);
+                    }
+                    std::collections::btree_map::Entry::Occupied(mut entry) => {
+                        let current = entry.get_mut();
+                        current.stock = current.stock.min(candidate.stock);
+                        current.capacity = current.capacity.max(candidate.capacity);
+                        current.last_replenished_at_ms = current
+                            .last_replenished_at_ms
+                            .max(candidate.last_replenished_at_ms);
+                    }
                 }
             }
         }
-        for (&pos, candidate) in &colony.fish_habitats {
-            match shared.fish_habitats.entry(pos) {
-                std::collections::btree_map::Entry::Vacant(entry) => {
-                    entry.insert(*candidate);
-                }
-                std::collections::btree_map::Entry::Occupied(mut entry) => {
-                    let current = entry.get_mut();
-                    current.stock = current.stock.min(candidate.stock);
-                    current.capacity = current.capacity.max(candidate.capacity);
-                    current.last_replenished_at_ms = current
-                        .last_replenished_at_ms
-                        .max(candidate.last_replenished_at_ms);
-                }
-            }
-        }
+        state.shared_spatial = shared;
+        sync_all_colonies_from_shared(state);
     }
-    state.shared_spatial = shared;
+
+    if state.shared_spatial.rules_version < 2 {
+        sync_all_colonies_from_shared(state);
+        let mut order = (0..state.colonies.len()).collect::<Vec<_>>();
+        order.sort_by(|left, right| state.colonies[*left].id.cmp(&state.colonies[*right].id));
+        for index in order {
+            sync_colony_from_shared(&state.shared_spatial, &mut state.colonies[index]);
+            let colony = &mut state.colonies[index];
+            let repaired = repair_legacy_communal_gate_approach(colony);
+            for pos in repaired {
+                if let Some(tile) = colony.world_tiles.get(&pos) {
+                    state.shared_spatial.tiles.insert(pos, tile.clone());
+                }
+            }
+        }
+        state.shared_spatial.rules_version = CURRENT_SHARED_SPATIAL_RULES_VERSION;
+    }
     sync_all_colonies_from_shared(state);
 }
 
@@ -6476,6 +6647,14 @@ fn phase_14_promote_queued_jobs_and_break_ground(
                 job.ends_at = None;
                 job.completed_at = None;
             }
+            if job.kind == JobKind::HaulGatherSpot
+                && matches!(job.metadata, JobMetadata::GatherHaul { .. })
+            {
+                // Physical pickup/arrival owns completion. Stall detection uses
+                // persisted progress metadata rather than exposing a false ETA.
+                job.ends_at = None;
+                job.completed_at = None;
+            }
             if job.kind == JobKind::BuildHouse
                 && matches!(
                     next_metadata,
@@ -6792,10 +6971,15 @@ fn phase_15_assign_promoted_job_destinations(
                 },
             },
             JobKind::HaulGatherSpot => match colony.jobs[job_index].metadata.clone() {
-                JobMetadata::GatherHaul { stockpile_id, .. } => JobMetadata::GatherHaul {
+                JobMetadata::GatherHaul {
+                    stockpile_id,
+                    last_progress_at,
+                    ..
+                } => JobMetadata::GatherHaul {
                     stockpile_id,
                     site: Some(site),
                     accepted: false,
+                    last_progress_at,
                 },
                 JobMetadata::StockpileHaul {
                     source_stockpile_id,
@@ -11856,6 +12040,7 @@ fn phase_25c_prosperity_migration(colony: &mut ColonyRuntime, gate: TickGate, wo
     };
     let previous_cohort_bucket = colony.migration_state.last_evaluated_cohort_bucket;
     let mut outcome = advance_migration(&policy, &mut colony.migration_state, &input);
+    let attempted_cohort_bucket = colony.migration_state.last_evaluated_cohort_bucket;
     let migration_exterior = (!outcome.arrivals.is_empty())
         .then(|| migrant_exterior_tile(colony, world_seed))
         .flatten();
@@ -11863,6 +12048,15 @@ fn phase_25c_prosperity_migration(colony: &mut ColonyRuntime, gate: TickGate, wo
         // A temporary staged fence or hazardous relocated gate must defer, not
         // consume, this deterministic cohort. Retrying the same bucket recreates
         // the same ids once the authoritative route opens.
+        if colony.migration_state.deferred_cohort_bucket != attempted_cohort_bucket {
+            append_event(
+                colony,
+                gate.processed_through,
+                EventKind::MigrationDeferred,
+                MIGRATION_DEFERRED_MESSAGE,
+            );
+        }
+        colony.migration_state.deferred_cohort_bucket = attempted_cohort_bucket;
         colony.migration_state.last_evaluated_cohort_bucket = previous_cohort_bucket;
         let blocked_ids = outcome
             .arrivals
@@ -11874,6 +12068,8 @@ fn phase_25c_prosperity_migration(colony: &mut ColonyRuntime, gate: TickGate, wo
             .probationary_migrants
             .retain(|migrant| !blocked_ids.contains(migrant.id.as_str()));
         outcome.arrivals.clear();
+    } else if !outcome.arrivals.is_empty() {
+        colony.migration_state.deferred_cohort_bucket = None;
     }
 
     for arrival in &outcome.arrivals {
@@ -14513,6 +14709,18 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
         }
 
         if moved {
+            for job in &mut colony.jobs {
+                if job.kind == JobKind::HaulGatherSpot
+                    && job.status == JobStatus::Active
+                    && job.assigned_cat.as_deref() == Some(cat_id.as_str())
+                    && current_task == task_for_job(JobKind::HaulGatherSpot)
+                    && let JobMetadata::GatherHaul {
+                        last_progress_at, ..
+                    } = &mut job.metadata
+                {
+                    *last_progress_at = Some(gate.processed_through);
+                }
+            }
             reveal_and_wear_walked_tiles(colony, movement, &walk.tiles, &cat_id);
         }
 
@@ -14630,9 +14838,87 @@ fn scout_travel_speed_factor(
 fn phase_p16_gather_spot_logistics(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u32) {
     expire_gather_spots(colony, gate.processed_through);
     complete_arrived_gather_haul_movers(colony, gate.processed_through);
+    cancel_stalled_gather_haul_movers(colony, gate.processed_through);
     if colony.officers.contains_key(&OfficerRole::Steward) {
         auto_designate_gather_spots(colony, gate.processed_through, world_seed);
         dispatch_gather_haul_movers(colony, gate.processed_through);
+    }
+}
+
+/// Release an outbound mover only after one full job duration without physical
+/// progress. A long but progressing route is never ended, and the public completion
+/// timestamp is not repurposed as a private stall deadline.
+fn cancel_stalled_gather_haul_movers(colony: &mut ColonyRuntime, now_ms: i64) {
+    for job in &mut colony.jobs {
+        if job.kind == JobKind::HaulGatherSpot
+            && job.status == JobStatus::Active
+            && let JobMetadata::GatherHaul {
+                last_progress_at, ..
+            } = &mut job.metadata
+            && last_progress_at.is_none()
+        {
+            *last_progress_at = Some(now_ms);
+        }
+    }
+    let stalled = colony
+        .jobs
+        .iter()
+        .filter(|job| {
+            job.kind == JobKind::HaulGatherSpot
+                && job.status == JobStatus::Active
+                && matches!(
+                    &job.metadata,
+                    JobMetadata::GatherHaul {
+                        last_progress_at,
+                        ..
+                    } if last_progress_at
+                        .unwrap_or(now_ms)
+                        .saturating_add(job.duration_ms.max(1)) <= now_ms
+                )
+                && job.assigned_cat.as_deref().is_none_or(|cat_id| {
+                    colony
+                        .cats
+                        .iter()
+                        .find(|cat| cat.id == cat_id && cat.death_time.is_none())
+                        .is_none_or(|cat| cat.carrying.is_none())
+                })
+        })
+        .map(|job| job.id.clone())
+        .collect::<Vec<_>>();
+    for job_id in stalled {
+        cancel_gather_haul_job(colony, &job_id, now_ms);
+    }
+}
+
+fn cancel_gather_haul_job(colony: &mut ColonyRuntime, job_id: &str, now_ms: i64) {
+    let Some((stored_id, cat_id, requested_by)) = colony.jobs.iter_mut().find_map(|job| {
+        (job.id == job_id
+            && job.kind == JobKind::HaulGatherSpot
+            && matches!(job.status, JobStatus::Queued | JobStatus::Active))
+        .then(|| {
+            job.status = JobStatus::Cancelled;
+            job.completed_at = Some(now_ms);
+            (job.id.clone(), job.assigned_cat.clone(), job.requested_by)
+        })
+    }) else {
+        return;
+    };
+    let _ = colony.items.release_job(&stored_id, false);
+    if let Some(cat_id) = cat_id
+        && let Some(cat) = colony.cats.iter_mut().find(|cat| cat.id == cat_id)
+        && cat.carrying.is_none()
+    {
+        cat.current_task = None;
+        cat.destination = None;
+        cat.activity = CatActivity::Idle;
+    }
+    if requested_by == JobRequester::Player {
+        append_event(
+            colony,
+            now_ms,
+            EventKind::JobCancelled,
+            "The requested gather haul was cancelled.",
+        );
     }
 }
 
@@ -14671,7 +14957,7 @@ pub(crate) fn cancel_gather_haul_jobs_for_spot(
     stockpile_id: &str,
     now_ms: i64,
 ) {
-    let cat_ids: Vec<CatId> = colony
+    let cancelled: Vec<(JobId, Option<CatId>)> = colony
         .jobs
         .iter_mut()
         .filter(|job| {
@@ -14682,17 +14968,20 @@ pub(crate) fn cancel_gather_haul_jobs_for_spot(
                     JobMetadata::GatherHaul { stockpile_id: id, .. } if id == stockpile_id
                 )
         })
-        .filter_map(|job| {
+        .map(|job| {
             job.status = JobStatus::Cancelled;
             job.completed_at = Some(now_ms);
-            job.assigned_cat.clone()
+            (job.id.clone(), job.assigned_cat.clone())
         })
         .collect();
 
-    for cat_id in cat_ids {
-        if let Some(cat) = colony.cats.iter_mut().find(|cat| cat.id == cat_id)
+    for (job_id, cat_id) in cancelled {
+        let _ = colony.items.release_job(&job_id, false);
+        if let Some(cat_id) = cat_id
+            && let Some(cat) = colony.cats.iter_mut().find(|cat| cat.id == cat_id)
             && cat.carrying.is_none()
         {
+            cat.current_task = None;
             cat.destination = None;
             cat.activity = CatActivity::Idle;
         }
@@ -15220,6 +15509,7 @@ fn dispatch_gather_haul_movers(colony: &mut ColonyRuntime, now_ms: i64) {
                 stockpile_id,
                 site: None,
                 accepted: false,
+                last_progress_at: Some(now_ms),
             },
         );
         farm_mover_in_flight |= is_farm_handoff;
@@ -18776,15 +19066,20 @@ pub(crate) fn building_station_capacity(colony: &ColonyRuntime, building: &Build
         .building(building.building_type.as_str())
         .capacity_mult
         .max(0.0);
-    let base_capacity = if building.building_type == BuildingType::Mill {
-        // The maintained masterwork-pastry recipe emits twelve Food before any
-        // yield research. A Mill must be able to hold one complete atomic batch;
-        // capacity research then scales that truthful working reserve normally.
-        12.0
-    } else {
-        stockpiles::STATION_LOCAL_CAPACITY
-    };
+    let base_capacity = maximum_station_resource_batch(colony, building.building_type)
+        .max(stockpiles::STATION_LOCAL_CAPACITY);
     base_capacity * multiplier
+}
+
+fn maximum_station_resource_batch(colony: &ColonyRuntime, building_type: BuildingType) -> f64 {
+    if building_type != BuildingType::Mill {
+        return 0.0;
+    }
+    let mut pastry =
+        food_plant_physical_recipe(crate::station_recipes::BAKE_MASTERWORK_PASTRY_RECIPE_ID)
+            .expect("the Mill catalog keeps its maximum atomic batch");
+    apply_food_plant_recipe_research(colony, &mut pastry);
+    pastry.output_per_cycle
 }
 
 fn deposit_stockpile_index(
@@ -19281,7 +19576,8 @@ fn queue_job_requested_by(
         click_count: 0,
         created_at: now_ms,
         started_at: (kind != JobKind::ReplantTree).then_some(now_ms),
-        ends_at: (kind != JobKind::ReplantTree).then_some(now_ms + duration_ms),
+        ends_at: (!matches!(kind, JobKind::ReplantTree | JobKind::HaulGatherSpot))
+            .then_some(now_ms + duration_ms),
         completed_at: None,
         metadata,
     });
@@ -20475,11 +20771,15 @@ fn accept_job(colony: &mut ColonyRuntime, job_index: usize, now_ms: i64) {
             wall_work_ms,
         },
         JobMetadata::GatherHaul {
-            stockpile_id, site, ..
+            stockpile_id,
+            site,
+            last_progress_at,
+            ..
         } => JobMetadata::GatherHaul {
             stockpile_id,
             site,
             accepted: true,
+            last_progress_at,
         },
         JobMetadata::StockpileHaul {
             source_stockpile_id,
@@ -28226,15 +28526,15 @@ fn credit_carrying(colony: &mut ColonyRuntime, carrying: &Carrying, deposit_at: 
                 let (x, y) = pile.center();
                 is_at_shrine(deposit_at, WorldPos { x, y })
             });
-        if !destination_exists
-            || !at_destination
-            || colony
-                .items
-                .instance(item_id)
-                .is_none_or(|instance| instance.location != expected || instance.credited)
-        {
+        let Some(item_kind) = colony.items.instance(item_id).and_then(|instance| {
+            (instance.location == expected && !instance.credited).then_some(instance.item.kind)
+        }) else {
+            return carrying.amount;
+        };
+        if !destination_exists || !at_destination {
             return carrying.amount;
         }
+        let books_were_exact = equipment_books_are_exact(colony);
         let credited = colony.items.credit_at(
             item_id,
             ItemLocation::Stockpile {
@@ -28243,6 +28543,9 @@ fn credit_carrying(colony: &mut ColonyRuntime, carrying: &Carrying, deposit_at: 
         );
         debug_assert!(credited);
         reconcile_finite_equipment_projections(colony);
+        if let Some(kind) = functional_resource_for_kind(item_kind) {
+            record_known_equipment_credit(colony, books_were_exact, pile_id, kind);
+        }
         return 0.0;
     }
     if let Some((plot_id, pile_id)) = parse_farm_cargo(carrying.source_gather_spot.as_deref()) {
@@ -28348,6 +28651,10 @@ fn credit_carrying(colony: &mut ColonyRuntime, carrying: &Carrying, deposit_at: 
                 headroom.min(carrying.amount)
             }
         });
+        let books_were_exact = matches!(
+            kind,
+            ResourceKind::Tools | ResourceKind::Weapons | ResourceKind::Armor
+        ) && equipment_books_are_exact(colony);
         stockpiles::add_resource(&mut colony.resources, kind, delivered);
         let destination_id = destination.map(|index| colony.stockpiles[index].id.clone());
         if let Some(destination) = destination {
@@ -28381,6 +28688,8 @@ fn credit_carrying(colony: &mut ColonyRuntime, carrying: &Carrying, deposit_at: 
                 );
                 debug_assert!(credited);
             }
+            reconcile_finite_equipment_projections(colony);
+            record_known_equipment_credit(colony, books_were_exact, &stockpile_id, kind);
         }
         // A destination can fill while this cat is en route. Keep any remainder
         // in its paws for ordinary rerouting; returning it to station output here
@@ -34337,6 +34646,7 @@ mod tests {
                 stockpile_id: "gather-1".to_owned(),
                 site: Some(world_pos_to_tile(gather_at)),
                 accepted: true,
+                last_progress_at: None,
             },
             ..JobRuntime::default()
         });
@@ -34453,6 +34763,7 @@ mod tests {
                 stockpile_id: "gather-1".to_owned(),
                 site: Some(world_pos_to_tile(gather_at)),
                 accepted: true,
+                last_progress_at: None,
             },
             ..JobRuntime::default()
         });
@@ -34530,6 +34841,7 @@ mod tests {
                 stockpile_id: "gather-1".to_owned(),
                 site: Some(world_pos_to_tile(gather_at)),
                 accepted: true,
+                last_progress_at: None,
             },
             ..JobRuntime::default()
         });
@@ -34601,6 +34913,7 @@ mod tests {
                 stockpile_id: "gather-blocks".to_owned(),
                 site: Some(world_pos_to_tile(gather_at)),
                 accepted: true,
+                last_progress_at: None,
             },
             ..JobRuntime::default()
         });
@@ -34666,6 +34979,7 @@ mod tests {
                 stockpile_id: gather_id.clone(),
                 site: Some(world_pos_to_tile(gather_at)),
                 accepted: true,
+                last_progress_at: None,
             },
             ..JobRuntime::default()
         });
@@ -34735,6 +35049,187 @@ mod tests {
     }
 
     #[test]
+    fn permanent_farm_handoff_retries_after_its_outbound_mover_stalls() {
+        let gather_id = farm_gather_spot_id("stalled");
+        let mut mover = adult_idle_cat("mover", "colony-1");
+        mover.current_task = Some(TaskType::Build);
+        mover.activity = CatActivity::Traveling;
+        mover.destination = Some(position_from_world(WorldPos { x: 30.0, y: 30.0 }));
+        let mut colony = ColonyRuntime {
+            id: "colony-1".to_owned(),
+            cats: vec![mover],
+            ..ColonyRuntime::default()
+        };
+        colony
+            .officers
+            .insert(OfficerRole::Steward, "mover".to_owned());
+        reconcile_colony_stockpiles(&mut colony);
+        let mut handoff = designated_pile(&gather_id, tile_rect(30, 30), &[ResourceKind::Grain]);
+        handoff.contents.grain = farming::FARM_BASKET_CAPACITY;
+        colony.stockpiles.push(handoff);
+        colony.resources.grain = farming::FARM_BASKET_CAPACITY;
+        colony.gather_spots.push(GatherSpot {
+            stockpile_id: gather_id.clone(),
+            kind: ResourceKind::Grain,
+            expires_at_ms: i64::MAX,
+            purpose: GatherSpotPurpose::General,
+        });
+        colony.jobs.push(JobRuntime {
+            id: "stalled-mover".to_owned(),
+            kind: JobKind::HaulGatherSpot,
+            status: JobStatus::Active,
+            assigned_cat: Some("mover".to_owned()),
+            duration_ms: 3_000,
+            started_at: Some(1_000),
+            ends_at: None,
+            metadata: JobMetadata::GatherHaul {
+                stockpile_id: gather_id.clone(),
+                site: Some(TilePos { x: 30, y: 30 }),
+                accepted: false,
+                last_progress_at: Some(1_000),
+            },
+            ..JobRuntime::default()
+        });
+        colony.jobs.push(JobRuntime {
+            id: "progressing-mover".to_owned(),
+            kind: JobKind::HaulGatherSpot,
+            status: JobStatus::Active,
+            assigned_cat: None,
+            duration_ms: 3_000,
+            started_at: Some(1_000),
+            ends_at: None,
+            metadata: JobMetadata::GatherHaul {
+                stockpile_id: gather_id.clone(),
+                site: Some(TilePos { x: 30, y: 30 }),
+                accepted: false,
+                last_progress_at: Some(4_999),
+            },
+            ..JobRuntime::default()
+        });
+
+        phase_p16_gather_spot_logistics(&mut colony, production_gate(1, 5_000), 42);
+
+        assert_eq!(
+            colony.jobs[0].status,
+            JobStatus::Cancelled,
+            "a permanent handoff must not stay pinned by a mover that stopped progressing"
+        );
+        assert!(colony.jobs.iter().skip(1).any(|job| {
+            job.kind == JobKind::HaulGatherSpot
+                && matches!(job.status, JobStatus::Queued | JobStatus::Active)
+                && matches!(
+                    &job.metadata,
+                    JobMetadata::GatherHaul { stockpile_id, .. } if stockpile_id == &gather_id
+                )
+        }));
+        assert_eq!(
+            colony.jobs[1].status,
+            JobStatus::Active,
+            "stall recovery cancels only the exact inactive mover"
+        );
+        assert!(
+            colony
+                .events
+                .iter()
+                .all(|event| event.kind != EventKind::JobCancelled),
+            "silent retries must not evict the player's event history"
+        );
+        assert_eq!(colony.resources.grain, farming::FARM_BASKET_CAPACITY);
+        assert_eq!(
+            colony
+                .stockpiles
+                .iter()
+                .find(|pile| pile.id == gather_id)
+                .expect("permanent handoff remains physical")
+                .contents
+                .grain,
+            farming::FARM_BASKET_CAPACITY
+        );
+    }
+
+    #[test]
+    fn player_requested_gather_haul_announces_stall_cancellation() {
+        let mut mover = adult_idle_cat("player-mover", "colony-1");
+        mover.current_task = Some(TaskType::Build);
+        mover.activity = CatActivity::Traveling;
+        mover.destination = Some(position_from_world(WorldPos { x: 30.0, y: 30.0 }));
+        let mut colony = ColonyRuntime {
+            id: "colony-1".to_owned(),
+            cats: vec![mover],
+            jobs: vec![JobRuntime {
+                id: "player-stalled-mover".to_owned(),
+                kind: JobKind::HaulGatherSpot,
+                status: JobStatus::Active,
+                requested_by: JobRequester::Player,
+                assigned_cat: Some("player-mover".to_owned()),
+                duration_ms: 3_000,
+                created_at: 1_000,
+                started_at: Some(1_000),
+                ends_at: None,
+                metadata: JobMetadata::GatherHaul {
+                    stockpile_id: "player-gather".to_owned(),
+                    site: Some(TilePos { x: 30, y: 30 }),
+                    accepted: false,
+                    last_progress_at: Some(1_000),
+                },
+                ..JobRuntime::default()
+            }],
+            ..ColonyRuntime::default()
+        };
+
+        cancel_stalled_gather_haul_movers(&mut colony, 4_000);
+
+        assert_eq!(colony.jobs[0].status, JobStatus::Cancelled);
+        assert!(colony.events.iter().any(|event| {
+            event.kind == EventKind::JobCancelled
+                && event.at_ms == 4_000
+                && event.message.contains("gather")
+        }));
+    }
+
+    #[test]
+    fn legacy_gather_haul_gets_one_full_stall_grace_period() {
+        let mut colony = ColonyRuntime {
+            id: "colony-1".to_owned(),
+            cats: vec![adult_idle_cat("legacy-mover", "colony-1")],
+            jobs: vec![JobRuntime {
+                id: "legacy-gather-mover".to_owned(),
+                kind: JobKind::HaulGatherSpot,
+                status: JobStatus::Active,
+                requested_by: JobRequester::Leader,
+                assigned_cat: Some("legacy-mover".to_owned()),
+                duration_ms: 3_000,
+                created_at: 1_000,
+                started_at: Some(1_000),
+                ends_at: None,
+                metadata: JobMetadata::GatherHaul {
+                    stockpile_id: "legacy-gather".to_owned(),
+                    site: Some(TilePos { x: 30, y: 30 }),
+                    accepted: false,
+                    last_progress_at: None,
+                },
+                ..JobRuntime::default()
+            }],
+            ..ColonyRuntime::default()
+        };
+
+        cancel_stalled_gather_haul_movers(&mut colony, 100_000);
+        assert_eq!(colony.jobs[0].status, JobStatus::Active);
+        assert!(matches!(
+            colony.jobs[0].metadata,
+            JobMetadata::GatherHaul {
+                last_progress_at: Some(100_000),
+                ..
+            }
+        ));
+
+        cancel_stalled_gather_haul_movers(&mut colony, 102_999);
+        assert_eq!(colony.jobs[0].status, JobStatus::Active);
+        cancel_stalled_gather_haul_movers(&mut colony, 103_000);
+        assert_eq!(colony.jobs[0].status, JobStatus::Cancelled);
+    }
+
+    #[test]
     fn expired_gather_spot_is_cleared_folds_contents_back_and_cancels_its_mover() {
         let mut colony = ColonyRuntime {
             id: "colony-1".to_owned(),
@@ -34761,6 +35256,7 @@ mod tests {
                 stockpile_id: "gather-1".to_owned(),
                 site: Some(TilePos { x: 30, y: 30 }),
                 accepted: false,
+                last_progress_at: Some(9_999),
             },
             ..JobRuntime::default()
         });
@@ -36658,6 +37154,26 @@ mod tests {
         assert!(
             baseline.resources.lumber > 0.0,
             "passive processor campaign never delivered output"
+        );
+    }
+
+    #[test]
+    fn station_capacity_tracks_the_largest_catalog_batch_and_owned_yield_effects() {
+        let mut colony = chain_colony(BuildingType::Mill, Resources::default(), false);
+        colony.upgrade_tree.owned_node_ids.clear();
+        assert_eq!(
+            building_station_capacity(&colony, &colony.buildings[0]),
+            12.0,
+            "the masterwork pastry batch defines the Mill's base working reserve"
+        );
+
+        colony
+            .upgrade_tree
+            .owned_node_ids
+            .push("baking_sources".to_owned());
+        assert!(
+            (building_station_capacity(&colony, &colony.buildings[0]) - 13.2).abs() < 1.0e-9,
+            "yield research must not make an atomic catalog batch exceed local capacity"
         );
     }
 
@@ -45416,6 +45932,11 @@ mod tests {
         let mut colony = chain_colony(BuildingType::Woodworking, Resources::default(), true);
         colony.finite_equipment_rules_version = CURRENT_FINITE_EQUIPMENT_RULES_VERSION;
         ensure_station_stores(&mut colony, 0);
+        colony.stock_ledger = StockLedger::counted_with_piles(
+            &colony.resources,
+            &colony.stockpiles,
+            colony.last_tick,
+        );
         let building = colony.buildings[0].clone();
         add_functional_station_output(&mut colony, &building.id, ResourceKind::Tools, 1);
         reconcile_finite_equipment_projections(&mut colony);
@@ -45451,6 +45972,17 @@ mod tests {
         assert!(matches!(delivered.location, ItemLocation::Stockpile { .. }));
         assert_eq!(colony.resources.tools, 1.0);
         assert_eq!(colony.items.count_kind(ItemKind::Tool), 1);
+        assert!(equipment_books_are_exact(&colony));
+        let ItemLocation::Stockpile { stockpile_id } = &delivered.location else {
+            unreachable!("delivered tool location was already checked")
+        };
+        assert_eq!(
+            colony.stock_ledger.pile_reports[stockpile_id]
+                .reported
+                .tools,
+            1.0,
+            "the observed station handoff keeps the destination equipment report exact"
+        );
     }
 
     #[test]
@@ -45733,6 +46265,11 @@ mod tests {
             .pop()
             .unwrap();
         reconcile_finite_equipment_projections(&mut colony);
+        colony.stock_ledger = StockLedger::counted_with_piles(
+            &colony.resources,
+            &colony.stockpiles,
+            colony.last_tick,
+        );
         let (x, y) = colony
             .stockpiles
             .iter()
@@ -45740,6 +46277,22 @@ mod tests {
             .unwrap()
             .center();
         colony.cats[0].position = position_from_world(WorldPos { x, y });
+
+        let mut stale = colony.clone();
+        stale.stock_ledger.reported.tools = 0.0;
+        stale
+            .stock_ledger
+            .pile_reports
+            .get_mut(&pile_id)
+            .unwrap()
+            .reported
+            .tools = 0.0;
+        retrieve_automatic_functional_equipment(&mut stale, 1_000);
+        assert_eq!(stale.stock_ledger.reported.tools, 0.0);
+        assert_eq!(
+            stale.stock_ledger.pile_reports[&pile_id].reported.tools, 0.0,
+            "automatic retrieval must not refresh a stale equipment report"
+        );
 
         retrieve_automatic_functional_equipment(&mut colony, 1_000);
         assert_eq!(
@@ -45749,6 +46302,11 @@ mod tests {
             }
         );
         assert_eq!(colony.resources.tools, 1.0, "ownership never flickers");
+        assert!(equipment_books_are_exact(&colony));
+        assert_eq!(
+            colony.stock_ledger.pile_reports[&pile_id].reported.tools, 0.0,
+            "fresh books follow the exact identity out of storage"
+        );
         reconcile_finite_equipment_projections(&mut colony);
         assert_eq!(
             colony
@@ -45770,6 +46328,78 @@ mod tests {
             }
         );
         assert_eq!(colony.resources.tools, 1.0);
+    }
+
+    #[test]
+    fn matching_equipment_total_does_not_launder_stale_pile_reports() {
+        let mut colony = chain_colony(BuildingType::Workshop, Resources::default(), true);
+        colony.finite_equipment_rules_version = CURRENT_FINITE_EQUIPMENT_RULES_VERSION;
+        let pile_id = colony
+            .stockpiles
+            .iter()
+            .find(|pile| pile.is_general_storehouse())
+            .expect("general storehouse")
+            .id
+            .clone();
+        let tool_id = seed_stored_functional_items(&mut colony, ResourceKind::Tools, 1)
+            .pop()
+            .expect("stored tool");
+        colony.stockpiles.push(designated_pile(
+            "stale-location-book",
+            tile_rect(30, 30),
+            &[ResourceKind::Tools],
+        ));
+        reconcile_finite_equipment_projections(&mut colony);
+        colony.stock_ledger = StockLedger::counted_with_piles(
+            &colony.resources,
+            &colony.stockpiles,
+            colony.last_tick,
+        );
+        colony
+            .stock_ledger
+            .pile_reports
+            .get_mut(&pile_id)
+            .expect("storehouse report")
+            .reported
+            .tools = 0.0;
+        colony
+            .stock_ledger
+            .pile_reports
+            .get_mut("stale-location-book")
+            .expect("second pile report")
+            .reported
+            .tools = 1.0;
+
+        assert_eq!(colony.stock_ledger.reported.tools, colony.resources.tools);
+        assert!(
+            !equipment_books_are_exact(&colony),
+            "a correct aggregate must not hide that the tool is reported in the wrong pile"
+        );
+        let reports_before = colony.stock_ledger.clone();
+        let source = colony
+            .stockpiles
+            .iter()
+            .find(|pile| pile.id == pile_id)
+            .expect("tool source")
+            .center();
+        colony.cats[0].position = position_from_world(WorldPos {
+            x: source.0,
+            y: source.1,
+        });
+        retrieve_automatic_functional_equipment(&mut colony, 1_000);
+
+        assert!(matches!(
+            &colony
+                .items
+                .instance(&tool_id)
+                .expect("tool remains")
+                .location,
+            ItemLocation::Carrier { .. }
+        ));
+        assert_eq!(
+            colony.stock_ledger, reports_before,
+            "automatic movement must not refresh or rebalance stale location books"
+        );
     }
 
     #[test]
@@ -46530,6 +47160,11 @@ mod tests {
         let tool_id = seed_stored_functional_items(&mut colony, ResourceKind::Tools, 1)
             .pop()
             .unwrap();
+        colony.stock_ledger = StockLedger::counted_with_piles(
+            &colony.resources,
+            &colony.stockpiles,
+            colony.last_tick,
+        );
         let source = colony
             .stockpiles
             .iter()
@@ -46543,6 +47178,13 @@ mod tests {
         retrieve_automatic_functional_equipment(&mut colony, 1_000);
         complete_equipment_retrieval(&mut colony, &cat_id, &tool_id);
         assert!(colony.items.instance(&tool_id).unwrap().auto_issued);
+        assert!(equipment_books_are_exact(&colony));
+        assert_eq!(
+            colony.stock_ledger.pile_reports[stockpiles::GENERAL_STOREHOUSE_ID]
+                .reported
+                .tools,
+            0.0
+        );
 
         colony
             .cats
@@ -46567,6 +47209,14 @@ mod tests {
             colony.items.instance(&tool_id).unwrap().location,
             ItemLocation::Stockpile { .. }
         ));
+        assert!(equipment_books_are_exact(&colony));
+        assert_eq!(
+            colony.stock_ledger.pile_reports[stockpiles::GENERAL_STOREHOUSE_ID]
+                .reported
+                .tools,
+            1.0,
+            "the completed automatic return restores the exact pile report"
+        );
 
         let destination = ItemLocation::Equipped {
             cat_id: cat_id.clone(),
@@ -50553,6 +51203,66 @@ mod tests {
         }
         assert!(colony.world_tiles[&pos(20, 6)].path_wear >= 64);
         assert!(colony.world_tiles[&pos(22, 6)].path_wear >= 64);
+    }
+
+    #[test]
+    fn diverted_cat_movement_does_not_refresh_gather_haul_progress() {
+        let mut cat = adult_idle_cat("diverted-mover", "colony-1");
+        cat.position = Position {
+            map: MapType::World,
+            x: 20.0,
+            y: 6.0,
+        };
+        cat.destination = Some(Position {
+            map: MapType::World,
+            x: 22.0,
+            y: 6.0,
+        });
+        cat.activity = CatActivity::Traveling;
+        cat.current_task = Some(TaskType::Patrol);
+        let mut colony = ColonyRuntime {
+            id: "colony-1".to_owned(),
+            resources: plentiful_resources(),
+            cats: vec![cat],
+            jobs: vec![JobRuntime {
+                id: "diverted-gather-haul".to_owned(),
+                kind: JobKind::HaulGatherSpot,
+                status: JobStatus::Active,
+                assigned_cat: Some("diverted-mover".to_owned()),
+                duration_ms: 3_000,
+                metadata: JobMetadata::GatherHaul {
+                    stockpile_id: "gather-diverted".to_owned(),
+                    site: Some(TilePos { x: 30, y: 30 }),
+                    accepted: true,
+                    last_progress_at: Some(1_000),
+                },
+                ..JobRuntime::default()
+            }],
+            world_tiles: walking_leg_world_tiles(20, 22),
+            test_rng_seed: Some(123),
+            ..ColonyRuntime::default()
+        };
+        let movement = walking_leg_movement_context(&colony);
+
+        phase_34_movement_travel_job_acceptance_reveal_path_wear(
+            &mut colony,
+            TickGate {
+                elapsed_sec: 8,
+                processed_through: 8_000,
+                minute_rolled: false,
+                previous_water: 0,
+            },
+            &movement,
+        );
+
+        assert_eq!(colony.cats[0].position.x, 22.0, "fixture cat did not move");
+        assert!(matches!(
+            colony.jobs[0].metadata,
+            JobMetadata::GatherHaul {
+                last_progress_at: Some(1_000),
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -54582,6 +55292,76 @@ mod tests {
         assert_eq!(current.resources.gem, 1);
         assert_eq!(current.resources.clay, 7);
         assert_eq!(current.resources.sand, 9);
+    }
+
+    #[test]
+    fn version_one_communal_world_repairs_its_gate_approach_once() {
+        let mut world = new_world(42);
+        world
+            .colonies
+            .push(found_global_colony(42, "colony-1", 1_000, 42));
+        register_colony_spatial(&mut world, 0);
+        let approach = communal_gate_approach_positions(&world.colonies[0]);
+        assert!(!approach.is_empty());
+        for pos in &approach {
+            let blocked = world.shared_spatial.tiles.get_mut(pos).unwrap();
+            blocked.tile_type = TileType::Mountains;
+            blocked.resources.water = 1;
+            blocked.overlay_feature = Some("river".to_owned());
+        }
+        sync_all_colonies_from_shared(&mut world);
+        world.shared_spatial.rules_version = 1;
+
+        ensure_shared_spatial_authority(&mut world);
+
+        assert_eq!(
+            world.shared_spatial.rules_version,
+            CURRENT_SHARED_SPATIAL_RULES_VERSION
+        );
+        assert_eq!(world.shared_spatial.rules_version, 2);
+        for pos in &approach {
+            let repaired = &world.shared_spatial.tiles[pos];
+            assert_eq!(repaired.tile_type, TileType::Meadow);
+            assert_eq!(repaired.resources.water, 1);
+            assert!(matches!(
+                repaired.overlay_feature.as_deref(),
+                Some("bridge_built_h" | "bridge_built_v")
+            ));
+            assert_eq!(world.colonies[0].world_tiles[pos], *repaired);
+        }
+
+        let repaired_once = world.clone();
+        ensure_shared_spatial_authority(&mut world);
+        assert_eq!(
+            world, repaired_once,
+            "the version-two migration is idempotent"
+        );
+    }
+
+    #[test]
+    fn version_one_gate_repair_preserves_passable_resource_tiles() {
+        let mut world = new_world(42);
+        world
+            .colonies
+            .push(found_global_colony(42, "colony-1", 1_000, 42));
+        register_colony_spatial(&mut world, 0);
+        let approach = communal_gate_approach_positions(&world.colonies[0]);
+        let resource_pos = approach[0];
+        let tile = world.shared_spatial.tiles.get_mut(&resource_pos).unwrap();
+        tile.tile_type = TileType::Meadow;
+        tile.resources.clay = 7;
+        tile.resources.gem = 3;
+        tile.max_resources.food = 11;
+        tile.overlay_feature = Some("ancient_road".to_owned());
+        let expected = tile.clone();
+        sync_all_colonies_from_shared(&mut world);
+        world.shared_spatial.rules_version = 1;
+
+        ensure_shared_spatial_authority(&mut world);
+
+        assert_eq!(world.shared_spatial.rules_version, 2);
+        assert_eq!(world.shared_spatial.tiles[&resource_pos], expected);
+        assert_eq!(world.colonies[0].world_tiles[&resource_pos], expected);
     }
 
     #[test]
@@ -58722,6 +59502,70 @@ mod tests {
                 tile_pos_to_world(position)
             ));
         }
+    }
+
+    #[test]
+    fn blocked_migration_emits_once_per_deferred_episode() {
+        let mut colony = found_colony(4242, "colony-1", 0, 4242);
+        colony.resources.food = 200.0;
+        colony.resources.water = 200.0;
+        colony.resources.materials = 200.0;
+        let passable_tiles = colony.world_tiles.clone();
+        for (pos, tile) in &mut colony.world_tiles {
+            if !colony.claimed_tiles.contains(pos) {
+                tile.resources.water = 1;
+            }
+        }
+
+        phase_25c_prosperity_migration(&mut colony, production_gate(60, 30 * 60 * 60_000), 4242);
+        phase_25c_prosperity_migration(
+            &mut colony,
+            production_gate(60, 30 * 60 * 60_000 + 60_000),
+            4242,
+        );
+
+        assert!(colony.migration_state.probationary_migrants.is_empty());
+        let deferred = colony
+            .events
+            .iter()
+            .filter(|event| {
+                event.kind == EventKind::MigrationDeferred
+                    && event.message == MIGRATION_DEFERRED_MESSAGE
+            })
+            .count();
+        assert_eq!(
+            deferred, 1,
+            "blocked retries emit one actionable diagnostic"
+        );
+        assert!(colony.migration_state.deferred_cohort_bucket.is_some());
+
+        colony.world_tiles = passable_tiles;
+        phase_25c_prosperity_migration(
+            &mut colony,
+            production_gate(60, 30 * 60 * 60_000 + 120_000),
+            4242,
+        );
+        assert!(
+            !colony.migration_state.probationary_migrants.is_empty(),
+            "opening the route admits the deferred deterministic cohort"
+        );
+        assert_eq!(colony.migration_state.deferred_cohort_bucket, None);
+
+        for (pos, tile) in &mut colony.world_tiles {
+            if !colony.claimed_tiles.contains(pos) {
+                tile.resources.water = 1;
+            }
+        }
+        phase_25c_prosperity_migration(&mut colony, production_gate(60, 42 * 60 * 60_000), 4242);
+        assert_eq!(
+            colony
+                .events
+                .iter()
+                .filter(|event| event.kind == EventKind::MigrationDeferred)
+                .count(),
+            2,
+            "a later blocked cohort starts a new observable episode"
+        );
     }
 
     #[test]

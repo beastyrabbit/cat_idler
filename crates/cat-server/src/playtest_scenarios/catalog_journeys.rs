@@ -2329,6 +2329,13 @@ async fn run_item_variant_catalog(seed: u32) -> Result<(), EntryFailure> {
         })?;
     }
     milestones.complete("all-equipment-unequipped");
+    harness
+        .advance_by(&mut client, 1)
+        .await
+        .map_err(|message| EntryFailure {
+            id: "item-variants".to_owned(),
+            message: format!("project final equipment actions: {message}"),
+        })?;
     let before = item_variant_projection(client.snapshot());
     let restarted = harness
         .restart_and_reconnect(client, &actor)

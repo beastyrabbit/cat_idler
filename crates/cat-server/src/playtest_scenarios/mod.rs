@@ -509,6 +509,7 @@ fn forgejo_and_nextest_files_keep_the_capped_execution_contract() {
     let nightly = include_str!("../../../../.forgejo/workflows/nightly-playtests.yaml");
     let coverage = include_str!("../../../../.forgejo/workflows/weekly-coverage.yaml");
     let nextest = include_str!("../../../../.config/nextest.toml");
+    let testing = include_str!("../../../../docs/TESTING.md");
     let required_quality = [
         "workflow_dispatch:",
         "cancel-in-progress: true",
@@ -519,7 +520,9 @@ fn forgejo_and_nextest_files_keep_the_capped_execution_contract() {
         "resources.txt",
         "runs-on: personal",
         "needs: quick",
+        "timeout-minutes: 45",
         "Enforce browser transfer budget",
+        "budget_bytes=\"$((12 * 1024 * 1024))\"",
         "target/playtest-traces/",
         "target/nextest/ci/",
         "GITHUB_STEP_SUMMARY",
@@ -538,13 +541,28 @@ fn forgejo_and_nextest_files_keep_the_capped_execution_contract() {
         1,
         "the full gate must run one unpartitioned workspace inventory"
     );
+    assert_eq!(
+        quality.matches("timeout-minutes: 45").count(),
+        2,
+        "the quick and WASM jobs must retain their documented timeout"
+    );
+    for needle in [
+        "45-minute timeout",
+        "30 minutes",
+        "120-minute per-test cap",
+        "12 MiB gzip transfer ceiling",
+    ] {
+        assert!(testing.contains(needle), "testing docs lost {needle:?}");
+    }
     for needle in [
         "workflow_dispatch:",
         "cron: \"30 8 * * *\"",
         "timeout-minutes: 180",
         "CAT_PLAYTEST_SEED_TIER: nightly",
         "runs-on: cat-idler-heavy",
+        "cargo nextest run -p cat-server --profile nightly",
         "nightly-resources.txt",
+        "target/nextest/nightly/",
         "target/playtest-traces/",
         "GITHUB_STEP_SUMMARY",
     ] {
@@ -559,6 +577,7 @@ fn forgejo_and_nextest_files_keep_the_capped_execution_contract() {
         "lcov.info",
         "coverage-html",
         "actual + 0.5",
+        "steps.coverage-tests.outcome == 'success'",
         "resources.txt",
         "target/playtest-traces/",
         "GITHUB_STEP_SUMMARY",
@@ -572,7 +591,12 @@ fn forgejo_and_nextest_files_keep_the_capped_execution_contract() {
         "[profile.ci]",
         "fail-fast = false",
         "test-threads = 2",
+        "slow-timeout = { period = \"300s\", terminate-after = 6 }",
         "[profile.ci.junit]",
+        "[profile.nightly]",
+        "inherits = \"ci\"",
+        "slow-timeout = { period = \"300s\", terminate-after = 24 }",
+        "[profile.nightly.junit]",
         "test-group = 'singleton'",
     ] {
         assert!(nextest.contains(needle), "Nextest config lost {needle:?}");

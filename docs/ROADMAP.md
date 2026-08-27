@@ -46,49 +46,11 @@ Ranking is by player impact; sizes are S (<1 day), M (~1–3 days), L (>3 days).
 9. **Remaining crafted-goods glyphs** [S] — replace the last generic `goods` fallbacks
    (`docs/assets/items_ui.md`).
 
-## Known red: playtest scenario journeys (full suite only)
-
-The `cat-server` real-socket scenario harness (nightly / full-suite tier) has deterministic
-reds on `main`. The merge-gating quick profile is green; these are exhaustive-inventory
-failures, several seeded only under `CAT_PLAYTEST_SEED_TIER=high-risk`. Fixture bugs found and
-fixed in this pass: the field parcel now clears generated terrain, and the Captain fixture owns
-the Barracks prerequisite plus an exclusive exact warrior. The shared haul bug is fixed (see
-Done); what remains open is per-journey tails:
-
-- **FIXED: station-output haul starvation** — HaulGatherSpot jobs carried a queue-time
-  `ends_at` stamp and were force-completed by the generic due-jobs phase while the mover was
-  still walking, so any handoff farther than one job-duration never delivered. Crops rotted in
-  farm handoffs ("awaiting physical haulage" forever). Now excluded from deadline completion
-  like CarryOffering; the crop-yield journey is green again.
-- **Captain weapon last mile — root-caused, needs a design decision.** The physical journey
-  is proven correct end-to-end (instrumented runs: ore→metal→weapon crafted, hauled, credited,
-  and `Equipped { cat-28 }` within ~40 min sim time, stable for hours). What fails is
-  *observation*: the socket privacy projection (`redact_exact_functional_equipment`) strips
-  tool/weapon/armor identities unless the Accountant's ledger is exactly current at the instant
-  a snapshot is built, and the leader director's constant hunting mutates food faster than any
-  observer can catch an accurate window. Resolution options: (a) let the fixture world go quiet
-  after the credit (suppress hunts), (b) expose exact equipment to the colony's controlling
-  player whenever their own session caused the change, or (c) observe through a server-side
-  attestation instead of the wire. Pick one, then the scenario goes green without weakening it.
-  Fixture prerequisites landed meanwhile: Barracks (Captain office survival) and a staffed
-  Accounting Tent (required for any exposure at all).
-- **ReplantTree stump reachability — partially fixed.** The static A* reachability pre-filter
-  on replant sites flapped while walls staged and the claimed ring grew, rejecting stumps the
-  colony itself had just felled; it is removed in favour of logging's contract (movers route,
-  validation doesn't path-probe). Residual: with the director's near-total employment fill,
-  eager `RequestJob` worker assignment races single-tick idle windows ("No available worker"
-  despite a just-idle cat). Options: queue player jobs unassigned until a worker frees up, or
-  widen `select_best_cat` to traveling-but-taskless cats.
-- **System-journey tails** (each its own investigation): poor-guidance runs lack bounded
-  visible consequences; prosperous migration produces no physical arrival; an appointed
-  Loremaster shows no owned automation effect; trader visit 2 restocks identically to visit 1;
-  peer-shrine contact flag never sets after a completed scout exchange.
-
 ## Infrastructure / project health
 
 - **First green CI run** — the new serialized gates are live; confirm the first full
   `cat-idler-heavy` suite passes on `main` and keep the nightly playtest schedule honest.
-- **WASM bundle** — 9.1 MB gzip / ~40 PNG fetches; atlasing + asset manifest per
+- **WASM bundle** — the maintained gzip budget is documented in `docs/TESTING.md`; atlasing + asset manifest per
   `docs/migration/WASM.md` is the biggest web-playability lever. Large-colony wasm perf unmeasured.
 - **Snapshot/persistence scaling (profiling-gated)** — dirty-tracked SQLite saves and delta WS
   snapshots are pre-scoped in `docs/reviews/RESOLUTION.md`; drive with profiling data first.

@@ -563,12 +563,76 @@ fn guidance_setup(world: &mut WorldState) {
     colony.test_critical_ms_override = 10_000;
 }
 
-#[derive(Debug, Clone, Copy)]
+const MIN_VISIBLE_AVERAGE_NEED_DEFICIT: f64 = 0.5;
+
+#[derive(Debug, Clone, Copy, Default)]
 struct GuidanceOutcome {
-    stores: f64,
+    reported_stores: f64,
+    report_age_ms: i64,
     population: u32,
+    deaths: usize,
+    survival_death_events: usize,
+    migration_departures: u64,
+    average_food_water_deficit: f64,
+    lowest_hunger: f64,
+    lowest_thirst: f64,
+    lowest_health: f64,
     revealed: usize,
     resets: usize,
+}
+
+fn poor_guidance_has_visible_survival_cost(guided: GuidanceOutcome, poor: GuidanceOutcome) -> bool {
+    let reports_are_current = guided.report_age_ms <= cat_sim::ledger::ACCOUNTING_ROUND_INTERVAL_MS
+        && poor.report_age_ms <= cat_sim::ledger::ACCOUNTING_ROUND_INTERVAL_MS;
+    poor.survival_death_events > guided.survival_death_events
+        || poor.deaths > guided.deaths
+        || poor.migration_departures > guided.migration_departures
+        || poor.population < guided.population
+        || poor.average_food_water_deficit
+            > guided.average_food_water_deficit + MIN_VISIBLE_AVERAGE_NEED_DEFICIT
+        || (reports_are_current && poor.reported_stores + 1.0 < guided.reported_stores)
+}
+
+#[test]
+fn stale_accountant_totals_cannot_prove_a_poor_guidance_cost() {
+    let guided = GuidanceOutcome {
+        reported_stores: 300.0,
+        report_age_ms: 600_000,
+        population: 30,
+        ..GuidanceOutcome::default()
+    };
+    let stale_poor = GuidanceOutcome {
+        reported_stores: 0.0,
+        ..guided
+    };
+    assert!(
+        !poor_guidance_has_visible_survival_cost(guided, stale_poor),
+        "an unstaffed Accountant's old totals cannot establish a current economic outcome"
+    );
+
+    let current_guided = GuidanceOutcome {
+        report_age_ms: 30_000,
+        ..guided
+    };
+    let current_poor = GuidanceOutcome {
+        reported_stores: 250.0,
+        ..current_guided
+    };
+    assert!(poor_guidance_has_visible_survival_cost(
+        current_guided,
+        current_poor
+    ));
+
+    let noisy_single_cat_minimum = GuidanceOutcome {
+        lowest_hunger: current_guided.lowest_hunger - 2.0,
+        lowest_thirst: current_guided.lowest_thirst - 2.0,
+        lowest_health: current_guided.lowest_health - 2.0,
+        ..current_guided
+    };
+    assert!(
+        !poor_guidance_has_visible_survival_cost(current_guided, noisy_single_cat_minimum),
+        "single-cat minima are diagnostics, not an independently sufficient outcome"
+    );
 }
 
 async fn run_signed_guidance(
@@ -580,7 +644,7 @@ async fn run_signed_guidance(
         .map_err(|error| bootstrap_failure(EXECUTABLE_SCENARIO_IDS[0], seed, error))?;
     for _ in 0..120 {
         let targets: &[(JobKind, usize)] = if poor {
-            &[(JobKind::Explore, 1), (JobKind::Quarry, 1)]
+            &[(JobKind::Explore, 1), (JobKind::Quarry, 8)]
         } else {
             &[
                 (JobKind::HuntExpedition, 6),
@@ -615,10 +679,57 @@ async fn run_signed_guidance(
         }
         journey.advance(5_000).await?;
     }
+    let now = journey.last_snapshot.now;
     let colony = selected(&journey.last_snapshot);
+    let living = colony
+        .cats
+        .iter()
+        .filter(|cat| cat.death_time.is_none())
+        .collect::<Vec<_>>();
+    let living_count = living.len().max(1) as f64;
     let outcome = GuidanceOutcome {
-        stores: colony.resources.food + colony.resources.water,
+        reported_stores: colony.resources.food + colony.resources.water,
+        report_age_ms: colony
+            .stock_ledger
+            .as_ref()
+            .map_or(i64::MAX, |ledger| now.saturating_sub(ledger.last_counted)),
         population: colony.housing.population,
+        deaths: colony
+            .cats
+            .iter()
+            .filter(|cat| cat.death_time.is_some())
+            .count(),
+        survival_death_events: colony
+            .events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event.kind.as_str(),
+                    "death_starvation" | "death_dehydration" | "death_starvation_and_dehydration"
+                )
+            })
+            .count(),
+        migration_departures: colony.housing.departures,
+        average_food_water_deficit: living
+            .iter()
+            .map(|cat| 200.0 - cat.needs.hunger - cat.needs.thirst)
+            .sum::<f64>()
+            / living_count,
+        lowest_hunger: living
+            .iter()
+            .map(|cat| cat.needs.hunger)
+            .reduce(f64::min)
+            .unwrap_or(0.0),
+        lowest_thirst: living
+            .iter()
+            .map(|cat| cat.needs.thirst)
+            .reduce(f64::min)
+            .unwrap_or(0.0),
+        lowest_health: living
+            .iter()
+            .map(|cat| cat.needs.health)
+            .reduce(f64::min)
+            .unwrap_or(0.0),
         revealed: colony.revealed_tiles.len(),
         resets: colony
             .events
@@ -634,7 +745,7 @@ async fn poor_decisions(seed: u32) -> Result<(), JourneyFailure> {
     let (mut poor_journey, poor) = run_signed_guidance(seed, true).await?;
     if guided.resets > 1
         || poor.resets > 1
-        || (poor.stores >= guided.stores && poor.population >= guided.population)
+        || !poor_guidance_has_visible_survival_cost(guided, poor)
         || poor.revealed < guided.revealed
     {
         return Err(poor_journey.failure(format!(
@@ -753,7 +864,7 @@ async fn housing_migration(seed: u32) -> Result<(), JourneyFailure> {
     let initial_water = initial.resources.water;
     let initial_materials = initial.resources.materials;
     let arrival = journey
-        .eventually(2 * 60 * 60_000, 60_000, |snapshot| {
+        .eventually(2 * 60 * 60_000, 1_000, |snapshot| {
             selected(snapshot)
                 .cats
                 .iter()
@@ -860,6 +971,8 @@ async fn housing_lifecycle(seed: u32) -> Result<(), JourneyFailure> {
 fn officer_setup(world: &mut WorldState) {
     common_setup(world);
     let colony = &mut world.colonies[0];
+    colony.run_started_at = START_MS - 31 * 60 * 60_000;
+    colony.leader_id = colony.cats.last().map(|cat| cat.id.clone());
     let anchor = colony.anchor;
     for (index, role) in OfficerRole::ALL.iter().copied().enumerate() {
         let prerequisite = prerequisite_for(role);
@@ -985,6 +1098,12 @@ async fn officers(seed: u32) -> Result<(), JourneyFailure> {
         .take(OfficerRole::ALL.len())
         .map(|cat| cat.id.clone())
         .collect::<Vec<_>>();
+    let research_event_baseline = selected(&journey.last_snapshot)
+        .events
+        .iter()
+        .map(|event| event.timestamp)
+        .max()
+        .unwrap_or(i64::MIN);
     for (&role, cat_id) in OfficerRole::ALL.iter().zip(cats) {
         let action = journey.signed(|actor| ClientAction::AssignOfficer {
             session_id: actor.session_id.clone(),
@@ -998,9 +1117,13 @@ async fn officers(seed: u32) -> Result<(), JourneyFailure> {
     if selected(&journey.last_snapshot).officers.len() != OfficerRole::ALL.len() {
         return Err(journey.failure("not every vacant office accepted an exact holder".to_owned()));
     }
+    let mut saw_research_unlock = false;
     let effects = journey
         .eventually(30 * 60_000, 1_000, |snapshot| {
             let colony = selected(snapshot);
+            saw_research_unlock |= colony.events.iter().any(|event| {
+                event.kind == "research_unlocked" && event.timestamp > research_event_baseline
+            });
             OfficerRole::ALL.iter().copied().all(|role| {
                 let protocol = protocol_role(role);
                 if role == OfficerRole::Captain {
@@ -1019,10 +1142,7 @@ async fn officers(seed: u32) -> Result<(), JourneyFailure> {
                             .any(|slot| slot.automated_by == Some(protocol))
                     })
                 }
-            }) && colony
-                .events
-                .iter()
-                .any(|event| event.kind == "research_unlocked")
+            }) && saw_research_unlock
         })
         .await;
     if let Err(mut failure) = effects {
@@ -1049,7 +1169,7 @@ async fn officers(seed: u32) -> Result<(), JourneyFailure> {
             })
             .collect::<Vec<_>>();
         failure.reason = format!(
-            "not every appointed role produced its owned automation effect: {observed:?}; {}",
+            "not every appointed role produced its owned automation effect: {observed:?}; saw_research_unlock={saw_research_unlock}; {}",
             failure.reason
         );
         return Err(failure);
@@ -2438,6 +2558,8 @@ async fn transport_network(seed: u32) -> Result<(), JourneyFailure> {
     let ship_baseline = 20.0;
     let mut rail_destination_peak = 0.0_f64;
     let mut ship_destination_peak = 0.0_f64;
+    let mut rail_conservation_observed = false;
+    let mut ship_conservation_observed = false;
     let mut rail_conserved = true;
     let mut ship_conserved = true;
     let delivery = journey
@@ -2447,22 +2569,39 @@ async fn transport_network(seed: u32) -> Result<(), JourneyFailure> {
                 rail_destination_peak.max(destination_amount(snapshot, &rail_destination_id));
             ship_destination_peak =
                 ship_destination_peak.max(destination_amount(snapshot, "system-ship-destination"));
-            rail_conserved &= (scoped_total(
-                snapshot,
-                &rail_source_id,
-                &rail_destination_id,
-                ProtocolTransportMode::Rail,
-            ) - rail_baseline)
-                .abs()
-                <= 1.0e-9;
-            ship_conserved &= (scoped_total(
-                snapshot,
-                "system-ship-source",
-                "system-ship-destination",
-                ProtocolTransportMode::Shipping,
-            ) - ship_baseline)
-                .abs()
-                <= 1.0e-9;
+            // Reported conservation becomes observable only after physical loading:
+            // route planning intentionally does not disclose source or destination stock.
+            let route_is_in_flight = |mode| {
+                colony.transport.routes.iter().any(|route| {
+                    route.mode == mode
+                        && !matches!(
+                            route.phase.as_str(),
+                            "boarding" | "loading" | "complete" | "cancelled"
+                        )
+                })
+            };
+            if route_is_in_flight(ProtocolTransportMode::Rail) {
+                rail_conservation_observed = true;
+                rail_conserved &= (scoped_total(
+                    snapshot,
+                    &rail_source_id,
+                    &rail_destination_id,
+                    ProtocolTransportMode::Rail,
+                ) - rail_baseline)
+                    .abs()
+                    <= 1.0e-9;
+            }
+            if route_is_in_flight(ProtocolTransportMode::Shipping) {
+                ship_conservation_observed = true;
+                ship_conserved &= (scoped_total(
+                    snapshot,
+                    "system-ship-source",
+                    "system-ship-destination",
+                    ProtocolTransportMode::Shipping,
+                ) - ship_baseline)
+                    .abs()
+                    <= 1.0e-9;
+            }
             colony.transport.routes.len() == 2
                 && colony
                     .transport
@@ -2471,6 +2610,8 @@ async fn transport_network(seed: u32) -> Result<(), JourneyFailure> {
                     .all(|route| route.phase == "complete")
                 && rail_destination_peak >= 2.0
                 && ship_destination_peak >= 2.0
+                && rail_conservation_observed
+                && ship_conservation_observed
                 && rail_conserved
                 && ship_conserved
         })
@@ -2483,7 +2624,7 @@ async fn transport_network(seed: u32) -> Result<(), JourneyFailure> {
             .map(|route| (&route.id, route.mode, route.phase.as_str()))
             .collect::<Vec<_>>();
         failure.reason = format!(
-            "transport lifecycle routes={routes:?}, rail_destination_peak={rail_destination_peak}, ship_destination_peak={ship_destination_peak}, rail_conserved={rail_conserved} (baseline={rail_baseline}), ship_conserved={ship_conserved} (baseline={ship_baseline}); {}",
+            "transport lifecycle routes={routes:?}, rail_destination_peak={rail_destination_peak}, ship_destination_peak={ship_destination_peak}, rail_conserved={rail_conserved} after_observation={rail_conservation_observed} (baseline={rail_baseline}), ship_conserved={ship_conserved} after_observation={ship_conservation_observed} (baseline={ship_baseline}); {}",
             failure.reason
         );
         return Err(failure);
@@ -3014,40 +3155,71 @@ async fn traders(seed: u32) -> Result<(), JourneyFailure> {
 fn multi_village_setup(world: &mut WorldState) {
     common_setup(world);
     let world_seed = world.world_seed;
-    let anchor = world.colonies[0].anchor;
-    for (index, peer_anchor) in [
-        TilePos {
-            x: anchor.x - 11,
-            y: anchor.y,
-        },
-        TilePos {
-            x: anchor.x + 11,
-            y: anchor.y,
-        },
-        TilePos {
-            x: anchor.x,
-            y: anchor.y - 11,
-        },
-        TilePos {
-            x: anchor.x,
-            y: anchor.y + 11,
-        },
-    ]
-    .into_iter()
-    .enumerate()
-    {
+    let global = &world.colonies[0];
+    let area = from_tiles(
+        &global
+            .claimed_tiles
+            .iter()
+            .map(|tile| GridPos {
+                x: tile.x,
+                y: tile.y,
+            })
+            .collect::<Vec<_>>(),
+    );
+    let gate = gate_placement_default(&area).expect("global contact fixture has a gate");
+    let delta = side_delta(gate.side);
+    let perpendicular = GridPos {
+        x: -delta.y,
+        y: delta.x,
+    };
+    for (index, side) in [-1, 1].into_iter().enumerate() {
+        let peer_shrine = TilePos {
+            x: gate.x + delta.x * 7 + perpendicular.x * side * 5,
+            y: gate.y + delta.y * 7 + perpendicular.y * side * 5,
+        };
         let mut peer = found_colony_at(
             world_seed,
             format!("system-contact-peer-{index}"),
             START_MS,
             8_000 + index as u32,
-            peer_anchor,
+            TilePos {
+                x: peer_shrine.x - 1,
+                y: peer_shrine.y - 1,
+            },
         );
         peer.kind = VillageKind::Personal;
         peer.owner_player_id = None;
         world.colonies.push(peer);
         register_colony_spatial(world, world.colonies.len() - 1);
     }
+
+    // Give both directional peers one shared outward road with separate branches.
+    // They remain a meaningful scout trip away while every contact is physically reachable.
+    for side in [-1, 1] {
+        for outward in 1..=7 {
+            let pos = TilePos {
+                x: gate.x + delta.x * outward,
+                y: gate.y + delta.y * outward,
+            };
+            if let Some(tile) = world.shared_spatial.tiles.get_mut(&pos) {
+                tile.tile_type = cat_sim::types::TileType::Meadow;
+                tile.resources.water = 0;
+                tile.overlay_feature = Some("road_built".to_owned());
+            }
+        }
+        for branch in 1..=5 {
+            let pos = TilePos {
+                x: gate.x + delta.x * 7 + perpendicular.x * side * branch,
+                y: gate.y + delta.y * 7 + perpendicular.y * side * branch,
+            };
+            if let Some(tile) = world.shared_spatial.tiles.get_mut(&pos) {
+                tile.tile_type = cat_sim::types::TileType::Meadow;
+                tile.resources.water = 0;
+                tile.overlay_feature = Some("road_built".to_owned());
+            }
+        }
+    }
+    cat_sim::world_tick::sync_all_colonies_from_shared(world);
 }
 
 async fn multi_village(seed: u32) -> Result<(), JourneyFailure> {
@@ -3139,31 +3311,32 @@ async fn multi_village(seed: u32) -> Result<(), JourneyFailure> {
         return Err(journey
             .failure("global/personal selection did not round-trip over the socket".to_owned()));
     }
-    let global_anchor = journey
+    let action = journey.signed(|actor| ClientAction::JoinVillage {
+        colony_id: global_id.clone(),
+        session_id: actor.session_id.clone(),
+        sig: Some(actor.sig.clone()),
+    });
+    journey.send(action).await?;
+    let global = journey
         .last_snapshot
         .colonies
         .iter()
         .find(|colony| colony.id == global_id)
-        .expect("global village remains projected")
-        .anchor;
-    let contact_centers = [
-        TilePoint {
-            x: global_anchor.x - 10,
-            y: global_anchor.y + 1,
-        },
-        TilePoint {
-            x: global_anchor.x + 12,
-            y: global_anchor.y + 1,
-        },
-        TilePoint {
-            x: global_anchor.x + 1,
-            y: global_anchor.y - 10,
-        },
-        TilePoint {
-            x: global_anchor.x + 1,
-            y: global_anchor.y + 12,
-        },
-    ];
+        .expect("global village remains projected");
+    let gate = global
+        .village_gate
+        .expect("global village projects its gate");
+    let (dx, dy) = match gate.side {
+        cat_protocol::GateSide::N => (0, -1),
+        cat_protocol::GateSide::E => (1, 0),
+        cat_protocol::GateSide::S => (0, 1),
+        cat_protocol::GateSide::W => (-1, 0),
+    };
+    let (px, py) = (-dy, dx);
+    let contact_centers = [-1, 1].map(|side| TilePoint {
+        x: gate.x + dx * 7 + px * side * 5,
+        y: gate.y + dy * 7 + py * side * 5,
+    });
     let mut saw_return = false;
     let mut saw_peer_shrine_reveal = false;
     let contact = journey
@@ -3245,30 +3418,83 @@ async fn run_case(id: &'static str, seed: u32) -> Result<(), JourneyFailure> {
     }
 }
 
-#[tokio::test]
-async fn real_websocket_system_journeys_aggregate_all_broad_scenarios() {
+async fn run_requested_seed_tier(id: &'static str) {
     let mut failures = Vec::new();
-    let selected_id = std::env::var("CAT_SYSTEM_SCENARIO_ID").ok();
     for &seed in super::requested_seed_tier().seeds() {
-        for &id in EXECUTABLE_SCENARIO_IDS {
-            if selected_id.as_deref().is_some_and(|wanted| wanted != id) {
-                continue;
-            }
-            if let Err(failure) = run_case(id, seed).await {
-                let trace = failure.write_trace();
-                failures.push(format!(
-                    "{} seed {seed} after {:?} at {}ms: {}; trace={trace:?}",
-                    failure.scenario_id, failure.milestone, failure.simulated_ms, failure.reason
-                ));
-            }
+        if let Err(failure) = run_case(id, seed).await {
+            let trace = failure.write_trace();
+            failures.push(format!(
+                "{} seed {seed} after {:?} at {}ms: {}; trace={trace:?}",
+                failure.scenario_id, failure.milestone, failure.simulated_ms, failure.reason
+            ));
         }
     }
     assert!(
         failures.is_empty(),
-        "system journey failures (all scenarios ran):\n{}",
+        "system journey failures for {id}:\n{}",
         failures.join("\n")
     );
 }
+
+macro_rules! system_journey_tests {
+    ($(($test_name:ident, $scenario_id:literal)),+ $(,)?) => {
+        const GENERATED_SYSTEM_SCENARIO_IDS: &[&str] = &[$($scenario_id),+];
+
+        $(
+            #[tokio::test]
+            async fn $test_name() {
+                run_requested_seed_tier($scenario_id).await;
+            }
+        )+
+    };
+}
+
+system_journey_tests!(
+    (
+        real_websocket_fresh_world_survival_and_needs,
+        "fresh-world-survival-and-needs"
+    ),
+    (
+        real_websocket_housing_breeding_migration_aging_extinction,
+        "housing-breeding-migration-aging-extinction"
+    ),
+    (
+        real_websocket_all_officers_vacant_and_assigned,
+        "all-officers-vacant-and-assigned"
+    ),
+    (
+        real_websocket_research_blessings_and_shrine_work,
+        "research-blessings-and-shrine-work"
+    ),
+    (
+        real_websocket_elections_voting_and_vote_kick,
+        "elections-voting-and-vote-kick"
+    ),
+    (
+        real_websocket_raids_training_and_defense,
+        "raids-training-and-defense"
+    ),
+    (
+        real_websocket_stockpiles_gather_spots_and_hauling,
+        "stockpiles-gather-spots-and-hauling"
+    ),
+    (
+        real_websocket_roads_bridges_rail_and_shipping,
+        "roads-bridges-rail-and-shipping"
+    ),
+    (
+        real_websocket_traders_and_village_trade,
+        "traders-and-village-trade"
+    ),
+    (
+        real_websocket_multi_village_selection_and_restart,
+        "multi-village-selection-and-restart"
+    ),
+    (
+        real_websocket_shrine_demand_ritual_lifecycle,
+        "shrine-demand-ritual-lifecycle"
+    ),
+);
 
 #[tokio::test]
 async fn signed_shrine_demand_runs_one_physical_ritual_and_persists() {
@@ -3287,6 +3513,7 @@ async fn signed_shrine_demand_runs_one_physical_ritual_and_persists() {
 
 #[test]
 fn executable_system_ids_are_unique_and_exclude_catalog_sweeps() {
+    assert_eq!(GENERATED_SYSTEM_SCENARIO_IDS, EXECUTABLE_SCENARIO_IDS);
     let ids = EXECUTABLE_SCENARIO_IDS
         .iter()
         .copied()
