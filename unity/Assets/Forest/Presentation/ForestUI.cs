@@ -50,6 +50,8 @@ namespace IdleCatForest.Presentation
         private bool linePlacement;
         private string researchCategory = "All categories";
         private bool researchMap;
+        private string renderedVillageId = "", serverAddress = "ws://127.0.0.1:8788/ws";
+        private bool renderedRemote;
 
         private void Awake()
         {
@@ -78,6 +80,7 @@ namespace IdleCatForest.Presentation
         {
             if (Time.unscaledTime < nextRefresh) return; nextRefresh = Time.unscaledTime + .5f;
             if (Village == null) { headline.text = Game.Status; return; }
+            if (OpenSection != "" && (renderedVillageId != Village.Id || renderedRemote != Game.IsRemote)) RenderPanel();
             int alive = Village.Cats.Count(c => c.Alive), working = Village.Cats.Count(c => c.Alive && c.JobId != "");
             headline.text = Village.Name + "  /  " + alive + " cats";
             stores.text = "Food " + Reported("food") + "    Water " + Reported("water") + "    Research " + Village.ResearchPoints.ToString("0") + "    Blessings " + Village.Blessings.ToString("0") + "\n" + working + " on jobs · " + (Game.CurrentWorld.TimeSeconds / 3600).ToString("0.0") + " hours · " + Village.Research.Count + " studies";
@@ -101,6 +104,7 @@ namespace IdleCatForest.Presentation
         private void RenderPanel()
         {
             if (Village == null) return; content.Clear(); drawerTitle.text = OpenSection;
+            renderedVillageId = Village.Id; renderedRemote = Game.IsRemote;
             switch (OpenSection)
             {
                 case "Village": VillagePanel(); break;
@@ -124,7 +128,9 @@ namespace IdleCatForest.Presentation
             foreach (var v in Game.CurrentWorld.Villages) { string id = v.Id; Button(content, v.Name + (v.Id == Village.Id ? " · selected" : ""), () => Act(new GameAction { Kind = "JoinVillage", TargetId = id }, true)); }
             var name = Field(content, "New village name", "Mosslight");
             Button(content, "Found personal village", () => Act(new GameAction { Kind = "FoundVillage", Name = name.value }, true));
-            Separator(); Text("Shared server"); var server = Field(content, "Server address", "ws://127.0.0.1:8788/ws"); Button(content, "Connect", () => { _ = Game.Connect(server.value); });
+            Separator(); Text("Shared server"); var server = Field(content, "Server address", serverAddress);
+            server.RegisterValueChangedCallback(e => serverAddress = e.newValue);
+            Button(content, "Connect", () => { _ = Game.Connect(serverAddress); });
             if (Game.IsRemote) Button(content, "Return to local world", Game.Disconnect);
             Button(content, "Save local world", Game.Save);
             Text("Local saves are separate from the former game's data. A failed or unsupported save is never silently reset.");

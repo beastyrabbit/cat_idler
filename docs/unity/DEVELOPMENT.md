@@ -26,6 +26,16 @@ Open the repository's `unity` directory in Unity Hub, or run:
 bash tools/forest.sh open
 ```
 
+If the prerelease CLI returns without opening an Editor, open the folder through
+Unity Hub. The verified direct executable fallback on this Mac is:
+
+```sh
+/Applications/Unity/Hub/Editor/6000.6.0f1/Unity.app/Contents/MacOS/Unity -projectPath "$PWD/unity"
+```
+
+For projects below `/tmp`, macOS reports the canonical `/private/tmp` path to
+Pipeline. Use the project path returned by `unity status` for live commands.
+
 Open `Assets/Scenes/Forest.unity` and press Play. If regenerating project settings
 or the entry scene, stop Play mode and run `bash tools/forest.sh setup` first.
 The setup uses Editor APIs and saves the scene; it never copies a Library cache.

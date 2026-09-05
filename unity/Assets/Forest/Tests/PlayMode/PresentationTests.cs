@@ -164,6 +164,16 @@ namespace IdleCatForest.Tests
         }
 
         [UnityTest]
+        public IEnumerator VillagePanelTracksAuthoritativeSelectionChanges()
+        {
+            game.UI.OpenPanel("Village");
+            Assert.That(game.Send(new GameAction { Kind = "FoundVillage", Name = "New Grove" }).Result.Success, Is.True);
+            yield return new WaitForSecondsRealtime(.6f);
+            var buttons = game.GetComponent<UIDocument>().rootVisualElement.Query<Button>().ToList();
+            Assert.That(buttons.Any(b => b.text == "New Grove · selected"), Is.True, "Network-driven selection changes must refresh the open panel.");
+        }
+
+        [UnityTest]
         public IEnumerator WorkBoostControlsTargetTheDisplayedJob()
         {
             game.UI.OpenPanel("Work"); Submit("woodcut");

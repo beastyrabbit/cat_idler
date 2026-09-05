@@ -4,10 +4,9 @@ A non-commercial forest colony game. Cats gather, carry, build, learn, rest and
 raise kittens while you decide how the village develops. Specialist officers
 gradually take over work that begins under manual control.
 
-Unity is the selected engine. This branch migrates the maintained Rust/Bevy game
-to a C# simulation and an Apple Silicon macOS application. The
-[migration acceptance ledger](docs/unity/ACCEPTANCE.md) records current evidence
-and open gates; the migration is not ready for delivery until those gates close.
+The game runs in Unity with a C# simulation and an Apple Silicon macOS application.
+The [migration acceptance ledger](docs/unity/ACCEPTANCE.md) records gameplay,
+save compatibility, native UI checks and measured performance.
 
 ## Play on macOS
 

@@ -1,34 +1,94 @@
 # Unity migration acceptance
 
-Status: implementation in progress. No release readiness is claimed by this checklist.
-Baseline: current `main`, `8c5ea0f2d0871a1f12dfdafd831e6d4a78d40cec`.
-The current source has 53 public action variants, including development controls,
-25 building types, 108 station recipes, 487 studies, seven specialist officers and
-19 labors. Older prose claiming 52 actions or 104 recipes is stale.
+Local acceptance verified on September 6, 2026. The rows below distinguish
+automated checks, normal UI observations and their limits. Final candidate review,
+outgoing secret scanning and publication are recorded in the migration PR.
 
-| Required capability | Acceptance evidence | Status |
+The migration started from `main` at
+`8c5ea0f2d0871a1f12dfdafd831e6d4a78d40cec`. A clean checkout of
+`27ab7138fe419e5c701e5384cf9b7329589ebdb9` passed dependency resolution, compilation,
+native build, scene opening and Play mode. The later Village panel refresh passed
+its focused regression, the complete 14-test PlayMode suite and a rebuilt native
+app check of connection, local return and reconnect.
+
+The maintained inventory is 25 buildings, 108 recipes, 487 studies, seven
+specialist officers and 19 labors. The legacy action inventory had 53 variants,
+including development controls. The Unity authority rejects development-only
+time and random-state controls.
+
+| Required capability | Observed evidence | Status |
 | --- | --- | --- |
-| Reproducible native game | Fresh dependency resolve, compile, open, Play mode and Apple Silicon build; documented commands | Open |
-| Living cats | Physical finite meals/water and sleep, preferences/skills, injury, aging, breeding bed reservations, migrants, death and atomic colony recovery | Open |
-| Manual and automated work | Founding Leader safety floor; all seven office prerequisites and vacancies; normal UI for every manual category | Open |
-| Physical economy | Sources, cargo, finite pile capacity, source/destination claims, per-cat workplace slots, all 108 queued recipes, full input-to-delivery chains | Open |
-| Scarcity and interruption | Contended inputs/beds, cancelled/reassigned jobs, death, blocked route, full destination and direct-control handoffs conserve goods and release claims | Open |
-| Construction and territory | Exact placement, delivered construction materials, roads/bridges, expansion, exterior farms and growth/harvest | Open |
-| Knowledge and progression | Provisional scouting returned to shrine, all 487 reachable studies with functioning effects, blessings, research labor and daily Leader choice | Open |
-| Equipment, defense and trade | Exact equipment identities/wear/repair, finite visiting trader, raids/warriors, rail/shipping, physical inter-village caravan | Open |
-| Persistent shared authority | Communal and personal villages, two player identities, foreign denial and confidential reports, reconnection and real network trade | Open |
-| Saves and migration | Atomic save/reload/server restart retain jobs, cargo, reservations, identities and progression; read-only legacy import with unchanged source and no replay | Open |
-| 3D management and cat control | Recognizable Blender-authored forest, visible movement/carry/work/needs, readable controls, existing cat enters third-person control and returns to AI | Open |
-| Normal UI operation | Editor and packaged app: inspect, build, queues, research, walk/interact, return to management; state assertions accompany inspected frames | Open |
-| Extended operation | Fresh and established multiple-seed campaigns; distinguish designed loss from starvation/deadlock; no invented inputs | Open |
-| Measured performance | Founding and expanded populations, real tick/frame timings, workloads/machine/limits recorded | Open |
-| Delivery | Complete outgoing diff/security scan, independent candidate review, one PR with evidence; no merge/deploy | Open |
+| Reproducible native game | Clean checkout resolved locked .NET dependencies, built with zero warnings/errors, passed formatting, and produced an ARM64 IL2CPP app. Unity imported its own Library, then opened Forest.unity and entered Play mode. The final UI source also rebuilt successfully. | Verified |
+| Living cats | Finite meals, water, sleep, needs, skills, breeding beds, migration, death and recovery pass focused scenarios. Campaigns retain every founding cat without extinction resets. | Verified |
+| Manual and automated work | Leader safety work, seven officer prerequisites and vacancies, public job actions and staffed queues pass scenarios. Normal UI logging passes a focused PlayMode check. | Verified |
+| Physical economy | All 108 recipes carry inputs, perform work and deliver outputs. Native Wood Cutter production delivered nine planks; the Editor completed one batch and delivered one plank. | Verified |
+| Scarcity and interruption | Contended inputs and beds, cancellation, reassignment, death, blocked routes, full storage, shipping recovery and direct-control handoffs pass conservation and ownership checks. | Verified |
+| Construction and territory | Placement, material delivery, roads, bridges, expansion and farms pass scenarios. Normal UI placed and completed a Den with 16 planks, eight blocks and 300 work. | Verified |
+| Knowledge and progression | All 487 studies pass public purchase traversal with separate effect scenarios. Normal UI research spent 20,000 → 19,995 points on Research Hut and displayed the dependency map. | Verified |
+| Equipment, defense and trade | Exact item identity, condition, repair, finite traders, raids, warriors, rail/shipping and physical barter pass scenarios and real socket tests. | Verified |
+| Persistent shared authority | Two identities, private-village denial, filtered reports, restart and physical trade pass real socket tests. The native app connected to a synthetic server, founded 15-cat Mosslight, then reconnected to the same village, ID 74. | Verified |
+| Saves and migration | 21 authority tests and the real SQLite conversion pipeline pass. Jobs, cargo, claims, identities and returning trade survive restart without replay. Import preserves source bytes and refuses unknown schemas and destination overwrite. The packaged app opened the converted world and resumed both imported jobs. | Verified |
+| 3D management and cat control | Blender geometry passes export/import checks. Editor and native UI inspect and control the same cat, walk, take five food and return it to AI while the colony continues. Native deposit emptied its cargo into the original store. | Verified |
+| Normal UI operation | Editor and native inspect, staffing, queues, research, construction and direct-control flows were exercised with saved-state checks. Native repeat persisted as true and pause/resume returned to unpaused work. Editor queue delivery passed; its repeat click did not persist. Final native connection, return and reconnect refreshed the open Village panel and preserved the server address. | Verified within this scope |
+| Extended operation | Nine campaign twins cover fresh 48-hour, established 72-hour and shared/personal 48-hour worlds at seeds 7, 41 and 127. | Verified in .NET |
+| Measured performance | Final native 30/150-cat samples measured 16.67 ms median frames, 17.60/17.27 ms p95 frames and 3.71/1.31 ms p95 economy ticks at 6016×3080 on an M1 Max. Workloads, windows and limits are in [performance evidence](PERFORMANCE.md). | Verified |
 
-The C# model and Unity scene are replacements for the legacy implementation. The
-legacy entry points remain until the replacement gates pass. A catalog count or
-successful compile alone does not close a gameplay row.
+## Test and build evidence
 
-Intentional design decisions and their tests belong in `GAMEPLAY_ACCEPTANCE.md`.
-Save compatibility belongs in `PERSISTENCE.md`. Asset provenance and reproduction
-commands belong in `source-art/README.md`. Record observed verification results
-and remaining failures here before delivery.
+- [Simulation results](../../tools/scenarios/VALIDATION.md): 536 focused cases
+  passed in 8.58 seconds and nine campaign twins passed in 170.87 seconds.
+  Campaigns compare partitioned time, validate claims and retain founding IDs.
+  The established fixture has finite supplies and one repeating wood-processing
+  station; it does not prove indefinite operation of every mature production chain.
+- Unity EditMode passed 542 noncampaign tests in 49.454 seconds. The unfiltered
+  Editor run timed out after 600 seconds, so no Editor campaign pass is claimed.
+  The same nine campaign scenarios passed in the .NET runner.
+- Unity PlayMode passed all 14 tests in 7.561 seconds. These include ordinary UI
+  logging, research, queues after reload, direct control at 8× speed, village
+  selection, stockpile corners, merchant sales, work boosts and authored geometry.
+- [Authority and import checks](PERSISTENCE.md) passed 21 tests. The real Rust
+  SQLite writer → normalizer → C# continuation pipeline passed three tests; the
+  archival exporter passed two. All test worlds and identities are synthetic.
+- [Blender verification](../../source-art/verification.json) passed for 80 models,
+  86 meshes and 92,593 triangles. [Art documentation](../../source-art/README.md)
+  records editable sources, orientation, units, pivots and reproduction commands.
+
+Local reports are `artifacts/tests/editmode.xml`, `artifacts/tests/playmode.xml`
+and `artifacts/fresh-checkout/27ab713-verification.txt`. The fresh-checkout report
+covers the clean build; subsequent interactive scene opening and Play mode were
+checked through Pipeline and Computer Use. These ignored reports are local
+evidence, not published PR attachments. No Library, save or identity directory was
+copied into the fresh checkout.
+
+## Final native checks and evidence
+
+The final build includes the Village refresh regression fix. A 150-cat local
+world connected to the isolated shared server and selected the existing 15-cat
+Mosslight village. Returning restored the 150-cat local world; reconnect retained
+the server address and selected Mosslight again. The open panel tracked every
+transition without closing and reopening it.
+
+A separate copy of the synthetic SQLite-converted world opened with 30 cats and
+16 buildings. At 35.7 simulated seconds, the imported haul had delivered 2.5 logs
+and the unfinished production job had raised stored planks from 20 to 21. Both
+original cat IDs remained. The normal roster selected Fixture Moss, entered the
+close camera and returned that cat to AI. Runtime logs for the final founding,
+expanded and imported worlds contained no exception, assertion or runtime error.
+
+The PR includes game-only management and carrying screenshots, the research map
+and an eight-second interaction video through verified Schaffa links. These use
+synthetic saves. They contain no identity files, server credentials or user data.
+The recording shows deposit, walking and return to management; capture overhead
+makes it unsuitable for measuring frame rate. Performance was sampled separately
+before capture.
+
+Unity/C# is now the only playable application. Superseded Rust/Bevy entry points,
+root Cargo configuration and obsolete checks were retired after replacement
+builds and tests worked. Frozen compatibility libraries remain under
+`tools/save-import/legacy` for read-only import and catalog export. Their locked
+builds and the import pipeline still pass after retirement.
+
+[Gameplay decisions](GAMEPLAY_ACCEPTANCE.md), [save compatibility](PERSISTENCE.md)
+and [development commands](DEVELOPMENT.md) describe the implemented behavior and
+reproduction steps. No merge, deployment, purchase or production-data change has
+been performed for this migration.

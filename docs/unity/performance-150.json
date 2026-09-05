@@ -1,0 +1,23 @@
+{
+    "population": 150,
+    "buildings": 54,
+    "workingCats": 10,
+    "reservations": 0,
+    "frames": 3600,
+    "steps": 1200,
+    "economyTicks": 120,
+    "width": 6016,
+    "height": 3080,
+    "frameP50": 16.665958404541016,
+    "frameP95": 17.271499633789063,
+    "stepP50": 0.0122,
+    "stepP95": 0.5213,
+    "economyP50": 0.5213,
+    "economyP95": 1.3079,
+    "speed": 1.0,
+    "processor": "Apple M1 Max",
+    "graphics": "Apple M1 Max",
+    "editor": false,
+    "remote": false,
+    "directControl": false
+}
