@@ -34,3 +34,26 @@ crates/cat-web/dist/
 
 # Bevy client framebuffer verification screenshots (never commit)
 crates/cat-client/reference/*.png
+
+# Unity generated state and local native/server outputs.
+/unity/[Ll]ibrary/
+/unity/[Tt]emp/
+/unity/[Oo]bj/
+/unity/[Ll]ogs/
+/unity/[Uu]ser[Ss]ettings/
+/unity/[Bb]uild/
+/unity/[Bb]uilds/
+/unity/[Mm]emoryCaptures/
+/unity/[Rr]ecordings/
+/unity/*.csproj
+/unity/*.sln
+/unity/*.slnx
+**/bin/
+**/obj/
+*.blend1
+*.blend2
+/source-art/previews/
+**/__pycache__/
+/server/data/
+*.previous
+*.identity/

@@ -1,0 +1,212 @@
+using System;
+using System.Collections;
+using System.IO;
+using System.Linq;
+using IdleCatForest.Presentation;
+using IdleCatForest.Simulation;
+using NUnit.Framework;
+using UnityEngine;
+using UnityEngine.TestTools;
+using UnityEngine.UIElements;
+
+namespace IdleCatForest.Tests
+{
+    public class PresentationTests
+    {
+        [Test]
+        public void EveryMaintainedBuildingAndCargoTypeHasAuthoredGeometry()
+        {
+            foreach (var name in Simulation.Catalog.Buildings)
+            {
+                var asset = Resources.Load<GameObject>("ForestArt/" + name);
+                Assert.That(asset, Is.Not.Null, name);
+                Assert.That(asset.GetComponentsInChildren<MeshFilter>().Sum(m => m.sharedMesh.vertexCount), Is.GreaterThan(30), name);
+            }
+            var cat = Resources.Load<GameObject>("ForestArt/cat"); Assert.That(cat, Is.Not.Null);
+            foreach (var part in new[] { "Head", "Tail", "PawFrontLeft", "PawFrontRight", "PawBackLeft", "PawBackRight" })
+                Assert.That(cat.GetComponentsInChildren<Transform>().Any(t => t.name == part), Is.True, part);
+        }
+
+        [Test]
+        public void AllManagementCategoriesAreReachableInNormalUi()
+        {
+            foreach (var section in new[] { "Village", "Cats", "Build", "Work", "Stores", "Research", "Officers", "Shrine", "Defense", "Trade", "Routes", "Events" })
+                CollectionAssert.Contains(ForestUI.Sections, section);
+        }
+    }
+
+    public class LivePresentationTests
+    {
+        private ForestGame game;
+        private string directory;
+
+        [UnitySetUp]
+        public IEnumerator StartIsolatedWorld()
+        {
+            Assert.That(ForestGame.Instance, Is.Null, "The test must never replace a running user's world.");
+            directory = Path.Combine(Path.GetTempPath(), "forest-presentation-" + Guid.NewGuid().ToString("N"));
+            game = new GameObject("Isolated presentation test").AddComponent<ForestGame>();
+            game.InitialSavePath = Path.Combine(directory, "world.json");
+            yield return null;
+            Assert.That(game.Selected, Is.Not.Null, game.Status);
+            game.SetSpeed(0);
+        }
+
+        [UnityTearDown]
+        public IEnumerator CloseIsolatedWorld()
+        {
+            if (game != null) UnityEngine.Object.Destroy(game.gameObject);
+            yield return null;
+            if (directory != null && Directory.Exists(directory)) Directory.Delete(directory, true);
+        }
+
+        [UnityTest]
+        public IEnumerator ExistingResourceViewChangesWhenInfrastructureReplacesIt()
+        {
+            var tile = game.CurrentWorld.Tiles.First(t => game.Selected.Known.Contains(t.Position) && t.Resource == "logs" && t.Amount > 0 && !t.Wall && !t.Road);
+            yield return new WaitForSecondsRealtime(.25f);
+            string name = "tile:" + tile.Position;
+            Assert.That(GameObject.Find(name).transform.Find("tree_oak"), Is.Not.Null);
+            tile.Road = true;
+            yield return new WaitForSecondsRealtime(.25f);
+            Assert.That(GameObject.Find(name).transform.Find("road"), Is.Not.Null, "A tile keeps its identity when its visible asset changes.");
+        }
+
+        [UnityTest]
+        public IEnumerator InspectButtonControlsTheSameCatAndRestoresManagement()
+        {
+            var cat = game.Selected.Cats.First(c => c.Alive && c.Id != game.Selected.LeaderId);
+            cat.Cargo.Add(new Simulation.Stack("food", 1));
+            game.View.InspectCat(cat.Id);
+            game.UI.OpenPanel("Inspect");
+            Submit("Control this cat · Tab");
+            yield return null;
+            Assert.That(game.View.ControlledCat, Is.SameAs(cat));
+            Assert.That(game.View.Camera.orthographic, Is.False);
+            Assert.That(cat.Cargo.Single(s => s.Resource == "food").Amount, Is.EqualTo(1));
+            game.UI.OpenPanel("Inspect");
+            Submit("Return to management");
+            yield return null;
+            Assert.That(cat.ControlledBy, Is.Empty);
+            Assert.That(game.View.Camera.orthographic, Is.True);
+            Assert.That(game.Selected.Cats.Count(c => c.Id == cat.Id), Is.EqualTo(1));
+        }
+
+        [UnityTest]
+        public IEnumerator ResearchControlsSpendPointsAndDisplayTheDependencyMap()
+        {
+            var study = Catalog.Research.First(n => n.Prerequisites.Count == 0 && !game.Selected.Research.Contains(n.Id));
+            game.Selected.ResearchPoints = study.Cost + 17;
+            game.UI.OpenPanel("Research");
+            Submit("Research " + study.Name);
+            yield return null;
+            CollectionAssert.Contains(game.Selected.Research, study.Id);
+            Assert.That(game.Selected.ResearchPoints, Is.EqualTo(17).Within(.000001));
+            Submit("Dependency map");
+            yield return null;
+            var maps = game.GetComponent<UIDocument>().rootVisualElement.Query<ScrollView>().ToList();
+            Assert.That(maps.Any(view => view.mode == ScrollViewMode.VerticalAndHorizontal), Is.True);
+            Assert.That(game.GetComponent<UIDocument>().rootVisualElement.Query<Button>().ToList().Any(button => button.text.StartsWith("Requires ", StringComparison.Ordinal)), Is.True);
+        }
+
+        [UnityTest]
+        public IEnumerator ManualLoggingButtonCreatesSupportedPhysicalWork()
+        {
+            game.UI.OpenPanel("Work");
+            Submit("woodcut");
+            yield return null;
+            Assert.That(game.Selected.Jobs.Any(j=>j.Kind=="logs"&&!j.Completed),Is.True,game.LastAction);
+        }
+
+        [UnityTest]
+        public IEnumerator RestoredStationInspectorUsesTheAuthoritativeSlotQueue()
+        {
+            var station=game.Selected.Buildings.First(b=>b.Kind=="wood_cutter");
+            var cat=game.Selected.Cats.First(c=>c.Alive&&c.JobId==""&&c.BuildingId=="");
+            Assert.That(game.Send(new GameAction{Kind="AssignWorker",BuildingId=station.Id,CatId=cat.Id}).Result.Success,Is.True);
+            station.Queue.Add(new QueueEntry{RecipeId="logs_to_planks"});
+            var restored=Authority.WireJson.Clone(station);
+            restored.Slots[0].Queue.Clear();
+            game.Selected.Buildings[game.Selected.Buildings.IndexOf(station)]=restored;
+            game.View.InspectBuilding(station.Id);game.UI.OpenPanel("Inspect");
+            yield return null;
+            Assert.That(game.GetComponent<UIDocument>().rootVisualElement.Query<Label>().ToList().Any(label=>label.text=="1. logs to planks"),Is.False,"A stale building queue must not hide the real empty first-slot queue.");
+        }
+
+        [UnityTest]
+        public IEnumerator StationaryDirectControlSurvivesEightTimesSpeed()
+        {
+            var cat=game.Selected.Cats.First(c=>c.Alive&&c.Id!=game.Selected.LeaderId);
+            game.View.InspectCat(cat.Id);game.View.EnterSelectedCat();
+            game.SetSpeed(8);
+            yield return new WaitForSecondsRealtime(4.15f);
+            Assert.That(cat.ControlledBy,Is.EqualTo(game.PlayerId),"Heartbeat must follow simulation speed.");
+        }
+
+        private void Submit(string text)
+        {
+            var button = game.GetComponent<UIDocument>().rootVisualElement.Query<Button>().ToList().Single(b => b.text == text);
+            using (var submit = NavigationSubmitEvent.GetPooled()) { submit.target = button; button.SendEvent(submit); }
+        }
+
+        [UnityTest]
+        public IEnumerator MerchantSellingControlsTransferTheSelectedStoredItem()
+        {
+            var item = new Item { Id = "review-sale", Kind = "tool", Material = "wood", VillageId = game.Selected.Id, LocationId = game.Selected.Stockpiles[0].Id };
+            game.Selected.Items.Add(item);
+            game.Selected.Trader.Phase = "trading"; game.Selected.Trader.Coins = 100;
+            double coins = game.Selected.Coins;
+            game.UI.OpenPanel("Trade"); Submit("Sell goods");
+            yield return null;
+            Assert.That(game.Selected.Trader.Items.Contains(item), Is.True, game.LastAction);
+            Assert.That(game.Selected.Items.Contains(item), Is.False);
+            Assert.That(game.Selected.Coins, Is.GreaterThan(coins));
+        }
+
+        [UnityTest]
+        public IEnumerator WorkBoostControlsTargetTheDisplayedJob()
+        {
+            game.UI.OpenPanel("Work"); Submit("woodcut");
+            var job = game.Selected.Jobs.Single(j => j.Kind == "logs" && !j.Completed);
+            Submit("Boost logs · " + job.Id);
+            yield return null;
+            Assert.That(job.BoostCount, Is.EqualTo(1), game.LastAction);
+        }
+
+        [UnityTest]
+        public IEnumerator StockpileDesignationRetainsBothSelectedCorners()
+        {
+            game.UI.OpenPanel("Stores"); Submit("Designate general stockpile");
+            var place = typeof(ForestUI).GetMethod("Place", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            place.Invoke(game.UI, new object[] { new Int2(-2, -6) });
+            Assert.That(game.UI.HasPlacement, Is.True, "The first click chooses the first corner.");
+            place.Invoke(game.UI, new object[] { new Int2(-1, -5) });
+            yield return null;
+            Assert.That(game.LastAction, Does.Contain("accepted"));
+            var pile = game.Selected.Stockpiles.Single(p => p.Position.Equals(new Int2(-2, -6)));
+            Assert.That(pile.Width, Is.EqualTo(2)); Assert.That(pile.Depth, Is.EqualTo(2));
+        }
+
+        [UnityTest]
+        public IEnumerator AllBlessingUnlocksHaveReachableControls()
+        {
+            game.Selected.Research.Clear(); game.UI.OpenPanel("Shrine");
+            yield return null;
+            var buttons = game.GetComponent<UIDocument>().rootVisualElement.Query<Button>().ToList();
+            foreach (var study in Catalog.Research.Take(24))
+                Assert.That(buttons.Any(b => b.text.StartsWith("Blessing: " + study.Name + " · ", StringComparison.Ordinal)), Is.True, study.Id);
+        }
+
+        [UnityTest]
+        public IEnumerator VacantSecondarySlotDoesNotOfferFirstSlotEdits()
+        {
+            var station = game.Selected.Buildings.First(b => b.Kind == "wood_cutter");
+            station.Slots.Add(new WorkSlot { CatId = "" });
+            station.Slots.Add(new WorkSlot { CatId = "", Queue = new System.Collections.Generic.List<QueueEntry> { new QueueEntry { RecipeId = "logs_to_planks" } } });
+            game.View.InspectBuilding(station.Id); game.UI.OpenPanel("Inspect");
+            yield return null;
+            var buttons = game.GetComponent<UIDocument>().rootVisualElement.Query<Button>().ToList();
+            Assert.That(buttons.Count(b => b.text == "Remove"), Is.EqualTo(0), "An unstaffed secondary queue cannot route edits to the first slot.");
+        }
+    }
+}

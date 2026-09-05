@@ -1,12 +1,14 @@
-# Idle Cat Forest — game vision
+# Idle Cat Forest game vision
 
 **"An idle version of Dwarf Fortress, played by cats, in a forest."**
 
 Idle Cat Forest is developed and distributed solely as a non-commercial game project.
 
 ## Pillars
-1. **Top-down, single level.** A flat 2D grid world (no isometric, no z-layers). Read
-   the map like DF: everything is a *place* — tiles, workshops, stockpiles, cats.
+1. **Readable 3D places.** An orthographic management camera shows the forest's
+   tiles, workshops, stockpiles and cats. Blender-authored geometry also works in
+   a closer third-person camera when the player controls an existing cat. The
+   simulation uses a single walkable ground level; the presentation has real height.
 2. **Manual → automated via roles.** Early game you direct the colony by hand (what to
    build, who hauls what, where the stockpiles go). As the colony grows you unlock and
    assign **leadership roles / officers**, each of which *automates a whole category of
@@ -44,15 +46,15 @@ Idle Cat Forest is developed and distributed solely as a non-commercial game pro
    automation and rituals remain Loremaster-owned, while the Leader retains the daily strategic
    study choice described below.
 
-## What already exists in the sim (reuse, don't rebuild)
-- Utility-AI **leader director** (one overseer that automates) — the seed of the role system.
-- **Jobs/labors**, **workshops** (workshop/smithy/field/research_hut/school/barracks),
-  **hauling** (cats carry yields in trips), **storage** capacities, **movement/pathfinding**,
-  life sim, economy, upgrade tree. All ported to Rust (`cat-sim`), deterministic, tested.
-- Authoritative server (`cat-server`) + Bevy client (`cat-client`) already stream the live world.
+## Implementation context
+The Unity migration implements these systems in pure C# with an authoritative
+shared-world host and a native Apple Silicon client. The earlier Rust/Bevy and
+TypeScript games provide behavioral and save-format evidence. Retaining their
+architecture is not a design goal. See [ARCHITECTURE.md](ARCHITECTURE.md) and
+[unity/ACCEPTANCE.md](unity/ACCEPTANCE.md) for current implementation and verification.
 
 ## What this vision adds (roadmap deltas)
-- **Client: top-down renderer** (replaces the iso plan) — flat tile grid, cats + carried
+- **Client: orthographic 3D renderer** with third-person cat control, cats + carried
   items, readable open workshops/buildings without map plaques, **visible stockpiles**,
   camera, dashboard, and manual action tools.
 - **Sim: role/officer system** — split the monolithic leader director into assignable roles,

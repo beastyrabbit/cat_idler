@@ -1,0 +1,4 @@
+<linker>
+  <assembly fullname="IdleCatForest.Simulation" preserve="all" />
+  <assembly fullname="IdleCatForest.Authority" preserve="all" />
+</linker>

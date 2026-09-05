@@ -1,4 +1,4 @@
-name: Rust, playtest, and WASM quality gates
+name: Unity simulation and shared-world quality
 
 on:
   push:
@@ -9,264 +9,60 @@ on:
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_BUILD_JOBS: 2
+
 concurrency:
   group: cat-idler-quality-${{ forgejo.ref }}
   cancel-in-progress: true
 
-env:
-  CARGO_TERM_COLOR: always
-  CARGO_BUILD_JOBS: 2
-
 jobs:
-  quick:
-    name: Quick Rust gate
-    runs-on: personal
-    # A cold Cargo cache rebuilds the whole workspace under clippy; 15 minutes
-    # was exceeded on the first run of a new lockfile hash.
-    timeout-minutes: 45
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-
-      - name: Install native build dependencies
-        run: |
-          set -euo pipefail
-          apt-get update
-          apt-get install -y --no-install-recommends \
-            ca-certificates curl build-essential pkg-config libssl-dev \
-            libasound2-dev libudev-dev libx11-dev libxcursor-dev libxi-dev \
-            libxrandr-dev libwayland-dev libxkbcommon-dev libvulkan-dev
-
-      - name: Install Rust and test tools
-        run: |
-          set -euo pipefail
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-            | sh -s -- -y --profile minimal --default-toolchain 1.96
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-          "$HOME/.cargo/bin/rustup" component add clippy rustfmt
-          curl -LsSf https://get.nexte.st/latest/linux \
-            | tar zxf - -C "$HOME/.cargo/bin"
-          deny_install_dir="$(mktemp -d)"
-          curl -LsSf \
-            https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/cargo-deny-0.20.2-x86_64-unknown-linux-musl.tar.gz \
-            | tar zxf - --strip-components=1 -C "$deny_install_dir"
-          install -m 0755 "$deny_install_dir/cargo-deny" /usr/local/bin/cargo-deny
-
-      - name: Restore Cargo cache
-        uses: actions/cache@v5
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: rust-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: rust-${{ runner.os }}-
-
-      - name: Check formatting and dependency policy
-        run: |
-          set -euo pipefail
-          cargo fmt --all -- --check
-          cargo-deny check advisories bans sources
-
-      - name: Deny Clippy warnings
-        run: cargo clippy --workspace --all-targets -- -D warnings
-
-      - name: Compile complete test inventory
-        run: cargo nextest list --workspace --message-format human > target/nextest-list.txt
-
-      - name: Run stable smoke profile
-        run: |
-          set -o pipefail
-          mkdir -p target/nextest/smoke
-          cargo nextest run --workspace --profile smoke 2>&1 \
-            | tee target/nextest/smoke/timing.log
-
-      - name: Publish quick reports
-        if: always()
-        uses: https://data.forgejo.org/forgejo/upload-artifact@v4
-        with:
-          name: quick-reports
-          path: |
-            target/nextest-list.txt
-            target/nextest/smoke/
-          if-no-files-found: warn
-
-      - name: Summarize quick gate
-        if: always()
-        run: |
-          {
-            echo '## Quick gate'
-            echo '- Runner class: `personal`'
-            echo '- Build jobs: `2`'
-            echo '- Inventory, smoke JUnit, and timing log: `quick-reports` artifact'
-          } >> "$GITHUB_STEP_SUMMARY"
-
-  full:
-    name: Complete deterministic workspace suite
-    needs: quick
+  simulation:
+    name: C# rules, real sockets and legacy saves
     runs-on: cat-idler-heavy
-    timeout-minutes: 150
-    env:
-      CAT_PLAYTEST_SEED_TIER: high-risk
-      CAT_PLAYTEST_TRACE_DIR: target/playtest-traces
+    timeout-minutes: 20
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-
-      - name: Install native build dependencies
+      - uses: actions/checkout@v6
+      - name: Install converter build and verification tools
         run: |
           set -euo pipefail
           apt-get update
-          apt-get install -y --no-install-recommends \
-            ca-certificates curl build-essential pkg-config libssl-dev time \
-            libasound2-dev libudev-dev libx11-dev libxcursor-dev libxi-dev \
-            libxrandr-dev libwayland-dev libxkbcommon-dev libvulkan-dev
-
-      - name: Install Rust and Nextest
-        run: |
-          set -euo pipefail
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-            | sh -s -- -y --profile minimal --default-toolchain 1.96
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-          curl -LsSf https://get.nexte.st/latest/linux \
-            | tar zxf - -C "$HOME/.cargo/bin"
-
-      - name: Restore Cargo cache
-        uses: actions/cache@v5
+          apt-get install -y --no-install-recommends ca-certificates curl build-essential python3
+      - uses: actions/setup-dotnet@v5
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: rust-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: rust-${{ runner.os }}-
-
-      - name: Verify effective job resource ceilings
-        run: |
-          set -euo pipefail
-          mkdir -p target/nextest/ci
-          read -r cpu_quota cpu_period < /sys/fs/cgroup/cpu.max
-          memory_limit="$(cat /sys/fs/cgroup/memory.max)"
-          if [ "$cpu_quota" = max ] || [ "$memory_limit" = max ]; then
-            echo 'Heavy job is missing an effective CPU or memory ceiling.' >&2
-            exit 1
-          fi
-          cpu_millis="$((cpu_quota * 1000 / cpu_period))"
-          printf 'cpu_millis=%s\nmemory_bytes=%s\n' "$cpu_millis" "$memory_limit" \
-            | tee target/nextest/ci/cgroup-limits.txt
-          test "$cpu_millis" -le 2000
-          test "$memory_limit" -le $((5 * 1024 * 1024 * 1024))
-
-      - name: Run complete suite without fail-fast
-        id: full-suite
-        continue-on-error: true
+          dotnet-version: '10.0.400'
+      - name: Restore locked dependencies
+        run: dotnet restore IdleCatForest.slnx --locked-mode
+      - name: Compile with warnings as errors
+        run: dotnet build IdleCatForest.slnx --no-restore -warnaserror
+      - name: Check C# formatting
+        run: dotnet format whitespace IdleCatForest.slnx --no-restore --verify-no-changes
+      - name: Run all simulation scenarios
         run: |
           set -o pipefail
-          rm -rf target/playtest-traces
-          mkdir -p target/nextest/ci target/playtest-traces
-          /usr/bin/time -v -o target/nextest/ci/resources.txt \
-            cargo nextest run --workspace --profile ci 2>&1 \
-            | tee target/nextest/ci/timing.log
-
-      - name: Publish complete-suite reports
-        if: always()
-        uses: https://data.forgejo.org/forgejo/upload-artifact@v4
-        with:
-          name: complete-suite-reports
-          path: |
-            target/nextest/ci/
-            target/playtest-traces/
-          if-no-files-found: warn
-
-      - name: Summarize complete suite
-        if: always()
+          mkdir -p artifacts/ci
+          dotnet tools/scenarios/bin/Debug/net10.0/Forest.Scenarios.dll | tee artifacts/ci/scenarios.txt
+      - name: Run authority and real socket tests
         run: |
-          {
-            echo '## Complete deterministic suite'
-            echo '- Runner class: `cat-idler-heavy` (2 CPU / 5 GiB job cap)'
-            echo '- Scheduling: one unpartitioned Nextest run, two test threads, fail-fast disabled'
-            echo '- Result: `${{ steps.full-suite.outcome }}`'
-            echo '- JUnit, timing, and per-scenario traces: `complete-suite-reports` artifact'
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Enforce complete-suite result
-        if: steps.full-suite.outcome != 'success'
-        run: exit 1
-
-  wasm:
-    name: Build browser client
-    needs: quick
-    runs-on: personal
-    timeout-minutes: 45
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-
-      - name: Install WASM build dependencies
+          set -o pipefail
+          dotnet server/Forest.Tests/bin/Debug/net10.0/Forest.Tests.dll | tee artifacts/ci/authority.txt
+      - name: Install the read-only legacy converter toolchain
         run: |
           set -euo pipefail
-          apt-get update
-          apt-get install -y --no-install-recommends \
-            ca-certificates curl build-essential pkg-config libssl-dev \
-            binaryen
-
-      - name: Install Rust, WASM target, and Trunk
-        run: |
-          set -euxo pipefail
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-            | sh -s -- -y --profile minimal --default-toolchain 1.96
-          ls -la "$HOME/.cargo/bin"
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.98.0
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-          "$HOME/.cargo/bin/rustup" target add wasm32-unknown-unknown
-          # Absolute path: GITHUB_PATH only applies to later steps, and the
-          # in-step PATH export has proven unreliable under the runner shell.
-          "$HOME/.cargo/bin/cargo" install trunk --locked --version 0.21.14
-
-      - name: Restore Cargo cache
-        uses: actions/cache@v5
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: wasm-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: wasm-${{ runner.os }}-
-
-      - name: Build release browser bundle
-        run: scripts/build-web.sh
-
-      - name: Enforce browser transfer budget
+      - name: Verify real SQLite conversion and source preservation
         run: |
-          set -euo pipefail
-          mkdir -p target/wasm-report
-          transfer_bytes="$(tar -C crates/cat-web/dist -cf - . | gzip -9 | wc -c)"
-          # 12 MiB: the unoptimized single-wasm bundle currently lands at
-          # ~11.1 MiB gzipped; atlasing (see docs/ROADMAP.md) is the fix that
-          # should eventually bring this back under 10.
-          budget_bytes="$((12 * 1024 * 1024))"
-          printf 'gzip_transfer_bytes=%s\nbudget_bytes=%s\n' \
-            "$transfer_bytes" "$budget_bytes" | tee target/wasm-report/transfer.txt
-          if [ "$transfer_bytes" -gt "$budget_bytes" ]; then
-            echo "WASM bundle exceeds the 12 MiB gzip transfer budget" >&2
-            exit 1
-          fi
-
-      - name: Publish browser bundle report
+          cargo build --locked --manifest-path tools/save-import/normalize-legacy/Cargo.toml
+          python3 -m unittest tools/save-import/test_playable_import.py tools/save-import/test_legacy_archive.py
+      - name: Publish test evidence
         if: always()
         uses: https://data.forgejo.org/forgejo/upload-artifact@v4
         with:
-          name: wasm-bundle-report
-          path: target/wasm-report/
+          name: unity-simulation-reports
+          path: artifacts/ci
           if-no-files-found: warn
-
-      - name: Summarize browser bundle
-        run: |
-          {
-            echo '## WASM build'
-            echo '- Runs after the quick gate and independently of whole-game expectation failures.'
-            echo '- Enforced gzip transfer budget: `12 MiB`.'
-            echo '- Largest transfer artifacts:'
-            echo '```text'
-            du -ah crates/cat-web/dist | sort -h | tail -20
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"

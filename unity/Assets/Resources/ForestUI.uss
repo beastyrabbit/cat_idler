@@ -1,0 +1,42 @@
+#forest-ui { flex-grow: 1; color: rgb(231,230,212); font-size: 13px; }
+.top { position: absolute; top: 18px; left: 22px; right: 22px; height: 86px; flex-direction: row; align-items: center; justify-content: space-between; padding: 14px 20px; background-color: rgba(24,43,38,0.97); border-radius: 10px; border-width: 1px; border-color: rgb(79,101,75); }
+.brand { min-width: 290px; }
+.eyebrow { font-size: 10px; letter-spacing: 2px; color: rgb(203,166,95); margin-bottom: 6px; }
+.headline { font-size: 23px; -unity-font-style: bold; }
+.stores { font-size: 14px; white-space: normal; }
+.clock { align-items: flex-end; }
+.navigation { position: absolute; left: 22px; top: 117px; flex-direction: row; flex-wrap: wrap; right: 22px; }
+.navigation > Button { padding: 8px 13px; margin: 0px 5px 5px 0px; font-size: 12px; }
+Button { min-height: 29px; padding: 5px 10px; margin: 3px 0px; color: rgb(235,229,204); background-color: rgb(48,69,54); border-width: 1px; border-color: rgb(91,107,77); border-radius: 5px; white-space: normal; }
+Button:hover { background-color: rgb(72,90,62); border-color: rgb(207,175,102); }
+Button:active { background-color: rgb(104,100,64); }
+Button:focus { border-color: rgb(235,202,121); }
+.row { flex-direction: row; flex-wrap: wrap; align-items: center; }
+.row > Button { margin-right: 5px; }
+.drawer { position: absolute; top: 167px; left: 22px; bottom: 105px; width: 368px; padding: 15px; border-radius: 10px; background-color: rgba(23,42,37,0.98); border-width: 1px; border-color: rgb(88,103,74); }
+.drawer.wide { width: auto; right: 22px; }
+.drawer-heading { flex-shrink: 0; justify-content: space-between; padding-bottom: 9px; border-bottom-width: 1px; border-bottom-color: rgb(67,85,62); }
+.title { font-size: 23px; -unity-font-style: bold; }
+.drawer-scroll { flex-grow: 1; margin-top: 7px; }
+.drawer-scroll > .unity-scroll-view__content-viewport { padding-right: 8px; }
+.body { white-space: normal; margin-top: 5px; margin-bottom: 7px; }
+.subtitle { font-size: 15px; -unity-font-style: bold; white-space: normal; margin-top: 7px; margin-bottom: 5px; color: rgb(233,218,176); }
+.muted { color: rgb(158,179,153); white-space: normal; font-size: 11px; margin: 3px 0px; }
+.warning { color: rgb(238,162,113); white-space: normal; margin: 5px 0px; }
+.card { padding: 10px; margin-bottom: 8px; border-width: 1px; border-color: rgb(59,83,61); border-radius: 6px; background-color: rgb(32,51,43); }
+.research-cards { flex-direction: row; flex-wrap: wrap; }
+.research-card { width: 285px; min-height: 190px; padding: 13px; margin: 7px; border-radius: 7px; border-width: 1px; border-color: rgb(77,99,65); background-color: rgb(32,51,43); }
+.research-card > Button { margin-top: auto; }
+.separator { height: 1px; background-color: rgb(68,87,61); margin: 15px 0px; }
+.stock-row { padding: 5px 1px; border-bottom-width: 1px; border-bottom-color: rgb(52,73,54); }
+.bottom { position: absolute; bottom: 15px; left: 22px; right: 22px; padding: 10px 15px; border-radius: 8px; background-color: rgba(19,35,31,0.94); }
+.hint { color: rgb(230,216,177); font-size: 12px; white-space: normal; }
+.feedback { color: rgb(239,182,109); font-size: 12px; white-space: normal; margin-top: 4px; }
+.status { color: rgb(137,163,140); font-size: 10px; margin-top: 4px; }
+.unity-base-field { margin: 6px 0px; min-height: 25px; color: rgb(230,222,198); }
+.unity-base-field__label { min-width: 100px; max-width: 145px; white-space: normal; }
+.unity-base-field__input { background-color: rgb(18,34,28); color: rgb(234,224,191); border-width: 1px; border-color: rgb(70,91,61); padding: 4px; }
+.unity-progress-bar { margin: 5px 0px; }
+.unity-progress-bar__background { background-color: rgb(14,28,22); }
+.unity-progress-bar__progress { background-color: rgb(100,137,77); }
+.unity-progress-bar__title { color: rgb(245,238,211); font-size: 11px; }

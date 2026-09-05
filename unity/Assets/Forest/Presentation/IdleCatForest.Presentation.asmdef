@@ -1,0 +1,5 @@
+{
+  "name": "IdleCatForest.Presentation",
+  "rootNamespace": "IdleCatForest.Presentation",
+  "references": ["IdleCatForest.Simulation", "IdleCatForest.Authority", "Unity.InputSystem"]
+}

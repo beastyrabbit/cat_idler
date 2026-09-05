@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "dependencies": {
+    "net10.0": {
+      "Newtonsoft.Json": {
+        "type": "Transitive",
+        "resolved": "13.0.4",
+        "contentHash": "pdgNNMai3zv51W5aq268sujXUyx7SNdE2bj1wZcWjAQrKMFZV260lbqYop1d2GM67JI1huLRwxo9ZqnfF/lC6A=="
+      },
+      "forest.authority": {
+        "type": "Project",
+        "dependencies": {
+          "Newtonsoft.Json": "[13.0.4, )"
+        }
+      },
+      "forest.saveimport": {
+        "type": "Project",
+        "dependencies": {
+          "Forest.Authority": "[1.0.0, )"
+        }
+      },
+      "forest.server": {
+        "type": "Project",
+        "dependencies": {
+          "Forest.Authority": "[1.0.0, )"
+        }
+      }
+    }
+  }
+}

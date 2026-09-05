@@ -1,0 +1,1734 @@
+{
+  "generator": "source-art/build_forest.py",
+  "blender": "5.2.1 LTS",
+  "seed": 271828,
+  "unit": "meter",
+  "unity_forward": "+Z",
+  "unity_up": "+Y",
+  "palette_srgb_hex": {
+    "bark": "65432F",
+    "wood": "B17B4C",
+    "endgrain": "D9AB70",
+    "darkwood": "49392F",
+    "earth": "675243",
+    "soil": "43392D",
+    "stone": "849090",
+    "stone_light": "B1B9B0",
+    "slate": "465964",
+    "iron": "687E89",
+    "coal": "303D45",
+    "copper": "C98655",
+    "leaf": "587F50",
+    "leaf_light": "8EAD64",
+    "pine": "2E6557",
+    "moss": "AAC579",
+    "straw": "DABC72",
+    "grain": "E0BE60",
+    "teal": "477F80",
+    "teal_light": "72A69B",
+    "terracotta": "B96E4D",
+    "cream": "EDDFC0",
+    "cloth": "7C86A8",
+    "berry": "AC5068",
+    "herb": "69A49B",
+    "flower": "C1A2C9",
+    "water": "69B3BE",
+    "fur": "D49B60",
+    "fur_light": "F2D6AB",
+    "fur_dark": "A9683D",
+    "nose": "B37077",
+    "eye": "283D35",
+    "gold": "D4AA4F",
+    "ember": "F29E58",
+    "leather": "9B684A",
+    "gem": "76C6BA"
+  },
+  "assets": {
+    "cat": {
+      "description": "Sculpted ginger cat with head, tail and four paw pivots for procedural animation",
+      "vertices": 1166,
+      "triangles": 2144,
+      "bounds_blender": [
+        [
+          -0.3911,
+          -0.7508,
+          0.0
+        ],
+        [
+          0.3911,
+          0.8031,
+          1.34
+        ]
+      ],
+      "mesh_count": 7,
+      "parts": [
+        "Body",
+        "Head",
+        "Tail",
+        "PawFrontLeft",
+        "PawBackLeft",
+        "PawFrontRight",
+        "PawBackRight"
+      ]
+    },
+    "tree_oak": {
+      "description": "Broad layered oak crown, exposed branching trunk and flared roots",
+      "vertices": 510,
+      "triangles": 952,
+      "bounds_blender": [
+        [
+          -1.3395,
+          -1.4667,
+          -0.0267
+        ],
+        [
+          1.4694,
+          1.4667,
+          3.95
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "tree_oak_mesh"
+      ]
+    },
+    "tree_pine": {
+      "description": "Tiered conifer with visible trunk and irregular bough silhouette",
+      "vertices": 88,
+      "triangles": 156,
+      "bounds_blender": [
+        [
+          -0.9848,
+          -0.9397,
+          0.0
+        ],
+        [
+          0.9848,
+          1.0,
+          3.74
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "tree_pine_mesh"
+      ]
+    },
+    "shrub": {
+      "description": "Low branching shrub",
+      "vertices": 330,
+      "triangles": 620,
+      "bounds_blender": [
+        [
+          -0.6069,
+          -0.6463,
+          0.0093
+        ],
+        [
+          0.6604,
+          0.6463,
+          0.9
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "shrub_mesh"
+      ]
+    },
+    "berry_bush": {
+      "description": "Round berry bush with visible ripe pink fruit",
+      "vertices": 510,
+      "triangles": 920,
+      "bounds_blender": [
+        [
+          -0.6069,
+          -0.6463,
+          0.0093
+        ],
+        [
+          0.6604,
+          0.6463,
+          0.9
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "berry_bush_mesh"
+      ]
+    },
+    "stump": {
+      "description": "Cut stump with exposed growth rings and roots",
+      "vertices": 186,
+      "triangles": 336,
+      "bounds_blender": [
+        [
+          -0.6201,
+          -0.6201,
+          -0.0439
+        ],
+        [
+          0.6201,
+          0.6201,
+          0.616
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "stump_mesh"
+      ]
+    },
+    "rock": {
+      "description": "Angular stone outcrop",
+      "vertices": 24,
+      "triangles": 40,
+      "bounds_blender": [
+        [
+          -0.6619,
+          -0.5189,
+          -0.18
+        ],
+        [
+          0.8378,
+          0.5262,
+          1.02
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "rock_mesh"
+      ]
+    },
+    "ore_iron": {
+      "description": "Angular stone outcrop with visible copper inclusions",
+      "vertices": 84,
+      "triangles": 140,
+      "bounds_blender": [
+        [
+          -0.6619,
+          -0.5189,
+          -0.18
+        ],
+        [
+          0.8378,
+          0.5262,
+          1.02
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "ore_iron_mesh"
+      ]
+    },
+    "ore_coal": {
+      "description": "Angular stone outcrop with visible coal inclusions",
+      "vertices": 84,
+      "triangles": 140,
+      "bounds_blender": [
+        [
+          -0.6619,
+          -0.5189,
+          -0.18
+        ],
+        [
+          0.8378,
+          0.5262,
+          1.02
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "ore_coal_mesh"
+      ]
+    },
+    "grain_plot": {
+      "description": "Raised grain bed with separate readable stems",
+      "vertices": 1416,
+      "triangles": 2524,
+      "bounds_blender": [
+        [
+          -0.91,
+          -0.73,
+          0.0
+        ],
+        [
+          0.91,
+          0.73,
+          1.0358
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "grain_plot_mesh"
+      ]
+    },
+    "herb_plot": {
+      "description": "Raised herbs bed with separate readable stems",
+      "vertices": 840,
+      "triangles": 1468,
+      "bounds_blender": [
+        [
+          -0.91,
+          -0.73,
+          0.0
+        ],
+        [
+          0.91,
+          0.73,
+          0.7955
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "herb_plot_mesh"
+      ]
+    },
+    "catnip_plot": {
+      "description": "Raised catnip bed with separate readable stems",
+      "vertices": 840,
+      "triangles": 1468,
+      "bounds_blender": [
+        [
+          -0.91,
+          -0.73,
+          0.0
+        ],
+        [
+          0.91,
+          0.73,
+          0.7902
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "catnip_plot_mesh"
+      ]
+    },
+    "reeds": {
+      "description": "Waterside reeds with brown seed heads",
+      "vertices": 558,
+      "triangles": 1008,
+      "bounds_blender": [
+        [
+          -0.5518,
+          -0.2431,
+          -0.0015
+        ],
+        [
+          0.4208,
+          0.3642,
+          1.1299
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "reeds_mesh"
+      ]
+    },
+    "den": {
+      "description": "Cutaway colony den",
+      "vertices": 1346,
+      "triangles": 2488,
+      "bounds_blender": [
+        [
+          -1.66,
+          -1.64,
+          0.0
+        ],
+        [
+          1.66,
+          1.56,
+          2.675
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "den_mesh"
+      ]
+    },
+    "food_storage": {
+      "description": "Cutaway colony food storage",
+      "vertices": 2646,
+      "triangles": 4844,
+      "bounds_blender": [
+        [
+          -1.66,
+          -1.64,
+          0.0
+        ],
+        [
+          1.66,
+          1.56,
+          2.4
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "food_storage_mesh"
+      ]
+    },
+    "water_bowl": {
+      "description": "Cutaway colony water bowl",
+      "vertices": 228,
+      "triangles": 412,
+      "bounds_blender": [
+        [
+          -0.9353,
+          -0.9646,
+          -0.05
+        ],
+        [
+          1.0126,
+          0.9646,
+          0.815
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "water_bowl_mesh"
+      ]
+    },
+    "beds": {
+      "description": "Cutaway colony beds",
+      "vertices": 1338,
+      "triangles": 2480,
+      "bounds_blender": [
+        [
+          -1.66,
+          -1.64,
+          0.0
+        ],
+        [
+          1.66,
+          1.56,
+          2.4
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "beds_mesh"
+      ]
+    },
+    "herb_garden": {
+      "description": "Cutaway colony herb garden",
+      "vertices": 840,
+      "triangles": 1468,
+      "bounds_blender": [
+        [
+          -1.51,
+          -1.23,
+          0.0
+        ],
+        [
+          1.51,
+          1.23,
+          0.7839
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "herb_garden_mesh"
+      ]
+    },
+    "nursery": {
+      "description": "Cutaway colony nursery",
+      "vertices": 1492,
+      "triangles": 2768,
+      "bounds_blender": [
+        [
+          -1.66,
+          -1.64,
+          0.0
+        ],
+        [
+          1.66,
+          1.56,
+          2.4
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "nursery_mesh"
+      ]
+    },
+    "elder_corner": {
+      "description": "Cutaway colony elder corner",
+      "vertices": 1506,
+      "triangles": 2796,
+      "bounds_blender": [
+        [
+          -1.66,
+          -1.64,
+          0.0
+        ],
+        [
+          1.66,
+          1.56,
+          2.4
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "elder_corner_mesh"
+      ]
+    },
+    "walls": {
+      "description": "Cutaway colony walls",
+      "vertices": 200,
+      "triangles": 328,
+      "bounds_blender": [
+        [
+          -1.2,
+          -0.24,
+          0.0
+        ],
+        [
+          1.2,
+          0.16,
+          1.705
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "walls_mesh"
+      ]
+    },
+    "mouse_farm": {
+      "description": "Cutaway colony mouse farm",
+      "vertices": 1624,
+      "triangles": 2960,
+      "bounds_blender": [
+        [
+          -1.66,
+          -1.64,
+          0.0
+        ],
+        [
+          1.66,
+          1.56,
+          2.4
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "mouse_farm_mesh"
+      ]
+    },
+    "shrine": {
+      "description": "Cutaway colony shrine",
+      "vertices": 432,
+      "triangles": 804,
+      "bounds_blender": [
+        [
+          -1.25,
+          -1.25,
+          0.0
+        ],
+        [
+          1.25,
+          1.25,
+          2.425
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "shrine_mesh"
+      ]
+    },
+    "workshop": {
+      "description": "Cutaway colony workshop",
+      "vertices": 1680,
+      "triangles": 3084,
+      "bounds_blender": [
+        [
+          -1.66,
+          -1.64,
+          0.0
+        ],
+        [
+          1.66,
+          1.56,
+          2.4
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "workshop_mesh"
+      ]
+    },
+    "field": {
+      "description": "Cutaway colony field",
+      "vertices": 1476,
+      "triangles": 2632,
+      "bounds_blender": [
+        [
+          -1.51,
+          -1.23,
+          0.0
+        ],
+        [
+          1.65,
+          1.23,
+          1.6
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "field_mesh"
+      ]
+    },
+    "smithy": {
+      "description": "Cutaway colony smithy",
+      "vertices": 1224,
+      "triangles": 2244,
+      "bounds_blender": [
+        [
+          -1.66,
+          -1.64,
+          0.0
+        ],
+        [
+          1.66,
+          1.56,
+          2.4
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "smithy_mesh"
+      ]
+    },
+    "barracks": {
+      "description": "Cutaway colony barracks",
+      "vertices": 1300,
+      "triangles": 2392,
+      "bounds_blender": [
+        [
+          -1.66,
+          -1.64,
+          0.0
+        ],
+        [
+          1.66,
+          1.56,
+          2.4
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "barracks_mesh"
+      ]
+    },
+    "accounting_tent": {
+      "description": "Cutaway colony accounting tent",
+      "vertices": 1788,
+      "triangles": 3260,
+      "bounds_blender": [
+        [
+          -1.66,
+          -1.64,
+          0.0
+        ],
+        [
+          1.66,
+          1.56,
+          2.4
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "accounting_tent_mesh"
+      ]
+    },
+    "wood_cutter": {
+      "description": "Cutaway colony wood cutter",
+      "vertices": 1514,
+      "triangles": 2748,
+      "bounds_blender": [
+        [
+          -1.66,
+          -1.64,
+          0.0
+        ],
+        [
+          1.66,
+          1.56,
+          2.4
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "wood_cutter_mesh"
+      ]
+    },
+    "stone_prep": {
+      "description": "Cutaway colony stone prep",
+      "vertices": 1164,
+      "triangles": 2128,
+      "bounds_blender": [
+        [
+          -1.66,
+          -1.64,
+          0.0
+        ],
+        [
+          1.66,
+          1.56,
+          2.4
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "stone_prep_mesh"
+      ]
+    },
+    "woodworking": {
+      "description": "Cutaway colony woodworking",
+      "vertices": 1248,
+      "triangles": 2288,
+      "bounds_blender": [
+        [
+          -1.66,
+          -1.64,
+          0.0
+        ],
+        [
+          1.66,
+          1.56,
+          2.4
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "woodworking_mesh"
+      ]
+    },
+    "clothier": {
+      "description": "Cutaway colony clothier",
+      "vertices": 1700,
+      "triangles": 3120,
+      "bounds_blender": [
+        [
+          -1.66,
+          -1.64,
+          0.0
+        ],
+        [
+          1.66,
+          1.56,
+          2.4
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "clothier_mesh"
+      ]
+    },
+    "tannery": {
+      "description": "Cutaway colony tannery",
+      "vertices": 1208,
+      "triangles": 2214,
+      "bounds_blender": [
+        [
+          -1.66,
+          -1.64,
+          0.0
+        ],
+        [
+          1.66,
+          1.56,
+          2.4
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "tannery_mesh"
+      ]
+    },
+    "research_hut": {
+      "description": "Cutaway colony research hut",
+      "vertices": 1642,
+      "triangles": 3020,
+      "bounds_blender": [
+        [
+          -1.66,
+          -1.64,
+          0.0
+        ],
+        [
+          1.66,
+          1.56,
+          2.4
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "research_hut_mesh"
+      ]
+    },
+    "smelter": {
+      "description": "Cutaway colony smelter",
+      "vertices": 1624,
+      "triangles": 2984,
+      "bounds_blender": [
+        [
+          -1.66,
+          -1.64,
+          0.0
+        ],
+        [
+          1.66,
+          1.56,
+          2.411
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "smelter_mesh"
+      ]
+    },
+    "mill": {
+      "description": "Cutaway colony mill",
+      "vertices": 1530,
+      "triangles": 2836,
+      "bounds_blender": [
+        [
+          -1.66,
+          -1.64,
+          0.0
+        ],
+        [
+          2.05,
+          1.56,
+          2.4
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "mill_mesh"
+      ]
+    },
+    "sawmill": {
+      "description": "Cutaway colony sawmill",
+      "vertices": 1702,
+      "triangles": 3120,
+      "bounds_blender": [
+        [
+          -1.66,
+          -1.64,
+          0.0
+        ],
+        [
+          1.91,
+          1.56,
+          2.4
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "sawmill_mesh"
+      ]
+    },
+    "school": {
+      "description": "Cutaway colony school",
+      "vertices": 1592,
+      "triangles": 2908,
+      "bounds_blender": [
+        [
+          -1.66,
+          -1.64,
+          0.0
+        ],
+        [
+          1.66,
+          1.56,
+          2.4
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "school_mesh"
+      ]
+    },
+    "stockpile": {
+      "description": "Marked timber stockpile with open crates and stacked logs",
+      "vertices": 1182,
+      "triangles": 2152,
+      "bounds_blender": [
+        [
+          -1.46,
+          -1.16,
+          0.0
+        ],
+        [
+          1.46,
+          1.16,
+          0.65
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "stockpile_mesh"
+      ]
+    },
+    "road": {
+      "description": "One meter gravel road tile, warm earth and embedded stones",
+      "vertices": 132,
+      "triangles": 224,
+      "bounds_blender": [
+        [
+          -0.5,
+          -0.5,
+          -0.01
+        ],
+        [
+          0.5,
+          0.5,
+          0.06
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "road_mesh"
+      ]
+    },
+    "fence": {
+      "description": "Split rail timber fence",
+      "vertices": 106,
+      "triangles": 188,
+      "bounds_blender": [
+        [
+          -1.09,
+          -0.14,
+          0.0
+        ],
+        [
+          1.09,
+          0.14,
+          1.195
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "fence_mesh"
+      ]
+    },
+    "gate": {
+      "description": "Split rail timber gate",
+      "vertices": 154,
+      "triangles": 276,
+      "bounds_blender": [
+        [
+          -1.09,
+          -0.14,
+          0.0
+        ],
+        [
+          1.09,
+          0.14,
+          1.195
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "gate_mesh"
+      ]
+    },
+    "rail": {
+      "description": "One meter narrow gauge track section",
+      "vertices": 120,
+      "triangles": 220,
+      "bounds_blender": [
+        [
+          -0.6,
+          -0.5,
+          0.0
+        ],
+        [
+          0.6,
+          0.5,
+          0.21
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "rail_mesh"
+      ]
+    },
+    "dock": {
+      "description": "Timber pier with pilings, mooring posts and rope",
+      "vertices": 440,
+      "triangles": 804,
+      "bounds_blender": [
+        [
+          -0.97,
+          -1.5275,
+          0.0
+        ],
+        [
+          0.97,
+          1.5275,
+          0.84
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "dock_mesh"
+      ]
+    },
+    "cart": {
+      "description": "Four wheel wooden haul cart with open load bed and shafts",
+      "vertices": 1496,
+      "triangles": 2772,
+      "bounds_blender": [
+        [
+          -0.795,
+          -1.754,
+          0.0
+        ],
+        [
+          0.795,
+          0.71,
+          1.479
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "cart_mesh"
+      ]
+    },
+    "boat": {
+      "description": "Open clinker style river boat with benches and oars",
+      "vertices": 1032,
+      "triangles": 1892,
+      "bounds_blender": [
+        [
+          -1.4758,
+          -1.6601,
+          0.06
+        ],
+        [
+          1.4758,
+          1.385,
+          0.665
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "boat_mesh"
+      ]
+    },
+    "watchtower": {
+      "description": "Raised guard platform with ladder and teal canopy",
+      "vertices": 480,
+      "triangles": 880,
+      "bounds_blender": [
+        [
+          -0.9,
+          -1.133,
+          -0.0032
+        ],
+        [
+          0.9,
+          1.0455,
+          3.5472
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "watchtower_mesh"
+      ]
+    },
+    "healing_tent": {
+      "description": "Open herb clinic with examination nest and medicine jars",
+      "vertices": 1434,
+      "triangles": 2612,
+      "bounds_blender": [
+        [
+          -1.66,
+          -1.64,
+          0.0
+        ],
+        [
+          1.66,
+          1.56,
+          2.4
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "healing_tent_mesh"
+      ]
+    },
+    "cargo_food": {
+      "description": "Distinct carried food bundle, ground pivot for shoulder attachment",
+      "vertices": 106,
+      "triangles": 204,
+      "bounds_blender": [
+        [
+          -0.2187,
+          -0.1886,
+          -0.027
+        ],
+        [
+          0.2187,
+          0.1886,
+          0.432
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "cargo_food_mesh"
+      ]
+    },
+    "cargo_fish": {
+      "description": "Distinct carried fish bundle, ground pivot for shoulder attachment",
+      "vertices": 57,
+      "triangles": 101,
+      "bounds_blender": [
+        [
+          -0.16,
+          -0.31,
+          0.01
+        ],
+        [
+          0.16,
+          0.45,
+          0.23
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "cargo_fish_mesh"
+      ]
+    },
+    "cargo_blessings": {
+      "description": "Distinct carried blessings bundle, ground pivot for shoulder attachment",
+      "vertices": 228,
+      "triangles": 408,
+      "bounds_blender": [
+        [
+          -0.3642,
+          -0.173,
+          -0.001
+        ],
+        [
+          0.3642,
+          0.173,
+          0.52
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "cargo_blessings_mesh"
+      ]
+    },
+    "cargo_materials": {
+      "description": "Distinct carried materials bundle, ground pivot for shoulder attachment",
+      "vertices": 318,
+      "triangles": 568,
+      "bounds_blender": [
+        [
+          -0.19,
+          -0.341,
+          0.0108
+        ],
+        [
+          0.19,
+          0.341,
+          0.304
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "cargo_materials_mesh"
+      ]
+    },
+    "cargo_stone": {
+      "description": "Distinct carried stone bundle, ground pivot for shoulder attachment",
+      "vertices": 36,
+      "triangles": 60,
+      "bounds_blender": [
+        [
+          -0.2392,
+          -0.1701,
+          -0.03
+        ],
+        [
+          0.2392,
+          0.1701,
+          0.39
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "cargo_stone_mesh"
+      ]
+    },
+    "cargo_refined": {
+      "description": "Distinct carried refined bundle, ground pivot for shoulder attachment",
+      "vertices": 106,
+      "triangles": 204,
+      "bounds_blender": [
+        [
+          -0.2187,
+          -0.1886,
+          -0.027
+        ],
+        [
+          0.2187,
+          0.1886,
+          0.432
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "cargo_refined_mesh"
+      ]
+    },
+    "cargo_logs": {
+      "description": "Distinct carried logs bundle, ground pivot for shoulder attachment",
+      "vertices": 318,
+      "triangles": 568,
+      "bounds_blender": [
+        [
+          -0.19,
+          -0.341,
+          0.0108
+        ],
+        [
+          0.19,
+          0.341,
+          0.304
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "cargo_logs_mesh"
+      ]
+    },
+    "cargo_lumber": {
+      "description": "Distinct carried lumber bundle, ground pivot for shoulder attachment",
+      "vertices": 120,
+      "triangles": 220,
+      "bounds_blender": [
+        [
+          -0.19,
+          -0.315,
+          0.0075
+        ],
+        [
+          0.19,
+          0.315,
+          0.2125
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "cargo_lumber_mesh"
+      ]
+    },
+    "cargo_planks": {
+      "description": "Distinct carried planks bundle, ground pivot for shoulder attachment",
+      "vertices": 120,
+      "triangles": 220,
+      "bounds_blender": [
+        [
+          -0.22,
+          -0.315,
+          0.0075
+        ],
+        [
+          0.22,
+          0.315,
+          0.2125
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "cargo_planks_mesh"
+      ]
+    },
+    "cargo_blocks": {
+      "description": "Distinct carried blocks bundle, ground pivot for shoulder attachment",
+      "vertices": 72,
+      "triangles": 132,
+      "bounds_blender": [
+        [
+          -0.205,
+          -0.19,
+          0.03
+        ],
+        [
+          0.205,
+          0.19,
+          0.33
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "cargo_blocks_mesh"
+      ]
+    },
+    "cargo_tools": {
+      "description": "Distinct carried tools bundle, ground pivot for shoulder attachment",
+      "vertices": 32,
+      "triangles": 56,
+      "bounds_blender": [
+        [
+          -0.1562,
+          -0.0375,
+          -0.0025
+        ],
+        [
+          0.25,
+          0.0375,
+          0.8
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "cargo_tools_mesh"
+      ]
+    },
+    "cargo_water": {
+      "description": "Distinct carried water bundle, ground pivot for shoulder attachment",
+      "vertices": 84,
+      "triangles": 160,
+      "bounds_blender": [
+        [
+          -0.1712,
+          -0.18,
+          0.03
+        ],
+        [
+          0.285,
+          0.18,
+          0.485
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "cargo_water_mesh"
+      ]
+    },
+    "cargo_catnip": {
+      "description": "Distinct carried catnip bundle, ground pivot for shoulder attachment",
+      "vertices": 228,
+      "triangles": 408,
+      "bounds_blender": [
+        [
+          -0.3642,
+          -0.173,
+          -0.001
+        ],
+        [
+          0.3642,
+          0.173,
+          0.52
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "cargo_catnip_mesh"
+      ]
+    },
+    "cargo_grain": {
+      "description": "Distinct carried grain bundle, ground pivot for shoulder attachment",
+      "vertices": 106,
+      "triangles": 204,
+      "bounds_blender": [
+        [
+          -0.2187,
+          -0.1886,
+          -0.027
+        ],
+        [
+          0.2187,
+          0.1886,
+          0.432
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "cargo_grain_mesh"
+      ]
+    },
+    "cargo_flour": {
+      "description": "Distinct carried flour bundle, ground pivot for shoulder attachment",
+      "vertices": 106,
+      "triangles": 204,
+      "bounds_blender": [
+        [
+          -0.2187,
+          -0.1886,
+          -0.027
+        ],
+        [
+          0.2187,
+          0.1886,
+          0.432
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "cargo_flour_mesh"
+      ]
+    },
+    "cargo_preserves": {
+      "description": "Distinct carried preserves bundle, ground pivot for shoulder attachment",
+      "vertices": 84,
+      "triangles": 160,
+      "bounds_blender": [
+        [
+          -0.1712,
+          -0.18,
+          0.03
+        ],
+        [
+          0.285,
+          0.18,
+          0.485
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "cargo_preserves_mesh"
+      ]
+    },
+    "cargo_medicine": {
+      "description": "Distinct carried medicine bundle, ground pivot for shoulder attachment",
+      "vertices": 84,
+      "triangles": 160,
+      "bounds_blender": [
+        [
+          -0.1712,
+          -0.18,
+          0.03
+        ],
+        [
+          0.285,
+          0.18,
+          0.485
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "cargo_medicine_mesh"
+      ]
+    },
+    "cargo_brew": {
+      "description": "Distinct carried brew bundle, ground pivot for shoulder attachment",
+      "vertices": 84,
+      "triangles": 160,
+      "bounds_blender": [
+        [
+          -0.1712,
+          -0.18,
+          0.03
+        ],
+        [
+          0.285,
+          0.18,
+          0.485
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "cargo_brew_mesh"
+      ]
+    },
+    "cargo_herbs": {
+      "description": "Distinct carried herbs bundle, ground pivot for shoulder attachment",
+      "vertices": 228,
+      "triangles": 408,
+      "bounds_blender": [
+        [
+          -0.3642,
+          -0.173,
+          -0.001
+        ],
+        [
+          0.3642,
+          0.173,
+          0.52
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "cargo_herbs_mesh"
+      ]
+    },
+    "cargo_hide": {
+      "description": "Distinct carried hide bundle, ground pivot for shoulder attachment",
+      "vertices": 96,
+      "triangles": 176,
+      "bounds_blender": [
+        [
+          -0.2,
+          -0.21,
+          0.02
+        ],
+        [
+          0.2,
+          0.21,
+          0.258
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "cargo_hide_mesh"
+      ]
+    },
+    "cargo_leather": {
+      "description": "Distinct carried leather bundle, ground pivot for shoulder attachment",
+      "vertices": 96,
+      "triangles": 176,
+      "bounds_blender": [
+        [
+          -0.2,
+          -0.21,
+          0.02
+        ],
+        [
+          0.2,
+          0.21,
+          0.258
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "cargo_leather_mesh"
+      ]
+    },
+    "cargo_fibre": {
+      "description": "Distinct carried fibre bundle, ground pivot for shoulder attachment",
+      "vertices": 106,
+      "triangles": 204,
+      "bounds_blender": [
+        [
+          -0.2187,
+          -0.1886,
+          -0.027
+        ],
+        [
+          0.2187,
+          0.1886,
+          0.432
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "cargo_fibre_mesh"
+      ]
+    },
+    "cargo_thread": {
+      "description": "Distinct carried thread bundle, ground pivot for shoulder attachment",
+      "vertices": 120,
+      "triangles": 216,
+      "bounds_blender": [
+        [
+          -0.2341,
+          -0.12,
+          0.02
+        ],
+        [
+          0.2341,
+          0.12,
+          0.34
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "cargo_thread_mesh"
+      ]
+    },
+    "cargo_cloth": {
+      "description": "Distinct carried cloth bundle, ground pivot for shoulder attachment",
+      "vertices": 96,
+      "triangles": 176,
+      "bounds_blender": [
+        [
+          -0.2,
+          -0.21,
+          0.02
+        ],
+        [
+          0.2,
+          0.21,
+          0.258
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "cargo_cloth_mesh"
+      ]
+    },
+    "cargo_bone": {
+      "description": "Distinct carried bone bundle, ground pivot for shoulder attachment",
+      "vertices": 72,
+      "triangles": 124,
+      "bounds_blender": [
+        [
+          -0.1266,
+          -0.3081,
+          0.01
+        ],
+        [
+          0.1266,
+          0.3081,
+          0.17
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "cargo_bone_mesh"
+      ]
+    },
+    "cargo_ore": {
+      "description": "Distinct carried ore bundle, ground pivot for shoulder attachment",
+      "vertices": 36,
+      "triangles": 60,
+      "bounds_blender": [
+        [
+          -0.2392,
+          -0.1701,
+          -0.03
+        ],
+        [
+          0.2392,
+          0.1701,
+          0.39
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "cargo_ore_mesh"
+      ]
+    },
+    "cargo_gem": {
+      "description": "Distinct carried gem bundle, ground pivot for shoulder attachment",
+      "vertices": 36,
+      "triangles": 60,
+      "bounds_blender": [
+        [
+          -0.2392,
+          -0.1701,
+          -0.03
+        ],
+        [
+          0.2392,
+          0.1701,
+          0.39
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "cargo_gem_mesh"
+      ]
+    },
+    "cargo_clay": {
+      "description": "Distinct carried clay bundle, ground pivot for shoulder attachment",
+      "vertices": 36,
+      "triangles": 60,
+      "bounds_blender": [
+        [
+          -0.2392,
+          -0.1701,
+          -0.03
+        ],
+        [
+          0.2392,
+          0.1701,
+          0.39
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "cargo_clay_mesh"
+      ]
+    },
+    "cargo_sand": {
+      "description": "Distinct carried sand bundle, ground pivot for shoulder attachment",
+      "vertices": 36,
+      "triangles": 60,
+      "bounds_blender": [
+        [
+          -0.2392,
+          -0.1701,
+          -0.03
+        ],
+        [
+          0.2392,
+          0.1701,
+          0.39
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "cargo_sand_mesh"
+      ]
+    },
+    "cargo_metal": {
+      "description": "Distinct carried metal bundle, ground pivot for shoulder attachment",
+      "vertices": 72,
+      "triangles": 132,
+      "bounds_blender": [
+        [
+          -0.205,
+          -0.19,
+          0.03
+        ],
+        [
+          0.205,
+          0.19,
+          0.33
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "cargo_metal_mesh"
+      ]
+    },
+    "cargo_weapons": {
+      "description": "Distinct carried weapons bundle, ground pivot for shoulder attachment",
+      "vertices": 61,
+      "triangles": 106,
+      "bounds_blender": [
+        [
+          -0.1562,
+          -0.0375,
+          -0.0025
+        ],
+        [
+          0.265,
+          0.115,
+          0.905
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "cargo_weapons_mesh"
+      ]
+    },
+    "cargo_armor": {
+      "description": "Distinct carried armor bundle, ground pivot for shoulder attachment",
+      "vertices": 90,
+      "triangles": 176,
+      "bounds_blender": [
+        [
+          -0.275,
+          -0.275,
+          -0.01
+        ],
+        [
+          0.275,
+          0.275,
+          0.39
+        ]
+      ],
+      "mesh_count": 1,
+      "parts": [
+        "cargo_armor_mesh"
+      ]
+    }
+  }
+}

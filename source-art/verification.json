@@ -1,0 +1,497 @@
+{
+  "blender": "5.2.1 LTS",
+  "asset_count": 80,
+  "passed": true,
+  "checks": [
+    "FBX reimport",
+    "triangle preservation",
+    "mesh count",
+    "finite vertices",
+    "meter scale",
+    "orientation and bounds",
+    "material assignment",
+    "cat articulation names and pivots"
+  ],
+  "results": [
+    {
+      "asset": "cat",
+      "triangles": 2144,
+      "mesh_count": 7,
+      "passed": true
+    },
+    {
+      "asset": "tree_oak",
+      "triangles": 952,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "tree_pine",
+      "triangles": 156,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "shrub",
+      "triangles": 620,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "berry_bush",
+      "triangles": 920,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "stump",
+      "triangles": 336,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "rock",
+      "triangles": 40,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "ore_iron",
+      "triangles": 140,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "ore_coal",
+      "triangles": 140,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "grain_plot",
+      "triangles": 2524,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "herb_plot",
+      "triangles": 1468,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "catnip_plot",
+      "triangles": 1468,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "reeds",
+      "triangles": 1008,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "den",
+      "triangles": 2488,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "food_storage",
+      "triangles": 4844,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "water_bowl",
+      "triangles": 412,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "beds",
+      "triangles": 2480,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "herb_garden",
+      "triangles": 1468,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "nursery",
+      "triangles": 2768,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "elder_corner",
+      "triangles": 2796,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "walls",
+      "triangles": 328,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "mouse_farm",
+      "triangles": 2960,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "shrine",
+      "triangles": 804,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "workshop",
+      "triangles": 3084,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "field",
+      "triangles": 2632,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "smithy",
+      "triangles": 2244,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "barracks",
+      "triangles": 2392,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "accounting_tent",
+      "triangles": 3260,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "wood_cutter",
+      "triangles": 2748,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "stone_prep",
+      "triangles": 2128,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "woodworking",
+      "triangles": 2288,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "clothier",
+      "triangles": 3120,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "tannery",
+      "triangles": 2214,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "research_hut",
+      "triangles": 3020,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "smelter",
+      "triangles": 2984,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "mill",
+      "triangles": 2836,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "sawmill",
+      "triangles": 3120,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "school",
+      "triangles": 2908,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "stockpile",
+      "triangles": 2152,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "road",
+      "triangles": 224,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "fence",
+      "triangles": 188,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "gate",
+      "triangles": 276,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "rail",
+      "triangles": 220,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "dock",
+      "triangles": 804,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "cart",
+      "triangles": 2772,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "boat",
+      "triangles": 1892,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "watchtower",
+      "triangles": 880,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "healing_tent",
+      "triangles": 2612,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "cargo_food",
+      "triangles": 204,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "cargo_fish",
+      "triangles": 101,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "cargo_blessings",
+      "triangles": 408,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "cargo_materials",
+      "triangles": 568,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "cargo_stone",
+      "triangles": 60,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "cargo_refined",
+      "triangles": 204,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "cargo_logs",
+      "triangles": 568,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "cargo_lumber",
+      "triangles": 220,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "cargo_planks",
+      "triangles": 220,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "cargo_blocks",
+      "triangles": 132,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "cargo_tools",
+      "triangles": 56,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "cargo_water",
+      "triangles": 160,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "cargo_catnip",
+      "triangles": 408,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "cargo_grain",
+      "triangles": 204,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "cargo_flour",
+      "triangles": 204,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "cargo_preserves",
+      "triangles": 160,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "cargo_medicine",
+      "triangles": 160,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "cargo_brew",
+      "triangles": 160,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "cargo_herbs",
+      "triangles": 408,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "cargo_hide",
+      "triangles": 176,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "cargo_leather",
+      "triangles": 176,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "cargo_fibre",
+      "triangles": 204,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "cargo_thread",
+      "triangles": 216,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "cargo_cloth",
+      "triangles": 176,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "cargo_bone",
+      "triangles": 124,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "cargo_ore",
+      "triangles": 60,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "cargo_gem",
+      "triangles": 60,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "cargo_clay",
+      "triangles": 60,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "cargo_sand",
+      "triangles": 60,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "cargo_metal",
+      "triangles": 132,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "cargo_weapons",
+      "triangles": 106,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "cargo_armor",
+      "triangles": 176,
+      "mesh_count": 1,
+      "passed": true
+    }
+  ]
+}

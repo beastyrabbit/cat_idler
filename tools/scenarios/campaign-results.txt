@@ -1,0 +1,10 @@
+PASS campaign.fresh_48h_seed_7 14353.0ms
+PASS campaign.established_72h_seed_7 24110.9ms
+PASS campaign.shared_personal_48h_seed_7 22207.4ms
+PASS campaign.fresh_48h_seed_41 13889.0ms
+PASS campaign.established_72h_seed_41 22404.5ms
+PASS campaign.shared_personal_48h_seed_41 20585.4ms
+PASS campaign.fresh_48h_seed_127 13005.9ms
+PASS campaign.established_72h_seed_127 20676.2ms
+PASS campaign.shared_personal_48h_seed_127 19630.0ms
+RESULT total=9 failed=0 elapsed_ms=170865.1

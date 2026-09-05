@@ -1,271 +1,100 @@
-<div align="center">
-
 # Idle Cat Forest
 
-### An idle Dwarf Fortress, played by cats, in a forest.
+A non-commercial forest colony game. Cats gather, carry, build, learn, rest and
+raise kittens while you decide how the village develops. Specialist officers
+gradually take over work that begins under manual control.
 
-_A self-running cat colony you nudge, not micromanage — now a native Rust + Bevy game._
+Unity is the selected engine. This branch migrates the maintained Rust/Bevy game
+to a C# simulation and an Apple Silicon macOS application. The
+[migration acceptance ledger](docs/unity/ACCEPTANCE.md) records current evidence
+and open gates; the migration is not ready for delivery until those gates close.
 
-**Project status: non-commercial.** Idle Cat Forest is developed and distributed solely as a
-non-commercial game project.
+## Play on macOS
 
-![Rust](https://img.shields.io/badge/Rust-edition_2024-orange?style=flat-square&logo=rust)
-![Bevy](https://img.shields.io/badge/Bevy-0.19-blue?style=flat-square)
-![Tokio](https://img.shields.io/badge/tokio_+_axum-WebSocket-informational?style=flat-square)
-![SQLite](https://img.shields.io/badge/SQLite_(rusqlite)-persistence-003b57?style=flat-square&logo=sqlite&logoColor=white)
-![Tests](https://img.shields.io/badge/cat--sim_tests-770%2B_passing-brightgreen?style=flat-square)
-![Status](https://img.shields.io/badge/status-pre--release%2C_migration_complete-yellow?style=flat-square)
+Install Unity Editor **6000.6.0f1 for Apple Silicon** with **Mac Build Support
+IL2CPP**. Open the repository's `unity` folder in Unity Hub, open
+`Assets/Scenes/Forest.unity`, and press Play.
 
-</div>
+With Unity CLI **1.0.0-beta.6** installed:
 
----
-
-## What is this?
-
-**"An idle version of Dwarf Fortress, played by cats, in a forest."** Idle Cat Forest is a
-top-down, single-level god-sim: a cat colony lives, works, breeds, ages, researches, and
-fights entirely on its own, driven by an authoritative server that ticks the simulation once
-a second whether or not anyone is watching. Early play lets you direct exact jobs, placements,
-workers, and priorities; assigning leadership roles progressively hands those categories back
-to the colony. You also found villages, paint zones, vote, and spend a slow tech tree while the
-cats continue living their own lives.
-
-A **utility-AI leader director** keeps a fresh village alive with bounded hunting, water, and
-scouting work, while seven officer roles automate their own specialist categories. Vacant
-specialist categories stay manual, so appointing officers visibly hands work back to the colony.
-Cats walk every tile to get where they're going, lineages form through breeding, roads wear in
-from traffic, stockpiles fill and empty, and raid pressure builds with your success. See
-[`docs/GAME_VISION.md`](docs/GAME_VISION.md) for the full design pillars
-(manual → role-automation, visible workplaces, production chains) and
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for how the Rust workspace implements it.
-
-> **This is a rebuild.** The game shipped originally as a Next.js/TypeScript web app (a
-> Victorian-newspaper-themed single shared colony). That version is frozen — reference only —
-> on branch `archive/web-game` (tag `web-final`). The "same idea, not bit-identical" Rust +
-> Bevy migration is complete, and the TypeScript source was removed from `main` at the P11
-> cutover. Full context is in [`docs/HANDOFF.md`](docs/HANDOFF.md) and
-> [`docs/migration/BOARD.md`](docs/migration/BOARD.md).
-
-## Screenshots
-
-The screenshots under [`docs/screenshots/`](docs/screenshots/) (newspaper UI, isometric map,
-cat cards) are from the **archived TypeScript web version** — the Catford Examiner newspaper
-and the isometric renderer were both dropped in the rebuild (see `AGENTS.md`: "the Catford
-Examiner and its flavor generators are DROPPED"). They're kept for historical reference only
-and are **not representative of the current top-down Bevy client**. No committed screenshot of
-the Rust client exists yet; the standard way to see it is to build and run it yourself (below),
-or see `docs/HANDOFF.md`'s framebuffer-verification method for how the migration team
-captures Bevy screenshots without a display.
-
-## Architecture
-
-One Cargo workspace under `crates/`:
-
-```
-cat-client (Bevy 0.19 renderer/UI, native + wasm-targetable)
-  ├── cat-desktop   thin native launcher bin
-  └── cat-web       thin wasm launcher bin (Trunk bundle live-verified in Chromium)
-        ↕ WebSocket (ewebsock), snapshot in / action out, JSON over cat-protocol
-cat-server (tokio + axum, authoritative)
-  ├── runs cat-sim's world_tick() once a second for every colony
-  ├── broadcasts WorldSnapshot to all connected clients
-  ├── receives ClientAction, applies it via cat-sim, persists to SQLite (rusqlite)
-  └── HMAC-signed session identity, per-session rate limiting
-        ↕ calls
-cat-sim (pure, deterministic simulation core — no I/O, no rendering, no std::time)
+```sh
+bash tools/forest.sh open
 ```
 
-Plus **cat-dev**, a small launcher bin (`cargo dev`) that builds and runs `cat-server` +
-`cat-desktop` together for local development.
+To build the native application, close this project's Editor first:
 
-- **`cat-sim`** — the whole simulation as pure functions over plain data: life sim (aging,
-  breeding, genetics, old-age/starvation death), movement + A* pathfinding, the leader
-  director (a utility-AI that allocates a shared labor budget across colony goals), jobs,
-  production/hauling/storage, an upgrade tree with god-purchase and cat-research paths,
-  threat/raids/combat, elections, zones, roads, terrain generation, and the newer DF-style
-  item/material economy (crafting, traders, coin). One `world_tick(&mut WorldState, now)` call
-  runs 53 ordered phases per colony per tick — the single source of truth, same discipline as
-  the old TS `workerTick`. `#![forbid(unsafe_code)]`, no `rand` — all randomness goes through a
-  ported seeded LCG (`rng.rs`) with forked chains for movement/life/raids so replay is
-  deterministic. World state is multi-colony (`WorldState { colonies: Vec<ColonyRuntime> }`)
-  from the ground up — the old game's single global colony is now colony `#1` of many, with
-  player-founded villages (`found_colony`) as a first-class primitive.
-- **`cat-protocol`** — `serde` wire types shared by client and server: `WorldSnapshot` /
-  `ColonySnapshot` (resources, cats, jobs, buildings, upgrades, threat, raiders, zones, items,
-  officers, gather spots, roads, transport, and physical caravans) and a typed `ClientAction`
-  enum (found/join/select/trade villages, request jobs, purchase research, vote, plan and staff
-  buildings, assign officers and labor preferences, defend raids, author farms/roads/stockpiles/
-  gather spots/fishing, edit station queues, equip/repair goods, construct and route rail/shipping,
-  trade with visitors, and use release-disabled test controls).
-- **`cat-server`** — `axum` exposes `GET /health`, stateful `GET /ready`, and `GET /ws`
-  (WebSocket). CPU-heavy simulation and synchronous persistence run on Tokio's blocking pool;
-  new sockets receive a startup-initialized last-completed snapshot without waiting behind an
-  in-progress tick. The loop ticks the shared world once a second, saves to SQLite every 5 ticks (plus a
-  graceful-shutdown save), and broadcasts the new snapshot. Persistence
-  (`crates/cat-server/src/persistence.rs`) mirrors the old Drizzle schema in `rusqlite` tables
-  (`world`, `colonies`, `cats`, `jobs`, `buildings`, `world_tiles`, `shared_world_tiles`, `events`, `zones`,
-  `elections`, `votes`, `raiders`) with additive migrations on open. Session identity is
-  HMAC-signed (`SESSION_HMAC_SECRET`; the development fallback is loopback-only unless explicitly
-  opted in). Public binds require an Origin allowlist. Actions and connections are bounded per
-  authenticated session and effective client IP, including explicitly trusted reverse proxies.
-- **`cat-client`** — a Bevy 0.19 app (`cat_client::run()`) shared by native and wasm: connects
-  over WebSocket via `ewebsock`, deserializes `WorldSnapshot` every frame, and renders the
-  world **top-down** (a design pivot away from the archived game's isometric map — see
-  `docs/GAME_VISION.md`): terrain by biome, cats with shape-and-color specialization/officer
-  badges and carried-item markers, label-free roofed homes and open craft stations, visible stockpiles/gather spots,
-  fog of war, roads, raiders, a DF-Steam-inspired HUD (resources, census, event log, trade,
-  inspectors), and a full-page 487-study ("about 500") research ledger. All 487 studies are live
-  and purchasable; 108 physical recipes and every generated resource payload have authoritative
-  runtime consumers.
-- **`cat-desktop`** / **`cat-web`** — thin binaries over `cat-client`. `cat-web` builds with
-  Trunk, serves the selected assets, derives a same-origin WebSocket URL for deployment, and
-  has been exercised end-to-end in Chromium. The production `Dockerfile` serves the optimized
-  SPA, assets, probes, and WebSocket from one non-root server image with compression and exact
-  Origin checks. See [`docs/migration/WASM.md`](docs/migration/WASM.md) for the build recipe and
-  optional transfer-weight work.
-
-For the full phase-by-phase build history and maintained rollup, see
-[`docs/migration/BOARD.md`](docs/migration/BOARD.md). The post-cutover correctness pass and
-P12–P19 design evidence are tracked in
-[`docs/IMPLEMENTATION_AUDIT.md`](docs/IMPLEMENTATION_AUDIT.md).
-
-## How to run it
-
-Requires a graphical session for the native client (Bevy opens a window).
-
-```bash
-# One command: builds + runs cat-server and cat-desktop together, wires the client
-# to the server's WebSocket, and stops the server when the client window closes.
-cargo dev
+```sh
+bash tools/forest.sh build
+open 'artifacts/macos/Idle Cat Forest.app'
 ```
 
-Or run the two halves yourself in separate terminals:
+The project pins Unity Pipeline **0.6.0-exp.1** and its package graph. The native
+build uses ARM64 IL2CPP. Browser and other native exports are not verified targets.
 
-```bash
-# Terminal 1 — the authoritative server (the world; keeps ticking with no client attached)
-cargo run -p cat-server
-curl http://127.0.0.1:8787/health   # -> ok
+## Controls
 
-# Terminal 2 — the Bevy client window
-BEVY_ASSET_ROOT=$PWD CAT_SERVER_URL=ws://127.0.0.1:8787/ws cargo run -p cat-desktop
+- WASD or arrows pan the management camera. The wheel zooms; middle drag pans.
+- Click a cat or workplace to inspect it. The top navigation opens management tools.
+- Use Build to choose a plan, then click a clear known site. Cats must carry its materials.
+- Assign a worker and edit station or individual work queues in the workplace inspector.
+- Research offers searchable cards and a dependency map for all 487 studies.
+- Inspect a cat and press Tab to enter third-person control. WASD walks, right drag
+  turns the camera, E interacts, and Tab returns to management. Inventory, needs
+  and identity belong to the same authoritative cat throughout.
+- Village creates a personal village, selects the Commons, saves locally or
+  connects to a shared server. The other villages keep simulating.
+
+Inventory marked with an asterisk is a physical Accountant report, which can be
+stale. The game does not pretend an unvisited pile has a fresh exact count.
+Action failures appear at the bottom of the window.
+
+## Shared world and saves
+
+The local app embeds the same authority used by the server. Install **.NET SDK
+10.0.400** to run a separate shared world:
+
+```sh
+dotnet restore IdleCatForest.slnx --locked-mode
+bash tools/forest.sh server
 ```
 
-### Environment
+The default server listens on loopback at `ws://127.0.0.1:8788/ws`. The Village
+panel connects to it. Personal villages belong to signed identities; the communal
+village is shared. Remote connections require secure WebSockets except on loopback.
 
-```env
-PORT=8787                              # cat-server listen port (both binaries agree on this via cat-dev)
-BIND_ADDR=127.0.0.1                    # server bind IP; production image uses 0.0.0.0
-GAME_DB_PATH=data/cat.db               # SQLite file (created + migrated automatically)
-SESSION_HMAC_SECRET=...                # required for production and every public bind
-CAT_SERVER_WEB_DIST_DIR=...            # optional Trunk dist served by cat-server
-CAT_SERVER_PUBLIC_IMAGES_DIR=...       # optional image tree served at /public/images
-CAT_SERVER_ALLOWED_ORIGINS=...         # required exact WS Origin allowlist for public binds
-CAT_SERVER_TRUSTED_PROXY_IPS=...       # optional exact proxies allowed to supply one X-Forwarded-For IP
-CAT_SERVER_URL=ws://127.0.0.1:8787/ws  # cat-desktop/cat-web: which server to connect to
-BEVY_ASSET_ROOT=$PWD                   # cat-desktop: resolve public/images/... from the workspace root
+Local Unity saves are separate from the old game's data. Existing worlds are
+loaded, never replaced because loading failed. See the tested
+[save and identity migration procedure](docs/unity/PERSISTENCE.md) before importing
+a maintained legacy SQLite world. Keep its original database, signer and identity
+files intact. Import writes a new destination.
+
+## Development and verification
+
+```sh
+dotnet build IdleCatForest.slnx --no-restore
+bash tools/forest.sh server-test
+dotnet run --project tools/scenarios/Forest.Scenarios.csproj
+bash tools/forest.sh edit-test
+bash tools/forest.sh play-test
 ```
 
-The world ticks once a second (fixed; not currently configurable via env var).
+Close this project's Editor before batch Unity tests. The
+[development guide](docs/unity/DEVELOPMENT.md) explains setup, inspection, build
+commands and isolated scenario saves. The [testing guide](docs/TESTING.md) explains
+focused checks, long campaigns, normal UI verification and performance evidence.
 
-### Browser / WASM build
+Game rules live in `unity/Assets/Forest/Simulation`, independently of Unity.
+The .NET host and scenarios compile that same source. Rendering and input live in
+`Presentation`; signed identity and persistence live in `Authority`. Read the
+[architecture](docs/ARCHITECTURE.md) and [game vision](docs/GAME_VISION.md) before
+changing behavior.
 
-The reproducible entry point is `scripts/build-web.sh` (or `scripts/build-web.sh --serve`). It
-creates the Trunk release bundle under `crates/cat-web/dist/`; the browser client has been
-live-verified in Chromium. Production packaging is the repository `Dockerfile` plus
-[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md). See
-[`docs/migration/WASM.md`](docs/migration/WASM.md) for the smoke test and optional transfer and
-performance work.
+Most custom models were authored in Blender. Editable sources and reproducible
+FBX export, import and geometry checks are in [source-art](source-art/README.md).
+No external AI service is required to play or test. Package and asset provenance
+is recorded in [third-party sources](docs/unity/THIRD_PARTY.md).
 
-## Testing & determinism
-
-`cat-sim` is pure and deterministic: no `std::time`, no threads, no `rand` — every random draw
-goes through a ported seeded LCG with independently-forked chains for movement, life sim, and
-raids, so a given seed reproduces the same run bit-for-bit. This is what makes the module
-**unit-testable without a server or client**:
-
-```bash
-cargo nextest run --workspace --profile smoke # small local cross-crate safety net
-cargo nextest run -p <crate> <test-filter>     # focused tests for the code being changed
-cargo clippy --all-targets -- -D warnings
-cargo fmt --all -- --check
-```
-
-The full workspace suite is intentionally a Forgejo responsibility: one resource-capped
-`cat-idler-heavy` runner executes the complete Nextest inventory with two dynamically scheduled
-test threads, so long simulation campaigns do not consume the development workstation or swamp the
-homelab. The smoke profile is not a replacement for focused tests; run the relevant module or
-regression test locally, then let the pushed Forgejo workflow provide complete coverage.
-
-Where a Rust module ports TS behavior, it's checked against **golden-master fixtures**
-generated from the original TypeScript sim under `docs/migration/fixtures/` (seed → N ticks →
-snapshot); parity is "same idea," not bit-identical `Math.random` output — see `AGENTS.md` for
-the exact bar and rationale.
-
-## Project structure
-
-```
-cat_idler/
-├── crates/
-│   ├── cat-sim/          # Pure deterministic simulation core (60+ modules, 53-phase world_tick)
-│   ├── cat-protocol/     # serde wire types: WorldSnapshot/ColonySnapshot + ClientAction
-│   ├── cat-server/       # tokio + axum WS server, rusqlite persistence, identity, rate-limit
-│   ├── cat-client/       # Bevy 0.19 renderer + UI (native + wasm)
-│   ├── cat-desktop/      # native launcher bin over cat-client
-│   ├── cat-web/          # wasm launcher bin over cat-client
-│   └── cat-dev/          # `cargo dev` — builds/runs server + desktop client together
-├── docs/
-│   ├── ARCHITECTURE.md   # Rust workspace architecture (start here)
-│   ├── GAME_VISION.md    # design pillars for the DF-style rebuild
-│   ├── HANDOFF.md        # migration status + hard-won lessons for whoever picks this up
-│   ├── migration/        # BOARD.md (task board), specs/ (design specs p2–p19), fixtures/
-│   └── assets/           # sprite pack selection + catalogs for the Bevy client
-└── public/images/game/   # Kenney Roguelike 16px sprites used by cat-client
-```
-
-The original Next.js/TypeScript web game was retired at the P11 cutover — it lives, fully
-runnable, on branch `archive/web-game` (tag `web-final`).
-
-## Documentation
-
-| Doc | What it covers |
-| --- | --- |
-| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | The Rust workspace: crates, the tick loop, protocol, persistence, client rendering |
-| [`docs/GAME_VISION.md`](docs/GAME_VISION.md) | Design pillars for "Idle Cat Forest" (manual → role-automation, visible workplaces) |
-| [`docs/HANDOFF.md`](docs/HANDOFF.md) | Migration status, architecture, hard-won Bevy/codex lessons |
-| [`docs/IMPLEMENTATION_AUDIT.md`](docs/IMPLEMENTATION_AUDIT.md) | Current design-to-code gaps, active fixes, and full playtest matrix |
-| [`docs/migration/BOARD.md`](docs/migration/BOARD.md) | Phase-by-phase task board (P0–P9 tracked in detail) |
-| [`docs/migration/specs/`](docs/migration/specs/) | Design specs for pathfinding, leader director, world_tick, and P12–P19 (skills/roles, spatial placement, biomes, visual polish, item economy) |
-| [`docs/migration/WASM.md`](docs/migration/WASM.md) | Verified browser/production build and optional optimization work |
-| [`docs/assets/SELECTION.md`](docs/assets/SELECTION.md) | Sprite-family selection and runtime art mapping |
-| [`AGENTS.md`](AGENTS.md) | Ground rules for the codex/Claude build team doing the port |
-
-Docs describing the old TypeScript/Next.js game (`docs/plan.md`, `docs/ROADMAP.md`,
-`docs/LEADER_AI_DESIGN.md`, `docs/TERRAIN_DESIGN.md`, `docs/ENGINE_PLATFORM.md`,
-`docs/ENGINE_FRONTEND.md`, `docs/TASKS.md`, `docs/TESTING.md`, `docs/UI_CONCEPTS.md`) are
-marked superseded at the top of each file and kept only as design-history reference for the
-port — they no longer describe how to build, run, or test this project.
-
-## Status
-
-Pre-release, with the web→Rust/Bevy migration, P11 cutover, and maintained P12–P19 design complete. Verified product slices
-include the responsive authoritative server, selected-village routing, a production browser
-image, bounded world streaming, label-free roofed homes/open stations, the full-page 487-study
-("about 500") ledger, exterior farming/logging with distinct Mill/Sawmill production, the
-seven-role manual/officer split, physical local workshop logistics, exact road/rail/shipping
-  routes, all 108 physical recipes, all 487 live studies, and exhaustive guided coverage of every
-  public action. The global/personal village
-model and founding housing/migration lifecycle are verified. The accepted founding contract is
-15 adults in three five-bed Dens, slow
-reserved-bed pregnancy, prosperity migration with 36 game-hours to house each arrival,
-deterministic reset, physical emergency water hauling, and 240/288-game-hour ordinary versus
-leader/healer old-age thresholds.
-[`docs/IMPLEMENTATION_AUDIT.md`](docs/IMPLEMENTATION_AUDIT.md) is the living evidence ledger.
-The tiered local-smoke/remote-full workflow is documented in
-[`docs/TESTING.md`](docs/TESTING.md); newly reproduced defects go in
-[`docs/FIX_LOG.md`](docs/FIX_LOG.md).
-
----
-
-<div align="center">
-  <sub>Built with human calories and mass GPU cycles.</sub>
-</div>
+The former TypeScript game is historical on `archive/web-game`. The Rust/Bevy
+implementation at the migration base remains available in Git history. A frozen
+Rust library and SQLite loader under `tools/save-import/legacy` support legacy
+import and catalog export; they are not another playable application.

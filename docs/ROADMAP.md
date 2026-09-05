@@ -1,3 +1,7 @@
+> Historical Rust/Bevy record. Current development follows [AGENTS.md](../AGENTS.md),
+> [Unity architecture](ARCHITECTURE.md), and the [acceptance ledger](unity/ACCEPTANCE.md).
+> Old commands, entry points and backlog statuses below are retained as history.
+
 # Improvement roadmap
 
 Standing backlog for post-migration gameplay and playability work, assembled 2026-08-21 from a

@@ -1,4 +1,9 @@
-# Idle Cat Forest implementation audit and fix tracker
+# Historical Rust implementation audit
+
+> This ledger records the pre-Unity implementation. Its verified labels do not
+> transfer to Unity. Current migration evidence and open gates live in
+> [unity/ACCEPTANCE.md](unity/ACCEPTANCE.md). Use this document to recover gameplay
+> requirements, not as current engine, build or release instructions.
 
 Last updated: 2026-07-21
 

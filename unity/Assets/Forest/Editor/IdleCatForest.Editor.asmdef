@@ -1,0 +1,5 @@
+{
+  "name": "IdleCatForest.Editor",
+  "references": ["IdleCatForest.Presentation", "IdleCatForest.Simulation", "IdleCatForest.Authority", "Unity.Pipeline"],
+  "includePlatforms": ["Editor"]
+}
