@@ -432,7 +432,7 @@ namespace IdleCatForest.Simulation
                     var t = TileAt(at);
                     if (!v.Known.Contains(at) || !Walkable(at) || RoadSurface(t) || t.Rail || ShrineRing(v, at) || v.Buildings.Any(b => b.HasEntrance && b.Entrance.Equals(at)))
                         return false;
-                    if (v.Jobs.Any(j => !j.Completed && (j.Kind == "road" || j.Kind == "rail") && j.Path.Contains(at)))
+                    if (v.Jobs.Any(j => !j.Completed && (j.Kind == "road" || j.Kind == "rail") && j.Path.Contains(at)) || PendingExpansionWall(v, at))
                         return false;
                     if (exterior ? t.ClaimId != "" : t.ClaimId != v.Id)
                         return false;
@@ -451,7 +451,7 @@ namespace IdleCatForest.Simulation
                 return ActionResult.Fail("Research unlock required");
             if (!FreeSite(v, p, 2, 2, kind == "field"))
                 return ActionResult.Fail("Occupied, unmapped, or invalid footprint");
-            var entry = BuildingEntrance(v, new Building { Position = p });
+            var entry = FreeBuildingEntrance(v, p);
             if (!entry.HasValue)
                 return ActionResult.Fail("Building entrance must touch the shrine-connected road network");
             int count = v.Buildings.Count(b => b.Kind == kind);

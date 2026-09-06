@@ -75,7 +75,7 @@ namespace IdleCatForest.Simulation
                         for (int x = -5; x < 5; x++)
                         {
                             var p = new Int2(v.Center.X + x, v.Center.Z + z);
-                            if (FreeSite(v, p, 2, 2))
+                            if (FreeSite(v, p, 2, 2) && FreeBuildingEntrance(v, p).HasValue)
                                 return Plan(v, "den", p, c);
                         }
                     return ActionResult.Fail("No clear Den footprint");
@@ -107,6 +107,8 @@ namespace IdleCatForest.Simulation
                         return ActionResult.Fail("Expansion already active");
                     if (!CanConstructJob(v, pending))
                         return ActionResult.Fail("Foreign territory blocks expansion");
+                    if (pending.OriginalKind != "expand_village" && ExpansionFootprintBlocked(v, v.Radius + 2, pending.Path))
+                        return ActionResult.Fail("Existing footprint or entrance blocks expansion");
                     if (c.Cargo.Count > 0)
                         Spill(v, c.Position, c.Cargo);
                     pending.CatId = c.Id;
@@ -117,6 +119,8 @@ namespace IdleCatForest.Simulation
                 int radius = v.Radius + 2;
                 if (!CanModifyTerrain(v.Id, new Int2(v.Center.X - radius, v.Center.Z - radius), radius * 2 + 1, radius * 2 + 1))
                     return ActionResult.Fail("Foreign territory blocks expansion");
+                if (ExpansionFootprintBlocked(v, radius))
+                    return ActionResult.Fail("Existing footprint or entrance blocks expansion");
                 var perimeter = new List<Int2>();
                 for (int x = -radius; x <= radius; x++)
                 {
@@ -370,6 +374,16 @@ namespace IdleCatForest.Simulation
             }
             if (j.BlockedReason == "foreign_territory")
                 j.BlockedReason = c.BlockedReason = "";
+            if (j.Kind == "expand" && j.OriginalKind != "expand_village")
+            {
+                if (ExpansionFootprintBlocked(v, v.Radius + 2, j.Path))
+                {
+                    j.BlockedReason = c.BlockedReason = "expansion_footprint_blocked";
+                    return;
+                }
+                if (j.BlockedReason == "expansion_footprint_blocked")
+                    j.BlockedReason = c.BlockedReason = "";
+            }
             if (j.Kind == "road" || j.Kind == "rail")
             {
                 if (j.Path.Any(p => !FreeInfrastructureFootprint(v, j.Kind, p)))
@@ -878,7 +892,7 @@ namespace IdleCatForest.Simulation
             }
             Int2? site = null;
             foreach (var p in v.Known.OrderBy(p => Int2.Distance(v.Center, p)).ThenBy(p => p.Z).ThenBy(p => p.X))
-                if (FreeSite(v, p, 2, 2, kind == "field") && BuildingEntrance(v, new Building { Position = p }).HasValue && Path(c.Position, p, v) != null)
+                if (FreeSite(v, p, 2, 2, kind == "field") && FreeBuildingEntrance(v, p).HasValue && Path(c.Position, p, v) != null)
                 {
                     site = p;
                     break;
@@ -897,7 +911,7 @@ namespace IdleCatForest.Simulation
                 j.BlockedReason = "missing_scaffold_input";
                 return null;
             }
-            var scaffold = new Building { Id = Id(kind), Kind = kind, Position = site.Value, Entrance = BuildingEntrance(v, new Building { Position = site.Value }).Value, HasEntrance = true, Required = bill, RequiredWork = Math.Max(1, j.RequiredWork), Progress = j.Progress, Inputs = j.Local };
+            var scaffold = new Building { Id = Id(kind), Kind = kind, Position = site.Value, Entrance = FreeBuildingEntrance(v, site.Value).Value, HasEntrance = true, Required = bill, RequiredWork = Math.Max(1, j.RequiredWork), Progress = j.Progress, Inputs = j.Local };
             j.Local = new List<Stack>();
             v.Buildings.Add(scaffold);
             j.TargetId = scaffold.Id;
@@ -916,6 +930,44 @@ namespace IdleCatForest.Simulation
             if (v.Items.Any(i => c.Equipment.Contains(i.Id) && i.Kind == "tool" && i.Condition > 0))
                 rate *= 1.15;
             return Math.Clamp(rate, 0.1, 20);
+        }
+        private bool PendingExpansionWall(Village v, Int2 at) => v.Jobs.Any(j => !j.Completed && j.Kind == "expand" && j.OriginalKind != "expand_village" && j.Path.Contains(at));
+        private Int2? FreeBuildingEntrance(Village v, Int2 position)
+        {
+            var roads = ConnectedRoads(v);
+            foreach (var at in EntranceCandidates(new Building { Position = position }).OrderBy(p => Int2.Distance(p, v.Center)).ThenBy(p => p.Z).ThenBy(p => p.X))
+                if (roads.Contains(at) && !PendingExpansionWall(v, at))
+                    return at;
+            return null;
+        }
+        private bool ExpansionFootprintBlocked(Village v, int radius, List<Int2> plannedWalls = null)
+        {
+            bool WallAt(Int2 p) => plannedWalls != null && plannedWalls.Contains(p) || Math.Max(Math.Abs(p.X - v.Center.X), Math.Abs(p.Z - v.Center.Z)) == radius && !LayoutGate(v, p, radius) && !FarmExterior(v, p, radius);
+            bool WallCrosses(Int2 origin, int width, int depth)
+            {
+                for (int x = 0; x < width; x++)
+                    for (int z = 0; z < depth; z++)
+                        if (WallAt(new Int2(origin.X + x, origin.Z + z)))
+                            return true;
+                return false;
+            }
+            foreach (var building in v.Buildings)
+            {
+                if (WallCrosses(building.Position, building.Width, building.Depth))
+                    return true;
+                if (building.HasEntrance)
+                {
+                    if (WallAt(building.Entrance))
+                        return true;
+                }
+                else if (EntranceCandidates(building).Any(WallAt))
+                {
+                    var entrance = BuildingEntrance(v, building);
+                    if (entrance.HasValue && WallAt(entrance.Value))
+                        return true;
+                }
+            }
+            return v.Stockpiles.Any(p => p.Kind != "spill" && !p.Kind.StartsWith("zone_", StringComparison.Ordinal) && WallCrosses(p.Position, p.Width, p.Depth));
         }
         private void Expand(Village v)
         {

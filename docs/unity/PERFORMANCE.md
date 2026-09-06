@@ -5,7 +5,9 @@ The September 6, 2026 native samples held approximately 60 frames per second at
 the local simulation at 1× speed in management view, with its 60 FPS target.
 The measured build includes the simulation, art and normal-window UI revisions.
 A subsequent layout correction applies only below 650 panel units and is inactive
-at the measured window size. Unity Editors were closed, and both samples preceded F9/F10 evidence capture. The
+at the measured window size. Later housing and expansion guards do not activate
+in these samples: both worlds are younger than six simulated hours and have no
+expansion jobs. Unity Editors were closed, and both samples preceded F9/F10 evidence capture. The
 player's earlier native game instance remained open in the background to preserve
 that session, so these are not measurements on an otherwise idle machine.
 

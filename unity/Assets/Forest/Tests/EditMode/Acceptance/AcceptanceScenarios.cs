@@ -23,6 +23,23 @@ namespace IdleCatForest.Acceptance
             }
             yield return new Scenario("regression.layout_four_exits_reach_finite_sources", FoundingExits);
             yield return new Scenario("regression.layout_disconnected_building_rejected", DisconnectedBuilding);
+            foreach (string housing in new[] { "automatic", "leader_plan_house", "build_house" })
+            {
+                string mode = housing;
+                yield return new Scenario("regression.review_housing_skips_disconnected_" + mode, () => HousingConnectedSite(mode));
+            }
+            foreach (string obstruction in new[] { "field", "entrance", "gather" })
+            {
+                string kind = obstruction;
+                yield return new Scenario("regression.review_expansion_preserves_" + kind, () => ExpansionFootprint(kind, false));
+            }
+            yield return new Scenario("regression.review_expansion_rechecks_field", () => ExpansionFootprint("field", true));
+            yield return new Scenario("regression.review_expansion_resumes_after_gather_removal", () => ExpansionFootprint("gather", true));
+            foreach (string site in new[] { "footprint", "entrance", "alternate_entrance", "gather" })
+            {
+                string placement = site;
+                yield return new Scenario("regression.review_expansion_reserves_" + placement, () => PendingExpansionPlacement(placement));
+            }
             yield return new Scenario("regression.layout_shrine_ring_reserved", ShrineRingReserved);
             yield return new Scenario("regression.layout_pending_entrance_preserves_work", PendingEntrance);
             yield return new Scenario("regression.layout_new_building_uses_door", BuildingDoor);
@@ -199,6 +216,129 @@ namespace IdleCatForest.Acceptance
             var denied = w.Apply(Context(v), new GameAction { Kind = "PlanBuilding", Name = "wood_cutter", Position = at, CatId = c.Id });
             Check(!denied.Success, "Disconnected paving allowed a new building without a shrine-connected entrance");
             Check(v.Buildings.Count == buildings && w.Reservations.Count == claims && Goods(w, v, "planks") == timber, "Rejected layout changed property or claims");
+        }
+        static void HousingConnectedSite(string mode)
+        {
+            var w = Fixture(out var v, out var c); c.BuildingId = ""; v.FoundedAt = -6 * 3600;
+            World.Add(v.Stockpiles[0].Goods, "planks", 16); World.Add(v.Stockpiles[0].Goods, "blocks", 8);
+            var disconnected = new Int2(-4, -4); var connected = new Int2(4, -4);
+            v.Known.Clear();
+            v.Known.Add(new Int2(-11, 4));
+            foreach (var tile in w.Tiles) tile.Road = Math.Max(Math.Abs(tile.Position.X), Math.Abs(tile.Position.Z)) == 2;
+            foreach (var origin in new[] { disconnected, connected })
+                for (int x = 0; x < 2; x++) for (int z = 0; z < 2; z++) v.Known.Add(new Int2(origin.X + x, origin.Z + z));
+            w.TileAt(new Int2(3, -2)).Road = w.TileAt(new Int2(4, -2)).Road = true;
+            Check(!w.BuildingEntrance(v, new Building { Position = disconnected }).HasValue && w.BuildingEntrance(v, new Building { Position = connected }).HasValue, "Housing fixture must offer a disconnected site before a connected site");
+            var denied = w.Apply(Context(v), new GameAction { Kind = "PlanBuilding", Name = "den", Position = disconnected, CatId = c.Id });
+            Check(!denied.Success && denied.Error.Contains("entrance"), "First housing site is not a clear but disconnected footprint");
+            if (mode == "automatic") w.Step(10);
+            else Act(w, v, new GameAction { Kind = "RequestJob", Name = mode, CatId = c.Id });
+            var den = v.Buildings.SingleOrDefault(b => b.Kind == "den" && !b.Completed);
+            Check(den != null && den.Position.Equals(connected), "Housing stopped at the disconnected site instead of selecting the later connected site");
+            var job = v.Jobs.Single(j => j.TargetId == den.Id);
+            if (mode == "automatic") Check(job.AutomatedBy == "leader" && job.Requester == "leader", "Automatic housing lost its Leader work owner");
+            w.Step(600); Check(den.Completed && job.Completed, "Selected connected housing did not complete through physical delivery and construction");
+            Near(Goods(w, v, "planks"), 0, "Housing did not consume its exact Plank bill"); Near(Goods(w, v, "blocks"), 0, "Housing did not consume its exact Block bill");
+            Check(w.Reservations.Count == 0, "Completed housing retained claims"); Valid(w);
+        }
+        static void ExpansionFootprint(string kind, bool pending)
+        {
+            var w = Fixture(out var v, out var c); c.BuildingId = ""; PrepareExpansion(w, v);
+            World.Add(v.Stockpiles[0].Goods, "materials", kind == "entrance" ? 1002 : 1001); World.Add(v.Stockpiles[0].Goods, "planks", 4); World.Add(v.Stockpiles[0].Goods, "blocks", 2);
+            v.Research = Catalog.Research.Select(n => n.Id).ToList(); int radius = v.Radius, outer = radius + 2;
+            var at = new Int2(outer + (kind == "entrance" ? 1 : 0), 1); var entry = kind == "entrance" ? new Int2(outer, 1) : new Int2(outer, 0);
+            for (int x = outer; x <= outer + 2; x++) for (int z = 0; z <= 2; z++)
+            { var p = new Int2(x, z); var tile = w.TileAt(p); tile.Wall = tile.Water = tile.Mountain = tile.Road = false; tile.ClaimId = ""; if (!v.Known.Contains(p)) v.Known.Add(p); }
+            for (int x = radius; x < outer; x++) w.TileAt(new Int2(x, 0)).Road = true;
+            var roadId = Act(w, v, new GameAction { Kind = "BuildRoad", Position = new Int2(outer, 0), End = entry, CatId = c.Id }).EntityId;
+            var road = v.Jobs.Single(j => j.Id == roadId); for (int tick = 0; tick < 600 && !road.Completed; tick++) w.Step(1);
+            Check(road.Completed && w.TileAt(entry).Road, "Public road did not connect the exterior work site"); Near(Goods(w, v, "materials"), 1000, "Exterior access road did not consume its exact bill");
+            Job expansion = null; Cat builder = c;
+            if (pending)
+            {
+                var planned = Act(w, v, new GameAction { Kind = "RequestJob", Name = "expand", CatId = c.Id }); expansion = v.Jobs.Single(j => j.Id == planned.EntityId);
+                for (int tick = 0; tick < 1800 && expansion.PathIndex == 0; tick++) w.Step(1);
+                Check(expansion.PathIndex > 0, "Expansion must have paid perimeter work before the competing building");
+                builder = v.Cats[1]; builder.ControlledBy = "";
+            }
+            string obstacleId;
+            if (pending)
+            {
+                // Explicit loaded-state fault: older saves could already contain work on the reserved perimeter.
+                if (kind == "gather") { var pile = new Stockpile { Id = w.Id("loaded-gather"), Kind = "gather", Position = at, Width = 1, Depth = 1 }; v.Stockpiles.Add(pile); obstacleId = pile.Id; }
+                else { var field = new Building { Id = w.Id("loaded-field"), Kind = "field", Position = at, Entrance = entry, HasEntrance = true, Completed = true }; v.Buildings.Add(field); obstacleId = field.Id; }
+            }
+            else if (kind == "gather") obstacleId = Act(w, v, new GameAction { Kind = "DesignateGatherSpot", Resource = "logs", Position = at, End = at }).EntityId;
+            else
+            {
+                obstacleId = Act(w, v, new GameAction { Kind = "PlanBuilding", Name = "field", Position = at, CatId = builder.Id }).EntityId;
+                var field = v.Buildings.Single(b => b.Id == obstacleId); Check(field.Entrance.Equals(entry), "Field did not use the intended exterior entrance");
+                if (!pending) { for (int tick = 0; tick < 600 && !field.Completed; tick++) w.Step(1); Check(field.Completed && w.Path(v.Center, field.Position, v) != null, "Public exterior Field did not complete with reachable work position"); }
+            }
+            int claims = w.Reservations.Count, jobs = v.Jobs.Count; double materials = Goods(w, v, "materials"); string terrain = TerrainState(w.TileAt(at)), entryTerrain = TerrainState(w.TileAt(entry));
+            if (pending)
+            {
+                int paid = expansion.PathIndex; double progress = expansion.Progress; string held = string.Join("|", w.Reservations.Where(r => r.OwnerId.StartsWith(expansion.Id, StringComparison.Ordinal)).Select(r => r.OwnerId + ":" + r.Amount));
+                w.Step(3);
+                Check(!expansion.Completed && expansion.BlockedReason == "expansion_footprint_blocked" && expansion.PathIndex == paid && expansion.Progress == progress, "Pending expansion advanced after an exterior Field occupied its wall route");
+                Check(expansion.Path.Take(paid).All(p => w.TileAt(p).Wall), "Blocked expansion discarded paid wall segments");
+                Check(held == string.Join("|", w.Reservations.Where(r => r.OwnerId.StartsWith(expansion.Id, StringComparison.Ordinal)).Select(r => r.OwnerId + ":" + r.Amount)), "Blocked expansion changed its held input claims");
+            }
+            else
+            {
+                var denied = w.Apply(Context(v), new GameAction { Kind = "RequestJob", Name = "expand", CatId = c.Id });
+                Check(!denied.Success && denied.Error.Contains("footprint"), "Expansion accepted a wall through an existing " + kind);
+                Check(v.Jobs.Count == jobs && w.Reservations.Count == claims, "Rejected expansion created work or reserved materials");
+            }
+            Check(v.Radius == radius && TerrainState(w.TileAt(at)) == terrain && TerrainState(w.TileAt(entry)) == entryTerrain, "Expansion changed the protected work position or entrance");
+            Near(Goods(w, v, "materials"), materials, "Conflicting expansion consumed materials"); Valid(w);
+            if (pending && kind == "gather")
+            {
+                Act(w, v, new GameAction { Kind = "RemoveGatherSpot", TargetId = obstacleId });
+                for (int tick = 0; tick < 12000 && !expansion.Completed; tick++) w.Step(1);
+                Check(expansion.Completed && v.Radius == outer && expansion.BlockedReason == "", "Removing the obstruction did not resume the same expansion");
+                foreach (var gate in new[] { new Int2(0, outer), new Int2(0, -outer), new Int2(outer, 0), new Int2(-outer, 0) }) Check(!w.TileAt(gate).Wall, "Resumed expansion closed a required cardinal gate");
+                Check(expansion.Path.All(p => w.TileAt(p).Wall), "Resumed expansion lost a paid perimeter segment");
+                Near(Goods(w, v, "materials"), 1000 - expansion.Path.Count, "Resumed expansion consumed more than its finite perimeter bill"); Check(w.Reservations.Count == 0, "Completed expansion retained claims"); Valid(w);
+            }
+        }
+        static void PendingExpansionPlacement(string site)
+        {
+            var w = Fixture(out var v, out var c); c.BuildingId = ""; PrepareExpansion(w, v);
+            World.Add(v.Stockpiles[0].Goods, "materials", 1000); World.Add(v.Stockpiles[0].Goods, "planks", 4); World.Add(v.Stockpiles[0].Goods, "blocks", 2); v.Research = Catalog.Research.Select(n => n.Id).ToList();
+            int outer = v.Radius + 2; bool doorway = site == "entrance" || site == "alternate_entrance";
+            int row = site == "alternate_entrance" ? 2 : 1;
+            var at = new Int2(outer + (doorway ? 1 : 0), row); var blockedEntry = new Int2(outer, row); var alternate = new Int2(outer + 3, row);
+            for (int x = outer; x <= outer + 3; x++) for (int z = 0; z <= row + 1; z++)
+            { var p = new Int2(x, z); var tile = w.TileAt(p); tile.Wall = tile.Water = tile.Mountain = tile.Road = false; tile.ClaimId = ""; if (!v.Known.Contains(p)) v.Known.Add(p); }
+            for (int x = v.Radius; x <= outer; x++) w.TileAt(new Int2(x, 0)).Road = true;
+            if (doorway) for (int z = 1; z <= row; z++) w.TileAt(new Int2(outer, z)).Road = true;
+            if (site == "alternate_entrance")
+            {
+                for (int x = outer + 1; x <= alternate.X; x++) w.TileAt(new Int2(x, 0)).Road = true;
+                for (int z = 1; z <= row; z++) w.TileAt(new Int2(alternate.X, z)).Road = true;
+                Check(w.BuildingEntrance(v, new Building { Position = at }).Equals(blockedEntry), "Fixture must prefer the doorway that expansion reserves");
+            }
+            var planned = Act(w, v, new GameAction { Kind = "RequestJob", Name = "expand", CatId = c.Id }); var expansion = v.Jobs.Single(j => j.Id == planned.EntityId);
+            var builder = v.Cats[1]; builder.ControlledBy = ""; int claims = w.Reservations.Count, buildings = v.Buildings.Count, piles = v.Stockpiles.Count, jobs = v.Jobs.Count;
+            double materials = Goods(w, v, "materials"), timber = Goods(w, v, "planks"), blocks = Goods(w, v, "blocks");
+            var action = site == "gather" ? new GameAction { Kind = "DesignateGatherSpot", Resource = "logs", Position = at, End = at } : new GameAction { Kind = "PlanBuilding", Name = "field", Position = at, CatId = builder.Id };
+            var result = w.Apply(Context(v), action);
+            if (site == "alternate_entrance")
+            {
+                Check(result.Success, "Reserved first doorway prevented selection of another connected entrance"); var field = v.Buildings.Single(b => b.Id == result.EntityId);
+                Check(field.Entrance.Equals(alternate) && !expansion.Path.Contains(field.Entrance), "Field chose the reserved expansion wall instead of the alternate entrance");
+                for (int tick = 0; tick < 12000 && (!expansion.Completed || !field.Completed); tick++) w.Step(1);
+                Check(field.Completed && expansion.Completed && w.Path(v.Center, field.Position, v) != null, "Field with an alternate doorway did not remain reachable through completed expansion");
+                Near(Goods(w, v, "materials"), 1000 - expansion.Path.Count, "Concurrent expansion changed its exact material bill"); Near(Goods(w, v, "planks"), 0, "Concurrent Field changed its timber bill"); Near(Goods(w, v, "blocks"), 0, "Concurrent Field changed its block bill");
+            }
+            else
+            {
+                Check(!result.Success, "Public " + site + " placement occupied a pending expansion wall");
+                Check(v.Buildings.Count == buildings && v.Stockpiles.Count == piles && v.Jobs.Count == jobs && w.Reservations.Count == claims, "Rejected placement changed structures, work or claims");
+                Near(Goods(w, v, "materials"), materials, "Rejected placement consumed expansion materials"); Near(Goods(w, v, "planks"), timber, "Rejected placement consumed timber"); Near(Goods(w, v, "blocks"), blocks, "Rejected placement consumed blocks");
+            }
+            Valid(w);
         }
         static void ShrineRingReserved()
         {

@@ -606,6 +606,7 @@ namespace IdleCatForest.Presentation
                 case "foreign_territory": return "This site belongs to another village. Choose land within your village.";
                 case "building_entrance_disconnected": return "The entrance is cut off. Connect its road back to the shrine to resume construction.";
                 case "infrastructure_footprint_blocked": return "Road or rail work is paused. A building, stockpile or farm occupies the reserved route. Clear that footprint to resume.";
+                case "expansion_footprint_blocked": return "Expansion is paused because the new fence would cross a building, entrance or stockpile. Its materials and completed fence sections remain reserved.";
                 case "queue_empty": return "Ready for work. Add a recipe to this worker's queue.";
                 case "queue_paused": return "Production is paused. Resume the queue when you are ready.";
                 case "worker_required": return "Waiting for a worker. Assign an available cat.";

@@ -6,10 +6,10 @@ shrine, surrounding roads, connected entrances, four gates, joined fence corners
 responsive zoom and a readable management interface. Existing played saves keep
 their layout and progress; a separate new save exercises the revised founding.
 
-The revised simulation passed 605 noncampaign scenarios, including 103 regressions,
-and nine campaign twins. Unity passed 611 EditMode and 32 PlayMode tests.
+The revised simulation passed 617 noncampaign scenarios, including 115 regressions,
+and nine campaign twins. Unity passed 623 EditMode and 32 PlayMode tests.
 The authority/import suite passed 43 tests. The real SQLite pipeline passed four
-tests in 23.856 seconds. Blender reimport verified 82 models, 88 meshes and 145,611
+tests in 24.361 seconds. Blender reimport verified 82 models, 88 meshes and 145,611
 triangles. These checks establish the tested behavior, not the player's approval
 of the visual design. Native observations and current costs appear below and in
 [the performance report](PERFORMANCE.md).
@@ -24,6 +24,10 @@ The migration started from `main` at
 native build, scene opening and Play mode. The later Village panel refresh passed
 its focused regression and a rebuilt native app check of connection, local return
 and reconnect.
+
+The corrective revision at `70b26a5d9ba77ffe0378006bdc0d2d94c4e2a360` also passed
+locked .NET restore and an ARM64 IL2CPP build in a new checkout with no existing
+Unity Library. No Library, played save or identity directory was copied into it.
 
 The maintained inventory is 25 buildings, 108 recipes, 487 studies, seven
 specialist officers and 19 labors. The legacy action inventory had 53 variants,
@@ -49,13 +53,13 @@ time and random-state controls.
 
 ## Test and build evidence
 
-- [Simulation results](../../tools/scenarios/VALIDATION.md): 605 focused cases,
-  including 103 regressions, passed in 17.6016 seconds. Nine campaign twins passed
-  in 221.0792 seconds after the founding and doorway changes.
+- [Simulation results](../../tools/scenarios/VALIDATION.md): 617 focused cases,
+  including 115 regressions, passed in 16.7938 seconds. Nine campaign twins passed
+  in 208.8116 seconds after the housing and expansion corrections.
   Campaigns compare partitioned time, validate claims and retain founding IDs.
   The established fixture has finite supplies and one repeating wood-processing
   station; it does not prove indefinite operation of every mature production chain.
-- Unity EditMode passed 611 noncampaign tests in 73.656 seconds. The unfiltered
+- Unity EditMode passed 623 noncampaign tests in 69.665 seconds. The unfiltered
   Editor run timed out after 600 seconds, so no Editor campaign pass is claimed.
   The same nine campaign scenarios passed in the .NET runner.
 - The complete corrective-revision PlayMode run passed 32 tests.
@@ -82,12 +86,12 @@ and imported-output fixes. Campaign workloads use no transport routes or
 imported batch outputs, so their pass provides no evidence for that delivery
 path. Import tests check partial delivery, mixed item filters, full storage,
 public staffing and restart directly.
-The pending-road footprint guard followed the campaign run. It passed the
-complete noncampaign suite and interruption regressions; campaigns contain no
-road or rail construction jobs and therefore do not exercise that guard.
+The final campaign run includes the housing and expansion corrections.
+Campaigns contain no road, rail or expansion construction jobs; the focused
+regressions exercise those guards, paid construction and interrupted resumption.
 
 Local reports are `artifacts/tests/territory-focused.txt`,
-`artifacts/tests/outbound-formats-authority.txt`, `artifacts/tests/editmode.xml`, `artifacts/tests/playmode.xml`
+`artifacts/tests/revision-final-authority.txt`, `artifacts/tests/revision-final-editmode.xml`, `artifacts/tests/revision-final-playmode.xml`
 and `artifacts/fresh-checkout/27ab713-verification.txt`. The fresh-checkout report
 covers the clean build; subsequent interactive scene opening and Play mode were
 checked through Pipeline and Computer Use. These ignored reports are local
@@ -124,8 +128,18 @@ navigation. A Research Hut purchase persisted as one owned study and 19,995 poin
 Hazel entered direct control, moved, and returned to AI with the same ID and an
 empty control owner. Wheel and button zoom were captured separately from the
 performance sample. Its dedicated native log contained no exception, assertion
-or runtime-error marker. The narrow-window correction followed these checks;
-it does not change the normal-window layout or simulation.
+or runtime-error marker. After the narrow-window correction, a separate native
+run at 1508×912 pixels displayed the village name and all four speed controls
+above four nonoverlapping resources. The Cats list scrolled to Fern, inspection
+opened at the needs bars, and scrolling, Back and Close remained usable.
+The dedicated narrow-window log contained no exception, assertion or runtime-error
+marker. That correction does not change the normal-window layout or simulation.
+
+The rebuilt app after the housing and expansion corrections also opened a new
+ordinary seed-41 save with 30 cats, 16 buildings and a 3×3 shrine at `(-1,-1)`.
+Its save checksum verified. Cats reached the exterior, the zoom button responded,
+and a world click opened the Stone Prep inspector with its workplace in view.
+The dedicated runtime log contained no exception, assertion or error marker.
 
 The save and performance files continued updating during observation. Current
 measured samples are in [the performance report](PERFORMANCE.md). Captures use
