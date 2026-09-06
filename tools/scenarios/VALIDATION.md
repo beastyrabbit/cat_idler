@@ -2,6 +2,22 @@
 
 The executable suite and Unity EditMode tests share `AcceptanceScenarios.cs`. Results below came from the .NET executable on the development Mac. Unity Editor and packaged UI execution belong to the parent migration checks.
 
+The live-simulation revision passes all 678 noncampaign scenarios, including
+176 regressions, in 99.3138 seconds. Twenty-three new cases check 50-millisecond
+movement and work, shared actor time, fractional partitions, transport,
+researched terrain speeds and missing-supply retries. The original emergency
+water scenario still requires physical recovery within 240 simulated seconds.
+Pickup and reboarding observations use the smaller steps with their original
+elapsed limits and conservation assertions. These execution times are test
+evidence, not native performance measurements.
+
+All nine campaign twins also pass on the live simulation at `90177b6`.
+Fresh 48-hour, established 72-hour and shared/personal 48-hour scenarios run at
+seeds 7, 41 and 127. The three groups ran concurrently and took 459.662, 739.764
+and 741.187 seconds respectively. Each twin comparison still checks partitioned
+elapsed time, founding identities, ownership and resource invariants. The finite
+established workload and other campaign scope limits described below remain.
+
 Observed failures before simulation corrections:
 
 | Scenario | Observed failure | Correction verified by scenario |
@@ -50,7 +66,7 @@ Observed failures before simulation corrections:
 
 Earlier source-reviewed interruption findings were already corrected when their executable scenarios first ran. Their passing tests cover busy-worker ownership, direct-control route release, item-only pile removal, farm replacement, preserves, medicines/brew, equipment combat effects, accounting reachability, zone decisions, and bounded direct movement.
 
-A complete final noncampaign run passed all 655 cases, including 153 regressions, in 30.5763 seconds. This run overlapped the Unity and authority suites; its duration is validation evidence, not an isolated performance measurement. All nine campaign twins passed in 213.7647 seconds on `61d29f1`, after the housing selectors, expansion footprint/road guards, fishing placement checks and linear-work reservations, but before the prospective farm-edge and transport corrections. Every original founding cat survived, and no colony reset. Campaigns exercise corrected housing selection after six game-hours; they contain no player road/rail construction, expansion jobs, farm corridor fences, transport routes or imported batch outputs. They were not repeated for the final guards. The four farm-edge scenarios, five rail-passability cases and four transport-continuation cases directly cover those paths; other focused scenarios and authority/import tests cover their respective paths.
+Before the live-simulation revision, a complete noncampaign run passed all 655 cases, including 153 regressions, in 30.5763 seconds. This run overlapped the Unity and authority suites; its duration is validation evidence, not an isolated performance measurement. All nine campaign twins passed in 213.7647 seconds on `61d29f1`, after the housing selectors, expansion footprint/road guards, fishing placement checks and linear-work reservations, but before the prospective farm-edge and transport corrections. Every original founding cat survived, and no colony reset. Campaigns exercise corrected housing selection after six game-hours; they contain no player road/rail construction, expansion jobs, farm corridor fences, transport routes or imported batch outputs. They were not repeated for the final guards. The four farm-edge scenarios, five rail-passability cases and four transport-continuation cases directly cover those paths; other focused scenarios and authority/import tests cover their respective paths.
 
 The four review regressions for carried Food, surplus Planks, Armor production and unequipping first failed together, then passed after their fixes. Existing assertions were preserved. The construction cases follow public control, pickup, reassignment, material delivery and completion, checking the exact bill and recoverable surplus. The Armor cases check accepting storage, item identity, condition and the absence of duplicate scalar goods.
 
@@ -88,4 +104,4 @@ Three scalar-haul regressions first failed in 0.1331 seconds, then passed in 0.1
 
 Two later public avoid-zone cases first failed together in 0.0777 seconds. A real SaveStore test also failed after reloading the already-carried `input_delivery` phase in 0.32 seconds. The carrier now selects a reachable alternate store while the original remains obstructed, preserving the same job, carrier and finite load. Five scalar cases passed in 0.1579 seconds, including competing eight/four-unit loads and the existing no-alternative checks. The real restart case passed in 0.34 seconds and survived a second reload without replay. Combined implementation smoke took about 0.90 seconds.
 
-`latest-results.txt` and `campaign-results.txt` retain every scenario result and final `RESULT` line from their respective completed runs. `regression-results.txt` extracts all 153 regression results from the final 655-case run and claims no separate timing. Read those counts and any named failures before describing a run as successful.
+`latest-results.txt` retains every noncampaign result and its final `RESULT` line. `campaign-results.txt` retains each concurrent group's results and elapsed time, followed by the combined nine-case count. `regression-results.txt` extracts all 176 regression results from the current 678-case run and claims no separate timing. Read those counts and any named failures before describing a run as successful.

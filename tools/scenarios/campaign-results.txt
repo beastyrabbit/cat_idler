@@ -1,10 +1,21 @@
-PASS campaign.fresh_48h_seed_7 17995.2ms
-PASS campaign.established_72h_seed_7 27238.6ms
-PASS campaign.shared_personal_48h_seed_7 27193.5ms
-PASS campaign.fresh_48h_seed_41 16187.3ms
-PASS campaign.established_72h_seed_41 26983.9ms
-PASS campaign.shared_personal_48h_seed_41 27199.4ms
-PASS campaign.fresh_48h_seed_127 15961.6ms
-PASS campaign.established_72h_seed_127 28444.1ms
-PASS campaign.shared_personal_48h_seed_127 26557.9ms
-RESULT total=9 failed=0 elapsed_ms=213764.7
+Three groups ran concurrently. Each RESULT reports that group's elapsed time.
+
+GROUP fresh
+PASS campaign.fresh_48h_seed_7 160155.9ms
+PASS campaign.fresh_48h_seed_41 152363.3ms
+PASS campaign.fresh_48h_seed_127 147136.7ms
+RESULT total=3 failed=0 elapsed_ms=459661.7
+
+GROUP established
+PASS campaign.established_72h_seed_7 252562.8ms
+PASS campaign.established_72h_seed_41 243091.1ms
+PASS campaign.established_72h_seed_127 244106.5ms
+RESULT total=3 failed=0 elapsed_ms=739763.6
+
+GROUP shared
+PASS campaign.shared_personal_48h_seed_7 252382.3ms
+PASS campaign.shared_personal_48h_seed_41 240771.4ms
+PASS campaign.shared_personal_48h_seed_127 248030.1ms
+RESULT total=3 failed=0 elapsed_ms=741186.7
+
+Combined: total=9 failed=0

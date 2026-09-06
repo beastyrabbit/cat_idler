@@ -6,11 +6,34 @@ shrine, surrounding roads, connected entrances, four gates, joined fence corners
 responsive zoom and a readable management interface. Existing played saves keep
 their layout and progress; a separate new save exercises the revised founding.
 
-The revised simulation passed 655 noncampaign scenarios, including 153 regressions.
-Nine earlier campaign twins passed within the scope described below.
-Unity passed 661 EditMode and 34 PlayMode tests.
-The authority/import suite passed 47 tests. The real SQLite pipeline passed four
-tests in 24.959 seconds. Blender reimport verified 82 models, 88 meshes and 145,611
+The subsequent live-simulation revision replaces the one-second actor update
+with 50-millisecond steps. Autonomous cats, work, needs and transport now advance
+within each second; the renderer follows fractional positions every frame and
+the inspector updates its progress bars between panel refreshes. The host sends
+autonomous snapshots throughout each second. Planning and ecology retain their
+slower schedules. Existing saves acquire the finer clock without replaying work
+or changing their layout.
+
+Twenty-three focused scenarios cover subsecond movement, work rates, shared actor
+time, fractional elapsed-time partitions, direct-control turns and transport.
+Research and terrain affect forward movement, retracing an interrupted segment
+and the final approach to a parked vehicle through the same speed calculation.
+An unsuccessful search for food or water preserves the cat's current work path.
+This prevents repeated need checks from reversing an emergency fetcher before
+it reaches the source; the original 240-second recovery assertion still passes.
+A save/restart test compares complete authoritative state across fractional
+partitions and initializes a synthetic old save at its existing time. Four
+import cases block sparse return paths at an intermediate wall or fence, then
+resume the same scalar or exact-item payment after clearing and restarting.
+The four cases first failed at the obstacle and passed after adjacent traversal
+was restored. Timing-sensitive pickup and reboarding checks now sample every
+50 milliseconds with unchanged elapsed deadlines and conservation assertions.
+
+The live simulation passed 678 noncampaign scenarios, including 176 regressions,
+and all nine campaign twins within the scope described below.
+Unity passed 684 EditMode and 37 PlayMode tests.
+The authority/import suite passed 53 tests. Four real SQLite pipeline tests and
+two archive checks passed in 25.169 seconds. Blender reimport verified 82 models, 88 meshes and 145,611
 triangles. These checks establish the tested behavior, not the player's approval
 of the visual design. Native observations and current costs appear below and in
 [the performance report](PERFORMANCE.md).
@@ -46,7 +69,7 @@ time and random-state controls.
 | Knowledge and progression | All 487 studies pass public purchase traversal with separate effect scenarios. Normal UI research spent 20,000 → 19,995 points on Research Hut and displayed the dependency map. | Verified |
 | Equipment, defense and trade | Exact item identity, condition, repair, finite traders, raids, warriors, rail/shipping and physical barter pass scenarios and real socket tests. | Verified |
 | Persistent shared authority | Two identities, private-village denial, filtered reports, restart and physical trade pass real socket tests. The native app connected to a synthetic server, founded 15-cat Mosslight, then reconnected to the same village, ID 74. | Verified |
-| Saves and migration | 47 authority/import tests and the real SQLite conversion pipeline pass. Jobs, cargo, claims, identities and returning trade survive restart without replay. Imported exact-item capacity, physical pickup, mixed output delivery and newly staffed empty queues preserve their limits and identities. Import preserves source bytes and refuses unknown schemas and destination overwrite. The packaged app opened the converted world and resumed both imported jobs. | Verified |
+| Saves and migration | 53 authority/import tests and the real SQLite conversion pipeline pass. Jobs, cargo, claims, identities, fractional elapsed time and returning trade survive restart without replay. Imported exact-item capacity, physical pickup, sparse return paths, mixed output delivery and newly staffed empty queues preserve their limits and identities. Import preserves source bytes and refuses unknown schemas and destination overwrite. The packaged app opened the converted world and resumed both imported jobs. | Verified |
 | 3D management and cat control | Blender geometry passes export/import checks. Editor and native UI inspect and control the same cat, walk, take five food and return it to AI while the colony continues. Native deposit emptied its cargo into the original store. | Verified |
 | Normal UI operation | Editor and native inspect, staffing, queues, research, construction and direct-control flows were exercised with saved-state checks. Native repeat persisted as true and pause/resume returned to unpaused work. Editor queue delivery passed; its repeat click did not persist. Original native connection, return and reconnect refreshed the open Village panel and preserved the server address. Corrective-revision road, construction and queue observations appear below. | Verified within this scope |
 | Extended operation | Nine campaign twins cover fresh 48-hour, established 72-hour and shared/personal 48-hour worlds at seeds 7, 41 and 127. | Verified in .NET |
@@ -54,16 +77,16 @@ time and random-state controls.
 
 ## Test and build evidence
 
-- [Simulation results](../../tools/scenarios/VALIDATION.md): 655 focused cases,
-  including 153 regressions, passed in 30.5763 seconds. Nine campaign twins passed
-  in 213.7647 seconds after the complete road and shore-placement corrections.
+- [Simulation results](../../tools/scenarios/VALIDATION.md): 678 focused cases,
+  including 176 regressions, passed in 99.3138 seconds. Nine campaign twins passed
+  on the live simulation. The three concurrent groups took 459.662, 739.764 and
+  741.187 seconds for fresh, established and shared/personal colonies.
   Campaigns compare partitioned time, validate claims and retain founding IDs.
   The established fixture has finite supplies and one repeating wood-processing
   station; it does not prove indefinite operation of every mature production chain.
-- Unity EditMode passed 661 noncampaign tests in 95.056 seconds. The unfiltered
-  Editor run timed out after 600 seconds, so no Editor campaign pass is claimed.
-  The same nine campaign scenarios passed in the .NET runner.
-- The complete corrective-revision PlayMode run passed 34 tests.
+- Unity EditMode passed 684 noncampaign tests in 595.298 seconds. Long campaigns
+  are excluded from this Editor run and passed in the .NET runner.
+- The complete live-simulation PlayMode run passed 37 tests in 13.503 seconds.
   These include ordinary UI logging, research, queues after reload, direct control
   at 8× speed, village selection, stockpile corners, merchant sales, work boosts, authored geometry
   and terrain categories/bounds during camera movement. Exact crafted cargo
@@ -76,7 +99,7 @@ time and random-state controls.
   and nonoverlapping narrow headers with usable Cats/Inspect scroll areas at
   600×360 and 550×336 panel units. A public 4×3 farm designation visibly covers
   every occupied tile, and clearing it removes the whole crop footprint.
-- [Authority and import checks](PERSISTENCE.md) passed 47 tests in 31.75 seconds. The real Rust
+- [Authority and import checks](PERSISTENCE.md) passed 53 tests. The real Rust
   SQLite writer → normalizer → C# continuation pipeline passed four tests; the
   archival exporter passed two. All test worlds and identities are synthetic.
 - [Blender verification](../../source-art/verification.json) passed for 82 models,
@@ -88,8 +111,8 @@ and imported-output fixes. Campaign workloads use no transport routes or
 imported batch outputs, so their pass provides no evidence for that delivery
 path. Import tests check partial delivery, mixed item filters, full storage,
 public staffing and restart directly.
-The last campaign run used `61d29f1`, before the final farm-edge projection,
-crop-rendering and transport corrections. Campaigns contain no road, rail or expansion
+The current campaign run used `90177b6`, including the live clock and earlier
+farm-edge, crop-rendering and transport corrections. Campaigns contain no road, rail or expansion
 construction jobs and no designated farms; they do not exercise those changes.
 The final focused regressions cover future farm boundaries, paid construction,
 blocked rail transport and interrupted resumption. PlayMode checks the complete visible farm footprint.
@@ -130,7 +153,33 @@ checked through Pipeline and Computer Use. These ignored reports are local
 evidence, not published PR attachments. No Library, save or identity directory was
 copied into the fresh checkout.
 
-## Corrective-revision native observations
+## Live-simulation native observations
+
+A separate checkout built `90177b6` as an ARM64 IL2CPP app with clean source
+provenance and no compiler or Editor errors. All 29 packaged files matched the
+copied test app by path and SHA-256. The native player reported a 0.05-second
+simulation step. No played user save or identity directory was replaced.
+
+The normal Cats panel showed Hazel's Hunt work increasing through fractional
+values, then entering delivery with eight Food in cargo. Pause selected the
+paused header state and left the save unchanged; returning to 1× resumed play.
+The 4× and 8× controls selected their matching runtime speeds. Fern entered
+direct control with identity `cat-26`, moved with W and A, showed the normal
+out-of-reach response to E, and returned to AI with the same identity. A manual
+Hunt request through Work created `job-74` for `cat-32`; the final saved job had
+finished its work and entered output delivery. The checksum-verified save at
+1,228.85 seconds retained all 30 living cats and no control owner for Fern.
+
+An eight-second recording captured only the synthetic game's window. The
+converted MP4 contains 460 frames across 8.084 seconds, including the transition
+from pause to 1× and autonomous movement. Separate measurements exclude recording,
+Unity Editors and scenario runners; exact 30/150-cat results appear in
+[the performance report](PERFORMANCE.md).
+The expanded world's normal inspector also showed Review Cat 2's production
+progress increasing from 382.0 to 391.1 of 600 work. A game-only capture records
+the latter state. Neither native log contained an exception or assertion marker.
+
+## Earlier corrective-revision native observations
 
 The revised packaged app used an isolated 30-cat founding fixture with finite
 extra construction supplies and research currency. Food, water, cat needs and
