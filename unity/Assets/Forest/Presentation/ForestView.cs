@@ -264,10 +264,11 @@ namespace IdleCatForest.Presentation
         {
             foreach (Transform child in groundRoot) { var filter = child.GetComponent<MeshFilter>(); if (filter != null) Destroy(filter.sharedMesh); Destroy(child.gameObject); }
             var v = Game.Selected; var known = new HashSet<Int2>(v.Known);
+            var terrain = Game.CurrentWorld.Tiles.ToDictionary(tile => tile.Position);
             var groups = new Dictionary<int, List<Vector3>>();
             for (int z = groundCenter.Z - 38; z <= groundCenter.Z + 38; z++) for (int x = groundCenter.X - 38; x <= groundCenter.X + 38; x++)
             {
-                var point = new Int2(x, z); var tile = Game.CurrentWorld.GetTile(point);
+                var point = new Int2(x, z); terrain.TryGetValue(point, out var tile);
                 int category = !known.Contains(point) ? 0 : tile != null && tile.Water ? 1 : tile != null && tile.Mountain ? 2 : 3 + Math.Abs(unchecked(x * 73 + z * 37)) % 3;
                 if (!groups.ContainsKey(category)) groups[category] = new List<Vector3>();
                 groups[category].Add(new Vector3(x, 0, z));

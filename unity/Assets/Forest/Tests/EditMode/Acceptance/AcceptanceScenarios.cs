@@ -35,6 +35,10 @@ namespace IdleCatForest.Acceptance
             yield return new Scenario("regression.selected_quarry_resource", QuarryResource);
             yield return new Scenario("regression.medicine_and_brew_consumption", ProcessedNeeds);
             yield return new Scenario("regression.direct_control_leaves_recoverable_cargo", ControlledCargo);
+            yield return new Scenario("regression.review_scaffold_preserves_controlled_food", () => ControlledScaffoldCargo("food"));
+            yield return new Scenario("regression.review_scaffold_preserves_surplus_planks", () => ControlledScaffoldCargo("planks"));
+            yield return new Scenario("regression.review_armor_production_accepting_storage", ArmorProductionStorage);
+            yield return new Scenario("regression.review_armor_unequip_accepting_storage", ArmorUnequipStorage);
             yield return new Scenario("catalog.research_487_public_purchase", ResearchGraph);
             yield return new Scenario("catalog.all_buildings_public_construction", AllBuildings);
             yield return new Scenario("capability.rail_public_construction", RailCapability);
@@ -216,6 +220,63 @@ namespace IdleCatForest.Acceptance
         {
             var w = Fixture(out var v, out var c); c.Thirst = 1; c.Cargo.Add(new Stack("logs", 8)); Act(w, v, new GameAction { Kind = "EnterCat", CatId = c.Id }); Act(w, v, new GameAction { Kind = "LeaveCat", CatId = c.Id }); w.Step(60);
             Check(c.Alive && c.Thirst > 35, "Leaving direct control with cargo prevents AI need recovery"); Near(Goods(w, v, "logs"), 8, "Direct-control cargo disappeared");
+        }
+        static void ControlledScaffoldCargo(string resource)
+        {
+            var w = Fixture(out var v, out var c); c.BuildingId = ""; c.Position = new Int2(2, 2); c.X = 2; c.Z = 2;
+            var source = v.Stockpiles[0]; World.Add(source.Goods, "planks", 12); World.Add(source.Goods, "blocks", 2);
+            var planned = Act(w, v, new GameAction { Kind = "PlanBuilding", Name = "wood_cutter", Position = new Int2(-5, 1), CatId = c.Id });
+            var scaffold = v.Buildings.Single(b => b.Id == planned.EntityId);
+            Act(w, v, new GameAction { Kind = "EnterCat", CatId = c.Id });
+            Act(w, v, new GameAction { Kind = "InteractCat", CatId = c.Id, TargetId = source.Id, Resource = resource, Amount = 8 });
+            Act(w, v, new GameAction { Kind = "LeaveCat", CatId = c.Id });
+            Check(c.JobId == "" && World.Amount(c.Cargo, resource) == 8, "Fixture must leave direct control with cargo and no active job");
+            double initialFood = Goods(w, v, "food"), initialPlanks = Goods(w, v, "planks"), initialBlocks = Goods(w, v, "blocks");
+            Act(w, v, new GameAction { Kind = "AssignWorker", CatId = c.Id, BuildingId = scaffold.Id });
+            bool preservedAtHandoff = c.Cargo.Count == 0 && v.Stockpiles.Any(p => p.Kind == "spill" && p.Position.Equals(new Int2(2, 2)) && World.Amount(p.Goods, resource) == 8);
+            for (int tick = 0; tick < 600 && !scaffold.Completed; tick++) w.Step(1);
+            Check(scaffold.Completed, "Reassigned scaffold did not complete with its finite material bill");
+            Near(Goods(w, v, "food"), initialFood * Math.Pow(1 - 0.0002, Math.Floor(w.TimeSeconds / 60)), "Construction destroyed unrelated food beyond ordinary spoilage");
+            Near(Goods(w, v, "planks"), initialPlanks - World.Amount(scaffold.Required, "planks"), "Construction consumed surplus planks beyond its material bill");
+            Near(Goods(w, v, "blocks"), initialBlocks - World.Amount(scaffold.Required, "blocks"), "Construction block bill was not conserved");
+            Check(preservedAtHandoff, "New work must leave prior cargo in a physical spill before fetching construction materials");
+            Check(c.Cargo.Count == 0 && scaffold.Inputs.Count == 0 && w.Reservations.Count == 0, "Completed construction left cargo or input claims"); Valid(w);
+        }
+        static Stockpile ArmorPile(World w, Village v)
+        {
+            var at = new Int2(-5, 1);
+            var result = Act(w, v, new GameAction { Kind = "DesignateStockpile", Position = at, End = at, Accepts = new List<string> { "armor" } });
+            return v.Stockpiles.Single(p => p.Id == result.EntityId);
+        }
+        static void ArmorProductionStorage()
+        {
+            var w = Fixture(out var v, out var c); v.Research = Catalog.Research.Select(n => n.Id).ToList();
+            var recipe = Catalog.Recipe("smithy_armor"); var station = Station(w, v, recipe.Building); var source = v.Stockpiles[0];
+            source.Accepts.AddRange(new[] { "food", "water", "metal" }); World.Add(source.Goods, "metal", w.RecipeInput(v, recipe, recipe.Inputs.Single().Amount));
+            var destination = ArmorPile(w, v);
+            Act(w, v, new GameAction { Kind = "AssignWorker", CatId = c.Id, BuildingId = station.Id });
+            Act(w, v, new GameAction { Kind = "EditProductionQueue", BuildingId = station.Id, Edit = "add", RecipeId = recipe.Id });
+            for (int tick = 0; tick < 1800 && v.Items.Count == 0; tick++) w.Step(1);
+            Check(v.Items.Count == 1, "Armor recipe did not create exactly one physical item");
+            var item = v.Items.Single(); string id = item.Id; double condition = item.Condition, maximum = item.MaxCondition;
+            Check(item.Kind == "armor" && item.LocationId != destination.Id, "Fixture must observe produced armor before physical delivery");
+            for (int tick = 0; tick < 100 && !v.Jobs.Any(j => j.Kind == "production" && j.Completed); tick++) w.Step(1);
+            Check(v.Jobs.Any(j => j.Kind == "production" && j.Completed), "Armor production is blocked despite reachable armor-only storage");
+            Check(v.Items.Count == 1 && v.Items.Single().Id == id && item.LocationId == destination.Id, "Armor delivery changed identity or missed accepting storage");
+            Near(item.Condition, condition, "Armor delivery changed condition"); Near(item.MaxCondition, maximum, "Armor delivery changed maximum condition");
+            Near(Goods(w, v, "armor"), 0, "Armor delivery duplicated an exact item as scalar goods"); Near(Goods(w, v, "metal"), 0, "Armor production did not consume its exact material bill"); Valid(w);
+        }
+        static void ArmorUnequipStorage()
+        {
+            var w = Fixture(out var v, out var c); v.Stockpiles[0].Accepts.AddRange(new[] { "food", "water" }); var destination = ArmorPile(w, v);
+            var item = new Item { Id = w.Id("armor"), Kind = "armor", Material = "metal", Quality = 2, VillageId = v.Id, LocationId = destination.Id, Condition = 37.5, MaxCondition = 73 };
+            v.Items.Add(item); string id = item.Id;
+            Act(w, v, new GameAction { Kind = "EquipItem", CatId = c.Id, TargetId = id });
+            Check(c.Equipment.Contains(id) && item.LocationId == c.Id, "Armor did not enter the selected cat's equipment slot");
+            Act(w, v, new GameAction { Kind = "UnequipItem", CatId = c.Id, TargetId = id });
+            Check(v.Items.Count == 1 && v.Items.Single().Id == id && item.LocationId == destination.Id && !c.Equipment.Contains(id), "Unequipping lost exact armor identity or failed to use accepting storage");
+            Near(item.Condition, 37.5, "Unequipping changed armor condition"); Near(item.MaxCondition, 73, "Unequipping changed armor maximum condition");
+            Near(Goods(w, v, "armor"), 0, "Unequipping duplicated an exact item as scalar goods"); Valid(w);
         }
         static List<string> Ancestors(Study node)
         { var result = new HashSet<string>(); void Visit(string id) { if (!result.Add(id)) return; foreach (var p in Catalog.Study(id).Prerequisites) Visit(p); } foreach (var p in node.Prerequisites) Visit(p); return result.OrderBy(x => x, StringComparer.Ordinal).ToList(); }

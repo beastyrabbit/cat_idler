@@ -3,7 +3,8 @@
 The September 6, 2026 native samples held approximately 60 frames per second at
 6016 × 3080 on an Apple M1 Max with 32 GB of memory. The ARM64 IL2CPP player ran
 the local simulation at 1× speed in management view, with its 60 FPS target.
-Unity Editors were closed. Measurements preceded F9/F10 evidence capture.
+The final native build passed after all fixes. Unity Editors were closed, and
+measurements preceded F9/F10 evidence capture.
 
 These are observations of two finite review workloads. The frame cap hides spare
 rendering capacity, and the results do not establish performance at arbitrary
@@ -20,15 +21,15 @@ All timings below are milliseconds. Exact samples are preserved in
 | Buildings | 16 | 54 |
 | Cats with an active job at sampling | 5 | 10 |
 | Active reservations at sampling | 0 | 0 |
-| Frame interval p50 | 16.668 | 16.666 |
-| Frame interval p95 | 17.605 | 17.271 |
-| Local 0.1-second advance p50 | 0.0088 | 0.0122 |
-| Local 0.1-second advance p95 | 0.5069 | 0.5213 |
-| Complete economy tick p50 | 0.4940 | 0.5213 |
-| Complete economy tick p95 | 3.7089 | 1.3079 |
+| Frame interval p50 | 16.667 | 16.666 |
+| Frame interval p95 | 17.402 | 17.206 |
+| Local 0.1-second advance p50 | 0.0121 | 0.0119 |
+| Local 0.1-second advance p95 | 0.3143 | 0.5518 |
+| Complete economy tick p50 | 0.3236 | 0.5536 |
+| Complete economy tick p95 | 1.9122 | 1.3225 |
 | Frame samples | 3,600 | 3,600 |
-| Local advance samples | 3,600 | 1,200 |
-| Complete economy tick samples | 360 | 120 |
+| Local advance samples | 1,402 | 1,502 |
+| Complete economy tick samples | 140 | 150 |
 
 The populations perform different work, and their simulation sampling windows
 differ. The lower 150-cat economy p95 does not imply that adding cats makes the
@@ -51,11 +52,21 @@ runs outside this stopwatch; its cost can appear in frame intervals.
 
 Each list retains at most 3,600 samples. At the observed 60 FPS, the frame list
 covers approximately the latest minute. The 30-cat advance and economy lists
-cover approximately six minutes at 1×; the 150-cat lists cover two minutes.
+cover approximately 2.33 minutes at 1×; the 150-cat lists cover 2.5 minutes.
 Consequently, frame and simulation percentiles do not describe identical time
 windows. Percentiles sort the retained samples and select index `floor(q × N)`
 without interpolation. The player writes a report every ten seconds when
 `--forest-evidence` is enabled.
+
+## Terrain rebuild check
+
+An independent review found that each camera chunk rebuild called a linear tile
+search 5,929 times. The renderer now builds a position index once per rebuild.
+On the same Mac, a PlayMode check rebuilt three camera positions over 3,025 tiles
+in 160.028 ms before the change and 7.339 ms after it. Both runs checked the same
+77×77 mesh bounds, water, mountain, known missing ground and fog categories, and
+verified that moving the camera did not create authoritative tiles. These are
+Editor CPU timings for that operation, separate from native frame intervals.
 
 ## Workloads
 
@@ -97,7 +108,7 @@ open -n 'artifacts/macos/Idle Cat Forest.app' --args --forest-save "$forest_perf
 Leave the player at 1× in management view. Verify the report's actual width and
 height because macOS may constrain the requested window size. Observe
 `$forest_perf_dir/30/performance.json` after it reaches 3,600 frame samples,
-3,600 advance samples and 360 economy ticks, about six minutes. Preserve that
+at least 1,400 advance samples and 140 economy ticks, about 2.33 minutes. Preserve that
 report before pressing F9 or F10. Quit the 30-cat player before launching the
 expanded fixture:
 
@@ -105,8 +116,8 @@ expanded fixture:
 open -n 'artifacts/macos/Idle Cat Forest.app' --args --forest-save "$forest_perf_dir/expanded150.json" --forest-evidence "$forest_perf_dir/150" -screen-fullscreen 0 -screen-width 6016 -screen-height 3080
 ```
 
-Observe `$forest_perf_dir/150/performance.json` at 3,600 frame samples, 1,200
-advance samples and 120 economy ticks, about two minutes. The ten-second report
+Observe `$forest_perf_dir/150/performance.json` at 3,600 frame samples, at least
+1,500 advance samples and 150 economy ticks, about 2.5 minutes. The ten-second report
 cadence can produce nearby sample counts on a repeat run. Record the actual
 counts, workload and resolution rather than changing samples to match this table.
 Use newly generated saves for another run. Keep the adjacent private `.identity`

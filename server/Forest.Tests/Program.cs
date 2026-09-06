@@ -137,6 +137,60 @@ Test("socket projection never exposes private villages owners or stale exact sto
     }
     finally { Directory.Delete(directory, true); }
 });
+await AsyncTest("counted equipment remains selectable over a real socket until its ledger becomes stale", async () =>
+{
+    var directory = Path.Combine(Path.GetTempPath(), "forest-counted-equipment-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(directory);
+    try
+    {
+        using var runtime = new AuthorityRuntime(Path.Combine(directory, "world.json"), 7);
+        var owner = runtime.Connect(null, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        var village = runtime.World.Village(owner.SelectedVillageId);
+        var pile = village.Stockpiles[0]; var accountant = village.Cats[2]; var bearer = village.Cats[3];
+        var tent = new Building { Id = "fixture-accounting-tent", Kind = "accounting_tent", Completed = true, Position = pile.Position };
+        tent.Slots.Add(new WorkSlot { CatId = accountant.Id }); village.Buildings.Add(tent); accountant.BuildingId = tent.Id;
+        village.Officers.Add(new Officer { Role = "accountant", CatId = accountant.Id });
+        foreach (var kind in new[] { "tool", "weapon", "armor" })
+            village.Items.Add(new Item { Id = "counted-" + kind, Kind = kind, VillageId = village.Id, LocationId = pile.Id, Material = "wood", Quality = 3, Condition = 17, MaxCondition = 42 });
+        village.Items.Add(new Item { Id = "worn-weapon", Kind = "weapon", VillageId = village.Id, LocationId = bearer.Id });
+        bearer.Equipment.Add("worn-weapon");
+        var gather = new Stockpile { Id = "unreported-gather-pile", Kind = "zone_gather", Position = village.Center };
+        gather.Goods.Add(new IdleCatForest.Simulation.Stack("logs", 17)); village.Stockpiles.Add(gather);
+        village.Items.Add(new Item { Id = "unreported-pile-tool", Kind = "tool", VillageId = village.Id, LocationId = gather.Id });
+        void CountStorage()
+        {
+            // Start each real accounting tick at its finite final dwell, with the worker present.
+            foreach (var storage in village.Stockpiles.Where(p => p.Kind == "storage"))
+            {
+                accountant.Position = storage.Position; accountant.X = storage.Position.X; accountant.Z = storage.Position.Z; accountant.Path.Clear();
+                village.Accounting = new AccountingRound { WorkerId = accountant.Id, BuildingId = tent.Id, TargetId = storage.Id, Phase = "counting", DwellSeconds = 4 };
+                runtime.Advance(1);
+                Check(storage.CountedAt == runtime.World.TimeSeconds, "physical Accountant did not finish its count");
+            }
+        }
+        CountStorage();
+        Check(World.Amount(pile.Report, "tools") == 1 && World.Amount(pile.Report, "weapons") == 1 && World.Amount(pile.Report, "armor") == 1, "Accountant omitted exact item categories");
+        var credentialPath = Path.Combine(directory, "client.json"); CredentialStore.Save(credentialPath, owner.Credential, village.Id);
+        await using var app = HostEntry.Build(runtime, "http://127.0.0.1:0", false); await app.StartAsync();
+        var address = app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>().Addresses.Single().Replace("http://", "ws://") + "/ws";
+        using var client = new WorldClient(address, credentialPath); await client.ConnectAsync();
+        var visible = client.LatestWorld.Village(village.Id);
+        Check(visible.Items.Count(i => i.Id.StartsWith("counted-", StringComparison.Ordinal)) == 3, "fresh counted stored equipment was removed from authorized socket snapshot");
+        Check(visible.Cats.Single(c => c.Id == bearer.Id).Equipment.Contains("worn-weapon"), "fresh counted snapshot removed equipped item references");
+        Check(visible.Items.All(i => i.Id != "unreported-pile-tool") && visible.Stockpiles.Single(p => p.Id == gather.Id).Goods.Count == 0, "unreported nonstorage pile contents became visible");
+        Check((await client.SendAsync(new GameAction { Kind = "EquipItem", CatId = bearer.Id, TargetId = "counted-tool" })).Success, "authorized client could not select and equip its counted item");
+        Check(client.LatestWorld.Village(village.Id).Items.Count == 0 && client.LatestWorld.Village(village.Id).Cats.Single(c => c.Id == bearer.Id).Equipment.Count == 0, "stale equipment count exposed exact inventory");
+        CountStorage(); await client.SendAsync(new GameAction { Kind = "Presence" });
+        visible = client.LatestWorld.Village(village.Id);
+        Check(visible.Items.Single(i => i.Id == "counted-tool").LocationId == bearer.Id && visible.Cats.Single(c => c.Id == bearer.Id).Equipment.Contains("counted-tool"), "recount failed to restore the equipped item identity");
+        lock (runtime.Sync) World.Add(pile.Goods, "logs", 1);
+        await client.SendAsync(new GameAction { Kind = "Presence" });
+        Check(client.LatestWorld.Village(village.Id).Items.Count == 0, "stale scalar count exposed exact equipment");
+        Check(village.Items.Count == 5 && gather.Goods.Single().Amount == 17, "projection changed the canonical item or pile ledger");
+        client.Dispose(); await app.StopAsync();
+    }
+    finally { Directory.Delete(directory, true); }
+});
 await AsyncTest("real loopback identities village privacy signed actions and restart", async () =>
 {
     var directory = Path.Combine(Path.GetTempPath(), "forest-socket-test-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(directory);

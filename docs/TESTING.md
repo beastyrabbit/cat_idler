@@ -46,7 +46,7 @@ Reports are written to ignored `artifacts/tests`. Inspect the NUnit counts,
 failures and Editor/runtime logs. A successful CLI envelope or process launch is
 not proof of a passed suite.
 
-The EditMode wrapper runs the 542 noncampaign simulation tests. The nine extended
+The EditMode wrapper runs the 546 noncampaign simulation tests. The nine extended
 campaigns run through the standalone .NET executable, including in CI. Running
 all campaigns again under the Editor's Mono runtime exceeded the ten-minute local
 test limit. To select a specific Unity campaign, pass its name with `--filter`

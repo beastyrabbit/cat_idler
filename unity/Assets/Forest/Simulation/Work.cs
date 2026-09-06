@@ -224,7 +224,7 @@ namespace IdleCatForest.Simulation
             goods.Clear();
             return pile;
         }
-        private void CancelWork(Village v, Cat c)
+        private void CancelWork(Village v, Cat c, bool preserveUnassignedCargo = false)
         {
             if (v.Accounting?.WorkerId == c.Id)
                 v.Accounting = null;
@@ -271,6 +271,8 @@ namespace IdleCatForest.Simulation
                     job.CatId = "";
                 }
             }
+            else if (!preserveUnassignedCargo && c.Cargo.Count > 0)
+                Spill(v, c.Position, c.Cargo);
             foreach (var b in v.Buildings)
             {
                 foreach (var slot in b.Slots.Where(s => s.CatId == c.Id))
@@ -733,7 +735,7 @@ namespace IdleCatForest.Simulation
                     Add(c.Cargo, s.Resource, take);
                     Add(j.Local, s.Resource, -take);
                 }
-                string resource = c.Cargo.FirstOrDefault()?.Resource ?? (j.ItemIds.Count > 0 ? v.Items.Find(i => i.Id == j.ItemIds[0])?.Kind + "s" : "");
+                string resource = c.Cargo.FirstOrDefault()?.Resource ?? (j.ItemIds.Count > 0 ? ItemResource(v.Items.Find(i => i.Id == j.ItemIds[0])?.Kind) : "");
                 if (resource == "")
                 {
                     Finish(v, c, j);

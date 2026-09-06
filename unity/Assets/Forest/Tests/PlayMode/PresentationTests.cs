@@ -61,6 +61,60 @@ namespace IdleCatForest.Tests
         }
 
         [UnityTest]
+        public IEnumerator GroundRebuildPreservesTerrainAndNeverGeneratesUnknownTiles()
+        {
+            game.View.enabled = false;
+            var world = game.CurrentWorld;
+            world.Tiles.Clear(); game.Selected.Known.Clear();
+            for (int z = -27; z <= 27; z++) for (int x = -27; x <= 27; x++)
+            {
+                var point = new Int2(x, z);
+                world.Tiles.Add(new Tile { Position = point, Water = x == 1 && z == 0, Mountain = x == 2 && z == 0 });
+                game.Selected.Known.Add(point);
+            }
+            game.Selected.Known.Add(new Int2(28, 0));
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            var center = typeof(ForestView).GetField("groundCenter", flags);
+            var rebuild = typeof(ForestView).GetMethod("MakeGround", flags);
+            var ground = (Transform)typeof(ForestView).GetField("groundRoot", flags).GetValue(game.View);
+            int tileCount = world.Tiles.Count;
+            double elapsed = 0;
+            for (int i = 0; i < 3; i++)
+            {
+                center.SetValue(game.View, new Int2(i * 8, 0));
+                var timer = System.Diagnostics.Stopwatch.StartNew();
+                rebuild.Invoke(game.View, null); elapsed += timer.Elapsed.TotalMilliseconds;
+                yield return null;
+                var meshes = ground.GetComponentsInChildren<MeshFilter>();
+                Assert.That(meshes.Sum(m => m.sharedMesh.vertexCount), Is.EqualTo(77 * 77 * 4));
+                Assert.That(meshes.Min(m => m.sharedMesh.bounds.min.x), Is.EqualTo(i * 8 - 38.5f));
+                Assert.That(meshes.Max(m => m.sharedMesh.bounds.max.x), Is.EqualTo(i * 8 + 38.5f));
+                Assert.That(GroundCategory(meshes, new Int2(1, 0)), Is.EqualTo(1));
+                Assert.That(GroundCategory(meshes, new Int2(2, 0)), Is.EqualTo(2));
+                Assert.That(GroundCategory(meshes, new Int2(3, 0)), Is.EqualTo(3));
+                Assert.That(GroundCategory(meshes, new Int2(28, 0)), Is.EqualTo(4), "Known missing terrain stays visible without generating it.");
+                Assert.That(GroundCategory(meshes, new Int2(29, 0)), Is.EqualTo(0));
+                Assert.That(world.Tiles.Count, Is.EqualTo(tileCount), "Camera movement cannot generate authoritative terrain.");
+            }
+            TestContext.WriteLine("Three expanded-terrain rebuilds, milliseconds: " + elapsed.ToString("F3", System.Globalization.CultureInfo.InvariantCulture));
+        }
+
+        private static int GroundCategory(MeshFilter[] meshes, Int2 point)
+        {
+            foreach (var filter in meshes)
+            {
+                var vertices = filter.sharedMesh.vertices;
+                for (int i = 0; i < vertices.Length; i += 4)
+                {
+                    var midpoint = (vertices[i] + vertices[i + 2]) * .5f;
+                    if (midpoint.x == point.X && midpoint.z == point.Z)
+                        return int.Parse(filter.name.Substring("Ground ".Length));
+                }
+            }
+            Assert.Fail("No terrain at " + point); return -1;
+        }
+
+        [UnityTest]
         public IEnumerator ExistingResourceViewChangesWhenInfrastructureReplacesIt()
         {
             var tile = game.CurrentWorld.Tiles.First(t => game.Selected.Known.Contains(t.Position) && t.Resource == "logs" && t.Amount > 0 && !t.Wall && !t.Road);

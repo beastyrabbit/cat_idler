@@ -249,7 +249,7 @@ namespace IdleCatForest.Simulation
                         other.ControlledBy = "";
                         other.Goal = "idle";
                     }
-                    CancelWork(village, cat);
+                    CancelWork(village, cat, preserveUnassignedCargo: true);
                     cat.ControlledBy = context.PlayerId;
                     cat.ControlLeaseUntil = TimeSeconds + 30;
                     cat.Goal = "player_control";
@@ -538,7 +538,7 @@ namespace IdleCatForest.Simulation
             {
                 if (item.LocationId != c.Id || !c.Equipment.Contains(item.Id))
                     return ActionResult.Fail("Item not equipped by this cat");
-                var storage = Storage(v, item.Kind + "s", 1, c.Position);
+                var storage = Storage(v, ItemResource(item.Kind), 1, c.Position);
                 if (storage == null)
                     return ActionResult.Fail("No reachable equipment storage");
                 item.LocationId = storage.Id;
@@ -546,6 +546,7 @@ namespace IdleCatForest.Simulation
             }
             return ActionResult.Ok();
         }
+        private static string ItemResource(string kind) => kind == "tool" ? "tools" : kind == "weapon" ? "weapons" : kind == "armor" ? "armor" : kind + "s";
         private ActionResult Interact(Village v, Cat c, GameAction a)
         {
             if (a.Mode == "eat" || a.Mode == "drink" || a.Mode == "rest")

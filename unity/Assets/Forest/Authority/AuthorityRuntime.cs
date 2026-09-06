@@ -128,6 +128,14 @@ namespace IdleCatForest.Authority
                         foreach (var cat in village.Cats) cat.Equipment.Clear();
                         foreach (var job in village.Jobs) job.ItemIds.Clear();
                     }
+                    else
+                    {
+                        var unreported = village.Stockpiles.Where(pile => pile.Kind != "storage").Select(pile => pile.Id).ToHashSet();
+                        var hiddenItems = village.Items.Where(item => Functional(item.Kind) && unreported.Contains(item.LocationId)).Select(item => item.Id).ToHashSet();
+                        village.Items.RemoveAll(item => hiddenItems.Contains(item.Id));
+                        foreach (var cat in village.Cats) cat.Equipment.RemoveAll(id => hiddenItems.Contains(id));
+                        foreach (var job in village.Jobs) job.ItemIds.RemoveAll(id => hiddenItems.Contains(id));
+                    }
                     foreach (var job in village.Jobs) job.Reserved.Clear();
                     foreach (var cat in village.Cats) if (cat.ControlledBy.Length > 0 && cat.ControlledBy != playerId) cat.ControlledBy = "another-player";
                     if (village.Election != null) foreach (var ballot in village.Election.Votes) if (ballot.PlayerId != playerId) ballot.PlayerId = "other-voter";
@@ -150,9 +158,16 @@ namespace IdleCatForest.Authority
         private static bool Functional(string kind) => kind == "tool" || kind == "weapon" || kind == "armor";
         private static bool BooksCurrent(Village village)
         {
-            return village.Stockpiles.Count > 0 && village.Stockpiles.All(pile => pile.CountedAt >= 0
-                && pile.Goods.All(good => Math.Abs(good.Amount - pile.Report.Where(report => report.Resource == good.Resource).Sum(report => report.Amount)) < 0.000001)
-                && pile.Report.All(report => Math.Abs(report.Amount - pile.Goods.Where(good => good.Resource == report.Resource).Sum(good => good.Amount)) < 0.000001));
+            var storage = village.Stockpiles.Where(pile => pile.Kind == "storage").ToArray();
+            return storage.Length > 0 && storage.All(pile =>
+            {
+                if (pile.CountedAt < 0) return false;
+                var actual = pile.Goods.Select(good => new Stack(good.Resource, good.Amount)).ToList();
+                foreach (var item in village.Items.Where(item => item.LocationId == pile.Id && Functional(item.Kind)))
+                    World.Add(actual, item.Kind == "armor" ? "armor" : item.Kind + "s", 1);
+                return actual.Select(good => good.Resource).Concat(pile.Report.Select(report => report.Resource)).Distinct()
+                    .All(resource => Math.Abs(World.Amount(actual, resource) - World.Amount(pile.Report, resource)) < 0.000001);
+            });
         }
         private static bool ActionValid(GameAction action)
         {
