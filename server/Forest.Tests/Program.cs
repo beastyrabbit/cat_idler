@@ -408,6 +408,53 @@ Test("movement rate budget preserves ordinary action limits", () =>
     for (int i = 0; i < 120; i++) budget.Allow("ip", "socket", "owner", true, 12000);
     Check(!budget.Allow("ip", "other-socket", "owner", true, 12000), "reconnection bypassed signed player movement limit");
 });
+foreach (bool automaticTicks in new[] { false, true })
+    await AsyncTest(automaticTicks ? "rate-limited socket still receives scheduled snapshots" : "rate-limited socket keeps its frame without building projections", async () =>
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "forest-socket-budget-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            using var runtime = new AuthorityRuntime(Path.Combine(directory, "world.json"), 41);
+            await using var app = HostEntry.Build(runtime, "http://127.0.0.1:0", automaticTicks);
+            await app.StartAsync();
+            try
+            {
+                var address = app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>().Addresses.Single().Replace("http://", "ws://") + "/ws";
+                using var client = new WorldClient(address, Path.Combine(directory, "client.json"));
+                await client.ConnectAsync();
+                int denied = 0;
+                for (int i = 0; i < 35; i++)
+                {
+                    var before = client.LatestFrame;
+                    var result = await client.SendAsync(new GameAction { Kind = "Presence" });
+                    if (result.Success) Check(client.LatestFrame.Sequence > before.Sequence, "accepted action did not update the client frame");
+                    else
+                    {
+                        Check(result.Error.StartsWith("Too many actions.", StringComparison.Ordinal), "burst failed for a reason other than its action budget");
+                        denied++;
+                        if (!automaticTicks) Check(ReferenceEquals(client.LatestFrame, before), "rate-limited request replaced the client's latest frame");
+                    }
+                }
+                Check(denied >= 6, "socket burst did not exhaust the ordinary action budget");
+                if (!automaticTicks)
+                    Check(runtime.Project(null).Sequence == client.LatestFrame.Sequence + 1, "rejected requests built hidden full-world projections");
+                else
+                {
+                    double before = client.LatestWorld.TimeSeconds;
+                    var clock = System.Diagnostics.Stopwatch.StartNew();
+                    while (client.LatestWorld.TimeSeconds <= before && clock.Elapsed < TimeSpan.FromSeconds(3)) await Task.Delay(100);
+                    Check(client.LatestWorld.TimeSeconds > before && client.Status == "Connected", "throttling stopped scheduled snapshots or disconnected the client");
+                }
+                using var other = new WorldClient(address, Path.Combine(directory, "other.json"));
+                await other.ConnectAsync();
+                var previous = other.LatestFrame.Sequence;
+                Check((await other.SendAsync(new GameAction { Kind = "Presence" })).Success && other.LatestFrame.Sequence > previous, "throttled peer blocked another player's accepted action");
+            }
+            finally { await app.StopAsync(); if (automaticTicks) await Task.Delay(150); }
+        }
+        finally { Directory.Delete(directory, true); }
+    });
 Test("exact crafted haul survives claimed pickup and full-storage restarts", () =>
 {
     var directory = Path.Combine(Path.GetTempPath(), "forest-exact-haul-" + Guid.NewGuid().ToString("N"));

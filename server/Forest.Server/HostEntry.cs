@@ -80,8 +80,13 @@ public static class HostEntry
                         var response = new ServerMessage { Type = "result", RequestId = request.RequestId };
                         var authenticated = runtime.Authenticate(peer.Identity, request.SessionId, request.Sig, now);
                         var movement = authenticated && request.Action?.Kind?.Replace("_", "").Equals("movecat", StringComparison.OrdinalIgnoreCase) == true;
-                        if (!actionBudget.Allow(peerIp, peer.Id.ToString(), peer.Identity?.Credential.PlayerId ?? "", movement, now)) response.Result = ActionResult.Fail("Too many actions. Wait before retrying.");
-                        else if (request.Type == "presence")
+                        if (!actionBudget.Allow(peerIp, peer.Id.ToString(), peer.Identity?.Credential.PlayerId ?? "", movement, now))
+                        {
+                            response.Result = ActionResult.Fail("Too many actions. Wait before retrying.");
+                            await peer.Send(response, context.RequestAborted);
+                            continue;
+                        }
+                        if (request.Type == "presence")
                         {
                             if (peer.Identity != null) response.Result = ActionResult.Fail("This connection already has an identity.");
                             else if (string.IsNullOrEmpty(request.SessionId) && !identityLimits.Allow(peerIp, now)) response.Result = ActionResult.Fail("Too many new identities from this address.");

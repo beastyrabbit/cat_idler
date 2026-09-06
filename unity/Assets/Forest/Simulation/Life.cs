@@ -116,6 +116,13 @@ namespace IdleCatForest.Simulation
         }
         private bool TickNeeds(Village v, Cat c)
         {
+            // Stay aboard over water; the same needs can be met physically after docking.
+            if (v.Routes.Any(r => r.CatId == c.Id && r.Mode == "shipping" && r.Phase != "boarding" && v.Vehicles.Any(vehicle => vehicle.Id == r.VehicleId && vehicle.Position.Equals(c.Position) && !Walkable(v, vehicle.Position))))
+            {
+                if (c.Goal.StartsWith("need_", StringComparison.Ordinal))
+                    Resume(c);
+                return false;
+            }
             if (c.Goal.StartsWith("need_", StringComparison.Ordinal))
             {
                 if (c.Goal == "need_sleep")

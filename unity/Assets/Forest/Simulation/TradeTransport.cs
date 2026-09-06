@@ -137,7 +137,7 @@ namespace IdleCatForest.Simulation
                     Note(target, "trade", "Barter delivery completed", t.Id);
                     continue;
                 }
-                if (t.PathIndex < t.Path.Count && !Walkable(t.Path[t.PathIndex]))
+                if (t.PathIndex < t.Path.Count && (!Walkable(t.Path[t.PathIndex]) || !Crossable(new Int2((int)t.X, (int)t.Z), t.Path[t.PathIndex])))
                     continue;
                 t.Progress += 0.8;
                 if (t.Progress >= 1)
@@ -411,6 +411,16 @@ namespace IdleCatForest.Simulation
             v.Routes.Remove(route);
             return ActionResult.Ok();
         }
+        private bool ReboardTransport(TransportRoute route, Vehicle vehicle, Cat driver)
+        {
+            if (driver.Goal.StartsWith("need_", StringComparison.Ordinal))
+                return false;
+            if (driver.Position.Equals(vehicle.Position) && driver.X == vehicle.Position.X && driver.Z == vehicle.Position.Z)
+                return true;
+            driver.Goal = "returning to " + route.Mode;
+            route.BlockedReason = Move(driver, vehicle.Position, 1) ? "" : driver.BlockedReason;
+            return false;
+        }
         private void ReturnVessel(Village v, TransportRoute route, Vehicle vehicle, Cat driver)
         {
             if (driver == null)
@@ -421,6 +431,8 @@ namespace IdleCatForest.Simulation
                     route.BlockedReason = "driver_required · build bridge access to salvage wreck";
                 return;
             }
+            if (!ReboardTransport(route, vehicle, driver))
+                return;
             driver.Goal = driver.ControlledBy != "" ? "player_control · returning to dock" : "returning vessel to dock";
             if (route.PathIndex > 0)
             {
@@ -481,6 +493,8 @@ namespace IdleCatForest.Simulation
                     continue;
                 }
                 if (c.ControlledBy != "" || c.Goal.StartsWith("need_", StringComparison.Ordinal))
+                    continue;
+                if (route.Phase != "boarding" && !ReboardTransport(route, vehicle, c))
                     continue;
                 var source = v.Stockpiles.Find(s => s.Id == route.SourceId);
                 var destination = v.Stockpiles.Find(s => s.Id == route.DestinationId);

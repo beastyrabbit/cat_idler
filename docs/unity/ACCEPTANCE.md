@@ -6,10 +6,10 @@ shrine, surrounding roads, connected entrances, four gates, joined fence corners
 responsive zoom and a readable management interface. Existing played saves keep
 their layout and progress; a separate new save exercises the revised founding.
 
-The revised simulation passed 641 noncampaign scenarios, including 139 regressions.
+The revised simulation passed 645 noncampaign scenarios, including 143 regressions.
 Nine earlier campaign twins passed within the scope described below.
-Unity passed 647 EditMode and 33 PlayMode tests.
-The authority/import suite passed 44 tests. The real SQLite pipeline passed four
+Unity passed 651 EditMode and 33 PlayMode tests.
+The authority/import suite passed 46 tests. The real SQLite pipeline passed four
 tests in 24.959 seconds. Blender reimport verified 82 models, 88 meshes and 145,611
 triangles. These checks establish the tested behavior, not the player's approval
 of the visual design. Native observations and current costs appear below and in
@@ -46,7 +46,7 @@ time and random-state controls.
 | Knowledge and progression | All 487 studies pass public purchase traversal with separate effect scenarios. Normal UI research spent 20,000 → 19,995 points on Research Hut and displayed the dependency map. | Verified |
 | Equipment, defense and trade | Exact item identity, condition, repair, finite traders, raids, warriors, rail/shipping and physical barter pass scenarios and real socket tests. | Verified |
 | Persistent shared authority | Two identities, private-village denial, filtered reports, restart and physical trade pass real socket tests. The native app connected to a synthetic server, founded 15-cat Mosslight, then reconnected to the same village, ID 74. | Verified |
-| Saves and migration | 44 authority/import tests and the real SQLite conversion pipeline pass. Jobs, cargo, claims, identities and returning trade survive restart without replay. Imported exact-item capacity, physical pickup, mixed output delivery and newly staffed empty queues preserve their limits and identities. Import preserves source bytes and refuses unknown schemas and destination overwrite. The packaged app opened the converted world and resumed both imported jobs. | Verified |
+| Saves and migration | 46 authority/import tests and the real SQLite conversion pipeline pass. Jobs, cargo, claims, identities and returning trade survive restart without replay. Imported exact-item capacity, physical pickup, mixed output delivery and newly staffed empty queues preserve their limits and identities. Import preserves source bytes and refuses unknown schemas and destination overwrite. The packaged app opened the converted world and resumed both imported jobs. | Verified |
 | 3D management and cat control | Blender geometry passes export/import checks. Editor and native UI inspect and control the same cat, walk, take five food and return it to AI while the colony continues. Native deposit emptied its cargo into the original store. | Verified |
 | Normal UI operation | Editor and native inspect, staffing, queues, research, construction and direct-control flows were exercised with saved-state checks. Native repeat persisted as true and pause/resume returned to unpaused work. Editor queue delivery passed; its repeat click did not persist. Original native connection, return and reconnect refreshed the open Village panel and preserved the server address. Corrective-revision road, construction and queue observations appear below. | Verified within this scope |
 | Extended operation | Nine campaign twins cover fresh 48-hour, established 72-hour and shared/personal 48-hour worlds at seeds 7, 41 and 127. | Verified in .NET |
@@ -54,13 +54,13 @@ time and random-state controls.
 
 ## Test and build evidence
 
-- [Simulation results](../../tools/scenarios/VALIDATION.md): 641 focused cases,
-  including 139 regressions, passed in 28.4331 seconds. Nine campaign twins passed
+- [Simulation results](../../tools/scenarios/VALIDATION.md): 645 focused cases,
+  including 143 regressions, passed in 29.6758 seconds. Nine campaign twins passed
   in 213.7647 seconds after the complete road and shore-placement corrections.
   Campaigns compare partitioned time, validate claims and retain founding IDs.
   The established fixture has finite supplies and one repeating wood-processing
   station; it does not prove indefinite operation of every mature production chain.
-- Unity EditMode passed 647 noncampaign tests in 86.331 seconds. The unfiltered
+- Unity EditMode passed 651 noncampaign tests in 90.865 seconds. The unfiltered
   Editor run timed out after 600 seconds, so no Editor campaign pass is claimed.
   The same nine campaign scenarios passed in the .NET runner.
 - The complete corrective-revision PlayMode run passed 33 tests.
@@ -76,7 +76,7 @@ time and random-state controls.
   and nonoverlapping narrow headers with usable Cats/Inspect scroll areas at
   600×360 and 550×336 panel units. A public 4×3 farm designation visibly covers
   every occupied tile, and clearing it removes the whole crop footprint.
-- [Authority and import checks](PERSISTENCE.md) passed 44 tests in 28.62 seconds. The real Rust
+- [Authority and import checks](PERSISTENCE.md) passed 46 tests in 31.31 seconds. The real Rust
   SQLite writer → normalizer → C# continuation pipeline passed four tests; the
   archival exporter passed two. All test worlds and identities are synthetic.
 - [Blender verification](../../source-art/verification.json) passed for 82 models,
@@ -89,7 +89,7 @@ imported batch outputs, so their pass provides no evidence for that delivery
 path. Import tests check partial delivery, mixed item filters, full storage,
 public staffing and restart directly.
 The last campaign run used `61d29f1`, before the final farm-edge projection,
-crop-rendering and rail-passability corrections. Campaigns contain no road, rail or expansion
+crop-rendering and transport corrections. Campaigns contain no road, rail or expansion
 construction jobs and no designated farms; they do not exercise those changes.
 The final focused regressions cover future farm boundaries, paid construction,
 blocked rail transport and interrupted resumption. PlayMode checks the complete visible farm footprint.
@@ -100,9 +100,15 @@ expansions demonstrate blocking and recovery with the same wagon, driver, route
 and finite cargo. The authority suite also revokes a synthetic save directory's
 write permission, verifies continued ticks and failed readiness, then restores
 permission and checks successful saving without replacing cat identities.
+Four additional transport cases verify physical reboarding after drinking,
+a blocked return path, sleep at a reserved Den after an offshore journey, and
+an accepted caravan blocked by a newly completed farm fence. The same routes
+resume and conserve their cargo after needs or access recover. Two socket bursts
+verify that throttled requests avoid full projections while correlated failures,
+scheduled snapshots and another player's accepted actions still arrive.
 
 Local reports are `artifacts/tests/territory-focused.txt`,
-`artifacts/tests/revision-rail-authority.txt`, `artifacts/tests/revision-rail-editmode.xml`, `artifacts/tests/revision-rail-playmode.xml`
+`artifacts/tests/revision-transport-authority.txt`, `artifacts/tests/revision-transport-editmode.xml`, `artifacts/tests/revision-transport-playmode.xml`
 and `artifacts/fresh-checkout/27ab713-verification.txt`. The fresh-checkout report
 covers the clean build; subsequent interactive scene opening and Play mode were
 checked through Pipeline and Computer Use. These ignored reports are local
@@ -164,6 +170,13 @@ seed-41 save. The zoom button changed the view immediately, and clicking a Den
 opened its inspector with the building visible beside it. At 114.6 seconds the
 checksum-verified save retained 30 living cats, 16 buildings and the centered
 3×3 shrine. Its dedicated runtime log contained no error marker.
+
+The final transport and socket-budget source also built as an ARM64 IL2CPP app.
+Another unused seed-41 world opened the Cats panel and Fern's inspector, entered
+direct control with Tab, accepted walking input and returned to management with
+Tab. The checksum-verified save retained all 30 living cats, 16 buildings and
+layout version 1. Fern kept identity `cat-26` and resumed AI with no control owner.
+The dedicated runtime log contained no exception, assertion or error marker.
 
 The save and performance files continued updating during observation. Current
 measured samples are in [the performance report](PERFORMANCE.md). Captures use
