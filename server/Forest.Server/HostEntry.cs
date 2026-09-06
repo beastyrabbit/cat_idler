@@ -145,12 +145,12 @@ public static class HostEntry
                         {
                             saveAt = current + 5;
                             try { runtime.Save(); Interlocked.Exchange(ref failures, 0); }
-                            catch (IOException) { Interlocked.Increment(ref failures); }
+                            catch (Exception error) when (error is IOException || error is UnauthorizedAccessException) { Interlocked.Increment(ref failures); }
                         }
                     }
                 }
                 catch (OperationCanceledException) { }
-                finally { try { runtime.Save(); } catch (IOException) { Interlocked.Increment(ref failures); } }
+                finally { try { runtime.Save(); } catch (Exception error) when (error is IOException || error is UnauthorizedAccessException) { Interlocked.Increment(ref failures); } }
             }));
         return app;
     }

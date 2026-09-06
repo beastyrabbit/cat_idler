@@ -14,6 +14,8 @@ that session, so these are not measurements on an otherwise idle machine.
 Neither prepared workload contains designated farms. The later correction that
 renders every cell of a rectangular farm is therefore outside these samples;
 they do not measure rendering cost for large cultivated areas.
+The prepared worlds also have no transport routes, so the later rail-passability
+guard is not exercised by these samples.
 
 The 30-cat run included brief world-click inspection, a research purchase and
 navigation through a prerequisite link. Neither run entered direct control or

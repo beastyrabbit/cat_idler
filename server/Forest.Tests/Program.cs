@@ -94,6 +94,63 @@ Test("legacy native bearer import is private and never rewrites its source", () 
     }
     finally { Directory.Delete(directory, true); }
 });
+await AsyncTest("shared host survives save permission loss and recovers readiness", async () =>
+{
+    if (OperatingSystem.IsWindows()) return;
+    var directory = Path.Combine(Path.GetTempPath(), "forest-save-permission-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(directory);
+    var permissions = File.GetUnixFileMode(directory);
+    try
+    {
+        var path = Path.Combine(directory, "world.json");
+        using var runtime = new AuthorityRuntime(path, 41);
+        var original = File.ReadAllBytes(path);
+        var catIds = runtime.World.Villages.Single().Cats.Select(cat => cat.Id).ToArray();
+        await using var app = HostEntry.Build(runtime, "http://127.0.0.1:0", true);
+        await app.StartAsync();
+        try
+        {
+            var address = app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>().Addresses.Single();
+            using var http = new HttpClient { BaseAddress = new Uri(address), Timeout = TimeSpan.FromSeconds(2) };
+            File.SetUnixFileMode(directory, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+            try { runtime.Save(); throw new Exception("fixture did not deny save access"); }
+            catch (UnauthorizedAccessException) { }
+            Check((await http.GetAsync("/ready")).IsSuccessStatusCode, "host began unready before automatic save failures");
+            await Task.Delay(TimeSpan.FromSeconds(6.5));
+            lock (runtime.Sync) Check(runtime.World.TimeSeconds > 5.7, "save permission failure stopped automatic simulation ticks");
+            async Task WaitForReadiness(System.Net.HttpStatusCode expected, TimeSpan timeout)
+            {
+                var clock = System.Diagnostics.Stopwatch.StartNew();
+                while (clock.Elapsed < timeout)
+                {
+                    using var response = await http.GetAsync("/ready");
+                    if (response.StatusCode == expected) return;
+                    await Task.Delay(100);
+                }
+                throw new Exception("readiness did not become " + expected);
+            }
+            await WaitForReadiness(System.Net.HttpStatusCode.ServiceUnavailable, TimeSpan.FromSeconds(12));
+            Check(File.ReadAllBytes(path).SequenceEqual(original), "failed saves changed the last durable world");
+            double beforeRecovery;
+            lock (runtime.Sync) beforeRecovery = runtime.World.TimeSeconds;
+            Check(beforeRecovery >= 14, "repeated save failures stopped simulation");
+            File.SetUnixFileMode(directory, permissions);
+            await WaitForReadiness(System.Net.HttpStatusCode.OK, TimeSpan.FromSeconds(7));
+            var saved = SaveStore.Load<World>(path);
+            Check(saved.TimeSeconds > beforeRecovery, "readiness recovered without saving the advanced world");
+            Check(saved.Villages.Single().Cats.Select(cat => cat.Id).SequenceEqual(catIds), "save recovery replaced founding identities");
+            AuthorityRuntime.ValidateWorld(saved);
+        }
+        finally
+        {
+            File.SetUnixFileMode(directory, permissions);
+            await app.StopAsync();
+            // The automatic loop observes shutdown on its next timer continuation.
+            await Task.Delay(150);
+        }
+    }
+    finally { File.SetUnixFileMode(directory, permissions); Directory.Delete(directory, true); }
+});
 Test("full simulation save retains cargo reservations queues identities and entropy", () =>
 {
     var directory = Path.Combine(Path.GetTempPath(), "forest-runtime-test-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(directory);

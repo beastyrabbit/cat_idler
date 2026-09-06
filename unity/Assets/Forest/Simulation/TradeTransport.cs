@@ -565,7 +565,7 @@ namespace IdleCatForest.Simulation
                     continue;
                 }
                 var tile = TileAt(route.Path[next]);
-                if (route.Mode == "rail" ? !tile.Rail : (!tile.Water && !tile.Dock && next != 0 && next != route.Path.Count - 1))
+                if (route.Mode == "rail" ? !tile.Rail || !Walkable(v, route.Path[next]) || !Crossable(vehicle.Position, route.Path[next]) : (!tile.Water && !tile.Dock && next != 0 && next != route.Path.Count - 1))
                 {
                     route.BlockedReason = "route_blocked";
                     continue;
