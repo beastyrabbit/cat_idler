@@ -16,6 +16,7 @@ namespace IdleCatForest.Simulation
         public List<Village> Villages = new List<Village>(); public List<Player> Players = new List<Player>();
         public List<Tile> Tiles = new List<Tile>(); public List<TradeOffer> TradeOffers = new List<TradeOffer>(); public List<Reservation> Reservations = new List<Reservation>();
         [NonSerialized] private Dictionary<Int2, Tile> tileIndex;
+        [NonSerialized] private long pathSearchCount;
         public static World Create(int seed, long nowUnixMs = 0)
         {
             var w = new World { Seed = unchecked((uint)seed), RandomState = unchecked((uint)seed), EpochUnixMs = nowUnixMs };
@@ -392,6 +393,7 @@ namespace IdleCatForest.Simulation
         }
         public List<Int2> Path(Int2 start, Int2 end, Village village)
         {
+            pathSearchCount++;
             bool Passable(Int2 p) => village == null ? Walkable(p) : Walkable(village, p);
             if (start.Equals(end))
                 return new List<Int2>();
@@ -439,6 +441,12 @@ namespace IdleCatForest.Simulation
             double terrain = tile.Road ? 1.75 : tile.Dirt ? 1.05 : tile.Mountain ? 0.4 : tile.Biome.Contains("forest") ? 0.85 : 1;
             return 1.6 * (village == null ? 1 : Catalog.Effect(village, "movementSpeed", 1) * Catalog.Effect(village, "moveSpeedMult", 1)) * terrain;
         }
+        private static void ClearPathFailure(Cat c)
+        {
+            c.HasFailedPath = false;
+            c.FailedPathStart = c.FailedPathDestination = default;
+            c.NextPathAttemptAt = 0;
+        }
         private bool Move(Cat c, Int2 destination, double dt)
         {
             var village = Village(c.VillageId);
@@ -448,6 +456,7 @@ namespace IdleCatForest.Simulation
                 c.Z = destination.Z;
                 c.Path.Clear();
                 c.BlockedReason = "";
+                ClearPathFailure(c);
                 return true;
             }
             dt = Math.Min(dt, ActorTime(c));
@@ -477,16 +486,29 @@ namespace IdleCatForest.Simulation
                 c.Z = c.Position.Z;
                 c.Path.Clear();
                 if (c.Position.Equals(destination))
+                {
+                    ClearPathFailure(c);
                     return true;
+                }
             }
             if (changed)
             {
-                c.Path = Path(c.Position, destination, village) ?? new List<Int2>();
-                if (c.Path.Count == 0)
+                if (c.HasFailedPath && c.FailedPathStart.Equals(c.Position) && c.FailedPathDestination.Equals(destination) && TimeSeconds + 1e-9 < c.NextPathAttemptAt)
                 {
                     c.BlockedReason = "blocked_route";
                     return false;
                 }
+                c.Path = Path(c.Position, destination, village) ?? new List<Int2>();
+                if (c.Path.Count == 0)
+                {
+                    c.HasFailedPath = true;
+                    c.FailedPathStart = c.Position;
+                    c.FailedPathDestination = destination;
+                    c.NextPathAttemptAt = Math.Floor(TimeSeconds) + 1;
+                    c.BlockedReason = "blocked_route";
+                    return false;
+                }
+                ClearPathFailure(c);
             }
             double remainingSeconds = dt;
             while (remainingSeconds > 0 && c.Path.Count > 0)
@@ -522,6 +544,7 @@ namespace IdleCatForest.Simulation
                 }
             }
             c.BlockedReason = "";
+            ClearPathFailure(c);
             return c.Position.Equals(destination);
         }
         public bool Crossable(Int2 a, Int2 b) => Crossable(a, b, null, 0);

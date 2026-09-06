@@ -101,6 +101,7 @@ namespace IdleCatForest.Simulation
     public partial class Cat
     {
         public string NeedSourceId = ""; public double NextNeedAttemptAt;
+        public bool HasFailedPath; public Int2 FailedPathStart, FailedPathDestination; public double NextPathAttemptAt;
         public string Id = "", Name = "", VillageId = "", JobId = "", BuildingId = "", OfficerRole = "", Goal = "idle", BlockedReason = "", ControlledBy = "", BedId = "", Migration = "resident";
         public Int2 Position; public double X, Z, Hunger = 100, Thirst = 100, Rest = 100, Health = 100, AgeHours = 24, PregnantUntil = -1, ProbationUntil = -1, ControlLeaseUntil;
         public bool Alive = true, Boosted; public List<Stack> Cargo = new List<Stack>(), Skills = new List<Stack>();

@@ -509,6 +509,46 @@ Test("live simulation resumes fractional saves without replaying elapsed work", 
     }
     finally { Directory.Delete(directory, true); }
 });
+Test("failed path retry cache survives fractional save and resumes once", () =>
+{
+    var directory = Path.Combine(Path.GetTempPath(), "forest-path-retry-restart-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(directory);
+    try
+    {
+        var path = Path.Combine(directory, "world.json"); var whole = World.Create(41); var village = whole.Villages.Single(); var cat = village.Cats[1];
+        foreach (var other in village.Cats.Where(c => c.Id != cat.Id)) { other.ControlledBy = "fixture-observer"; other.ControlLeaseUntil = 10000; }
+        var start = new Int2(20, 20); var destination = new Int2(21, 20);
+        cat.Position = start; cat.X = start.X; cat.Z = start.Z; cat.BuildingId = ""; cat.Path.Clear();
+        foreach (var offset in new[] { new Int2(1, 0), new Int2(-1, 0), new Int2(0, 1), new Int2(0, -1) })
+        {
+            var neighbor = new Int2(start.X + offset.X, start.Z + offset.Z); var tile = whole.TileAt(neighbor);
+            tile.Wall = tile.Water = tile.Mountain = tile.Road = tile.Dirt = false; tile.Biome = "grass";
+            village.BoundaryEdges.Add(new BoundaryEdge { From = start, To = neighbor });
+        }
+        var origin = whole.TileAt(start); origin.Wall = origin.Water = origin.Mountain = false;
+        var job = new Job { Id = whole.Id("job"), Kind = "woodcut", Phase = "travel", Position = destination, CatId = cat.Id, RequiredWork = 1000 };
+        village.Jobs.Add(job); cat.JobId = job.Id; cat.Cargo.Add(new Stack("logs", 8));
+        whole.Step(.075);
+        Check(cat.HasFailedPath && cat.FailedPathStart.Equals(start) && cat.FailedPathDestination.Equals(destination) && cat.NextPathAttemptAt == 1, "blocked movement did not record its retry boundary");
+        Check(cat.Position.Equals(start) && job.Progress == 0, "blocked work moved or advanced before saving");
+        AuthorityRuntime.ValidateWorld(whole); SaveStore.Save(path, whole);
+        var resumed = SaveStore.Load<World>(path); AuthorityRuntime.ValidateWorld(resumed);
+        void SameState() => Check(JToken.DeepEquals(JToken.Parse(WireJson.Encode(whole)), JToken.Parse(WireJson.Encode(resumed))), "restart or elapsed partitions changed retry state, work, cargo or identities");
+        SameState();
+        whole.Step(.325); resumed.Step(.125); resumed.Step(.2); SameState();
+        foreach (var world in new[] { whole, resumed }) world.Villages.Single().BoundaryEdges.RemoveAll(edge => edge.From.Equals(start));
+        whole.Step(.575); resumed.Step(.2); resumed.Step(.375); SameState();
+        Check(cat.HasFailedPath && cat.Position.Equals(start) && cat.X == start.X && job.Progress == 0, "cleared route bypassed the persisted retry deadline");
+        whole.Step(.025); resumed.Step(.025); SameState();
+        Check(!cat.HasFailedPath && cat.X > start.X && cat.X < destination.X && job.Progress == 0, "retry boundary did not resume fractional physical movement");
+        whole.Step(1.025); resumed.Step(.425); resumed.Step(.6); SameState();
+        Check(cat.Position.Equals(destination) && job.Progress > 0 && !job.Completed && cat.JobId == job.Id && job.CatId == cat.Id && World.Amount(cat.Cargo, "logs") == 8, "recovered route lost its work owner or finite cargo");
+        AuthorityRuntime.ValidateWorld(resumed); SaveStore.Save(path, resumed); resumed = SaveStore.Load<World>(path);
+        whole.Step(.975); resumed.Step(.475); resumed.Step(.5); SameState(); AuthorityRuntime.ValidateWorld(resumed);
+        Check(resumed.Villages.Single().Jobs.Count(j => j.Id == job.Id) == 1, "second restart duplicated the recovered job");
+    }
+    finally { Directory.Delete(directory, true); }
+});
 Test("scalar haul retargets blocked destination across restart", () =>
 {
     var directory = Path.Combine(Path.GetTempPath(), "forest-scalar-retarget-" + Guid.NewGuid().ToString("N"));

@@ -20,7 +20,7 @@ jobs:
   campaigns:
     name: Fresh, established and shared-world seed campaigns
     runs-on: cat-idler-heavy
-    timeout-minutes: 15
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-dotnet@v5

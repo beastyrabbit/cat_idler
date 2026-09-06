@@ -46,14 +46,14 @@ Reports are written to ignored `artifacts/tests`. Inspect the NUnit counts,
 failures and Editor/runtime logs. A successful CLI envelope or process launch is
 not proof of a passed suite.
 
-The EditMode wrapper runs 594 noncampaign tests, including the 588 shared
-acceptance scenarios. The nine extended
+The EditMode wrapper runs the shared noncampaign acceptance scenarios and
+Unity-specific simulation checks. The nine extended
 campaigns run through the standalone .NET executable, including in CI. Running
 all campaigns again under the Editor's Mono runtime exceeded the ten-minute local
 test limit. To select a specific Unity campaign, pass its name with `--filter`
 and an appropriate `--timeout`; no campaign assertion is skipped or weakened.
 
-The current focused inventory includes 86 regressions. Ten cover exact-item
+The acceptance ledger records the current test counts. Ten regressions cover exact-item
 hauling through production spills, pickup, cancellation, death, full storage,
 competing claims, steward recovery and sale. The authority suite separately tests
 real save/reload boundaries and imported per-kind capacity and mixed output
@@ -71,6 +71,12 @@ assign workers, edit queues, purchase studies, enter a cat, walk, interact and
 return to management. Compare the observed state with the controls used.
 Screenshots establish appearance; accounting assertions establish correctness.
 Use separate temporary save paths for evidence sessions.
+
+Both Forgejo jobs allow 90 minutes for sequential campaign execution and setup.
+The live-simulation campaign groups recorded about 32 minutes of combined runtime
+on the development Mac while running concurrently. This informed the larger job
+budget; it is not a measurement of the Forgejo runner. Quality still runs every
+scenario, and the nightly job still runs all nine campaigns.
 
 ## Performance and release evidence
 

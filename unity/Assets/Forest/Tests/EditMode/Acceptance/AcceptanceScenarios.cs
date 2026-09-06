@@ -15,6 +15,11 @@ namespace IdleCatForest.Acceptance
     {
         public static IEnumerable<Scenario> Cases()
         {
+            foreach (string mode in new[] { "cadence", "recovery", "destination", "start", "partition" })
+            {
+                string check = mode;
+                yield return new Scenario("regression.continuous_failed_path_" + check, () => ContinuousFailedPath(check));
+            }
             yield return new Scenario("regression.continuous_npc_movement_and_needs", ContinuousNpc);
             yield return new Scenario("regression.continuous_stationary_work_rate", ContinuousWork);
             yield return new Scenario("regression.continuous_shared_movement_work_budget", ContinuousBudget);
@@ -671,6 +676,58 @@ namespace IdleCatForest.Acceptance
             Near(hunger - c.Hunger, 0.1 * 20 / 3600, "Needs did not advance continuously");
             w.Step(0.9); Near(c.X - x, 1.6, "Fixed steps changed one-second movement speed");
             Near(hunger - c.Hunger, 20.0 / 3600, "Fixed steps accelerated needs depletion"); Valid(w);
+        }
+        static World FailedPathFixture(out Village v, out Cat c)
+        {
+            var w = ContinuousFixture(out v, out c, true); v.Jobs.Single().Position = new Int2(4, 2);
+            // A bounded corridor keeps a failed, passable destination cheap to verify.
+            for (int x = 0; x <= 5; x++) for (int z = 1; z <= 3; z++)
+            {
+                var tile = w.TileAt(new Int2(x, z)); tile.Water = tile.Mountain = false;
+                tile.Wall = x == 0 || x == 5 || z == 1 || z == 3;
+            }
+            v.BoundaryEdges.Add(new BoundaryEdge { From = new Int2(3, 2), To = new Int2(4, 2) });
+            return w;
+        }
+        static long PathSearches(World w) => (long)typeof(World).GetField("pathSearchCount", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).GetValue(w);
+        static void ContinuousFailedPath(string mode)
+        {
+            var w = FailedPathFixture(out var v, out var c); var job = v.Jobs.Single(); long before = PathSearches(w);
+            w.Step(0.1);
+            Check(c.BlockedReason == "blocked_route" && c.Path.Count == 0 && c.X == 1 && job.Progress == 0, "Failed path advanced travel or work");
+            Check(PathSearches(w) - before == 1, "Unchanged failed movement searched again before the one-second planning boundary");
+            if (mode == "cadence")
+            {
+                w.Step(0.85); Check(PathSearches(w) - before == 1, "Failed search repeated within the planning interval");
+                before = PathSearches(w); w.Step(0.05); Check(PathSearches(w) - before == 1, "Failed movement did not retry at the next planning boundary");
+                before = PathSearches(w); w.Step(0.95); Check(PathSearches(w) == before, "Second failed search was not cached");
+            }
+            else if (mode == "recovery")
+            {
+                v.BoundaryEdges.Clear(); w.Step(0.85); Near(c.X, 1, "Blocked route retried before its planning boundary");
+                w.Step(0.05); Near(c.X, 1.08, "Reopened route did not resume at the next planning boundary");
+                w.Step(2); Check(c.Position.Equals(job.Position) && job.Progress > 0, "Recovered route did not resume the same physical job");
+            }
+            else if (mode == "destination")
+            {
+                job.Position = new Int2(2, 2); w.Step(0.05); Near(c.X, 1.08, "A changed destination waited for the previous failure deadline");
+                Check(PathSearches(w) - before == 2 && c.BlockedReason == "", "Changed destination did not get an immediate successful search");
+            }
+            else if (mode == "start")
+            {
+                // A restored/reassigned actor can have a different reached anchor with the same destination.
+                c.Position = new Int2(2, 2); c.X = 2; w.Step(0.05);
+                Check(PathSearches(w) - before == 2 && c.BlockedReason == "blocked_route", "A changed start reused the old anchor's failed search");
+            }
+            else
+            {
+                var split = FailedPathFixture(out var otherVillage, out var otherCat);
+                w.Step(0.93); for (int i = 0; i < 20; i++) { split.Step(0.03); split.Step(0.02); } split.Step(0.03);
+                Check(Fingerprint(w) == Fingerprint(split), "Fractional partitions changed failed-route timing or authoritative state");
+                v.BoundaryEdges.Clear(); otherVillage.BoundaryEdges.Clear(); w.Step(1); split.Step(0.97); split.Step(0.03);
+                Check(Fingerprint(w) == Fingerprint(split) && c.X > 1 && otherCat.X > 1, "Fractional partitions changed blocked-route recovery");
+            }
+            Valid(w);
         }
         static void ContinuousWork()
         {
