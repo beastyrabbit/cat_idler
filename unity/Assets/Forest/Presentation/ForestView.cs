@@ -15,6 +15,14 @@ namespace IdleCatForest.Presentation
         public string SelectedBuildingId { get; private set; } = "";
         public Int2 CursorTile { get; private set; }
         public bool DirectControl => ControlledCat != null;
+        public float ManagementZoom => DirectControl ? managementZoom : zoom;
+        public void ZoomBy(float steps)
+        {
+            if (DirectControl || float.IsNaN(steps) || float.IsInfinity(steps)) return;
+            // Input System 1.x uses normalized wheel steps, including fractional trackpad motion.
+            zoom = Mathf.Clamp(zoom * Mathf.Exp(Mathf.Clamp(-steps * .12f, -20, 20)), 3.5f, 36);
+            ApplyManagementCamera();
+        }
         public Cat ControlledCat => Game.Selected?.Cats.Find(c => c.Alive && c.ControlledBy == Game.PlayerId && c.ControlledBy != "");
         public Cat SelectedCat => Game.Selected?.Cats.Find(c => c.Id == SelectedCatId);
         public Building SelectedBuilding => Game.Selected?.Buildings.Find(b => b.Id == SelectedBuildingId);
@@ -67,12 +75,15 @@ namespace IdleCatForest.Presentation
         public void FocusVillage()
         {
             var v = Game.Selected; if (v == null) return;
-            focus = new Vector3(v.Center.X, 0, v.Center.Z); zoom = Mathf.Max(10, v.Radius + 4); villageId = "";
+            var center = new Vector3(v.Center.X, 0, v.Center.Z);
+            if (DirectControl) { managementFocus = center; managementZoom = Mathf.Max(10, v.Radius + 5); return; }
+            focus = center; zoom = Mathf.Max(10, v.Radius + 5); villageId = "";
+            ApplyManagementCamera();
             SelectedCatId = ""; SelectedBuildingId = "";
         }
 
         public void InspectCat(string id) { SelectedCatId = id; SelectedBuildingId = ""; var cat = SelectedCat; if (cat != null && !DirectControl) focus = Position(cat); }
-        public void InspectBuilding(string id) { SelectedBuildingId = id; SelectedCatId = ""; var b = SelectedBuilding; if (b != null && !DirectControl) focus = At(b.Position); }
+        public void InspectBuilding(string id) { SelectedBuildingId = id; SelectedCatId = ""; var b = SelectedBuilding; if (b != null && !DirectControl) focus = At(b.Position) + new Vector3((b.Width - 1) * .5f, 0, (b.Depth - 1) * .5f); }
         public void EnterSelectedCat() { if (SelectedCat != null) Game.Act(new GameAction { Kind = "EnterCatControl", CatId = SelectedCat.Id }); }
         public void LeaveCat() { var cat = ControlledCat; if (cat != null) Game.Act(new GameAction { Kind = "LeaveCatControl", CatId = cat.Id }); }
 
@@ -132,23 +143,55 @@ namespace IdleCatForest.Presentation
             {
                 float x = (keyboard.dKey.isPressed || keyboard.rightArrowKey.isPressed ? 1 : 0) - (keyboard.aKey.isPressed || keyboard.leftArrowKey.isPressed ? 1 : 0);
                 float z = (keyboard.wKey.isPressed || keyboard.upArrowKey.isPressed ? 1 : 0) - (keyboard.sKey.isPressed || keyboard.downArrowKey.isPressed ? 1 : 0);
-                focus += new Vector3(x, 0, z) * Time.unscaledDeltaTime * zoom * .65f;
-                if (!onUI) zoom = Mathf.Clamp(zoom - mouse.scroll.ReadValue().y * .018f, 5, 36);
-                if (!onUI && mouse.middleButton.isPressed) { var delta = mouse.delta.ReadValue(); focus += new Vector3(-delta.x, 0, -delta.y) * zoom * .0018f; }
+                var forward = Vector3.ProjectOnPlane(Camera.transform.forward, Vector3.up).normalized;
+                var direction = Vector3.ClampMagnitude(Camera.transform.right * x + forward * z, 1);
+                focus += direction * Time.unscaledDeltaTime * zoom * 1.1f;
+                if (!onUI)
+                {
+                    float steps = mouse.scroll.ReadValue().y;
+                    if (steps != 0)
+                    {
+                        var cursor = mouse.position.ReadValue(); var anchor = GroundPoint(cursor);
+                        ZoomBy(steps);
+                        focus += anchor - GroundPoint(cursor);
+                        ApplyManagementCamera();
+                    }
+                    if (mouse.middleButton.isPressed || mouse.rightButton.isPressed)
+                    {
+                        var cursor = mouse.position.ReadValue();
+                        focus += GroundPoint(cursor - mouse.delta.ReadValue()) - GroundPoint(cursor);
+                    }
+                }
+                if (keyboard.equalsKey.wasPressedThisFrame || keyboard.numpadPlusKey.wasPressedThisFrame) ZoomBy(1);
+                if (keyboard.minusKey.wasPressedThisFrame || keyboard.numpadMinusKey.wasPressedThisFrame) ZoomBy(-1);
                 if (keyboard.homeKey.wasPressedThisFrame) FocusVillage();
             }
             if (mouse.leftButton.wasPressedThisFrame && !onUI)
             {
                 if (Game.UI != null && Game.UI.HasPlacement) { TileClicked?.Invoke(CursorTile); return; }
                 var cat = Game.Selected.Cats.Where(c => c.Alive).OrderBy(c => Vector2.Distance(new Vector2((float)c.X, (float)c.Z), new Vector2(CursorTile.X, CursorTile.Z))).FirstOrDefault();
-                if (cat != null && Vector2.Distance(new Vector2((float)cat.X, (float)cat.Z), new Vector2(CursorTile.X, CursorTile.Z)) < .8f) { SelectedCatId = cat.Id; SelectedBuildingId = ""; Game.UI?.OpenPanel("Inspect"); }
+                if (cat != null && Vector2.Distance(new Vector2((float)cat.X, (float)cat.Z), new Vector2(CursorTile.X, CursorTile.Z)) < .8f) { InspectCat(cat.Id); Game.UI?.OpenPanel("Inspect"); }
                 else
                 {
                     var b = Game.Selected.Buildings.Find(p => CursorTile.X >= p.Position.X && CursorTile.X < p.Position.X + p.Width && CursorTile.Z >= p.Position.Z && CursorTile.Z < p.Position.Z + p.Depth);
-                    SelectedBuildingId = b?.Id ?? ""; SelectedCatId = "";
+                    InspectBuilding(b?.Id ?? "");
                     if (b != null) Game.UI?.OpenPanel("Inspect");
                 }
             }
+        }
+
+        private Vector3 GroundPoint(Vector2 screen)
+        {
+            var ray = Camera.ScreenPointToRay(screen);
+            return new Plane(Vector3.up, Vector3.zero).Raycast(ray, out float distance) ? ray.GetPoint(distance) : focus;
+        }
+
+        private void ApplyManagementCamera()
+        {
+            Camera.orthographic = true; Camera.orthographicSize = zoom;
+            Camera.transform.rotation = Quaternion.Euler(55, 0, 0);
+            float covered = Game.UI?.WorldLeftFraction ?? 0;
+            Camera.transform.position = focus - Camera.transform.forward * 50 - Camera.transform.right * (zoom * Camera.aspect * covered);
         }
 
         private void UpdateCamera()
@@ -167,9 +210,7 @@ namespace IdleCatForest.Presentation
             else
             {
                 if (wasDirect) { focus = managementFocus; zoom = managementZoom; }
-                Camera.orthographic = true; Camera.orthographicSize = zoom;
-                Camera.transform.rotation = Quaternion.Euler(64, 0, 0);
-                Camera.transform.position = focus - Camera.transform.forward * 50;
+                ApplyManagementCamera();
                 RenderSettings.fogStartDistance = 65; RenderSettings.fogEndDistance = 120;
             }
             wasDirect = cat != null;
@@ -180,7 +221,7 @@ namespace IdleCatForest.Presentation
             var world = Game.CurrentWorld; var v = Game.Selected;
             touched.Clear();
             int signature = v.Known.Count * 397 + world.Tiles.Count;
-            foreach (var tile in world.Tiles) if (tile.Water || tile.Mountain) signature = unchecked(signature * 31 + tile.Position.GetHashCode() + (tile.Water ? 1 : 2));
+            foreach (var tile in world.Tiles) if (tile.Water || tile.Mountain || tile.Dirt) signature = unchecked(signature * 31 + tile.Position.GetHashCode() + (tile.Water ? 1 : tile.Mountain ? 2 : 3));
             var center = ControlledCat == null ? focus : Position(ControlledCat);
             groundCenter = new Int2(Mathf.RoundToInt(center.x / 8) * 8, Mathf.RoundToInt(center.z / 8) * 8);
             signature = unchecked(signature * 397 + groundCenter.GetHashCode());
@@ -188,6 +229,14 @@ namespace IdleCatForest.Presentation
             foreach (var b in v.Buildings)
             {
                 var go = Entity("building:" + b.Id, b.Kind, At(b.Position) + new Vector3((b.Width - 1) * .5f, 0, (b.Depth - 1) * .5f), Mathf.Min(b.Width, b.Depth) * .92f);
+                Int2? entrance = b.HasEntrance ? b.Entrance : (Int2?)null;
+                if (entrance.HasValue)
+                {
+                    var p = entrance.Value;
+                    var outward = p.X < b.Position.X ? Vector3.left : p.X >= b.Position.X + b.Width ? Vector3.right : p.Z < b.Position.Z ? Vector3.back : Vector3.forward;
+                    go.transform.rotation = Quaternion.LookRotation(outward);
+                    Entity("entrance:" + b.Id, "road", At(p) - outward * .45f + Vector3.up * .015f, .52f);
+                }
                 if (!b.Completed) go.transform.localScale = new Vector3(go.transform.localScale.x, Mathf.Max(.15f, (float)b.Progress / Mathf.Max(1, (float)b.RequiredWork)) * go.transform.localScale.x, go.transform.localScale.z);
                 else if (b.WorkerId != "" && !b.Paused && b.BlockedReason == "")
                     Entity("activity:" + b.Id, "cargo_tools", go.transform.position + new Vector3(.3f, .7f, .1f), .3f);
@@ -205,15 +254,41 @@ namespace IdleCatForest.Presentation
             foreach (var f in v.Farms)
                 Entity("farm:" + f.Id, f.Crop == "grain" ? "grain_plot" : f.Crop == "catnip" ? "catnip_plot" : "herb_plot", At(f.Position), .85f + (float)Math.Min(1, f.Growth) * .15f);
             var known = new HashSet<Int2>(v.Known);
+            var tiles = world.Tiles.ToDictionary(t => t.Position);
+            bool Wall(Int2 p) => known.Contains(p) && tiles.TryGetValue(p, out var t) && t.Wall;
             foreach (var tile in world.Tiles)
             {
                 if (Int2.Distance(tile.Position, groundCenter) > 76 || !known.Contains(tile.Position)) continue;
+                if (tile.Wall)
+                {
+                    Entity("fence:post:" + tile.Position, "fence_post", At(tile.Position), 1, naturalScale: true);
+                    foreach (var step in new[] { new Int2(1, 0), new Int2(0, 1) })
+                    {
+                        var next = new Int2(tile.Position.X + step.X, tile.Position.Z + step.Z);
+                        if (!Wall(next)) continue;
+                        var rail = Entity("fence:rail:" + tile.Position + ":" + next, "fence_rail", (At(tile.Position) + At(next)) * .5f, 1, naturalScale: true);
+                        rail.transform.rotation = Quaternion.Euler(0, step.X == 0 ? 90 : 0, 0);
+                    }
+                    continue;
+                }
                 string asset = TileAsset(tile);
                 if (asset != "")
                 {
-                    var go = Entity("tile:" + tile.Position, asset, At(tile.Position), tile.Wall ? 1.05f : tile.Road || tile.Dirt || tile.Rail || tile.Bridge ? 1 : .85f);
-                    bool vertical = tile.Wall && (world.GetTile(new Int2(tile.Position.X, tile.Position.Z - 1))?.Wall == true || world.GetTile(new Int2(tile.Position.X, tile.Position.Z + 1))?.Wall == true);
-                    go.transform.rotation = Quaternion.Euler(0, vertical ? 90 : 0, 0);
+                    float width = tile.Road || tile.Overlay == "road_built" || tile.Rail || tile.Bridge ? 1 : asset == "tree_oak" ? 1.7f : .85f;
+                    var foliage = Entity("tile:" + tile.Position, asset, At(tile.Position), width);
+                    if (asset == "berry_bush" || asset == "shrub") foliage.transform.localScale = new Vector3(width, width * .5f, width);
+                }
+                int dx = tile.Position.X - v.Center.X, dz = tile.Position.Z - v.Center.Z;
+                bool cardinalGate = v.LayoutVersion > 0 && (dx == 0 && Math.Abs(dz) == v.Radius || dz == 0 && Math.Abs(dx) == v.Radius);
+                if (tile.Road || tile.Dirt || tile.Overlay == "road_built" || cardinalGate)
+                {
+                    bool horizontal = Wall(new Int2(tile.Position.X - 1, tile.Position.Z)) && Wall(new Int2(tile.Position.X + 1, tile.Position.Z));
+                    bool vertical = Wall(new Int2(tile.Position.X, tile.Position.Z - 1)) && Wall(new Int2(tile.Position.X, tile.Position.Z + 1));
+                    if (horizontal || vertical)
+                    {
+                        var gate = Entity("gate:" + tile.Position, "gate", At(tile.Position), 1, naturalScale: true);
+                        gate.transform.rotation = Quaternion.Euler(0, horizontal ? 0 : 90, 0);
+                    }
                 }
             }
             foreach (var edge in v.BoundaryEdges)
@@ -259,7 +334,7 @@ namespace IdleCatForest.Presentation
             if (tile.Dock) return "dock";
             if (tile.Rail) return "rail";
             if (tile.Bridge) return "road";
-            if (tile.Road || tile.Dirt) return "road";
+            if (tile.Road || tile.Overlay == "road_built") return "road";
             if (tile.Amount <= 0) return "";
             switch (tile.Resource.ToLowerInvariant())
             {
@@ -284,11 +359,11 @@ namespace IdleCatForest.Presentation
             for (int z = groundCenter.Z - 38; z <= groundCenter.Z + 38; z++) for (int x = groundCenter.X - 38; x <= groundCenter.X + 38; x++)
             {
                 var point = new Int2(x, z); terrain.TryGetValue(point, out var tile);
-                int category = !known.Contains(point) ? 0 : tile != null && tile.Water ? 1 : tile != null && tile.Mountain ? 2 : 3 + Math.Abs(unchecked(x * 73 + z * 37)) % 3;
+                int category = !known.Contains(point) ? 0 : tile != null && tile.Water ? 1 : tile != null && tile.Mountain ? 2 : tile != null && tile.Dirt ? 6 : 3 + Math.Abs(unchecked(x * 73 + z * 37)) % 3;
                 if (!groups.ContainsKey(category)) groups[category] = new List<Vector3>();
                 groups[category].Add(new Vector3(x, 0, z));
             }
-            Color[] colors = { new Color(.105f, .18f, .17f), new Color(.21f, .45f, .48f), new Color(.39f, .43f, .39f), new Color(.38f, .48f, .31f), new Color(.4f, .50f, .32f), new Color(.39f, .49f, .32f) };
+            Color[] colors = { new Color(.105f, .18f, .17f), new Color(.18f, .38f, .40f), new Color(.39f, .43f, .39f), new Color(.36f, .47f, .30f), new Color(.367f, .477f, .305f), new Color(.363f, .472f, .302f), new Color(.40f, .43f, .29f) };
             foreach (var pair in groups)
             {
                 var vertices = new List<Vector3>(); var triangles = new List<int>();
@@ -304,7 +379,7 @@ namespace IdleCatForest.Presentation
             }
         }
 
-        private GameObject Entity(string id, string asset, Vector3 position, float width, bool move = true)
+        private GameObject Entity(string id, string asset, Vector3 position, float width, bool move = true, bool naturalScale = false)
         {
             touched.Add(id);
             if (entityAssets.TryGetValue(id, out var previous) && previous != asset)
@@ -317,7 +392,7 @@ namespace IdleCatForest.Presentation
                 {
                     var child = Instantiate(model, go.transform); child.name = asset;
                     var renderers = child.GetComponentsInChildren<Renderer>();
-                    if (renderers.Length > 0)
+                    if (renderers.Length > 0 && !naturalScale)
                     {
                         var bounds = renderers[0].bounds; foreach (var r in renderers) bounds.Encapsulate(r.bounds);
                         float scale = 1 / Mathf.Max(.01f, Mathf.Max(bounds.size.x, bounds.size.z));
@@ -405,14 +480,29 @@ namespace IdleCatForest.Presentation
         public string CatId = "";
         private Transform[] parts;
         private Quaternion[] rest;
+        private Vector3[] positions;
+        private float phase;
         public void Animate(bool walking, string goal)
         {
-            if (parts == null) { parts = GetComponentsInChildren<Transform>().Where(t => t.name.StartsWith("Paw") || t.name == "Tail" || t.name == "Head").ToArray(); rest = parts.Select(t => t.localRotation).ToArray(); }
+            if (parts == null)
+            {
+                parts = GetComponentsInChildren<Transform>().Where(t => t.name.StartsWith("Paw") || t.name == "Tail" || t.name == "Head" || t.name == "Body").ToArray();
+                rest = parts.Select(t => t.localRotation).ToArray(); positions = parts.Select(t => t.localPosition).ToArray();
+                uint hash = 2166136261; foreach (char c in CatId) hash = unchecked((hash ^ c) * 16777619);
+                phase = hash % 628 / 100f;
+            }
+            float time = Time.time;
+            bool sleeping = goal == "need_sleep" && !walking;
+            bool working = !walking && (goal.Contains("work") || goal.Contains("harvest") || goal.Contains("produce"));
             for (int i = 0; i < parts.Length; i++)
             {
                 bool opposite = parts[i].name == "PawFrontRight" || parts[i].name == "PawBackLeft";
-                float angle = parts[i].name.StartsWith("Paw") ? (walking ? Mathf.Sin(Time.time * 11 + (opposite ? Mathf.PI : 0)) * 22 : 0) : parts[i].name == "Tail" ? Mathf.Sin(Time.time * 2) * 8 : goal == "sleep" ? 18 : Mathf.Sin(Time.time * 1.1f) * 3;
-                parts[i].localRotation = rest[i] * Quaternion.Euler(angle, 0, 0);
+                float angle = parts[i].name.StartsWith("Paw") ? (walking ? Mathf.Sin(time * 11 + phase + (opposite ? Mathf.PI : 0)) * 26 : working && parts[i].name.StartsWith("PawFront") ? Mathf.Sin(time * 5 + phase) * 12 : sleeping ? -28 : 0)
+                    : parts[i].name == "Tail" ? Mathf.Sin(time * 1.6f + phase) * (sleeping ? 3 : 12)
+                    : parts[i].name == "Head" ? sleeping ? 22 : working ? 10 + Mathf.Sin(time * 5 + phase) * 6 : Mathf.Sin(time * .8f + phase) * 4 : 0;
+                float glance = parts[i].name == "Head" && !walking && !sleeping && !working ? Mathf.Sin(time * .45f + phase) * 12 : 0;
+                parts[i].localRotation = rest[i] * Quaternion.Euler(angle, glance, 0);
+                parts[i].localPosition = positions[i] + (parts[i].name == "Body" ? Vector3.up * (walking ? Mathf.Sin(time * 22 + phase) * .012f : Mathf.Sin(time * 2 + phase) * .007f) : Vector3.zero);
             }
         }
     }

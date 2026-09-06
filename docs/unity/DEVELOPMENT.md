@@ -45,8 +45,11 @@ your personal village or connect to an explicit shared server. Local state lives
 under Unity's application data directory in `unity/world-v1.json`, separate from
 the former game's SQLite data. Corrupt or unsupported saves fail visibly.
 
-Use WASD/arrows to pan and the wheel to zoom. Click a cat or workplace to inspect
-it. Tab enters or leaves the selected cat; WASD walks, right drag turns the close
+Use WASD/arrows or right/middle drag to pan. The wheel zooms around the pointer;
++/− keys and the visible zoom buttons work from the management view. One normalized
+wheel step changes the scale by about 11%, including fractional trackpad input.
+Click a cat or workplace to inspect it. The camera keeps the subject beside the
+open drawer. Tab enters or leaves the selected cat; WASD walks, right drag turns the close
 camera, and E interacts with nearby storage or the shrine. Colony simulation
 continues during direct control. The management categories expose construction,
 manual jobs, queues, staffing, study purchases, stores, officers, defense and trade.
@@ -89,6 +92,20 @@ are ignored. The packaged app accepts `--forest-save <new-or-existing-path>`,
 `--forest-seed <integer>` for a newly created world, and
 `--forest-server <ws-or-wss-address>`. Existing saves determine their own seed.
 Other platforms have no build/test claim in this migration.
+
+New saves use the revised founding layout: a centered 3×3 shrine, surrounding
+road, four gates and connected building entrances. Older Unity and imported saves
+keep their existing coordinates, footprints, jobs and inventories. Newly planned
+buildings in those saves still require a road connection to the actual shrine.
+Use a separate unused path to try the new layout without replacing progress:
+
+```sh
+open -n 'artifacts/macos/Idle Cat Forest.app' --args --forest-save "$PWD/artifacts/playtest/world.json" --forest-seed 41
+```
+
+The same path resumes the same world on subsequent launches. On Retina Macs,
+`-screen-width 2400 -screen-height 1500` gives a comfortable management window;
+smaller windows keep the text size and scroll their panels.
 
 Install the native support module with Unity Hub, or with the pinned CLI:
 

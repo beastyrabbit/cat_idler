@@ -91,7 +91,7 @@ namespace IdleCatForest.Simulation
     public partial class Building
     {
         public string Id = "", Kind = "", WorkerId = "", BlockedReason = "";
-        public Int2 Position; public bool Completed, Paused; public int Width = 2, Depth = 2;
+        public Int2 Position, Entrance; public bool Completed, Paused, HasEntrance; public int Width = 2, Depth = 2;
         public double Progress, RequiredWork = 60;
         public List<Stack> Required = new List<Stack>(), Inputs = new List<Stack>(), Outputs = new List<Stack>();
         public List<QueueEntry> Queue = new List<QueueEntry>(); public List<string> ExtraWorkerIds = new List<string>();
@@ -179,6 +179,7 @@ namespace IdleCatForest.Simulation
     [Serializable]
     public partial class Village
     {
+        public int LayoutVersion;
         public string Id = "", Name = "", OwnerId = "", LeaderId = ""; public bool Communal; public Int2 Center; public int Radius = 6, Run = 1;
         public double FoundedAt, ResearchPoints, Blessings, Coins, LastLeaderResearch = -86400, LastMigration, NextElection = 86400;
         public long BoostMinute = -1; public int BoostsUsed;

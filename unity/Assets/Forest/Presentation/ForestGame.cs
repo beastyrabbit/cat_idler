@@ -177,7 +177,8 @@ namespace IdleCatForest.Presentation
             try
             {
                 ActionResult result = remote != null ? await remote.SendAsync(action) : local.Apply(action);
-                LastAction = result.Success ? Describe(action.Kind) + " accepted" : result.Error;
+                if (!result.Success || action.Kind != "KeepCatControl")
+                    LastAction = result.Success ? Describe(action.Kind) + " accepted" : result.Error;
                 if (result.Success) Revision++;
                 return result;
             }

@@ -430,7 +430,9 @@ namespace IdleCatForest.Simulation
                 {
                     var at = new Int2(p.X + x, p.Z + z);
                     var t = TileAt(at);
-                    if (!v.Known.Contains(at) || !Walkable(at) || t.Road || t.Rail)
+                    if (!v.Known.Contains(at) || !Walkable(at) || RoadSurface(t) || t.Rail || ShrineRing(v, at) || v.Buildings.Any(b => b.HasEntrance && b.Entrance.Equals(at)))
+                        return false;
+                    if (v.Jobs.Any(j => !j.Completed && (j.Kind == "road" || j.Kind == "rail") && j.Path.Contains(at)))
                         return false;
                     if (exterior ? t.ClaimId != "" : t.ClaimId != v.Id)
                         return false;
@@ -449,6 +451,9 @@ namespace IdleCatForest.Simulation
                 return ActionResult.Fail("Research unlock required");
             if (!FreeSite(v, p, 2, 2, kind == "field"))
                 return ActionResult.Fail("Occupied, unmapped, or invalid footprint");
+            var entry = BuildingEntrance(v, new Building { Position = p });
+            if (!entry.HasValue)
+                return ActionResult.Fail("Building entrance must touch the shrine-connected road network");
             int count = v.Buildings.Count(b => b.Kind == kind);
             double timber = 4 + count * 2, blocks = 2 + count;
             string timberKind = Available(v, "lumber") >= timber ? "lumber" : "planks";
@@ -457,7 +462,7 @@ namespace IdleCatForest.Simulation
             c = c ?? AvailableCat(v, "build");
             if (!FreeWorker(v, c))
                 return ActionResult.Fail("No available builder");
-            var b = new Building { Id = Id(kind), Kind = kind, Position = p, RequiredWork = 120 + count * 30 };
+            var b = new Building { Id = Id(kind), Kind = kind, Position = p, Entrance = entry.Value, HasEntrance = true, RequiredWork = 120 + count * 30 };
             b.Required.Add(new Stack(timberKind, timber));
             b.Required.Add(new Stack("blocks", blocks));
             if (!Reserve(v, b.Id, timberKind, timber) || !Reserve(v, b.Id, "blocks", blocks))
@@ -491,6 +496,8 @@ namespace IdleCatForest.Simulation
                 return ActionResult.Fail("Invalid stored resource");
             if (!CanModifyTerrain(v.Id, p, width, depth))
                 return ActionResult.Fail("Foreign territory cannot host this work site");
+            if (kind == "zone" && a.Resource == "avoid" && (ConnectedRoads(v).Any(at => Contains(p, width, depth, at)) || v.Buildings.Any(b => b.HasEntrance && Contains(p, width, depth, b.Entrance) || b.Kind == "shrine" && p.X < b.Position.X + b.Width && p.X + width > b.Position.X && p.Z < b.Position.Z + b.Depth && p.Z + depth > b.Position.Z)))
+                return ActionResult.Fail("Avoid zones cannot cover shrine roads or building entrances");
             var pile = new Stockpile { Id = Id("pile"), Position = p, Width = width, Depth = depth, Capacity = width * depth * 100, Kind = kind == "zone" ? "zone_" + a.Resource : kind == "designatestockpile" ? "storage" : kind == "designatefishingspot" ? "fishing" : "gather", Accepts = new List<string>(a.Accepts) };
             if (kind == "designategatherspot")
                 pile.Accepts = new List<string> { a.Resource };

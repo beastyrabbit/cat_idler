@@ -129,7 +129,7 @@ namespace IdleCatForest.Simulation
                     perimeter.Add(new Int2(v.Center.X - radius, v.Center.Z + z));
                     perimeter.Add(new Int2(v.Center.X + radius, v.Center.Z + z));
                 }
-                perimeter.RemoveAll(p => FarmExterior(v, p, radius));
+                perimeter.RemoveAll(p => FarmExterior(v, p, radius) || LayoutGate(v, p, radius));
                 if (perimeter.Any(p => !v.Known.Contains(p) || !Walkable(p)))
                     return ActionResult.Fail("Survey a dry reachable outer perimeter first");
                 var result = CreateInputJob(v, c, "expand", v.Center, "materials", perimeter.Count, 10, "");
@@ -370,6 +370,27 @@ namespace IdleCatForest.Simulation
             }
             if (j.BlockedReason == "foreign_territory")
                 j.BlockedReason = c.BlockedReason = "";
+            if (j.Kind == "road" || j.Kind == "rail")
+            {
+                if (j.Path.Any(p => !FreeInfrastructureFootprint(v, j.Kind, p)))
+                {
+                    j.BlockedReason = c.BlockedReason = "infrastructure_footprint_blocked";
+                    return;
+                }
+                if (j.BlockedReason == "infrastructure_footprint_blocked")
+                    j.BlockedReason = c.BlockedReason = "";
+            }
+            if (j.Kind == "build")
+            {
+                var scaffold = v.Buildings.Find(b => b.Id == j.TargetId);
+                if (scaffold != null && !ConnectedEntrance(v, scaffold))
+                {
+                    j.BlockedReason = c.BlockedReason = "building_entrance_disconnected";
+                    return;
+                }
+                if (j.BlockedReason == "building_entrance_disconnected")
+                    j.BlockedReason = c.BlockedReason = "";
+            }
             if (j.Kind == "production" && j.Phase != "output_delivery")
             {
                 var station = v.Buildings.Find(b => b.Id == j.TargetId);
@@ -857,7 +878,7 @@ namespace IdleCatForest.Simulation
             }
             Int2? site = null;
             foreach (var p in v.Known.OrderBy(p => Int2.Distance(v.Center, p)).ThenBy(p => p.Z).ThenBy(p => p.X))
-                if (FreeSite(v, p, 2, 2, kind == "field") && Path(c.Position, p, v) != null)
+                if (FreeSite(v, p, 2, 2, kind == "field") && BuildingEntrance(v, new Building { Position = p }).HasValue && Path(c.Position, p, v) != null)
                 {
                     site = p;
                     break;
@@ -876,7 +897,7 @@ namespace IdleCatForest.Simulation
                 j.BlockedReason = "missing_scaffold_input";
                 return null;
             }
-            var scaffold = new Building { Id = Id(kind), Kind = kind, Position = site.Value, Required = bill, RequiredWork = Math.Max(1, j.RequiredWork), Progress = j.Progress, Inputs = j.Local };
+            var scaffold = new Building { Id = Id(kind), Kind = kind, Position = site.Value, Entrance = BuildingEntrance(v, new Building { Position = site.Value }).Value, HasEntrance = true, Required = bill, RequiredWork = Math.Max(1, j.RequiredWork), Progress = j.Progress, Inputs = j.Local };
             j.Local = new List<Stack>();
             v.Buildings.Add(scaffold);
             j.TargetId = scaffold.Id;
@@ -920,7 +941,7 @@ namespace IdleCatForest.Simulation
                     t.Amount = 0;
                     t.ClaimId = v.Id;
                     t.Biome = "meadow";
-                    t.Wall = (Math.Abs(x) == v.Radius || Math.Abs(z) == v.Radius) && !(x == 0 && z == v.Radius);
+                    t.Wall = (Math.Abs(x) == v.Radius || Math.Abs(z) == v.Radius) && !LayoutGate(v, p, v.Radius);
                     if (!v.Known.Contains(p))
                         v.Known.Add(p);
                 }

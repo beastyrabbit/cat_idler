@@ -268,6 +268,7 @@ namespace IdleCatForest.Simulation
                 t.Items.Clear();
             }
         }
+        private bool FreeInfrastructureFootprint(Village v, string kind, Int2 p) => !v.Buildings.Any(b => Contains(b.Position, b.Width, b.Depth, p)) && (kind != "road" || RoadSpace(v, p));
         private ActionResult PlanLinear(Village v, GameAction a, string kind, Cat cat)
         {
             if (kind == "rail" && !Catalog.Owns(v, "unlock_capability", "rail_logistics"))
@@ -283,11 +284,12 @@ namespace IdleCatForest.Simulation
                     p.Z += Math.Sign(a.End.Z - p.Z);
                 path.Add(p);
             }
-            if (path.Count > 128 || path.Any(at => !v.Known.Contains(at) || !Walkable(at) || TileAt(at).Road || TileAt(at).Rail || v.Jobs.Any(j => !j.Completed && (j.Kind == "road" || j.Kind == "rail") && j.Path.Contains(at))))
+            if (path.Count > 128 || path.Any(at => !v.Known.Contains(at) || !Walkable(at) || !FreeInfrastructureFootprint(v, kind, at) || RoadSurface(TileAt(at)) || TileAt(at).Rail || v.Jobs.Any(j => !j.Completed && (j.Kind == "road" || j.Kind == "rail") && j.Path.Contains(at))))
                 return ActionResult.Fail("Route must be mapped, free, dry, and unclaimed");
             if (path.Any(at => !CanModifyTerrain(v.Id, at)))
                 return ActionResult.Fail("Foreign territory cannot be modified");
-            if (kind == "road" && !path.Any(at => Neighbors(at).Any(n => TileAt(n).Road)))
+            var connected = kind == "road" ? ConnectedRoads(v) : null;
+            if (kind == "road" && !path.Any(at => Neighbors(at).Any(connected.Contains)))
                 return ActionResult.Fail("Road must join shrine road network");
             var result = CreateInputJob(v, cat, kind, path[0], kind == "rail" ? "metal" : "materials", path.Count, 30 * path.Count, "");
             if (result.Success)

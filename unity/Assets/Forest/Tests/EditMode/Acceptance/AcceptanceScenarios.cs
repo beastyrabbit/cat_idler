@@ -15,6 +15,27 @@ namespace IdleCatForest.Acceptance
     {
         public static IEnumerable<Scenario> Cases()
         {
+            foreach (bool personal in new[] { false, true })
+            {
+                bool own = personal;
+                yield return new Scenario("regression.layout_shrine_ring_" + (own ? "personal" : "communal"), () => FoundingLayout(own, false));
+                yield return new Scenario("regression.layout_building_roads_" + (own ? "personal" : "communal"), () => FoundingLayout(own, true));
+            }
+            yield return new Scenario("regression.layout_four_exits_reach_finite_sources", FoundingExits);
+            yield return new Scenario("regression.layout_disconnected_building_rejected", DisconnectedBuilding);
+            yield return new Scenario("regression.layout_shrine_ring_reserved", ShrineRingReserved);
+            yield return new Scenario("regression.layout_pending_entrance_preserves_work", PendingEntrance);
+            yield return new Scenario("regression.layout_new_building_uses_door", BuildingDoor);
+            yield return new Scenario("regression.layout_isolated_road_cannot_extend", IsolatedRoad);
+            yield return new Scenario("regression.layout_paid_road_opens_building", PaidBuildingRoad);
+            yield return new Scenario("regression.layout_legacy_geometry_and_roads_preserved", LegacyLayout);
+            yield return new Scenario("regression.layout_avoid_cannot_close_shrine_access", AvoidShrineAccess);
+            foreach (bool rail in new[] { false, true })
+            {
+                bool track = rail;
+                yield return new Scenario("regression.layout_pending_" + (track ? "rail" : "road") + "_reserves_footprint", () => PendingRoadFootprint(track, false));
+                yield return new Scenario("regression.layout_pending_" + (track ? "rail" : "road") + "_rechecks_footprint", () => PendingRoadFootprint(track, true));
+            }
             yield return new Scenario("regression.buildable_founding_services", BuildableServices);
             yield return new Scenario("regression.cargo_critical_need_conservation", CargoNeed);
             yield return new Scenario("regression.busy_cat_job_ownership", BusyCat);
@@ -107,6 +128,175 @@ namespace IdleCatForest.Acceptance
             foreach (int seed in new[] { 7, 41, 127 }) { int captured = seed; yield return new Scenario("campaign.fresh_48h_seed_" + seed, () => Campaign(captured, 48, false)); yield return new Scenario("campaign.established_72h_seed_" + seed, () => Campaign(captured, 72, true)); yield return new Scenario("campaign.shared_personal_48h_seed_" + seed, () => Campaign(captured, 48, false, true)); }
         }
         public static void Run(string name) => Cases().Single(c => c.Name == name).Run();
+        static HashSet<Int2> LayoutRoads(World w, Village v)
+        {
+            var shrine = v.Buildings.Single(b => b.Kind == "shrine");
+            bool Inside(Building b, Int2 p) => p.X >= b.Position.X && p.X < b.Position.X + b.Width && p.Z >= b.Position.Z && p.Z < b.Position.Z + b.Depth;
+            var seen = new HashSet<Int2>(); var pending = new Queue<Int2>();
+            for (int x = 0; x < shrine.Width; x++) for (int z = 0; z < shrine.Depth; z++)
+                pending.Enqueue(new Int2(shrine.Position.X + x, shrine.Position.Z + z));
+            while (pending.Count > 0)
+            {
+                var at = pending.Dequeue();
+                foreach (var offset in new[] { new Int2(1, 0), new Int2(-1, 0), new Int2(0, 1), new Int2(0, -1) })
+                {
+                    var next = new Int2(at.X + offset.X, at.Z + offset.Z); var tile = w.GetTile(next);
+                    if (tile != null && tile.Road && w.Walkable(v, next) && !v.Buildings.Any(b => Inside(b, next)) && !seen.Contains(next))
+                    { seen.Add(next); pending.Enqueue(next); }
+                }
+            }
+            return seen;
+        }
+        static void FoundingLayout(bool personal, bool roads)
+        {
+            var w = World.Create(41); var v = w.Villages[0];
+            if (personal) v = w.Village(Act(w, v, new GameAction { Kind = "FoundVillage", Name = "Layout home" }).EntityId);
+            var shrine = v.Buildings.Single(b => b.Kind == "shrine");
+            if (!roads)
+            {
+                Check(shrine.Width == 3 && shrine.Depth == 3 && shrine.Position.Equals(new Int2(v.Center.X - 1, v.Center.Z - 1)), "Shrine must occupy exactly the centered3×3tiles");
+                for (int z = -2; z <= 2; z++) for (int x = -2; x <= 2; x++)
+                {
+                    var p = new Int2(v.Center.X + x, v.Center.Z + z); var t = w.TileAt(p);
+                    Check(t.Road == (Math.Max(Math.Abs(x), Math.Abs(z)) == 2), "Shrine road ring is incomplete or crosses the shrine at " + p);
+                    if (t.Road) Check(!v.Buildings.Any(b => p.X >= b.Position.X && p.X < b.Position.X + b.Width && p.Z >= b.Position.Z && p.Z < b.Position.Z + b.Depth) && !v.Stockpiles.Any(s => p.X >= s.Position.X && p.X < s.Position.X + s.Width && p.Z >= s.Position.Z && p.Z < s.Position.Z + s.Depth), "Shrine road overlaps a physical footprint");
+                }
+                Check(v.Cats.Count(c => c.Alive) == (personal ? 15 : 30) && v.Buildings.Count(b => b.Kind == "den") == (personal ? 3 : 6), "Founding population or housing changed");
+                return;
+            }
+            var network = LayoutRoads(w, v);
+            foreach (var b in v.Buildings.Where(b => b.Kind != "shrine"))
+            {
+                bool adjacent = network.Any(p => p.X >= b.Position.X && p.X < b.Position.X + b.Width && (p.Z == b.Position.Z - 1 || p.Z == b.Position.Z + b.Depth) || p.Z >= b.Position.Z && p.Z < b.Position.Z + b.Depth && (p.X == b.Position.X - 1 || p.X == b.Position.X + b.Width));
+                Check(adjacent, "Founding building lacks an entrance on shrine-connected road: " + b.Kind + " " + b.Position);
+                Check(w.Path(v.Center, b.Position, v) != null, "Founding building is physically unreachable: " + b.Kind);
+            }
+        }
+        static void FoundingExits()
+        {
+            foreach (int seed in new[] { 7, 41, 127 })
+            {
+                var w = World.Create(seed); Act(w, w.Villages[0], new GameAction { Kind = "FoundVillage", Name = "Exit home" });
+                foreach (var v in w.Villages)
+                {
+                    foreach (var d in new[] { new Int2(1, 0), new Int2(-1, 0), new Int2(0, 1), new Int2(0, -1) })
+                    {
+                        var gate = new Int2(v.Center.X + d.X * v.Radius, v.Center.Z + d.Z * v.Radius);
+                        var outside = new Int2(gate.X + d.X, gate.Z + d.Z);
+                        Check(!w.TileAt(gate).Wall && w.TileAt(gate).Road && w.Walkable(v, outside) && w.Path(v.Center, outside, v) != null, "Founding gate is not a real traversable exit: " + gate);
+                    }
+                    foreach (string resource in new[] { "food", "logs", "stone", "fibre", "ore", "clay", "sand", "gem" })
+                        Check(w.Tiles.Where(t => t.Resource == resource && t.Amount == 200 && Int2.Distance(t.Position, v.Center) < 30).Any(t => w.Path(v.Center, t.Position, v) != null), "Finite founding source is isolated: " + resource + " seed=" + seed);
+                }
+            }
+        }
+        static void DisconnectedBuilding()
+        {
+            var w = Fixture(out var v, out var c); c.BuildingId = ""; World.Add(v.Stockpiles[0].Goods, "planks", 100); World.Add(v.Stockpiles[0].Goods, "blocks", 100);
+            var at = new Int2(-6, -5); foreach (var tile in w.Tiles.Where(t => t.Position.X <= -3 && t.Position.Z <= -2)) tile.Road = false;
+            w.TileAt(new Int2(-6, -3)).Road = true;
+            int buildings = v.Buildings.Count, claims = w.Reservations.Count; double timber = Goods(w, v, "planks");
+            var denied = w.Apply(Context(v), new GameAction { Kind = "PlanBuilding", Name = "wood_cutter", Position = at, CatId = c.Id });
+            Check(!denied.Success, "Disconnected paving allowed a new building without a shrine-connected entrance");
+            Check(v.Buildings.Count == buildings && w.Reservations.Count == claims && Goods(w, v, "planks") == timber, "Rejected layout changed property or claims");
+        }
+        static void ShrineRingReserved()
+        {
+            var w = Fixture(out var v, out var c); c.BuildingId = ""; World.Add(v.Stockpiles[0].Goods, "planks", 100); World.Add(v.Stockpiles[0].Goods, "blocks", 100);
+            Check(!w.Apply(Context(v), new GameAction { Kind = "PlanBuilding", Name = "wood_cutter", Position = new Int2(-3, -3), CatId = c.Id }).Success, "Construction occupied the shrine's required road ring");
+        }
+        static void PendingEntrance()
+        {
+            var w = Fixture(out var v, out var c); c.BuildingId = ""; World.Add(v.Stockpiles[0].Goods, "planks", 100); World.Add(v.Stockpiles[0].Goods, "blocks", 100);
+            var id = Act(w, v, new GameAction { Kind = "PlanBuilding", Name = "wood_cutter", Position = new Int2(-5, 1), CatId = c.Id }).EntityId;
+            var building = v.Buildings.Single(b => b.Id == id); var entrance = w.BuildingEntrance(v, building); Check(entrance.HasValue, "Test scaffold has no connected entry");
+            var tile = w.TileAt(entrance.Value); tile.Road = false;
+            var job = v.Jobs.Single(j => j.TargetId == id); double goods = Goods(w, v, "planks"), progress = building.Progress; string claims = string.Join("|", w.Reservations.Select(r => r.OwnerId + ":" + r.Amount));
+            w.Step(3);
+            Check(job.BlockedReason == "building_entrance_disconnected" && !job.Completed && building.Progress == progress, "Scaffold progressed without its connected entrance");
+            Near(Goods(w, v, "planks"), goods, "Blocked entry consumed construction goods"); Check(string.Join("|", w.Reservations.Select(r => r.OwnerId + ":" + r.Amount)) == claims, "Blocked entry changed held claims");
+            tile.Road = true; w.Step(600); Check(building.Completed && job.Completed, "Repairing the existing road did not resume the same scaffold");
+        }
+        static void BuildingDoor()
+        {
+            var w = Fixture(out var v, out var c); c.BuildingId = ""; World.Add(v.Stockpiles[0].Goods, "planks", 100); World.Add(v.Stockpiles[0].Goods, "blocks", 100);
+            var id = Act(w, v, new GameAction { Kind = "PlanBuilding", Name = "wood_cutter", Position = new Int2(-5, 1), CatId = c.Id }).EntityId;
+            var building = v.Buildings.Single(b => b.Id == id); Check(building.HasEntrance, "New construction did not preserve its selected doorway");
+            var path = w.Path(v.Center, building.Position, v); Check(path != null && path.Contains(building.Entrance), "Physical worker path bypassed the selected doorway");
+            var closed = new Int2(building.Position.X - 1, building.Position.Z); Check(!closed.Equals(building.Entrance) && !w.Crossable(closed, building.Position), "Building exterior allowed a wall crossing away from its door");
+        }
+        static void IsolatedRoad()
+        {
+            var w = Fixture(out var v, out var c); c.BuildingId = ""; World.Add(v.Stockpiles[0].Goods, "materials", 100);
+            foreach (var tile in w.Tiles.Where(t => t.Position.X <= -3 && t.Position.Z <= 0)) tile.Road = false;
+            w.TileAt(new Int2(-6, -3)).Road = true;
+            Check(!LayoutRoads(w, v).Contains(new Int2(-6, -3)), "Test paving is connected instead of isolated");
+            Check(!w.Apply(Context(v), new GameAction { Kind = "BuildRoad", Position = new Int2(-6, -2), End = new Int2(-5, -2), CatId = c.Id }).Success, "Isolated paving bypassed shrine-road connectivity");
+        }
+        static void PaidBuildingRoad()
+        {
+            var w = Fixture(out var v, out var c); c.BuildingId = "";
+            foreach (var tile in w.Tiles.Where(t => t.Position.X <= -3 && t.Position.Z <= 0)) tile.Road = false;
+            World.Add(v.Stockpiles[0].Goods, "materials", 4); World.Add(v.Stockpiles[0].Goods, "planks", 4); World.Add(v.Stockpiles[0].Goods, "blocks", 2);
+            var at = new Int2(-6, -4);
+            Check(!w.Apply(Context(v), new GameAction { Kind = "PlanBuilding", Name = "wood_cutter", Position = at, CatId = c.Id }).Success, "Unpaved site was accepted before its access road existed");
+            var roadId = Act(w, v, new GameAction { Kind = "BuildRoad", Position = new Int2(-3, -2), End = new Int2(-6, -2), CatId = c.Id }).EntityId;
+            Check(!w.TileAt(new Int2(-6, -2)).Road, "Road appeared before physical work");
+            for (int tick = 0; tick < 600 && !v.Jobs.Single(j => j.Id == roadId).Completed; tick++) w.Step(1);
+            Check(v.Jobs.Single(j => j.Id == roadId).Completed, "Paid access road did not finish"); Near(Goods(w, v, "materials"), 0, "Road did not consume its exact four materials");
+            var buildingId = Act(w, v, new GameAction { Kind = "PlanBuilding", Name = "wood_cutter", Position = at, CatId = c.Id }).EntityId;
+            w.Step(600); var building = v.Buildings.Single(b => b.Id == buildingId);
+            Check(building.Completed && LayoutRoads(w, v).Contains(building.Entrance), "Road did not enable a connected completed building");
+            Near(Goods(w, v, "planks"), 0, "Building timber bill changed"); Near(Goods(w, v, "blocks"), 0, "Building block bill changed"); Valid(w);
+        }
+        static void LegacyLayout()
+        {
+            var w = new World { Seed = 41 }; var v = new Village { Id = "legacy-layout", Communal = true, Center = new Int2(0, 0), Radius = 12 }; w.Villages.Add(v);
+            var shrine = new Building { Id = "saved-shrine", Kind = "shrine", Position = new Int2(3, 3), Width = 3, Depth = 3, Completed = true };
+            var old = new Building { Id = "saved-workshop", Kind = "wood_cutter", Position = new Int2(8, 4), Width = 2, Depth = 2, Completed = true }; v.Buildings.AddRange(new[] { shrine, old });
+            for (int z = 0; z <= 12; z++) for (int x = 0; x <= 12; x++) { var at = new Int2(x, z); v.Known.Add(at); v.ClaimedTiles.Add(at); w.Tiles.Add(new Tile { Position = at, ClaimId = v.Id, Biome = "meadow" }); }
+            foreach (var at in new[] { new Int2(6, 4), new Int2(7, 4), new Int2(6, 3), new Int2(7, 3), new Int2(8, 3) }) w.TileAt(at).Overlay = "road_built";
+            var cat = new Cat { Id = "saved-cat", VillageId = v.Id, Position = new Int2(6, 3), X = 6, Z = 3 }; v.Cats.Add(cat);
+            v.Stockpiles.Add(new Stockpile { Id = "saved-store", Position = new Int2(1, 1), Goods = new List<Stack> { new Stack("planks", 20), new Stack("blocks", 20) } });
+            var terrain = string.Join("|", w.Tiles.Select(t => t.Position + ":" + t.Overlay + ":" + TerrainState(t)));
+            Check(w.BuildingEntrance(v, old).Equals(new Int2(8, 3)), "Imported road_built network was not rooted at the actual saved shrine footprint");
+            var result = Act(w, v, new GameAction { Kind = "PlanBuilding", Name = "wood_cutter", Position = new Int2(8, 1), CatId = cat.Id });
+            Check(v.LayoutVersion == 0 && !old.HasEntrance && old.Position.Equals(new Int2(8, 4)) && shrine.Position.Equals(new Int2(3, 3)), "Inspecting or extending a legacy layout relocated saved property");
+            Check(w.Tiles.Count == 169 && terrain == string.Join("|", w.Tiles.Select(t => t.Position + ":" + t.Overlay + ":" + TerrainState(t))), "Legacy compatibility silently paved or rewrote saved terrain");
+            Check(v.Buildings.Single(b => b.Id == result.EntityId).HasEntrance && v.Cats.Single().Id == "saved-cat", "New connected extension lost persisted layout or cat identity");
+        }
+        static void AvoidShrineAccess()
+        {
+            var w = World.Create(7); var v = w.Villages[0];
+            foreach (var at in new[] { v.Center, new Int2(v.Center.X, v.Center.Z + 2), v.Buildings.First(b => b.HasEntrance).Entrance })
+                Check(!w.Apply(Context(v), new GameAction { Kind = "CreateZone", Resource = "avoid", Position = at, End = at }).Success, "Avoid zone severed shrine or building access");
+        }
+        static void PendingRoadFootprint(bool rail, bool changed)
+        {
+            var w = Fixture(out var v, out var c); c.BuildingId = ""; v.Research = Catalog.Research.Select(n => n.Id).ToList();
+            var builder = v.Cats[1]; builder.ControlledBy = ""; builder.BuildingId = "";
+            string resource = rail ? "metal" : "materials";
+            World.Add(v.Stockpiles[0].Goods, resource, 2); World.Add(v.Stockpiles[0].Goods, "planks", 4); World.Add(v.Stockpiles[0].Goods, "blocks", 2);
+            var at = new Int2(-5, 1); var roadId = Act(w, v, new GameAction { Kind = rail ? "DesignateRail" : "BuildRoad", Position = at, End = new Int2(-4, 1), CatId = c.Id }).EntityId;
+            var job = v.Jobs.Single(j => j.Id == roadId); int count = v.Buildings.Count; double goods = Goods(w, v, resource), timber = Goods(w, v, "planks");
+            var claims = string.Join("|", w.Reservations.Select(r => r.OwnerId + ":" + r.Resource + ":" + r.Amount));
+            if (!changed)
+            {
+                var result = w.Apply(Context(v), new GameAction { Kind = "PlanBuilding", Name = "wood_cutter", Position = at, CatId = builder.Id });
+                Check(!result.Success, "Second builder occupied a reserved " + job.Kind + " path before paving completed");
+                Check(v.Buildings.Count == count && builder.JobId == "" && claims == string.Join("|", w.Reservations.Select(r => r.OwnerId + ":" + r.Resource + ":" + r.Amount)), "Rejected footprint changed ownership or claims");
+                Near(Goods(w, v, resource), goods, "Rejected footprint consumed road inputs"); Near(Goods(w, v, "planks"), timber, "Rejected footprint consumed timber");
+                return;
+            }
+            builder.ControlledBy = "fixture-held";
+            // Explicit imported-state fault: old saves can contain work under a later structure.
+            var blocking = new Building { Id = "imported-overlap", Kind = "den", Position = at, Completed = true }; v.Buildings.Add(blocking);
+            w.Step(3);
+            Check(job.BlockedReason == "infrastructure_footprint_blocked" && !job.Completed && job.Progress == 0 && job.PathIndex == 0, "Pending " + job.Kind + " advanced through an occupied footprint");
+            Check(claims == string.Join("|", w.Reservations.Select(r => r.OwnerId + ":" + r.Resource + ":" + r.Amount)), "Blocked infrastructure changed held input claims"); Near(Goods(w, v, resource), goods, "Blocked infrastructure consumed inputs");
+            v.Buildings.Remove(blocking); for (int tick = 0; tick < 600 && !job.Completed; tick++) w.Step(1);
+            Check(job.Completed && job.Path.All(p => rail ? w.TileAt(p).Rail : w.TileAt(p).Road), "Cleared footprint did not resume the same infrastructure work"); Near(Goods(w, v, resource), 0, "Resumed infrastructure did not consume exact finite inputs"); Valid(w);
+        }
         static void Check(bool condition, string message) { if (!condition) throw new InvalidOperationException(message); }
         static void Near(double actual, double expected, string message, double tolerance = 0.00001) => Check(Math.Abs(actual - expected) <= tolerance, message + " expected=" + expected + " actual=" + actual);
         static PlayerContext Context(Village v) => new PlayerContext { PlayerId = "acceptance-player", VillageId = v.Id };
@@ -225,6 +415,18 @@ namespace IdleCatForest.Acceptance
         static void Exterior(World w, Village v)
         {
             for (int x = 7; x <= 18; x++) for (int z = 7; z <= 18; z++) { var p = new Int2(x, z); var t = w.TileAt(p); t.Water = t.Mountain = t.Wall = false; t.Road = t.Rail = false; t.Resource = ""; t.Amount = 0; t.ClaimId = ""; if (!v.Known.Contains(p)) v.Known.Add(p); }
+        }
+        static void FixtureAccessRoad(World w, Village v, Int2 destination)
+        {
+            Check(w.TimeSeconds == 0, "Fixture roads must be established before play");
+            var at = new Int2(v.Center.X, v.Center.Z + v.Radius + 1);
+            while (true)
+            {
+                var tile = w.TileAt(at); tile.Road = true; tile.Water = tile.Mountain = tile.Wall = false; tile.Resource = ""; tile.Amount = 0;
+                if (!v.Known.Contains(at)) v.Known.Add(at);
+                if (at.Equals(destination)) break;
+                if (at.Z != destination.Z) at.Z += Math.Sign(destination.Z - at.Z); else at.X += Math.Sign(destination.X - at.X);
+            }
         }
         static void Zones()
         {
@@ -733,14 +935,15 @@ namespace IdleCatForest.Acceptance
             foreach (string kind in Catalog.Buildings.Where(k => k != "shrine"))
             {
                 var w = Fixture(out var v, out var c); v.Research = Catalog.Research.Select(n => n.Id).ToList(); c.BuildingId = ""; Exterior(w, v); World.Add(v.Stockpiles[0].Goods, "planks", 100); World.Add(v.Stockpiles[0].Goods, "blocks", 100); var at = kind == "field" ? new Int2(14, 14) : new Int2(-5, 1);
+                if (kind == "field") FixtureAccessRoad(w, v, new Int2(at.X, at.Z - 1));
                 var made = Act(w, v, new GameAction { Kind = "PlanBuilding", Name = kind, Position = at, CatId = c.Id }); w.Step(600); var built = v.Buildings.Single(b => b.Id == made.EntityId); Check(built.Completed, "Public construction failed " + kind); Check(built.Inputs.Count == 0, "Completed construction retained spendable inputs " + kind); Valid(w);
             }
         }
         static void RailCapability()
         {
-            var w = StudyFixture("rail", false, out var v, out var c); c.BuildingId = ""; World.Add(v.Stockpiles[0].Goods, "metal", 100); var path = new GameAction { Kind = "DesignateRail", Position = new Int2(1, 2), End = new Int2(3, 2), CatId = c.Id };
-            Check(!w.Apply(Context(v), path).Success, "Rail construction works without blueprint"); Act(w, v, new GameAction { Kind = "ResearchNode", NodeId = "rail" }); Act(w, v, path); w.Step(200); Check(Enumerable.Range(1, 3).All(x => w.TileAt(new Int2(x, 2)).Rail), "Researched physical track did not finish");
-            Act(w, v, new GameAction { Kind = "BuildTransportVehicle", Mode = "rail", Position = new Int2(1, 2), CatId = c.Id }); w.Step(180); Check(v.Vehicles.Any(x => x.Mode == "rail"), "Rail vehicle remains unreachable"); Valid(w);
+            var w = StudyFixture("rail", false, out var v, out var c); c.BuildingId = ""; World.Add(v.Stockpiles[0].Goods, "metal", 100); var path = new GameAction { Kind = "DesignateRail", Position = new Int2(-6, 1), End = new Int2(-4, 1), CatId = c.Id };
+            Check(!w.Apply(Context(v), path).Success, "Rail construction works without blueprint"); Act(w, v, new GameAction { Kind = "ResearchNode", NodeId = "rail" }); Act(w, v, path); w.Step(200); Check(Enumerable.Range(-6, 3).All(x => w.TileAt(new Int2(x, 1)).Rail), "Researched physical track did not finish");
+            Act(w, v, new GameAction { Kind = "BuildTransportVehicle", Mode = "rail", Position = new Int2(-6, 1), CatId = c.Id }); w.Step(180); Check(v.Vehicles.Any(x => x.Mode == "rail"), "Rail vehicle remains unreachable"); Valid(w);
         }
         static void ShippingCapability()
         {
@@ -853,6 +1056,7 @@ namespace IdleCatForest.Acceptance
         static void FarmFoodChain()
         {
             var w = Fixture(out var v, out var c); Exterior(w, v); v.Research = Catalog.Research.Select(n => n.Id).ToList(); World.Add(v.Stockpiles[0].Goods, "planks", 100); World.Add(v.Stockpiles[0].Goods, "blocks", 100); var mill = Station(w, v, "mill"); c.BuildingId = ""; double foodBefore = Goods(w, v, "food");
+            FixtureAccessRoad(w, v, new Int2(12, 11));
             Act(w, v, new GameAction { Kind = "PlanBuilding", Name = "field", Position = new Int2(12, 12), CatId = c.Id }); w.Step(600); var farm = Act(w, v, new GameAction { Kind = "DesignateFarm", Resource = "grain", Position = new Int2(14, 12), End = new Int2(15, 13) }); Act(w, v, new GameAction { Kind = "AssignWorker", TargetId = farm.EntityId, CatId = c.Id }); w.Step(7800);
             var output = v.Stockpiles.SingleOrDefault(p => p.ManagedBy == farm.EntityId && p.Kind == "farm_output"); Check(output != null && World.Amount(output.Goods, "grain") > 0, "Farm did not carry grain to its exterior handoff"); Near(w.Total(v, "grain"), 0, "Harvest teleported into general storage without hauling"); double grain = Goods(w, v, "grain");
             Act(w, v, new GameAction { Kind = "AssignWorker", CatId = c.Id }); Act(w, v, new GameAction { Kind = "HaulGatherSpot", TargetId = output.Id, CatId = c.Id }); w.Step(200); Check(w.Total(v, "grain") > 0, "Manual handoff haul never reached storehouse"); Check(Goods(w, v, "grain") <= grain && Goods(w, v, "grain") >= grain * 0.98, "Harvest/haul duplicated or discarded grain");

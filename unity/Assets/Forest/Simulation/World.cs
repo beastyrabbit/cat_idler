@@ -46,7 +46,7 @@ namespace IdleCatForest.Simulation
             int radius = communal ? 9 : 6;
             if (!CanModifyTerrain(villageId, new Int2(center.X - radius - 1, center.Z - radius - 1), radius * 2 + 3, radius * 2 + 3) || !CanModifyTerrain(villageId, new Int2(center.X + 2, center.Z + radius + 2)))
                 return false;
-            return new[] { new Int2(-radius - 2, 4), new Int2(-radius - 2, -4), new Int2(radius + 2, 3), new Int2(radius + 2, -4), new Int2(-radius - 4, -4), new Int2(radius + 4, -4), new Int2(radius + 4, 4), new Int2(-radius - 6, -4) }.All(offset => CanModifyTerrain(villageId, new Int2(center.X + offset.X, center.Z + offset.Z)));
+            return new[] { new Int2(-radius - 2, 4), new Int2(-radius - 2, -4), new Int2(radius + 2, 3), new Int2(radius + 2, -4), new Int2(-radius - 4, -4), new Int2(radius + 4, -4), new Int2(radius + 4, 4), new Int2(-radius - 6, -4) }.All(offset => Enumerable.Range(radius + 1, Math.Abs(offset.X) - radius).All(x => CanModifyTerrain(villageId, new Int2(center.X + Math.Sign(offset.X) * x, center.Z + offset.Z))));
         }
         public Tile GetTile(Int2 p) => Tiles.Find(t => t.Position.Equals(p));
         public Tile TileAt(Int2 p)
@@ -95,7 +95,7 @@ namespace IdleCatForest.Simulation
         {
             if (!CanFoundAt(id, center, communal))
                 throw new InvalidOperationException("Founding site overlaps foreign territory");
-            var v = new Village { Id = id, Name = name, OwnerId = owner, Communal = communal, Center = center, Radius = communal ? 9 : 6, FoundedAt = TimeSeconds, NextElection = TimeSeconds + 86400, LastMigration = TimeSeconds };
+            var v = new Village { Id = id, Name = name, OwnerId = owner, Communal = communal, Center = center, Radius = communal ? 9 : 6, LayoutVersion = 1, FoundedAt = TimeSeconds, NextElection = TimeSeconds + 86400, LastMigration = TimeSeconds };
             int radius = v.Radius;
             for (int z = -radius - 2; z <= radius + 2; z++)
                 for (int x = -radius - 2; x <= radius + 2; x++)
@@ -111,8 +111,8 @@ namespace IdleCatForest.Simulation
                         t.Amount = 0;
                         t.Biome = "meadow";
                         t.ClaimId = id;
-                        t.Wall = (Math.Abs(x) == radius || Math.Abs(z) == radius) && !(x == 0 && z == radius);
-                        t.Road = x == 0 || z == 0;
+                        t.Wall = (Math.Abs(x) == radius || Math.Abs(z) == radius) && !LayoutGate(v, p, radius);
+                        t.Road = (x == 0 || z == 0) && Math.Max(Math.Abs(x), Math.Abs(z)) >= 2 || Math.Max(Math.Abs(x), Math.Abs(z)) == 2;
                     }
                 }
             // Every founding has an exterior footpath from its gate to its finite starter deposits.
@@ -129,34 +129,52 @@ namespace IdleCatForest.Simulation
                     t.Deposits.Clear();
                     t.Biome = "meadow";
                     t.Dirt = true;
+                    t.Road = x == 0 || z == 0;
                 }
             var water = TileAt(new Int2(center.X + 2, center.Z + radius + 2));
             water.Water = true;
             water.Mountain = false;
             water.Resource = "fish";
             water.Amount = water.FishCapacity = 24;
-            foreach (var data in new[] { ("logs", -radius - 2, 4), ("stone", -radius - 2, -4), ("food", radius + 2, 3), ("fibre", radius + 2, -4), ("ore", -radius - 4, -4), ("clay", radius + 4, -4), ("sand", radius + 4, 4), ("gem", -radius - 6, -4) })
+            var deposits = new[] { ("logs", -radius - 2, 4), ("stone", -radius - 2, -4), ("food", radius + 2, 3), ("fibre", radius + 2, -4), ("ore", -radius - 4, -4), ("clay", radius + 4, -4), ("sand", radius + 4, 4), ("gem", -radius - 6, -4) };
+            foreach (var data in deposits)
+            {
+                for (int x = radius + 2; x <= Math.Abs(data.Item2); x++)
+                {
+                    var approach = TileAt(new Int2(center.X + Math.Sign(data.Item2) * x, center.Z + data.Item3));
+                    approach.Water = approach.Mountain = approach.Wall = false;
+                    approach.Resource = "";
+                    approach.Amount = approach.FishCapacity = 0;
+                    approach.Deposits.Clear();
+                    approach.Biome = "meadow";
+                    approach.Dirt = true;
+                }
+            }
+            foreach (var data in deposits)
             {
                 var t = TileAt(new Int2(center.X + data.Item2, center.Z + data.Item3));
                 t.Water = t.Mountain = false;
                 t.Resource = data.Item1;
                 t.Amount = 200;
             }
-            v.Buildings.Add(new Building { Id = Id("shrine"), Kind = "shrine", Position = center, Completed = true });
+            v.Buildings.Add(new Building { Id = Id("shrine"), Kind = "shrine", Position = new Int2(center.X - 1, center.Z - 1), Width = 3, Depth = 3, Completed = true });
             int scale = communal ? 2 : 1;
-            var blueprint = communal ? new[] { ("woodworking", -8, -8), ("den", -4, -8), ("wood_cutter", 3, -8), ("den", 7, -8), ("research_hut", -8, -4), ("stone_prep", 3, -4), ("barracks", 7, -4), ("woodworking", -8, 3), ("den", -4, 3), ("wood_cutter", 3, 3), ("den", 7, 3), ("food_storage", -8, 7), ("den", -4, 7), ("stone_prep", 3, 7), ("den", 7, 7) } : new[] { ("woodworking", -5, -5), ("den", -2, -5), ("wood_cutter", 2, -5), ("den", -5, 2), ("den", -2, 2), ("stone_prep", 2, 2) };
+            var blueprint = communal ? new[] { ("woodworking", -8, -8), ("den", -4, -8), ("wood_cutter", 3, -8), ("den", 7, -8), ("research_hut", -8, -4), ("stone_prep", 3, -4), ("barracks", 7, -4), ("woodworking", -8, 3), ("den", -4, 3), ("wood_cutter", 3, 3), ("den", 7, 3), ("food_storage", -8, 7), ("den", -4, 7), ("stone_prep", 3, 7), ("den", 7, 7) } : new[] { ("woodworking", -5, -5), ("den", -2, -5), ("wood_cutter", 2, -5), ("den", -5, 2), ("den", -2, 3), ("stone_prep", 3, 2) };
             foreach (var entry in blueprint)
                 v.Buildings.Add(new Building { Id = Id(entry.Item1), Kind = entry.Item1, Position = new Int2(center.X + entry.Item2, center.Z + entry.Item3), Completed = true, ConstructionConsumed = true });
-            var pile = new Stockpile { Id = Id("store"), Position = new Int2(center.X + (communal ? -4 : 2), center.Z + (communal ? -4 : -2)), Capacity = 2000 * scale };
+            var pile = new Stockpile { Id = Id("store"), Position = new Int2(center.X + (communal ? -4 : 3), center.Z + (communal ? -4 : -2)), Capacity = 2000 * scale };
             foreach (var s in new[] { new Stack("food", 50), new Stack("water", 100), new Stack("herbs", 16), new Stack("materials", 60), new Stack("planks", 10), new Stack("blocks", 10) })
                 pile.Goods.Add(new Stack(s.Resource, s.Amount * scale));
             v.Stockpiles.Add(pile);
             foreach (var building in v.Buildings.Where(b => b.Kind != "den" && b.Kind != "shrine"))
                 Commission(v, building);
+            foreach (var building in v.Buildings.Where(b => b.Kind != "shrine"))
+                ConnectFoundingBuilding(v, building);
+            var arrivals = ConnectedRoads(v).OrderBy(p => Int2.Distance(p, center)).ThenBy(p => p.Z).ThenBy(p => p.X).ToArray();
             string[] names = { "Juniper", "Moss", "Bramble", "Clover", "Pip", "Hazel", "Fern", "Cinder", "Acorn", "Willow", "Mallow", "Birch", "Sorrel", "Poppy", "Sage", "Thistle", "Rowan", "Nettle", "Pebble", "Ash", "Maple", "Honey", "Fennel", "Basil", "Cedar", "Brook", "Aspen", "Yarrow", "Wren", "Cricket", "Dandelion", "Finch", "Oak", "Saffron", "Snowdrop", "Tansy" };
             for (int i = 0; i < 15 * scale; i++)
             {
-                var c = NewCat(v, names[(i + (int)(Seed % 6)) % names.Length], new Int2(center.X + (i % 5) - 2, center.Z + 2 + (i / 5) % 3));
+                var c = NewCat(v, names[(i + (int)(Seed % 6)) % names.Length], arrivals[i % arrivals.Length]);
                 c.BedId = v.Buildings.Where(b => b.Kind == "den").ElementAt(i / 5).Id;
                 var labor = Catalog.Labors[(int)(Hash(c.Id) % Catalog.Labors.Length)];
                 c.Preferences.Add(labor);
@@ -165,6 +183,97 @@ namespace IdleCatForest.Simulation
             }
             v.LeaderId = v.Cats[0].Id;
             return v;
+        }
+        private static bool RoadSurface(Tile tile) => tile != null && (tile.Road || tile.Overlay == "road_built");
+        private static IEnumerable<Int2> EntranceCandidates(Building building)
+        {
+            for (int x = 0; x < building.Width; x++)
+            {
+                yield return new Int2(building.Position.X + x, building.Position.Z - 1);
+                yield return new Int2(building.Position.X + x, building.Position.Z + building.Depth);
+            }
+            for (int z = 0; z < building.Depth; z++)
+            {
+                yield return new Int2(building.Position.X - 1, building.Position.Z + z);
+                yield return new Int2(building.Position.X + building.Width, building.Position.Z + z);
+            }
+        }
+        private bool RoadSpace(Village v, Int2 p) => !v.Buildings.Any(b => Contains(b.Position, b.Width, b.Depth, p)) && !v.Stockpiles.Any(s => s.Kind != "spill" && !s.Kind.StartsWith("zone_", StringComparison.Ordinal) && Contains(s.Position, s.Width, s.Depth, p)) && !v.Farms.Any(f => Contains(f.Position, f.Width, f.Depth, p));
+        private HashSet<Int2> ConnectedRoads(Village v)
+        {
+            var seen = new HashSet<Int2>();
+            var pending = new Queue<Int2>();
+            var shrine = v.Buildings.FirstOrDefault(b => b.Kind == "shrine" && b.Completed);
+            if (shrine == null)
+                return seen;
+            for (int x = 0; x < shrine.Width; x++)
+                for (int z = 0; z < shrine.Depth; z++)
+                    pending.Enqueue(new Int2(shrine.Position.X + x, shrine.Position.Z + z));
+            while (pending.Count > 0)
+            {
+                var at = pending.Dequeue();
+                foreach (var p in Neighbors(at))
+                    if (!seen.Contains(p) && RoadSurface(GetTile(p)) && RoadSpace(v, p) && Walkable(v, p) && (!ReferenceEquals(Village(v.Id), v) || Crossable(at, p)))
+                    {
+                        seen.Add(p);
+                        pending.Enqueue(p);
+                    }
+            }
+            return seen;
+        }
+        public Int2? BuildingEntrance(Village v, Building building)
+        {
+            if (building.HasEntrance)
+                return building.Entrance;
+            var roads = ConnectedRoads(v);
+            foreach (var p in EntranceCandidates(building).OrderBy(p => Int2.Distance(p, v.Center)).ThenBy(p => p.Z).ThenBy(p => p.X))
+                if (roads.Contains(p))
+                    return p;
+            return null;
+        }
+        private bool ShrineRing(Village v, Int2 p) => v.Buildings.Any(b => b.Kind == "shrine" && Contains(new Int2(b.Position.X - 1, b.Position.Z - 1), b.Width + 2, b.Depth + 2, p) && !Contains(b.Position, b.Width, b.Depth, p));
+        private bool ConnectedEntrance(Village v, Building building) => !building.HasEntrance || EntranceCandidates(building).Contains(building.Entrance) && ConnectedRoads(v).Contains(building.Entrance);
+        private static bool LayoutGate(Village v, Int2 p, int radius)
+        {
+            int x = p.X - v.Center.X, z = p.Z - v.Center.Z;
+            return v.LayoutVersion > 0 ? x == 0 && Math.Abs(z) == radius || z == 0 && Math.Abs(x) == radius : x == 0 && z == radius;
+        }
+        private void ConnectFoundingBuilding(Village v, Building building)
+        {
+            var roads = ConnectedRoads(v);
+            var seen = new Dictionary<Int2, Int2>();
+            var pending = new Queue<Int2>();
+            foreach (var p in EntranceCandidates(building).OrderBy(p => Int2.Distance(p, v.Center)).ThenBy(p => p.Z).ThenBy(p => p.X))
+                if (RoadSpace(v, p) && Walkable(v, p))
+                {
+                    seen[p] = p;
+                    pending.Enqueue(p);
+                }
+            while (pending.Count > 0)
+            {
+                var at = pending.Dequeue();
+                if (roads.Contains(at))
+                {
+                    while (true)
+                    {
+                        TileAt(at).Road = true;
+                        if (seen[at].Equals(at))
+                        {
+                            building.Entrance = at;
+                            building.HasEntrance = true;
+                            return;
+                        }
+                        at = seen[at];
+                    }
+                }
+                foreach (var p in Neighbors(at))
+                    if (!seen.ContainsKey(p) && Math.Abs(p.X - v.Center.X) < v.Radius && Math.Abs(p.Z - v.Center.Z) < v.Radius && RoadSpace(v, p) && Walkable(v, p) && (!ReferenceEquals(Village(v.Id), v) || Crossable(at, p)))
+                    {
+                        seen[p] = at;
+                        pending.Enqueue(p);
+                    }
+            }
+            throw new InvalidOperationException("Founding building has no road entrance: " + building.Kind);
         }
         private Cat NewCat(Village v, string name, Int2 p)
         {
@@ -363,7 +472,23 @@ namespace IdleCatForest.Simulation
             c.BlockedReason = "";
             return c.Position.Equals(destination);
         }
-        public bool Crossable(Int2 a, Int2 b) => !Villages.Any(v => v.BoundaryEdges.Any(edge => edge.From.Equals(a) && edge.To.Equals(b) || edge.From.Equals(b) && edge.To.Equals(a)));
+        public bool Crossable(Int2 a, Int2 b)
+        {
+            foreach (var v in Villages)
+            {
+                if (v.BoundaryEdges.Any(edge => edge.From.Equals(a) && edge.To.Equals(b) || edge.From.Equals(b) && edge.To.Equals(a)))
+                    return false;
+                foreach (var building in v.Buildings)
+                {
+                    if (!building.HasEntrance)
+                        continue;
+                    bool fromInside = Contains(building.Position, building.Width, building.Depth, a), toInside = Contains(building.Position, building.Width, building.Depth, b);
+                    if (fromInside != toInside && !(fromInside ? b : a).Equals(building.Entrance))
+                        return false;
+                }
+            }
+            return true;
+        }
         private void Note(Village v, string kind, string text, string id = "")
         {
             v.Events.Add(new Event { Time = TimeSeconds, Kind = kind, Text = text, EntityId = id });

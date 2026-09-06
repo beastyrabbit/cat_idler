@@ -20,16 +20,16 @@ ART = ROOT / "source-art"
 EXPORT = ROOT / "unity/Assets/Resources/ForestArt"
 RNG = random.Random(271828)
 PALETTE = {
-    "bark": "65432F", "wood": "B17B4C", "endgrain": "D9AB70",
-    "darkwood": "49392F", "earth": "675243", "soil": "43392D",
-    "stone": "849090", "stone_light": "B1B9B0", "slate": "465964",
+    "bark": "51362B", "wood": "A87543", "endgrain": "D7AA6D",
+    "darkwood": "372C29", "earth": "977B54", "soil": "49372B",
+    "stone": "78877C", "stone_light": "BCC3AD", "slate": "405660",
     "iron": "687E89", "coal": "303D45", "copper": "C98655",
-    "leaf": "587F50", "leaf_light": "8EAD64", "pine": "2E6557",
-    "moss": "AAC579", "straw": "DABC72", "grain": "E0BE60",
-    "teal": "477F80", "teal_light": "72A69B", "terracotta": "B96E4D",
+    "leaf": "477B45", "leaf_light": "83AB52", "pine": "24594A",
+    "moss": "9BB96B", "straw": "D2AE5D", "grain": "E1BC58",
+    "teal": "306E70", "teal_light": "659A88", "terracotta": "B56443",
     "cream": "EDDFC0", "cloth": "7C86A8", "berry": "AC5068",
     "herb": "69A49B", "flower": "C1A2C9", "water": "69B3BE",
-    "fur": "D49B60", "fur_light": "F2D6AB", "fur_dark": "A9683D",
+    "fur": "D89545", "fur_light": "F5DBB0", "fur_dark": "995528",
     "nose": "B37077", "eye": "283D35", "gold": "D4AA4F",
     "ember": "F29E58", "leather": "9B684A", "gem": "76C6BA",
 }
@@ -233,26 +233,70 @@ def plank_floor(w=3.1, d=2.6):
             (w / count - 0.015, d, 0.08), "wood" if i % 3 else "endgrain", edge=0.012)
 
 
-def shelter(roof="teal", w=3.1, d=2.6, wall="wood", roof_height=2.2):
+def shingled_roof(w, back, front, eaves, ridge, color):
+    """A real pitched rear roof; the open front exposes each station from above."""
+    half = w / 2 + 0.08
+    slope = math.atan2(ridge - eaves, half)
+    variants = {"teal": "teal_light", "leaf": "pine", "cloth": "teal",
+                "terracotta": "wood", "cream": "straw", "straw": "endgrain",
+                "teal_light": "teal"}
+    rows = 4
+    columns = max(3, round((back - front) / 0.27))
+    for side in (-1, 1):
+        for row in range(rows):
+            dist = (row + 0.5) * half / rows
+            for col in range(columns):
+                y = front + (col + 0.5) * (back - front) / columns
+                z = ridge - dist * math.tan(slope) + (rows - row) * 0.012
+                tint = variants.get(color, "endgrain") if (row + col * 3) % 7 == 0 else color
+                box("Overlapping roof shingle", (side * dist, y, z),
+                    (half / rows / math.cos(slope) + 0.055, (back - front) / columns + 0.026, 0.065),
+                    tint, edge=0.018, rotation=(0, side * slope, 0))
+        for y in (front + 0.035, back - 0.055):
+            beam("Gable rafter", (0, y, ridge - 0.075), (side * half, y, eaves - 0.075), 0.13, "bark")
+        beam("Eave fascia", (side * half, front - 0.025, eaves - 0.03),
+             (side * half, back + 0.025, eaves - 0.03), 0.105, "endgrain")
+    beam("Carved ridge cap", (0, front - 0.12, ridge + 0.065),
+         (0, back + 0.12, ridge + 0.065), 0.15, "bark")
+    for y in (front, back):
+        beam("Gable tie", (-half, y, eaves - 0.11), (half, y, eaves - 0.11), 0.12, "bark")
+        beam("Gable king post", (0, y, eaves - 0.11), (0, y, ridge - 0.1), 0.105, "endgrain")
+
+
+def lantern(pos):
+    x, y, z = pos
+    box("Lantern warm glass", (x, y, z), (0.135, 0.135, 0.2), "ember", 0.014)
+    for height in (-0.12, 0.12):
+        box("Lantern frame", (x, y, z + height), (0.19, 0.19, 0.045), "darkwood", 0.008)
+    for dx in (-0.065, 0.065):
+        for dy in (-0.065, 0.065):
+            beam("Lantern mullion", (x + dx, y + dy, z - 0.1),
+                 (x + dx, y + dy, z + 0.1), 0.022, "darkwood")
+    torus("Lantern hanger", (x, y, z + 0.2), 0.055, 0.013, "iron", (math.pi / 2, 0, 0))
+
+
+def shelter(roof="teal", w=3.1, d=2.6, wall="wood", roof_height=2.48, home=False):
     plank_floor(w, d)
     for x in (-w / 2 + 0.12, w / 2 - 0.12):
         for y in (-d / 2 + 0.1, d / 2 - 0.1):
-            box("Chamfered post", (x, y, 0.95), (0.18, 0.18, 1.5), "bark")
+            height = 1.71 if y > 0 else 1.05
+            box("Chamfered post", (x, y, 0.23 + height / 2), (0.18, 0.18, height), "bark")
+            box("Stone post shoe", (x, y, 0.36), (0.24, 0.24, 0.26), "stone_light", 0.035)
+            cylinder("Oak peg", (x, y - 0.1, 0.75), 0.029, 0.024, "endgrain", 6,
+                     rotation=(math.pi / 2, 0, 0))
         for z in (0.36, 0.58):
             box("Cutaway side", (x, 0.18, z), (0.09, d - 0.48, 0.17), wall)
     for z in (0.35, 0.59, 0.83):
         box("Back wall", (0, d / 2 - 0.09, z), (w - 0.25, 0.12, 0.2), wall)
     beam("Lintel", (-w / 2, d / 2 - 0.1, 1.83), (w / 2, d / 2 - 0.1, 1.83), 0.18, "bark")
-    # A short rear canopy shades the building without hiding its work positions.
-    for i in range(8):
-        x = -w / 2 + (i + 0.5) * w / 8
-        box("Canopy shingle", (x, d / 2 - 0.30, roof_height), (w / 8 + 0.06, 1.04, 0.11),
-            roof, rotation=(math.radians(13), 0, 0))
-    beam("Roof ridge", (-w / 2 - 0.05, d / 2 + 0.2, roof_height + 0.14),
-         (w / 2 + 0.05, d / 2 + 0.2, roof_height + 0.14), 0.12, "endgrain")
+    shingled_roof(w, d / 2 + 0.1, 0.02 if home else 0.51, 1.93, roof_height, roof)
     for x in (-w / 2 + 0.1, w / 2 - 0.1):
         beam("Knee brace", (x, 0.5, 1.25), (x, 1.1, 1.8), 0.1, "wood")
-    box("Welcome step", (0, -d / 2 - 0.16, 0.08), (1.1, 0.36, 0.16), "stone_light")
+    for y, z, width in ((-d / 2 - 0.12, 0.08, 1.2), (-d / 2 - 0.29, 0.04, 1.38)):
+        box("Welcome step", (0, y, z), (width, 0.22, z * 2), "stone_light", 0.025)
+    lantern((-w / 2 + 0.13, -d / 2 + 0.01, 1.32))
+    for x in (-w / 2 + 0.22, w / 2 - 0.22):
+        box("Foundation corner course", (x, -d / 2 - 0.01, 0.09), (0.31, 0.24, 0.16), "slate", 0.025)
 
 
 def table(x=0, y=0, w=1.45, d=0.66, z=0.78):
@@ -408,7 +452,7 @@ def cat():
     new_asset("cat", "Sculpted ginger cat with head, tail and four paw pivots for procedural animation")
     orb("Torso", (0, 0.02, 0.59), (0.27, 0.47, 0.28), "fur", 3, True)
     orb("Chest bib", (0, -0.30, 0.56), (0.21, 0.18, 0.26), "fur_light", 2, True)
-    for angle in (1.76, 2.14):
+    for angle in (1.42, 1.82, 2.21):
         for side in (-1, 1):
             fur_marking("Tabby haunch marking", (0, 0.02, 0.59), (0.273, 0.474, 0.284),
                         side * angle, 0.06, 0.67, 0.052)
@@ -422,8 +466,12 @@ def cat():
         mesh("Ear pink", [(x - 0.068, -0.417, 1.055), (x + 0.068, -0.417, 1.055),
                           (x + side * 0.035, -0.412, 1.255)], [(0, 2, 1)], "nose")
         orb("Cream muzzle", (side * 0.093, -0.665, 0.81), (0.115, 0.073, 0.085), "fur_light", 2, True)
-        orb("Eye", (side * 0.137, -0.658, 0.965), (0.067, 0.027, 0.083), "eye", 2, True)
-        orb("Eye catchlight", (side * 0.13 - 0.014, -0.683, 0.989), (0.017, 0.013, 0.025), "cream", 1)
+        orb("Eye surround", (side * 0.137, -0.640, 0.965), (0.075, 0.021, 0.087), "fur_dark", 2, True)
+        orb("Amber iris", (side * 0.137, -0.654, 0.965), (0.066, 0.019, 0.078), "gold", 2, True)
+        orb("Cat slit pupil", (side * 0.137, -0.668, 0.965), (0.020, 0.01, 0.061), "eye", 2, True)
+        orb("Eye catchlight", (side * 0.13 - 0.014, -0.680, 0.989), (0.016, 0.009, 0.022), "cream", 1)
+        curve("Cat mouth", [(0, -0.719, 0.815), (side * 0.024, -0.733, 0.788),
+                            (side * 0.069, -0.727, 0.796)], 0.008, "fur_dark")
         for j in range(2):
             beam("Whisker", (side * 0.15, -0.7, 0.815 - j * 0.04),
                  (side * 0.39, -0.665, 0.84 - j * 0.075), 0.014, "cream")
@@ -450,19 +498,31 @@ def cat():
 def vegetation():
     new_asset("tree_oak", "Broad layered oak crown, exposed branching trunk and flared roots")
     cylinder("Tapered trunk", (0, 0, 1.3), 0.24, 2.6, "bark", 9, top=0.15)
-    for i in range(5):
-        a = i * math.tau / 5
+    for i in range(6):
+        a = i * math.tau / 6 + 0.13
         beam("Root flare", (0, 0, 0.35), (math.cos(a) * 0.5, math.sin(a) * 0.5, 0.03), 0.15, "bark")
-        beam("Fork branch", (0, 0, 1.55), (math.cos(a) * 0.75, math.sin(a) * 0.75, 2.6), 0.15, "bark")
-        orb("Broad leaf crown", (math.cos(a) * 0.68, math.sin(a) * 0.68, 2.72 + (i % 2) * 0.28),
-            (0.83, 0.82, 0.77), "leaf" if i % 2 else "leaf_light", 2)
-    orb("Oak crown top", (0.1, 0, 3.23), (0.94, 0.89, 0.72), "leaf_light", 2)
+        beam("Fork branch", (0, 0, 1.4), (math.cos(a) * 0.92, math.sin(a) * 0.92, 2.52), 0.15, "bark")
+        crown = (math.cos(a) * (0.8 + i % 2 * 0.15), math.sin(a) * 0.83, 2.55 + (i % 3) * 0.2)
+        orb("Broad leaf crown", crown, (0.86, 0.71, 0.62), "pine" if i == 4 else "leaf", 2)
+        orb("Sunlit leaf spray", (crown[0] + 0.13, crown[1] - 0.09, crown[2] + 0.35),
+            (0.55, 0.5, 0.32), "leaf_light" if i % 2 == 0 else "moss", 1)
+    orb("Oak crown top", (0.05, 0.1, 3.26), (0.87, 0.8, 0.54), "leaf_light", 2)
+    for pos in ((-0.35, -0.19, 0.06), (0.23, 0.3, 0.06)):
+        orb("Root moss", pos, (0.23, 0.18, 0.07), "leaf", 1)
     finish_asset("tree_oak")
     new_asset("tree_pine", "Tiered conifer with visible trunk and irregular bough silhouette")
     cylinder("Pine trunk", (0, 0, 1.65), 0.17, 3.3, "bark", 8, top=0.06)
-    for i in range(4):
-        cylinder("Pine bough tier", (0.05 * (i % 2), 0, 1.4 + i * 0.56), 1 - i * 0.19,
-                 1.32, "pine" if i % 2 else "leaf", 9, top=0.04)
+    for i in range(5):
+        radius = 1.06 - i * 0.19
+        height = 1.19 + i * 0.47
+        cylinder("Pine bough core", (0.035 * (i % 2), 0, height + 0.18), radius * 0.67,
+                 0.98, "pine", 9, top=0.025)
+        for j in range(5):
+            a = math.tau * j / 5 + i * 0.73
+            pos = (math.cos(a) * radius * 0.59, math.sin(a) * radius * 0.59, height - 0.15)
+            orb("Sweeping needle bough", pos, (radius * 0.53, radius * 0.45, 0.24),
+                "leaf" if (i + j) % 4 == 0 else "pine", 1)
+            beam("Pine branch", (0, 0, height - 0.2), (pos[0], pos[1], height - 0.15), 0.06, "bark")
     finish_asset("tree_pine")
     for name, mat in [("shrub", "leaf"), ("berry_bush", "leaf_light")]:
         new_asset(name, "Low branching shrub" if name == "shrub" else "Round berry bush with visible ripe pink fruit")
@@ -532,30 +592,55 @@ def buildings():
             for z in (0.36, 1.12):
                 beam("Palisade rail", (-1.2, -0.18, z), (1.2, -0.18, z), 0.12, "bark")
         elif name == "shrine":
-            cylinder("Sanctuary dais", (0, 0, 0.14), 1.25, 0.28, "stone", 8)
-            cylinder("Sanctuary step", (0, 0, 0.33), 0.91, 0.14, "stone_light", 8)
-            cylinder("Altar pedestal", (0, 0.2, 0.68), 0.38, 0.65, "stone", 6, top=0.28)
-            orb("Cat deity body", (0, 0.2, 1.25), (0.32, 0.32, 0.5), "cream", 2)
-            orb("Cat deity head", (0, 0.12, 1.75), (0.36, 0.31, 0.32), "cream", 2)
-            for x in (-0.22, 0.22):
-                cylinder("Deity ear", (x, 0.12, 2.02), 0.15, 0.36, "cream", 3, top=0)
-            torus("Sun halo", (0, 0.44, 1.81), 0.58, 0.035, "gold", rotation=(math.pi / 2, 0, 0))
-            for x in (-0.65, 0.65):
-                bowl((x, -0.37, 0.38), 0.22, "berry")
-                cylinder("Shrine candle", (x, 0.37, 0.57), 0.065, 0.32, "cream", 8)
-                orb("Candle flame", (x, 0.37, 0.79), (0.047, 0.047, 0.09), "ember")
+            ASSETS[name]["description"] = "Centered three-meter square sanctuary with nine paving bays, seated cat deity, halo and four open approaches"
+            box("Nine tile sanctuary base", (0, 0, 0.055), (2.96, 2.96, 0.11), "slate", 0.035)
+            for x in (-0.99, 0, 0.99):
+                for y in (-0.99, 0, 0.99):
+                    box("Sanctuary paving bay", (x, y, 0.12), (0.96, 0.96, 0.08),
+                        "stone_light" if x == 0 or y == 0 else "stone", 0.035)
+            for x in (-1.20, 1.20):
+                for y in (-1.20, 1.20):
+                    box("Corner moss bed", (x, y, 0.17), (0.3, 0.3, 0.045), "moss", 0.03)
+                    flower((x, y, 0.19), "flower", 0.28)
+            cylinder("Carved altar foot", (0, 0, 0.27), 0.65, 0.23, "stone_light", 8)
+            cylinder("Altar pedestal", (0, 0, 0.57), 0.43, 0.48, "stone", 8, top=0.35)
+            cylinder("Altar crown", (0, 0, 0.84), 0.49, 0.12, "stone_light", 8)
+            orb("Seated deity haunches", (0, 0.11, 1.17), (0.4, 0.33, 0.35), "cream", 2)
+            orb("Cat deity chest", (0, 0, 1.43), (0.31, 0.29, 0.47), "cream", 2)
+            for x in (-0.16, 0.16):
+                orb("Deity foreleg", (x, -0.22, 1.17), (0.1, 0.12, 0.34), "cream", 2)
+                orb("Deity paw", (x, -0.3, 0.96), (0.13, 0.16, 0.09), "stone_light", 2)
+            orb("Cat deity head", (0, -0.035, 1.89), (0.37, 0.32, 0.33), "cream", 2)
+            for x in (-0.23, 0.23):
+                cylinder("Deity pointed ear", (x, -0.025, 2.16), 0.17, 0.39, "cream", 3, top=0)
+                curve("Deity peaceful eye", [(x * 0.38, -0.33, 1.92), (x * 0.67, -0.356, 1.88),
+                                            (x, -0.314, 1.90)], 0.018, "slate")
+            orb("Deity nose", (0, -0.365, 1.83), (0.065, 0.023, 0.045), "gold", 1)
+            curve("Curled statue tail", [(0.3, 0.13, 1.08), (0.53, 0.0, 0.97), (0.42, -0.34, 0.96),
+                                        (0.06, -0.44, 0.98)], 0.095, "cream")
+            torus("Sun halo", (0, 0.31, 1.98), 0.68, 0.047, "gold", rotation=(math.pi / 2, 0, 0))
+            for i in range(9):
+                a = math.pi * i / 8
+                beam("Halo sun ray", (math.cos(a) * 0.72, 0.31, 1.98 + math.sin(a) * 0.72),
+                     (math.cos(a) * 0.82, 0.31, 1.98 + math.sin(a) * 0.82), 0.035, "gold")
+            for x in (-0.85, 0.85):
+                bowl((x, -0.7, 0.17), 0.22, "berry")
+                lantern((x, 0.72, 0.47))
         else:
             roofs = {"den": "leaf", "nursery": "terracotta", "elder_corner": "straw", "barracks": "terracotta",
                      "clothier": "cloth", "tannery": "terracotta", "research_hut": "cloth", "school": "teal_light",
                      "mill": "straw", "smelter": "terracotta", "accounting_tent": "cream"}
-            shelter(roofs.get(name, "teal"))
+            shelter(roofs.get(name, "teal"), roof_height=2.8 if name == "den" else 2.48,
+                    home=name in {"den", "nursery", "elder_corner"})
             if name in {"den", "beds", "nursery", "elder_corner"}:
-                for i, x in enumerate((-0.86, 0, 0.86)):
-                    y = 0.26 if name != "nursery" else 0.06
-                    box("Low bed frame", (x, y, 0.34), (0.75, 1.0, 0.18), "wood")
-                    orb("Woven nest", (x, y, 0.48), (0.33, 0.43, 0.14), "straw", 2)
-                    orb("Bed quilt", (x, y + 0.08, 0.56), (0.29, 0.29, 0.06), "cloth" if i % 2 else "teal_light", 2)
-                    orb("Pillow", (x, y - 0.26, 0.56), (0.24, 0.13, 0.08), "cream", 2)
+                positions = [(-0.92, 0.49), (0, 0.49), (0.92, 0.49), (-0.87, -0.63), (0.87, -0.63)] if name == "den" else [(-0.86, 0.26), (0, 0.26), (0.86, 0.26)]
+                for i, (x, y) in enumerate(positions):
+                    box("Low bed frame", (x, y, 0.34), (0.75, 0.88, 0.18), "wood")
+                    box("Bed headboard", (x, y + 0.38, 0.56), (0.77, 0.065, 0.42), "bark")
+                    orb("Woven nest", (x, y, 0.48), (0.33, 0.38, 0.14), "straw", 2)
+                    orb("Bed quilt", (x, y - 0.08, 0.56), (0.29, 0.27, 0.06), "cloth" if i % 2 else "teal_light", 2)
+                    box("Quilt stripe", (x, y - 0.12, 0.617), (0.51, 0.055, 0.012), "cream", 0.004)
+                    orb("Pillow", (x, y + 0.24, 0.56), (0.24, 0.11, 0.08), "cream", 2)
                 if name == "nursery":
                     for i in range(3):
                         orb("Kitten toy", (-0.4 + i * 0.4, -0.88, 0.37), (0.12,) * 3, ["berry", "gold", "cloth"][i], 2)
@@ -564,8 +649,13 @@ def buildings():
                     bowl((1.1, -0.83, 0.24), 0.23, "herb")
                     book((-0.95, -0.82, 0.29), "terracotta")
                 if name == "den":
-                    for x in (-0.3, 0.3):
-                        cylinder("Roof ear finial", (x, 0.88, 2.44), 0.17, 0.47, "leaf", 3, top=0)
+                    ASSETS[name]["description"] = "Cozy timber den with five quilted beds, pitched moss-green roof, cat gable and warm entry lantern"
+                    cylinder("Round cat gable", (0, -0.035, 2.30), 0.26, 0.07, "endgrain", 12,
+                             rotation=(math.pi / 2, 0, 0))
+                    for x in (-0.18, 0.18):
+                        cylinder("Gable cat ear", (x, -0.03, 2.56), 0.1, 0.22, "endgrain", 3, top=0)
+                        box("Cat gable eye", (x * 0.55, -0.078, 2.34), (0.045, 0.012, 0.075), "darkwood", 0.004)
+                    orb("Gable nose", (0, -0.08, 2.22), (0.038, 0.014, 0.028), "terracotta", 1)
             elif name == "food_storage":
                 for x in (-0.87, 0, 0.87):
                     crate((x, 0.3, 0.24), 0.64, True)
@@ -706,23 +796,43 @@ def props():
     for i in range(3):
         log((0.75 + (i % 2) * 0.34, 0.2, 0.19 + i // 2 * 0.29), 1.0, 0.17)
     finish_asset("stockpile")
-    new_asset("road", "One meter gravel road tile, warm earth and embedded stones")
-    box("Compacted path", (0, 0, 0.015), (1, 1, 0.03), "earth", edge=0.04)
-    for i in range(9):
-        orb("Embedded stepping stone", (RNG.uniform(-0.4, 0.4), RNG.uniform(-0.4, 0.4), 0.025),
-            (RNG.uniform(0.06, 0.14), RNG.uniform(0.06, 0.13), 0.035), "stone_light", 1)
+    new_asset("road", "One meter continuous warm gravel road with broad inset paving stones")
+    box("Compacted path", (0, 0, 0.015), (1, 1, 0.03), "earth", edge=0)
+    for row in range(3):
+        for col in range(3):
+            x, y = (col - 1) * 0.32, (row - 1) * 0.32
+            box("Inset path paver", (x + RNG.uniform(-0.012, 0.012), y + RNG.uniform(-0.012, 0.012), 0.028),
+                (RNG.uniform(0.26, 0.3), RNG.uniform(0.25, 0.3), 0.026),
+                "stone_light" if (row + col) % 3 else "stone", edge=0.021,
+                rotation=(0, 0, RNG.uniform(-0.045, 0.045)))
     finish_asset("road")
-    for name in ("fence", "gate"):
-        new_asset(name, "Split rail timber " + name)
-        for x in (-0.95, 0.95):
-            box("Fence post", (x, 0, 0.55), (0.17, 0.17, 1.1), "wood")
-            cylinder("Post cap", (x, 0, 1.14), 0.14, 0.11, "endgrain", 4, top=0)
-        for z in (0.38, 0.86):
-            beam("Fence rail", (-0.94, 0, z), (0.94, 0, z), 0.1, "wood")
-        if name == "gate":
-            beam("Gate diagonal", (-0.84, -0.04, 0.3), (0.84, -0.04, 0.94), 0.08, "endgrain")
-            box("Iron latch", (0.71, -0.1, 0.82), (0.18, 0.04, 0.09), "iron")
+    for name in ("fence", "fence_post", "fence_rail"):
+        new_asset(name, "Meter-scale split rail " + name + "; X-axis rail joins centered posts without corner gaps")
+        if name != "fence_rail":
+            for x in ((-0.5, 0.5) if name == "fence" else (0,)):
+                box("Fence post", (x, 0, 0.4), (0.16, 0.16, 0.8), "wood", 0.018)
+                cylinder("Post cap", (x, 0, 0.84), 0.114, 0.08, "endgrain", 4, top=0)
+                box("Fence foot", (x, 0, 0.06), (0.18, 0.18, 0.12), "slate", 0.023)
+                for z in (0.29, 0.65):
+                    cylinder("Rail peg", (x, -0.087, z), 0.026, 0.018, "darkwood", 6,
+                             rotation=(math.pi / 2, 0, 0))
+        if name != "fence_post":
+            for z in (0.29, 0.65):
+                box("Continuous fence rail", (0, 0, z), (1.0, 0.085, 0.095), "wood", 0.012)
+                box("Rail weathered grain", (0, -0.046, z + 0.012), (0.88, 0.009, 0.017), "endgrain", 0.003)
         finish_asset(name)
+    new_asset("gate", "Open two-meter village entrance, posts at X plus/minus one meter, overhead cat crest and lanterns")
+    for x in (-1, 1):
+        box("Gate stone footing", (x, 0, 0.12), (0.24, 0.24, 0.24), "slate", 0.03)
+        box("Gate upright", (x, 0, 0.83), (0.18, 0.18, 1.66), "bark", 0.022)
+        beam("High gate knee brace", (x, 0, 1.25), (x * 0.68, 0, 1.66), 0.09, "wood")
+        lantern((x, -0.15, 1.10))
+    beam("Open gate lintel", (-1.09, 0, 1.72), (1.09, 0, 1.72), 0.17, "wood")
+    shingled_roof(2.08, 0.24, -0.24, 1.79, 2.12, "leaf")
+    cylinder("Gate crest", (0, -0.265, 1.86), 0.15, 0.04, "endgrain", 10, rotation=(math.pi / 2, 0, 0))
+    for x in (-0.105, 0.105):
+        cylinder("Gate crest ear", (x, -0.265, 2.01), 0.065, 0.15, "endgrain", 3, top=0)
+    finish_asset("gate")
     new_asset("rail", "One meter narrow gauge track section")
     for y in (-0.4, 0, 0.4):
         box("Rail sleeper", (0, y, 0.05), (1.2, 0.15, 0.1), "wood")
