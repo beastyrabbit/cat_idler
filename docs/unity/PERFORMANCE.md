@@ -7,8 +7,10 @@ The clean build came from commit `90177b6c506900180ab0777df5ccdfbb2dcbe2b9`
 and includes the continuous simulation. Every 50-millisecond step advances actors.
 The p95 execution cost per step was 0.491 ms with 30 cats and 0.945 ms with 150.
 The later `6ee8080` correction limits repeated searches for unchanged unreachable
-actor destinations to the planning cadence. These measurements predate that
-correction and do not measure blocked-route recovery cost. Focused regressions
+actor destinations to the planning cadence. The subsequent `b73dc76` safeguards
+apply that cadence to blocked storage selection, unloading and missing-scaffold
+planning, and invalidate removed cached stores. These measurements predate those
+corrections and do not measure blocked-route recovery cost. Focused regressions
 verify the number of searches and eventual recovery separately.
 
 Both runs used the default management view without interaction, direct control,

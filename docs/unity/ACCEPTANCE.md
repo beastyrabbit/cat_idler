@@ -38,10 +38,18 @@ They count searches and verify recovery, endpoint changes and fractional time
 partitions. A real save test preserves the retry deadline and finite cargo across
 two restarts, then resumes physical movement and the same job.
 
-The live simulation passed 683 noncampaign scenarios, including 181 regressions,
-and all nine campaign twins within the scope described below.
-Unity passed 689 EditMode and 37 PlayMode tests.
-The authority/import suite passed 54 tests. Four real SQLite pipeline tests and
+A further review found direct storage and scaffold searches that bypassed the
+actor retry cache. Blocked alternate-store selection, waiting caravan unloading
+and unresolved scaffold planning now use the planning cadence. Cached delivery
+and need targets must still be storage after public removal converts a nonempty
+container into a spill. Six focused scenarios cover these cases, including scalar
+and exact-item delivery. Two real save tests preserve blocked unloading through
+fractional time and restart, then credit both sides exactly once when access returns.
+
+The live simulation passed 689 noncampaign scenarios, including 187 regressions.
+The preceding actor-retry revision passed nine campaign twins, 689 Unity EditMode
+and 37 PlayMode tests. The final storage safeguards have additional focused Unity
+checks described below. The authority/import suite passed 56 tests. Four real SQLite pipeline tests and
 two archive checks passed in 25.169 seconds. Blender reimport verified 82 models, 88 meshes and 145,611
 triangles. These checks establish the tested behavior, not the player's approval
 of the visual design. Native observations and current costs appear below and in
@@ -78,7 +86,7 @@ time and random-state controls.
 | Knowledge and progression | All 487 studies pass public purchase traversal with separate effect scenarios. Normal UI research spent 20,000 → 19,995 points on Research Hut and displayed the dependency map. | Verified |
 | Equipment, defense and trade | Exact item identity, condition, repair, finite traders, raids, warriors, rail/shipping and physical barter pass scenarios and real socket tests. | Verified |
 | Persistent shared authority | Two identities, private-village denial, filtered reports, restart and physical trade pass real socket tests. The native app connected to a synthetic server, founded 15-cat Mosslight, then reconnected to the same village, ID 74. | Verified |
-| Saves and migration | 54 authority/import tests and the real SQLite conversion pipeline pass. Jobs, cargo, claims, identities, fractional elapsed time and returning trade survive restart without replay. Imported exact-item capacity, physical pickup, sparse return paths, mixed output delivery and newly staffed empty queues preserve their limits and identities. Import preserves source bytes and refuses unknown schemas and destination overwrite. The packaged app opened the converted world and resumed both imported jobs. | Verified |
+| Saves and migration | 56 authority/import tests and the real SQLite conversion pipeline pass. Jobs, cargo, claims, identities, fractional elapsed time and returning trade survive restart without replay. Imported exact-item capacity, physical pickup, sparse return paths, mixed output delivery and newly staffed empty queues preserve their limits and identities. Import preserves source bytes and refuses unknown schemas and destination overwrite. The packaged app opened the converted world and resumed both imported jobs. | Verified |
 | 3D management and cat control | Blender geometry passes export/import checks. Editor and native UI inspect and control the same cat, walk, take five food and return it to AI while the colony continues. Native deposit emptied its cargo into the original store. | Verified |
 | Normal UI operation | Editor and native inspect, staffing, queues, research, construction and direct-control flows were exercised with saved-state checks. Native repeat persisted as true and pause/resume returned to unpaused work. Editor queue delivery passed; its repeat click did not persist. Original native connection, return and reconnect refreshed the open Village panel and preserved the server address. Corrective-revision road, construction and queue observations appear below. | Verified within this scope |
 | Extended operation | Nine campaign twins cover fresh 48-hour, established 72-hour and shared/personal 48-hour worlds at seeds 7, 41 and 127. | Verified in .NET |
@@ -86,8 +94,8 @@ time and random-state controls.
 
 ## Test and build evidence
 
-- [Simulation results](../../tools/scenarios/VALIDATION.md): 683 focused cases,
-  including 181 regressions, passed in 118.1283 seconds. Nine campaign twins passed
+- [Simulation results](../../tools/scenarios/VALIDATION.md): 689 focused cases,
+  including 187 regressions, passed in 103.9515 seconds. Nine campaign twins passed
   on the live simulation. The three concurrent groups took 446.120, 707.341 and
   693.151 seconds for fresh, established and shared/personal colonies.
   Campaigns compare partitioned time, validate claims and retain founding IDs.
@@ -95,6 +103,9 @@ time and random-state controls.
   station; it does not prove indefinite operation of every mature production chain.
 - Unity EditMode passed 689 noncampaign tests in 602.576 seconds. Long campaigns
   are excluded from this Editor run and passed in the .NET runner.
+  After the storage guards, all eleven focused storage and scalar-haul EditMode
+  cases passed. The immediate-alternate fixture isolates one eligible store so
+  its search-count assertion holds in both .NET and Unity's LINQ implementation.
 - The complete live-simulation PlayMode run passed 37 tests in 13.648 seconds.
   These include ordinary UI logging, research, queues after reload, direct control
   at 8× speed, village selection, stockpile corners, merchant sales, work boosts, authored geometry
@@ -108,7 +119,7 @@ time and random-state controls.
   and nonoverlapping narrow headers with usable Cats/Inspect scroll areas at
   600×360 and 550×336 panel units. A public 4×3 farm designation visibly covers
   every occupied tile, and clearing it removes the whole crop footprint.
-- [Authority and import checks](PERSISTENCE.md) passed 54 tests. The real Rust
+- [Authority and import checks](PERSISTENCE.md) passed 56 tests. The real Rust
   SQLite writer → normalizer → C# continuation pipeline passed four tests; the
   archival exporter passed two. All test worlds and identities are synthetic.
 - [Blender verification](../../source-art/verification.json) passed for 82 models,
@@ -120,10 +131,12 @@ and imported-output fixes. Campaign workloads use no transport routes or
 imported batch outputs, so their pass provides no evidence for that delivery
 path. Import tests check partial delivery, mixed item filters, full storage,
 public staffing and restart directly.
-The current campaign run used `6ee8080`, including the live clock and earlier
+The latest recorded campaign run used `6ee8080`, including the live clock and earlier
 farm-edge, crop-rendering and transport corrections. Campaigns contain no road, rail or expansion
 construction jobs and no designated farms; they do not exercise those changes.
-The final focused regressions cover future farm boundaries, paid construction,
+The final storage-cache, unloading and imported scaffold guards were checked
+with focused scenarios and restart tests; the campaigns were not rerun for those
+guards. The final focused regressions cover future farm boundaries, paid construction,
 blocked rail transport and interrupted resumption. PlayMode checks the complete visible farm footprint.
 
 Five rail regressions reproduce completed walls, water and fence edges blocking
@@ -194,8 +207,10 @@ opened normally, and Cats → Hazel plus the zoom control worked. Work increased
 from 13.4 to 33.7, stayed at 33.7 while paused, then reached 64.6 after 1× resumed.
 The checksum-verified save at 131.3 seconds retained all 30 living cats and Hazel's
 same working Hunt job. Its native log contained no exception or assertion marker.
-The performance samples above predate only this failed-search retry correction;
-they measure the live clock and retain their exact source revision.
+The final storage safeguards at `b73dc76` also built from clean source in the
+separate checkout without compiler or Editor errors. The performance samples
+predate the later retry and storage-planning safeguards; they measure the live
+clock and retain their exact source revision.
 
 ## Earlier corrective-revision native observations
 

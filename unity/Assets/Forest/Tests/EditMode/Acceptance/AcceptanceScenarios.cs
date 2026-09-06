@@ -701,9 +701,14 @@ namespace IdleCatForest.Acceptance
             var w = FailedPathFixture(out var v, out var c); var job = v.Jobs.Single(); job.Kind = "haul"; job.Phase = "input_delivery";
             var destination = v.Stockpiles[0]; destination.Position = job.Position; job.TargetId = destination.Id;
             c.Cargo.Add(new Stack("logs", 8));
-            if (alternative) { destination = new Stockpile { Id = w.Id("alternate-store"), Position = new Int2(2, 2), Width = 1, Depth = 1 }; v.Stockpiles.Add(destination); }
+            if (alternative)
+            {
+                // One eligible alternate makes the exact lookup count independent of LINQ's predicate evaluation strategy.
+                destination.Accepts.Add("water");
+                destination = new Stockpile { Id = w.Id("alternate-store"), Position = new Int2(2, 2), Width = 1, Depth = 1 }; v.Stockpiles.Add(destination);
+            }
             long before = PathSearches(w); w.Step(0.05);
-            Check(PathSearches(w) - before == 2 && c.X == 1, "Blocked haul must try its route and an initial alternate lookup immediately");
+            Check(PathSearches(w) - before == 2 && c.X == 1, "Blocked haul must try its route and an initial alternate lookup immediately; searches=" + (PathSearches(w) - before) + "; x=" + c.X);
             if (alternative)
             {
                 Check(job.TargetId == destination.Id && job.Position.Equals(destination.Position), "Reachable alternate storage was not selected immediately");
