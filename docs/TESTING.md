@@ -60,7 +60,9 @@ real save/reload boundaries and imported per-kind capacity and mixed output
 delivery. Thirty additional regressions protect foreign territory during
 construction, founding and recovery while allowing work on own and shared land.
 The authority suite also resumes unstaffed imported exact outputs through public
-staffing with one or two workers. PlayMode checks that crafted cargo becomes
+staffing with one or two workers. Preassigned workers must reach their imported
+station outputs through an open route, while actual inbound and outbound cargo
+retain their separate jobs and destinations. PlayMode checks that crafted cargo becomes
 visible only after pickup and follows the carrier. See the acceptance ledger for
 the completed run counts and campaign workload limits.
 

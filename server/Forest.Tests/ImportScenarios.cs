@@ -40,6 +40,84 @@ static class ImportScenarios
     }
     public static void Run(Action<string, Action> test, Action<bool, string> check)
     {
+        foreach (var outbound in new[] { "none", "scalar", "exact" })
+            test("import staffed exact station output waits for physical pickup with " + outbound + " outbound cargo", () =>
+            {
+                var input = Base(); Building(input, "bench", "woodworking", "worker", 6)["productionQueue"] = "[]";
+                var items = new JArray(Row("id", "leftover", "item", "tool:wood:3", "durability", 17, "maxDurability", 42, "location", Row("kind", "station", "building_id", "bench", "compartment", "local_output")));
+                if (outbound != "none")
+                {
+                    Pile(input, "station-output:bench", 6, "planks", 2);
+                    Tables(input)["cats"][0]["carrying"] = Json(new { kind = outbound == "exact" ? "tools" : "planks", amount = outbound == "exact" ? 1 : 3, jobEndedAt = 1000000, sourceGatherSpot = "station-out|bench|station-output:bench" + (outbound == "exact" ? "|item:carried" : "") });
+                    if (outbound == "exact") items.Add(Row("id", "carried", "item", "tool:bone:2", "durability", 19, "maxDurability", 43, "location", Row("kind", "carrier", "cat_id", "worker")));
+                }
+                Colony(input)["items"] = Json(new { nextSerial = 3, instances = items });
+                var world = Restart(Convert(input)); var v = world.Village("c"); var station = v.Buildings.Single(); var store = v.Stockpiles.Single(); var worker = v.Cats.Single(c => c.Id == "c\u001fworker");
+                var context = new PlayerContext { PlayerId = "fixture-owner", VillageId = v.Id };
+                check(v.Items.Single(i => i.Id == "c\u001fleftover").LocationId == station.Id && v.Jobs.All(j => !j.ItemIds.Contains("c\u001fleftover")), "import assigned station-resident exact output to a distant worker before pickup");
+                check(worker.BuildingId == station.Id && station.Slots.Single().CatId == worker.Id && station.Queue.Count == 0, "import lost the preassigned worker or empty queue");
+                if (outbound == "none")
+                {
+                    check(world.Apply(context, new GameAction { Kind = "CreateZone", Resource = "avoid", Position = station.Position, End = station.Position }).Success, "public avoid zone could not block station access");
+                    var zoneId = v.Stockpiles.Single(p => p.Kind == "zone_avoid").Id;
+                    for (int restart = 0; restart < 2; restart++)
+                    {
+                        world.Step(4);
+                        check(v.Items.Single().LocationId == station.Id && !v.Jobs.Any(j => j.Kind == "production") && World.Amount(v.Stockpiles.Single(p => p.Id == store.Id).Goods, "tools") == 0, "blocked station output changed ownership or delivered before pickup");
+                        world = Restart(world); v = world.Village("c");
+                    }
+                    check(world.Apply(context, new GameAction { Kind = "RemoveZone", TargetId = zoneId }).Success, "public zone removal could not reopen the pickup route");
+                }
+                if (outbound != "none")
+                {
+                    var outgoing = v.Jobs.Single();
+                    check(outgoing.Local.Count == 0 && World.Amount(station.Outputs, "planks") == 2, "outgoing cargo job prematurely adopted station leftovers");
+                    world.Step(1);
+                    check(outgoing.Completed && (outbound == "exact" ? v.Items.Single(i => i.Id == "c\u001fcarried").LocationId == store.Id : World.Amount(store.Goods, "planks") == 3), "already-carried output was forced back to the distant station before delivery");
+                    check(v.Items.Single(i => i.Id == "c\u001fleftover").LocationId == station.Id && World.Amount(station.Outputs, "planks") == 2, "outgoing delivery teleported station leftovers");
+                }
+                world = Restart(world); v = world.Village("c"); station = v.Buildings.Single(); worker = v.Cats.Single(c => c.Id == worker.Id);
+                check(world.Apply(context, new GameAction { Kind = "AssignWorker", BuildingId = station.Id, CatId = worker.Id }).Success, "public staffing could not continue the imported station assignment");
+                world.Step(1);
+                check(v.Items.Single(i => i.Id == "c\u001fleftover").LocationId == station.Id, "distant assigned worker skipped the physical pickup walk");
+                world = Restart(world); v = world.Village("c"); station = v.Buildings.Single(); worker = v.Cats.Single(c => c.Id == worker.Id);
+                bool pickedUp = false;
+                for (int tick = 0; tick < 60 && v.Items.Single(i => i.Id == "c\u001fleftover").LocationId != store.Id; tick++)
+                {
+                    world.Step(1);
+                    var item = v.Items.Single(i => i.Id == "c\u001fleftover");
+                    if (!pickedUp && item.LocationId != station.Id)
+                    {
+                        var delivery = v.Jobs.Single(j => j.Id == item.LocationId);
+                        check(worker.Position.Equals(station.Position) && delivery.CatId == worker.Id && delivery.ItemIds.Contains(item.Id), "exact output changed owner before the worker physically reached the station");
+                        pickedUp = true;
+                    }
+                }
+                check(pickedUp && v.Items.Single(i => i.Id == "c\u001fleftover").LocationId == store.Id && v.Jobs.Where(j => j.Kind == "production").All(j => j.Completed), "station pickup did not finish physical delivery");
+                world = Restart(world); v = world.Village("c");
+                var leftover = v.Items.Single(i => i.Id == "c\u001fleftover");
+                check(leftover.LocationId == store.Id && leftover.Condition == 17 && leftover.MaxCondition == 42 && leftover.Quality == 3, "pickup or restart changed exact output identity or condition");
+                if (outbound == "exact") check(v.Items.Single(i => i.Id == "c\u001fcarried").Condition == 19 && v.Items.Single(i => i.Id == "c\u001fcarried").MaxCondition == 43, "outbound recovery changed carried equipment condition");
+                check(v.Items.Count == (outbound == "exact" ? 2 : 1) && World.Amount(v.Stockpiles.Single().Goods, "planks") == (outbound == "none" ? 0 : outbound == "scalar" ? 5 : 2) && World.Amount(v.Stockpiles.Single().Goods, "tools") == 0 && world.Validate().Count == 0, "mixed output recovery lost or duplicated finite goods");
+            });
+        test("import inbound station cargo keeps its target beside pending exact output", () =>
+        {
+            var input = Base(); Building(input, "bench", "wood_cutter", "worker", 6)["productionProgress"] = 599;
+            Pile(input, "station-input:bench", 6, "logs", 2); Pile(input, "station-transit:bench", 6, "logs", 3);
+            Tables(input)["cats"][0]["carrying"] = Json(new { kind = "logs", amount = 3, jobEndedAt = 1000000, sourceGatherSpot = "station-in|bench|station-transit:bench" });
+            Colony(input)["items"] = Json(new { nextSerial = 2, instances = new[] { Row("id", "leftover", "item", "tool:wood:3", "durability", 17, "maxDurability", 42, "location", Row("kind", "station", "building_id", "bench", "compartment", "local_output")) } });
+            var world = Restart(Convert(input)); var v = world.Village("c"); var station = v.Buildings.Single(); var worker = v.Cats.Single(c => c.Id == "c\u001fworker");
+            var inbound = v.Jobs.Single();
+            check(inbound.Kind == "production" && inbound.TargetId == station.Id && inbound.Phase == "input_delivery" && inbound.RecipeId == "logs_to_planks" && inbound.Progress == 599, "pending output discarded the inbound station target or active recipe");
+            check(World.Amount(inbound.Local, "logs") == 2 && World.Amount(worker.Cargo, "logs") == 3 && v.Items.Single().LocationId == station.Id && inbound.ItemIds.Count == 0, "inbound adoption mixed pending outputs with recipe inputs");
+            world.Step(1);
+            check(v.Items.Single().LocationId == station.Id && World.Amount(worker.Cargo, "logs") == 3, "inbound cargo or pending output skipped the trip to the station");
+            world = Restart(world); v = world.Village("c");
+            for (int tick = 0; tick < 100; tick++) world.Step(1);
+            var item = v.Items.Single();
+            check(item.Id == "c\u001fleftover" && item.LocationId == "c\u001fstore" && item.Condition == 17 && item.MaxCondition == 42 && item.Quality == 3, "inbound work stranded or changed the pending exact output");
+            check(world.Total(v, "planks") == 1 && world.Total(v, "logs") == 20 && v.Jobs.Where(j => j.Kind == "production").All(j => j.Completed) && World.Amount(v.Stockpiles.Single().Goods, "tools") == 0 && world.Validate().Count == 0, "inbound continuation duplicated finite inputs or failed either output delivery");
+        });
         foreach (var workerCount in new[] { 1, 2 })
             test("import unstaffed exact station output resumes with " + workerCount + " workers", () =>
             {
@@ -105,8 +183,15 @@ static class ImportScenarios
                 }
             });
             var world = Restart(Convert(input)); var v = world.Village("c"); var store = v.Stockpiles.Single(p => p.Id == "c\u001fstore"); var armory = v.Stockpiles.Single(p => p.Id == "c\u001farmory");
+            var station = v.Buildings.Single();
+            check(v.Jobs.Count == 0 && v.Items.Count == 3 && v.Items.All(i => i.LocationId == station.Id), "import moved exact station output before physical pickup");
+            for (int tick = 0; tick < 20 && v.Jobs.Count == 0; tick++)
+            {
+                check(v.Items.All(i => i.LocationId == station.Id), "unclaimed exact output left the station");
+                world.Step(1);
+            }
             var job = v.Jobs.Single(j => j.Kind == "production");
-            check(job.Phase == "output_delivery" && job.ItemIds.Count == 3 && v.Items.All(i => i.LocationId == job.Id), "import did not retain all exact local-output items in its delivery job");
+            check(v.Cats.Single(c => c.Id == job.CatId).Position.Equals(station.Position) && job.Phase == "output_delivery" && job.ItemIds.Count == 3 && v.Items.All(i => i.LocationId == job.Id), "physical pickup did not transfer the complete exact output batch to its worker");
             for (int tick = 0; tick < 8; tick++)
             {
                 world.Step(1);

@@ -27,7 +27,7 @@ time and random-state controls.
 | Knowledge and progression | All 487 studies pass public purchase traversal with separate effect scenarios. Normal UI research spent 20,000 → 19,995 points on Research Hut and displayed the dependency map. | Verified |
 | Equipment, defense and trade | Exact item identity, condition, repair, finite traders, raids, warriors, rail/shipping and physical barter pass scenarios and real socket tests. | Verified |
 | Persistent shared authority | Two identities, private-village denial, filtered reports, restart and physical trade pass real socket tests. The native app connected to a synthetic server, founded 15-cat Mosslight, then reconnected to the same village, ID 74. | Verified |
-| Saves and migration | 33 authority/import tests and the real SQLite conversion pipeline pass. Jobs, cargo, claims, identities and returning trade survive restart without replay. Imported exact-item capacity, mixed output delivery and newly staffed empty queues preserve their limits and identities. Import preserves source bytes and refuses unknown schemas and destination overwrite. The packaged app opened the converted world and resumed both imported jobs. | Verified |
+| Saves and migration | 37 authority/import tests and the real SQLite conversion pipeline pass. Jobs, cargo, claims, identities and returning trade survive restart without replay. Imported exact-item capacity, physical pickup, mixed output delivery and newly staffed empty queues preserve their limits and identities. Import preserves source bytes and refuses unknown schemas and destination overwrite. The packaged app opened the converted world and resumed both imported jobs. | Verified |
 | 3D management and cat control | Blender geometry passes export/import checks. Editor and native UI inspect and control the same cat, walk, take five food and return it to AI while the colony continues. Native deposit emptied its cargo into the original store. | Verified |
 | Normal UI operation | Editor and native inspect, staffing, queues, research, construction and direct-control flows were exercised with saved-state checks. Native repeat persisted as true and pause/resume returned to unpaused work. Editor queue delivery passed; its repeat click did not persist. Final native connection, return and reconnect refreshed the open Village panel and preserved the server address. | Verified within this scope |
 | Extended operation | Nine campaign twins cover fresh 48-hour, established 72-hour and shared/personal 48-hour worlds at seeds 7, 41 and 127. | Verified in .NET |
@@ -49,7 +49,7 @@ time and random-state controls.
   selection, stockpile corners, merchant sales, work boosts, authored geometry
   and terrain categories/bounds during camera movement. Exact crafted cargo
   appears after physical pickup and follows its carrier.
-- [Authority and import checks](PERSISTENCE.md) passed 33 tests in 6.683 seconds. The real Rust
+- [Authority and import checks](PERSISTENCE.md) passed 37 tests in 6.830 seconds. The real Rust
   SQLite writer → normalizer → C# continuation pipeline passed three tests; the
   archival exporter passed two. All test worlds and identities are synthetic.
 - [Blender verification](../../source-art/verification.json) passed for 80 models,
@@ -63,7 +63,7 @@ path. Import tests check partial delivery, mixed item filters, full storage,
 public staffing and restart directly.
 
 Local reports are `artifacts/tests/territory-focused.txt`,
-`artifacts/tests/territory-authority.txt`, `artifacts/tests/editmode.xml`, `artifacts/tests/playmode.xml`
+`artifacts/tests/import-pickup-authority.txt`, `artifacts/tests/editmode.xml`, `artifacts/tests/playmode.xml`
 and `artifacts/fresh-checkout/27ab713-verification.txt`. The fresh-checkout report
 covers the clean build; subsequent interactive scene opening and Play mode were
 checked through Pipeline and Computer Use. These ignored reports are local
@@ -134,6 +134,12 @@ test denies a foreign road without mutation, then accepts an owned road.
 Imported exact outputs on empty, unstaffed queues now wait for a worker to reach
 the station. One- and two-worker restart tests verify exclusive adoption and
 delivery without changing identity, condition, quality or storage limits.
+Four further import regressions keep outputs at a distant station for its
+preassigned worker, including blocked access and restart. Actual outbound scalar
+and exact cargo delivers separately; inbound work retains its station, inputs
+and recipe progress. The final importer-only correction passed all 37 authority
+tests and the three real SQLite pipeline tests in 13.986 seconds. It does not
+change the simulation or Unity sources covered by the suite results above.
 
 [Gameplay decisions](GAMEPLAY_ACCEPTANCE.md), [save compatibility](PERSISTENCE.md)
 and [development commands](DEVELOPMENT.md) describe the implemented behavior and

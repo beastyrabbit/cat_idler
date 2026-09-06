@@ -73,11 +73,12 @@ public static partial class LegacyImport
                     if (v.Jobs.Any(j => !j.Completed && j.CatId == c.Id)) continue;
                     var recipe = Catalog.Recipe(slot.Queue.FirstOrDefault()?.RecipeId ?? b.Queue.FirstOrDefault()?.RecipeId ?? "");
                     bool outgoing = c.ImportedCargoSource.StartsWith("station-out|", StringComparison.Ordinal);
-                    var items = v.Items.Where(i => i.LocationId == b.Id && i.StationCompartment == "local_output").ToArray();
-                    if (b.Outputs.Count > 0 || items.Length > 0 || outgoing)
-                    { var job = StationJob(v, b, slot, c, recipe); job.Phase = "output_delivery"; Merge(job.Local, b.Outputs); b.Outputs.Clear(); foreach (var item in items) { item.LocationId = job.Id; job.ItemIds.Add(item.Id); } continue; }
-                    if (recipe == null) continue;
+                    if (outgoing)
+                    { var job = StationJob(v, b, slot, c, recipe); job.Phase = "output_delivery"; continue; }
                     bool inputCargo = c.ImportedCargoSource.StartsWith("station-in|", StringComparison.Ordinal);
+                    // TickStations adopts station output after physical pickup; already-carried cargo resumes separately.
+                    if (!inputCargo && slot.Progress <= 0 && (b.Outputs.Count > 0 || v.Items.Any(i => i.LocationId == b.Id && i.StationCompartment == "local_output"))) continue;
+                    if (recipe == null) continue;
                     if (slot.Progress > 0 || inputCargo || recipe.Inputs.All(s => World.Amount(b.Inputs, s.Resource) >= s.Amount))
                     {
                         var job = StationJob(v, b, slot, c, recipe); job.Phase = inputCargo ? "input_delivery" : "working";
