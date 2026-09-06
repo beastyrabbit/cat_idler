@@ -211,7 +211,7 @@ namespace IdleCatForest.Simulation
                 var item = v.Items.Where(i => i.LocationId == source.Id).OrderBy(i => i.Id, StringComparer.Ordinal).FirstOrDefault();
                 if (item == null)
                     return ActionResult.Fail("Empty source");
-                var itemStorage = ItemHaulStorage(v, ItemResource(item.Kind), source.Position, source.Id);
+                var itemStorage = Storage(v, ItemResource(item.Kind), 1, source.Position, source.Id);
                 if (itemStorage == null)
                     return ActionResult.Fail("No accepting destination");
                 if (Path(c.Position, source.Position, v) == null)
@@ -221,20 +221,18 @@ namespace IdleCatForest.Simulation
                 item.LocationId = haul.Id;
                 return ActionResult.Ok(haul.Id);
             }
-            double amount = Math.Min(8, resource.Amount);
-            var destination = Storage(v, resource.Resource, amount, source.Position);
-            if (destination == null || destination.Id == source.Id)
-                return ActionResult.Fail("No accepting destination");
-            string id = Id("job");
             double free = resource.Amount - Reservations.Where(r => r.PileId == source.Id && r.Resource == resource.Resource).Sum(r => r.Amount);
-            amount = Math.Min(amount, free);
+            double amount = Math.Min(8, free);
             if (amount <= 0)
                 return ActionResult.Fail("Cargo already claimed");
+            var destination = Storage(v, resource.Resource, amount, source.Position, source.Id);
+            if (destination == null)
+                return ActionResult.Fail("No accepting destination");
+            string id = Id("job");
             Reservations.Add(new Reservation { OwnerId = id, VillageId = v.Id, PileId = source.Id, Resource = resource.Resource, Amount = amount });
             StartJob(v, c, new Job { Id = id, Kind = "haul", Phase = "fetch", SourceId = source.Id, TargetId = destination.Id, Position = destination.Position, Resource = resource.Resource, Amount = amount });
             return ActionResult.Ok(id);
         }
-        private Stockpile ItemHaulStorage(Village v, string resource, Int2 from, string sourceId) => v.Stockpiles.Where(p => p.Kind == "storage" && p.Id != sourceId && HasRoom(v, p, resource, 1)).OrderBy(p => Int2.Distance(p.Position, from)).ThenBy(p => p.Id, StringComparer.Ordinal).FirstOrDefault(p => Path(from, p.Position, v) != null);
         private Stockpile Spill(Village v, Int2 p, List<Stack> goods)
         {
             if (goods.Count == 0)
@@ -838,7 +836,7 @@ namespace IdleCatForest.Simulation
                     Finish(v, c, j);
                     return;
                 }
-                var pile = j.Kind == "haul" && deliveredItem != null ? ItemHaulStorage(v, resource, c.Position, j.SourceId) : Storage(v, resource, cargo?.Amount ?? 1, c.Position);
+                var pile = Storage(v, resource, cargo?.Amount ?? 1, c.Position, j.Kind == "haul" ? j.SourceId : null);
                 if (pile == null)
                 {
                     j.BlockedReason = c.BlockedReason = "output_storage_full_or_unreachable";

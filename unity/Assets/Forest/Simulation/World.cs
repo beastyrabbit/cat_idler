@@ -336,7 +336,7 @@ namespace IdleCatForest.Simulation
             }
             return true;
         }
-        private Stockpile Storage(Village v, string resource, double amount, Int2 from) => v.Stockpiles.Where(s => s.Kind == "storage" && HasRoom(v, s, resource, amount)).OrderBy(s => Int2.Distance(s.Position, from)).ThenBy(s => s.Id, StringComparer.Ordinal).FirstOrDefault(s => Path(from, s.Position, v) != null);
+        private Stockpile Storage(Village v, string resource, double amount, Int2 from, string excludedId = null) => v.Stockpiles.Where(s => s.Kind == "storage" && (excludedId == null || s.Id != excludedId) && HasRoom(v, s, resource, amount)).OrderBy(s => Int2.Distance(s.Position, from)).ThenBy(s => s.Id, StringComparer.Ordinal).FirstOrDefault(s => Path(from, s.Position, v) != null);
         public bool HasRoom(Village v, Stockpile s, string resource, double amount)
         {
             if (s.Accepts.Count > 0 && !s.Accepts.Contains(resource))
