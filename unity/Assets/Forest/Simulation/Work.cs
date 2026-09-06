@@ -934,15 +934,25 @@ namespace IdleCatForest.Simulation
         private bool PendingExpansionWall(Village v, Int2 at) => v.Jobs.Any(j => !j.Completed && j.Kind == "expand" && j.OriginalKind != "expand_village" && j.Path.Contains(at));
         private Int2? FreeBuildingEntrance(Village v, Int2 position)
         {
-            var roads = ConnectedRoads(v);
+            var walls = v.Jobs.Where(j => !j.Completed && j.Kind == "expand" && j.OriginalKind != "expand_village").SelectMany(j => j.Path).ToHashSet();
+            var roads = ConnectedRoads(v, walls);
             foreach (var at in EntranceCandidates(new Building { Position = position }).OrderBy(p => Int2.Distance(p, v.Center)).ThenBy(p => p.Z).ThenBy(p => p.X))
-                if (roads.Contains(at) && !PendingExpansionWall(v, at))
+                if (roads.Contains(at))
                     return at;
             return null;
         }
         private bool ExpansionFootprintBlocked(Village v, int radius, List<Int2> plannedWalls = null)
         {
             bool WallAt(Int2 p) => plannedWalls != null && plannedWalls.Contains(p) || Math.Max(Math.Abs(p.X - v.Center.X), Math.Abs(p.Z - v.Center.Z)) == radius && !LayoutGate(v, p, radius) && !FarmExterior(v, p, radius);
+            var walls = plannedWalls == null ? new HashSet<Int2>() : plannedWalls.ToHashSet();
+            for (int offset = -radius; offset <= radius; offset++)
+                foreach (var p in new[] { new Int2(v.Center.X + offset, v.Center.Z - radius), new Int2(v.Center.X + offset, v.Center.Z + radius), new Int2(v.Center.X - radius, v.Center.Z + offset), new Int2(v.Center.X + radius, v.Center.Z + offset) })
+                    if (WallAt(p))
+                        walls.Add(p);
+            if (v.Jobs.Any(j => !j.Completed && (j.Kind == "road" || j.Kind == "rail") && j.Path.Any(walls.Contains)))
+                return true;
+            var currentRoads = ConnectedRoads(v);
+            var roads = ConnectedRoads(v, walls);
             bool WallCrosses(Int2 origin, int width, int depth)
             {
                 for (int x = 0; x < width; x++)
@@ -955,15 +965,10 @@ namespace IdleCatForest.Simulation
             {
                 if (WallCrosses(building.Position, building.Width, building.Depth))
                     return true;
-                if (building.HasEntrance)
-                {
-                    if (WallAt(building.Entrance))
-                        return true;
-                }
-                else if (EntranceCandidates(building).Any(WallAt))
+                if (building.Kind != "shrine")
                 {
                     var entrance = BuildingEntrance(v, building);
-                    if (entrance.HasValue && WallAt(entrance.Value))
+                    if (entrance.HasValue && (walls.Contains(entrance.Value) || currentRoads.Contains(entrance.Value) && !roads.Contains(entrance.Value)))
                         return true;
                 }
             }

@@ -284,7 +284,7 @@ namespace IdleCatForest.Simulation
                     p.Z += Math.Sign(a.End.Z - p.Z);
                 path.Add(p);
             }
-            if (path.Count > 128 || path.Any(at => !v.Known.Contains(at) || !Walkable(at) || !FreeInfrastructureFootprint(v, kind, at) || RoadSurface(TileAt(at)) || TileAt(at).Rail || v.Jobs.Any(j => !j.Completed && (j.Kind == "road" || j.Kind == "rail") && j.Path.Contains(at))))
+            if (path.Count > 128 || path.Any(at => !v.Known.Contains(at) || !Walkable(at) || !FreeInfrastructureFootprint(v, kind, at) || PendingExpansionWall(v, at) || RoadSurface(TileAt(at)) || TileAt(at).Rail || v.Jobs.Any(j => !j.Completed && (j.Kind == "road" || j.Kind == "rail") && j.Path.Contains(at))))
                 return ActionResult.Fail("Route must be mapped, free, dry, and unclaimed");
             if (path.Any(at => !CanModifyTerrain(v.Id, at)))
                 return ActionResult.Fail("Foreign territory cannot be modified");

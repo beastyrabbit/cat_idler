@@ -6,10 +6,10 @@ shrine, surrounding roads, connected entrances, four gates, joined fence corners
 responsive zoom and a readable management interface. Existing played saves keep
 their layout and progress; a separate new save exercises the revised founding.
 
-The revised simulation passed 617 noncampaign scenarios, including 115 regressions,
-and nine campaign twins. Unity passed 623 EditMode and 32 PlayMode tests.
+The revised simulation passed 632 noncampaign scenarios, including 130 regressions,
+and nine campaign twins. Unity passed 638 EditMode and 32 PlayMode tests.
 The authority/import suite passed 43 tests. The real SQLite pipeline passed four
-tests in 24.361 seconds. Blender reimport verified 82 models, 88 meshes and 145,611
+tests in 24.959 seconds. Blender reimport verified 82 models, 88 meshes and 145,611
 triangles. These checks establish the tested behavior, not the player's approval
 of the visual design. Native observations and current costs appear below and in
 [the performance report](PERFORMANCE.md).
@@ -25,7 +25,7 @@ native build, scene opening and Play mode. The later Village panel refresh passe
 its focused regression and a rebuilt native app check of connection, local return
 and reconnect.
 
-The corrective revision at `70b26a5d9ba77ffe0378006bdc0d2d94c4e2a360` also passed
+The corrective revision at `28ca62a33d831b6f42966bae01e99125b4592916` also passed
 locked .NET restore and an ARM64 IL2CPP build in a new checkout with no existing
 Unity Library. No Library, played save or identity directory was copied into it.
 
@@ -53,13 +53,13 @@ time and random-state controls.
 
 ## Test and build evidence
 
-- [Simulation results](../../tools/scenarios/VALIDATION.md): 617 focused cases,
-  including 115 regressions, passed in 16.7938 seconds. Nine campaign twins passed
-  in 208.8116 seconds after the housing and expansion corrections.
+- [Simulation results](../../tools/scenarios/VALIDATION.md): 632 focused cases,
+  including 130 regressions, passed in 21.4884 seconds. Nine campaign twins passed
+  in 213.7647 seconds after the complete road and shore-placement corrections.
   Campaigns compare partitioned time, validate claims and retain founding IDs.
   The established fixture has finite supplies and one repeating wood-processing
   station; it does not prove indefinite operation of every mature production chain.
-- Unity EditMode passed 623 noncampaign tests in 69.665 seconds. The unfiltered
+- Unity EditMode passed 638 noncampaign tests in 84.599 seconds. The unfiltered
   Editor run timed out after 600 seconds, so no Editor campaign pass is claimed.
   The same nine campaign scenarios passed in the .NET runner.
 - The complete corrective-revision PlayMode run passed 32 tests.
@@ -91,7 +91,7 @@ Campaigns contain no road, rail or expansion construction jobs; the focused
 regressions exercise those guards, paid construction and interrupted resumption.
 
 Local reports are `artifacts/tests/territory-focused.txt`,
-`artifacts/tests/revision-final-authority.txt`, `artifacts/tests/revision-final-editmode.xml`, `artifacts/tests/revision-final-playmode.xml`
+`artifacts/tests/revision-connectivity-authority.txt`, `artifacts/tests/revision-connectivity-editmode.xml`, `artifacts/tests/revision-connectivity-playmode.xml`
 and `artifacts/fresh-checkout/27ab713-verification.txt`. The fresh-checkout report
 covers the clean build; subsequent interactive scene opening and Play mode were
 checked through Pipeline and Computer Use. These ignored reports are local

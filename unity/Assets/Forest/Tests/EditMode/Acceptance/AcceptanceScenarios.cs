@@ -40,6 +40,22 @@ namespace IdleCatForest.Acceptance
                 string placement = site;
                 yield return new Scenario("regression.review_expansion_reserves_" + placement, () => PendingExpansionPlacement(placement));
             }
+            foreach (string order in new[] { "field_first", "expansion_first", "alternate_route", "loaded_conflict" })
+            {
+                string sequence = order;
+                yield return new Scenario("regression.review_expansion_upstream_road_" + sequence, () => ExpansionRoadConnection(sequence));
+            }
+            foreach (string shore in new[] { "road", "entrance", "pending_wall", "duplicate", "unmapped", "legal_owned", "legal_exterior" })
+            {
+                string placement = shore;
+                yield return new Scenario("regression.review_fishing_placement_" + placement, () => FishingPlacement(placement));
+            }
+            foreach (bool rail in new[] { false, true })
+            {
+                bool track = rail;
+                yield return new Scenario("regression.review_expansion_reserves_linear_" + (track ? "rail" : "road"), () => PendingExpansionLinear(track, true));
+                yield return new Scenario("regression.review_expansion_respects_linear_" + (track ? "rail" : "road"), () => PendingExpansionLinear(track, false));
+            }
             yield return new Scenario("regression.layout_shrine_ring_reserved", ShrineRingReserved);
             yield return new Scenario("regression.layout_pending_entrance_preserves_work", PendingEntrance);
             yield return new Scenario("regression.layout_new_building_uses_door", BuildingDoor);
@@ -339,6 +355,95 @@ namespace IdleCatForest.Acceptance
                 Near(Goods(w, v, "materials"), materials, "Rejected placement consumed expansion materials"); Near(Goods(w, v, "planks"), timber, "Rejected placement consumed timber"); Near(Goods(w, v, "blocks"), blocks, "Rejected placement consumed blocks");
             }
             Valid(w);
+        }
+        static void ExpansionRoadConnection(string order)
+        {
+            var w = Fixture(out var v, out var c); c.BuildingId = ""; PrepareExpansion(w, v);
+            World.Add(v.Stockpiles[0].Goods, "materials", 1003); World.Add(v.Stockpiles[0].Goods, "planks", 4); World.Add(v.Stockpiles[0].Goods, "blocks", 2); v.Research = Catalog.Research.Select(n => n.Id).ToList();
+            int outer = v.Radius + 2; var at = new Int2(outer + 1, 2); var entry = new Int2(outer + 1, 1); var crossing = new Int2(outer, 1);
+            for (int x = outer - 1; x <= outer + 2; x++) for (int z = 0; z <= 3; z++)
+            { var p = new Int2(x, z); var tile = w.TileAt(p); tile.Wall = tile.Water = tile.Mountain = tile.Road = false; tile.ClaimId = ""; if (!v.Known.Contains(p)) v.Known.Add(p); }
+            w.TileAt(new Int2(outer - 1, 0)).Road = true;
+            if (order == "alternate_route") { w.TileAt(new Int2(outer, 0)).Road = true; w.TileAt(new Int2(outer + 1, 0)).Road = true; }
+            var roadId = Act(w, v, new GameAction { Kind = "BuildRoad", Position = new Int2(outer - 1, 1), End = entry, CatId = c.Id }).EntityId;
+            var road = v.Jobs.Single(j => j.Id == roadId); for (int tick = 0; tick < 600 && !road.Completed; tick++) w.Step(1);
+            Check(road.Completed && w.BuildingEntrance(v, new Building { Position = at }).Equals(entry), "Public road did not connect the distant Field entrance"); Near(Goods(w, v, "materials"), 1000, "Access road changed its finite material bill");
+            bool expansionFirst = order == "expansion_first" || order == "loaded_conflict"; Job expansion = null; Building field = null; Cat builder = c;
+            if (expansionFirst)
+            {
+                var planned = Act(w, v, new GameAction { Kind = "RequestJob", Name = "expand", CatId = c.Id }); expansion = v.Jobs.Single(j => j.Id == planned.EntityId);
+                Check(expansion.Path.Contains(crossing) && !expansion.Path.Contains(entry), "Fixture must reserve an upstream road, not the doorway");
+                builder = v.Cats[1]; builder.ControlledBy = "";
+            }
+            if (order == "loaded_conflict")
+            {
+                // Existing save conflict: a completed Field whose road crosses already planned wall work.
+                field = new Building { Id = w.Id("loaded-field"), Kind = "field", Position = at, Entrance = entry, HasEntrance = true, Completed = true }; v.Buildings.Add(field);
+                double materials = Goods(w, v, "materials"), progress = expansion.Progress; int claims = w.Reservations.Count; w.Step(3);
+                Check(expansion.BlockedReason == "expansion_footprint_blocked" && expansion.Progress == progress && expansion.PathIndex == 0 && w.Reservations.Count == claims, "Loaded Field's upstream road did not pause the existing expansion before material movement");
+                Near(Goods(w, v, "materials"), materials, "Blocked upstream road consumed retained expansion materials"); Check(!w.TileAt(crossing).Wall, "Blocked expansion walled the Field's upstream road"); Valid(w); return;
+            }
+            int reservations = w.Reservations.Count, jobs = v.Jobs.Count, buildings = v.Buildings.Count;
+            var placement = w.Apply(Context(v), new GameAction { Kind = "PlanBuilding", Name = "field", Position = at, CatId = builder.Id });
+            if (order == "expansion_first")
+            {
+                Check(!placement.Success, "Field placement accepted a road that pending expansion will disconnect");
+                Check(v.Buildings.Count == buildings && v.Jobs.Count == jobs && w.Reservations.Count == reservations, "Rejected disconnected Field changed structures, jobs or claims"); Near(Goods(w, v, "planks"), 4, "Rejected Field consumed timber"); Near(Goods(w, v, "blocks"), 2, "Rejected Field consumed blocks"); Valid(w); return;
+            }
+            Check(placement.Success, "Initial exterior Field was not connected: " + placement.Error); field = v.Buildings.Single(b => b.Id == placement.EntityId);
+            for (int tick = 0; tick < 600 && !field.Completed; tick++) w.Step(1); Check(field.Completed, "Public exterior Field construction did not complete");
+            reservations = w.Reservations.Count; jobs = v.Jobs.Count; var expanded = w.Apply(Context(v), new GameAction { Kind = "RequestJob", Name = "expand", CatId = c.Id });
+            if (order == "field_first")
+            {
+                Check(!expanded.Success, "Expansion accepted an upstream wall that disconnects an existing Field"); Check(v.Jobs.Count == jobs && w.Reservations.Count == reservations, "Rejected expansion created jobs or claims"); Near(Goods(w, v, "materials"), 1000, "Rejected expansion consumed materials");
+            }
+            else
+            {
+                Check(expanded.Success, "Alternate road through the required gate did not allow expansion"); expansion = v.Jobs.Single(j => j.Id == expanded.EntityId);
+                for (int tick = 0; tick < 12000 && !expansion.Completed; tick++) w.Step(1);
+                Check(expansion.Completed && w.TileAt(crossing).Wall && w.BuildingEntrance(v, new Building { Position = at }).Equals(entry), "Completed expansion lost the Field's alternate shrine-connected road");
+                foreach (var gate in new[] { new Int2(0, outer), new Int2(0, -outer), new Int2(outer, 0), new Int2(-outer, 0) }) Check(!w.TileAt(gate).Wall, "Alternate access created a missing cardinal gate");
+                Near(Goods(w, v, "materials"), 1000 - expansion.Path.Count, "Expansion with alternate access changed its wall bill");
+            }
+            Check(w.BuildingEntrance(v, new Building { Position = at }).Equals(entry), "Existing Field lost its shrine-connected doorway"); Valid(w);
+        }
+        static void FishingPlacement(string placement)
+        {
+            var w = Fixture(out var v, out var c); c.BuildingId = ""; PrepareExpansion(w, v); World.Add(v.Stockpiles[0].Goods, "materials", 1000);
+            var at = placement == "road" ? new Int2(2, 1) : placement == "entrance" ? v.Buildings.First(b => b.Kind == "den").Entrance : placement == "pending_wall" ? new Int2(v.Radius + 2, 1) : placement == "legal_owned" ? new Int2(4, -5) : new Int2(12, 5);
+            var tile = w.TileAt(at); tile.Wall = tile.Water = tile.Mountain = false;
+            if (placement != "road" && placement != "entrance") tile.Road = tile.Rail = false;
+            if (!v.Known.Contains(at)) v.Known.Add(at); if (placement == "unmapped") v.Known.Remove(at);
+            var water = w.TileAt(new Int2(at.X + 1, at.Z)); water.Wall = water.Mountain = false; water.Water = true; water.Resource = "fish"; water.Amount = water.FishCapacity = 24;
+            if (placement == "pending_wall") Act(w, v, new GameAction { Kind = "RequestJob", Name = "expand", CatId = c.Id });
+            var action = new GameAction { Kind = "DesignateFishingSpot", Position = at, End = at };
+            if (placement == "duplicate") Act(w, v, action);
+            int piles = v.Stockpiles.Count, jobs = v.Jobs.Count, claims = w.Reservations.Count; string terrain = TerrainState(tile); double materials = Goods(w, v, "materials");
+            var result = w.Apply(Context(v), action); bool legal = placement == "legal_owned" || placement == "legal_exterior";
+            if (legal)
+            {
+                Check(result.Success, "Legal " + placement + " fishing shore was rejected: " + result.Error);
+                Check(v.Stockpiles.Count == piles + 1 && v.Stockpiles.Single(p => p.Id == result.EntityId).Kind == "fishing", "Legal fishing designation did not create its physical shore pile");
+            }
+            else
+            {
+                Check(!result.Success, "Fishing designation accepted " + placement + " shore");
+                Check(v.Stockpiles.Count == piles && v.Jobs.Count == jobs && w.Reservations.Count == claims, "Rejected fishing designation changed piles, work or claims");
+            }
+            Check(TerrainState(tile) == terrain, "Fishing designation changed its underlying terrain"); Near(Goods(w, v, "materials"), materials, "Fishing designation changed held materials"); Valid(w);
+        }
+        static void PendingExpansionLinear(bool rail, bool expansionFirst)
+        {
+            var w = Fixture(out var v, out var c); c.BuildingId = ""; PrepareExpansion(w, v);
+            World.Add(v.Stockpiles[0].Goods, "materials", 1000); World.Add(v.Stockpiles[0].Goods, "metal", 10); v.Research = Catalog.Research.Select(n => n.Id).ToList();
+            int outer = v.Radius + 2; var at = new Int2(outer, 1); var tile = w.TileAt(at); tile.Road = tile.Rail = false; w.TileAt(new Int2(outer, 0)).Road = true;
+            var wall = new GameAction { Kind = "RequestJob", Name = "expand", CatId = c.Id }; var line = new GameAction { Kind = rail ? "DesignateRail" : "BuildRoad", Position = at, End = at, CatId = c.Id };
+            Act(w, v, expansionFirst ? wall : line); var builder = v.Cats[1]; builder.ControlledBy = "";
+            int jobs = v.Jobs.Count, claims = w.Reservations.Count; double materials = Goods(w, v, "materials"), metal = Goods(w, v, "metal");
+            var second = expansionFirst ? line : wall; second.CatId = builder.Id; var result = w.Apply(Context(v), second);
+            Check(!result.Success, expansionFirst ? "Linear infrastructure accepted a reserved expansion wall" : "Expansion accepted a reserved linear infrastructure path");
+            Check(v.Jobs.Count == jobs && w.Reservations.Count == claims && !tile.Road && !tile.Rail, "Rejected linear work changed jobs, claims or terrain");
+            Near(Goods(w, v, "materials"), materials, "Rejected road consumed expansion materials"); Near(Goods(w, v, "metal"), metal, "Rejected rail consumed metal"); Valid(w);
         }
         static void ShrineRingReserved()
         {

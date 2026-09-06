@@ -482,6 +482,8 @@ namespace IdleCatForest.Simulation
             {
                 p = a.Position;
                 width = depth = 1;
+                if (!FreeSite(v, p, width, depth, GetTile(p)?.ClaimId != v.Id))
+                    return ActionResult.Fail("Invalid fishing area");
                 if (!Walkable(p) || !new[] { new Int2(1, 0), new Int2(-1, 0), new Int2(0, 1), new Int2(0, -1) }.Any(d => TileAt(new Int2(p.X + d.X, p.Z + d.Z)).Water))
                     return ActionResult.Fail("Fishing needs a walkable shore");
             }

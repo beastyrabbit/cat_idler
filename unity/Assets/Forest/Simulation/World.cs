@@ -199,7 +199,7 @@ namespace IdleCatForest.Simulation
             }
         }
         private bool RoadSpace(Village v, Int2 p) => !v.Buildings.Any(b => Contains(b.Position, b.Width, b.Depth, p)) && !v.Stockpiles.Any(s => s.Kind != "spill" && !s.Kind.StartsWith("zone_", StringComparison.Ordinal) && Contains(s.Position, s.Width, s.Depth, p)) && !v.Farms.Any(f => Contains(f.Position, f.Width, f.Depth, p));
-        private HashSet<Int2> ConnectedRoads(Village v)
+        private HashSet<Int2> ConnectedRoads(Village v, HashSet<Int2> excluded = null)
         {
             var seen = new HashSet<Int2>();
             var pending = new Queue<Int2>();
@@ -213,7 +213,7 @@ namespace IdleCatForest.Simulation
             {
                 var at = pending.Dequeue();
                 foreach (var p in Neighbors(at))
-                    if (!seen.Contains(p) && RoadSurface(GetTile(p)) && RoadSpace(v, p) && Walkable(v, p) && (!ReferenceEquals(Village(v.Id), v) || Crossable(at, p)))
+                    if (!seen.Contains(p) && (excluded == null || !excluded.Contains(p)) && RoadSurface(GetTile(p)) && RoadSpace(v, p) && Walkable(v, p) && (!ReferenceEquals(Village(v.Id), v) || Crossable(at, p)))
                     {
                         seen.Add(p);
                         pending.Enqueue(p);
