@@ -1,343 +1,87 @@
-# Architecture — Idle Cat Forest (Rust / Bevy)
+# Idle Cat Forest architecture
 
-Idle Cat Forest is developed and distributed solely as a non-commercial game project.
+Unity renders the forest and provides management and third-person cat control.
+The same C# simulation runs inside the native app or an independent shared-world
+server. The migration acceptance ledger is [unity/ACCEPTANCE.md](unity/ACCEPTANCE.md).
+The game is non-commercial.
 
-This is the current architecture of the game as a Rust Cargo workspace. It supersedes
-`docs/plan.md` (the TypeScript-era design doc, kept only as porting history — see the
-superseded notice at its top). For *design/gameplay* intent (why the systems exist, where
-they're headed) see `docs/GAME_VISION.md`; for the detailed per-system technical specs and
-port status see `docs/migration/specs/` and `docs/migration/BOARD.md`; for hard-won
-build/tooling lessons see `docs/HANDOFF.md`. This doc stays at the "how the pieces fit
-together" altitude.
+## Components
 
-## The workspace
-
-```
-Cargo workspace (edition 2024, resolver "3")
-├── crates/cat-sim       pure deterministic simulation core
-├── crates/cat-protocol  serde wire types shared by server + client
-├── crates/cat-server    tokio + axum authoritative server (WS + SQLite)
-├── crates/cat-client    Bevy 0.19 renderer/UI (lib, native + wasm)
-├── crates/cat-desktop   thin native binary over cat-client
-├── crates/cat-web       thin wasm binary over cat-client
-└── crates/cat-dev       `cargo dev` — local launcher, builds/runs server+desktop together
-```
-
-Data flow, end to end:
-
-```
-cat-sim::world_tick()  ──every colony, every 1s──▶  cat-server (owns the only WorldState)
-        ▲                                                    │
-        │ apply_action()                                     │ build_snapshot()
-        │                                                     ▼
-cat-server  ◀── ClientAction (JSON over WS) ──  cat-client  ◀── WorldSnapshot (JSON over WS)
-                                                     │
-                                                     ▼
-                                          Bevy ECS: sprites, HUD, input
-```
-
-The server is the single source of truth. Clients hold no authoritative state — every frame
-they render whatever `WorldSnapshot` they last received, and every player action is a
-`ClientAction` sent to the server and only reflected once the server's next tick includes its
-effect. There is no client-side prediction.
-
-## cat-sim — the simulation core
-
-`crates/cat-sim` is a `#![forbid(unsafe_code)]`, dependency-light crate (only `cat-protocol`,
-`serde`, `serde_json`, and `ryu-js` for archived-behavior float formatting) with **no I/O**: no
-filesystem, no networking, no clock, no threads, no `rand`. Every module is unit-tested in
-place; use `cargo nextest list -p cat-sim` for the current inventory rather than copying a test
-total into documentation.
-
-### Determinism
-
-All randomness is a ported seeded LCG (`rng.rs`): `seed × 1_664_525 + 1_013_904_223 mod 2^32`,
-matching the original TypeScript `seededRng.ts` bit for bit. Independent subsystems don't share
-one RNG stream — they fork the seed by a fixed offset so that, say, adding a new movement roll
-doesn't perturb the sequence of life-sim rolls in the same tick:
-
-- movement: `seed.wrapping_add(1_000_003)`
-- life sim (breeding/aging/mortality): `seed.wrapping_add(2_000_003)`
-- raids: `seed.wrapping_add(3_000_003)`
-
-This is what makes golden-master testing possible: seed → N ticks → deterministic snapshot,
-comparable against fixtures generated from the original TS implementation
-(`docs/migration/fixtures/`). The bar (per `AGENTS.md`) is *behavioral* parity — "same idea" —
-not byte-identical output in the handful of spots the original TS used raw, unseeded
-`Math.random()`.
-
-### World shape
-
-```rust
-pub struct WorldState {
-    pub colonies: Vec<ColonyRuntime>,
-    // + world-level fields: world_seed, tick counters, etc.
-}
-```
-
-The world is **multi-colony** from the ground up. The original TS game had exactly one global
-colony; here that's just `colonies[0]` (`colony-1`), and `found_colony(...)` is a first-class
-primitive for player-founded villages elsewhere on the same map. `ColonyRuntime` holds
-everything that was previously spread across the `colonies`/`cats`/`jobs`/`buildings`/etc.
-Drizzle tables: resources, cats, jobs, buildings, upgrade-tree state, threat/raid state,
-elections, zones, claimed tiles/fence/gate, officers, stockpiles, gather spots, and the item
-store.
-
-### The tick
-
-`world_tick(&mut WorldState, now_ms) -> Vec<TickReport>` is the single entry point, called once
-per shared world per second by `cat-server`; it then advances every colony in stable order. It
-runs many explicitly ordered phase functions
-(`fn phase_*` in `crates/cat-sim/src/world_tick.rs`) — life sim → consumption/spoilage → elections/zones → path
-decay/regrowth → job promotion → leader plan/direct/assign → production/research → survival →
-due-job completion → hauling → movement → roads → raids → status/persist-prep — mirroring the
-ported `server/game.ts:workerTick` ordering where behavior came from it, with post-cutover phases
-inserted explicitly for new systems such as habitats, migration, staged walls, stations, and
-traders. **Do not add a second tick path** — every simulated effect goes
-through this one function, same discipline the TS game enforced for `workerTick`.
-
-### Module map (by concern)
-
-| Concern | Modules |
+| Path | Responsibility |
 | --- | --- |
-| Foundation | `rng`, `types`, `entities`, `cost_constants`, `needs_constants`, `test_acceleration` |
-| World generation | `noise`, `terrain_gen`, `world_gen`, `biomes`, `climate` |
-| Cat AI | `pathfinding`, `movement`, `policy`, `tasks`, `cat_ai`, `leader_ai`, `leader_director`, `officers` |
-| Life sim | `needs`, `age`, `breeding`, `genetics`, `life_sim`, `survival`, `migration` |
-| Economy | `idle_engine`, `idle_rules`, `production`, `processing`, `productivity`, `farming`, `smithy`, `storage`, `shrine`, `trips`, `depletion`, `spoilage`, `housing`, `roads`, `transport`, `village_layout`, `village_area`, `village_sites`, `stockpiles`, `skills`, `ledger` |
-| Military & governance | `threat`, `warriors`, `combat`, `elections`, `zones`, `upgrade_tree` |
-| Item and research economy | `items`, `recipes`, `station_recipes`, `research_catalog`, `trader` |
-| Orchestration | `world_tick` (the tick loop), `actions` (pure `apply_action` + `build_snapshot`) |
+| `unity/Assets/Forest/Simulation` | Plain C# world, cats, catalogs, jobs, resource claims and player actions |
+| `unity/Assets/Forest/Authority` | Signed identity, permissions, client projection, atomic persistence and WebSocket client |
+| `unity/Assets/Forest/Presentation` | Unity models, cameras, input and UI Toolkit management |
+| `unity/Assets/Forest/Editor` | Entry scene, native build, inspection and measured performance commands |
+| `server/Forest.Server` | ASP.NET shared-world host |
+| `server/Forest.Tests` | Real sockets, identity, save, restart and migration verification |
+| `tools/scenarios` | Rendering-free scenarios shared with Unity EditMode tests |
+| `tools/save-import` | Read-only conversion of maintained legacy SQLite saves |
+| `source-art` | Editable Blender geometry and reproducible FBX export |
 
-Each module's doc comment cites the original TypeScript file it was ported from (e.g.
-`leader_director.rs` ← `lib/game/leaderDirector.ts`), per `AGENTS.md`'s commenting convention —
-that's the fastest way to find the ported behavior's original spec and tests.
+The .NET projects compile the simulation and authority source from Unity's Assets
+directory. There is one implementation of game rules. Unity assembly definitions
+keep simulation independent of the engine, rendering, network I/O and clocks.
 
-### Maintained product state
+## Time and decisions
 
-The migration and maintained P12–P19 product contract are complete. The authoritative evidence
-ledger is `docs/IMPLEMENTATION_AUDIT.md`; the migration board retains dated implementation history.
+`World.Step(seconds)` receives explicit time. Seeded random state, stable IDs,
+job phases and reservations belong to the world. Autonomous and controlled movement,
+needs, work, farming and transport advance in fixed 50-millisecond simulation steps.
+Each cat shares one time budget between movement and work. Rates are measured per
+simulated second, so shorter steps do not multiply production or consumption.
+Planning and ecology retain their slower schedules. Different input partitions
+must produce the same state at the same simulation boundary.
 
-- **Manual-to-officer control.** The founding Leader retains only a bounded hunt/water/scout
-  safety floor. Seven specialist offices own distinct automation categories, and vacancies leave
-  those categories manual. Signed actions cover placement, designation, governance, labor,
-  production queues, research, combat, shrine work, transport, equipment, and trade.
-- **Physical economy.** Ten maintained processor types and all 108 runtime recipes, including the
-  physical Fibre→Thread→Cloth chain and canonical Wood/Stone/Metal/Bone Mug routes, reserve finite
-  input, carry it to station-local storage, perform staffed work, create finite local output, and
-  deliver it before aggregate credit. All generated recipe/resource research payloads have an
-  authoritative consumer. The 32-resource storage/wire/carrying vocabulary is exhaustive; its
-  complete presentation lives in Stores rather than the compact world HUD.
-- **Research.** The persistent ledger contains exactly 487 implemented studies: 165 Building,
-  167 Recipe/Resource, and 155 Upgrade. Every node is dependency-order purchasable; no card is a
-  disabled `FUTURE` promise. Twelve `Crews` studies expand real concurrent physical stations;
-  thirteen others provide bounded effects scoped to their completed building rather than inventing
-  worker slots. Thirteen former containerless capacity studies are omitted with migration refunds.
-  The catalog is deterministically expanded from `research_catalog_legacy.json` plus the named
-  family/stage matrix in `research_catalog_tracks.json`; `research_catalog.rs` validates the
-  resulting dependency graph and effect bindings before exposing it to the sim and wire snapshot.
-- **Items and reports.** Exact equipment preserves identity, material, quality, weight, durability,
-  wear, repair, equipment, escrow, and persistence. A staffed Accountant physically visits piles;
-  only visited reports become current, and private exact totals never leak through snapshots.
-- **Shared world.** One ownerless 30-cat/six-Den Grand Commons and one private
-  15-cat/three-Den village per signed identity share canonical terrain and ecology. Returned scouts
-  establish contact. Persisted visible caravans conserve scalar goods and exact equipment over
-  obstacle-aware routes through both villages' gates.
-- **Spatial and visual truth.** Founding clearing, exterior farms, finite fishing and extraction,
-  dirt/stone roads, staged walls, rail/shipping, open label-free stations, physical cargo, the
-  Adventure UI, and native/WASM clients are implemented. The world view pins only critical survival
-  stores; the complete resource inventory lives in the Stores menu, and one compact command
-  category is expanded at a time. The full-page research ledger remains 487/487 with no
-  `FUTURE` state. The integrated road, single-cat-body, resolved-decoration, and compact-UI
-  corrections pass their generalized native visual and guided-play gate.
-- **Deployment.** The same-origin, non-root production image serves the client, assets, probes, and
-  WebSocket with compression and Origin checks. Local verification uses focused regressions and
-  the smoke profile; Forgejo owns one dynamically scheduled complete suite on the resource-capped
-  `cat-idler-heavy` runner.
+The save retains both requested elapsed time and the last consumed simulation
+step. Loading a partial step continues its remaining time; older saves begin from
+their existing clock without replaying elapsed work. Moving vehicles, merchants,
+caravans and raiders retain fractional coordinates plus their last reached grid
+position, which remains the anchor for route and boundary checks.
 
-### Maintained founding and life pacing
+The Leader creates bounded primitive survival and scouting work. Specialist
+officers create work in their researched categories. Jobs execute physical travel,
+pickup, work and delivery; choosing a plan does not credit its expected output.
+Cat needs can suspend work, and cancellation, death and direct control must release
+claims or leave owned cargo at a recoverable physical location.
 
-An ordinary village founding is a fixed simulation invariant, not client decoration: 15 adult
-cat entities occupy three complete Dens with five beds apiece. Pregnancy reserves a permanent
-bed before conception and gestates for 18 game-hours. After a 30-game-hour establishment window,
-a prosperous settlement can receive deterministic migrant cohorts; unhoused arrivals participate
-in the real economy during a 36-game-hour probation and leave if no bed opens. An extinction
-reset reconstructs the whole founding state atomically and uses run-scoped identities so old
-migrant or job records cannot leak into the new run.
+The catalogs contain 25 buildings, 108 recipes and 487 studies. Catalog data alone
+does not implement their effects. Named scenarios test physical production,
+capacity, service modifiers, resource stages and public unlocks. See
+[unity/GAMEPLAY_ACCEPTANCE.md](unity/GAMEPLAY_ACCEPTANCE.md).
 
-Old-age pacing intentionally diverges from the archived TypeScript prototype: ordinary mortality
-begins at 240 game-hours and leader/healer mortality at 288, rather than 48 and 57.6. Emergency
-water is likewise an ordinary physical job: a selected cat travels to water, carries the yield,
-and deposits it. No crisis phase may add free water directly to colony resources.
+## Authority and persistence
 
-## cat-protocol — the wire contract
+A local game embeds `LocalAuthority`. A remote game sends the same actions through
+`WorldClient`; the server validates the signed connection, selected village,
+action limits and permissions. The communal village is shared, while personal
+villages belong to stable identities. Founding and joining do not grant access to
+another player's private inventory or control.
 
-`crates/cat-protocol` has one dependency (`serde`) and defines the JSON shape both sides speak
-over the WebSocket:
+Client frames contain the permitted projection. Accountant reports remain
+historical physical counts; rendering must not expose canonical inventory as a
+current count. The server owns movement, control leases, goods, trades and routes.
+Unity physics and camera input cannot bypass those rules.
 
-- **`WorldSnapshot`** — top-level, holds a `Vec<ColonySnapshot>` plus world-level fields.
-- **`ColonySnapshot`** — one colony's full renderable state: resources + storage caps, cats,
-  jobs, buildings, upgrade-tree progress, research, open-election/vote-kick state plus the
-  authoritative between-term election schedule, zones, threat +
-  raiders, claimed tiles/fence/gate, village radius/anchor, officers, stockpiles, gather spots,
-  item store, road/rail/shipping infrastructure and routes, physical village caravans, online count.
-- **`ClientAction`** — an exhaustive typed contract. It covers handshake,
-  signed jobs/scouts/shrine work, upgrades/research, elections, zones, exact construction and
-  roads, staffing/officers/labor preferences, farm/stockpile/gather/fishing designations, village
-  founding/selection/barter/caravan cancellation, trader buy/sell, exact finite-item
-  equip/unequip/repair, station queue editing, rail/dock/vehicle construction and transport
-  routing, raids, and the three release-disabled test controls. The exhaustive enum in
-  `crates/cat-protocol/src/lib.rs` is authoritative when this inventory changes.
+Versioned saves retain the full authoritative world with a checksum and atomic
+replacement. Credential files are separate and protected. Unsupported or damaged
+data fails visibly and is never replaced with a fresh colony. Legacy import reads
+SQLite through the maintained loader and writes a new destination. Detailed
+format, key and continuation rules live in
+[unity/PERSISTENCE.md](unity/PERSISTENCE.md).
 
-Field names are `camelCase` on the wire (matching the old TS API shape where it still matters)
-via `#[serde(rename_all = "camelCase")]`-style annotations; most actions carry `session_id` /
-`nickname` / `sig` for HMAC-verified identity.
-`WorldSnapshot.protocolVersion` is the first serialized field. A snapshot-breaking enum or shape
-change must increment `PROTOCOL_VERSION`; the client detects that prefix before nested decoding,
-retains the last frame as stale, and shows `UPDATE REQUIRED`. Legacy snapshots default to version
-1, and wire collection counts/indices use fixed-width integers across native and wasm targets.
+## Rendering and operation
 
-## cat-server — the authoritative server
+The management camera is orthographic over an actual 3D world. Direct control uses
+a replaceable third-person camera following the same cat ID, needs, cargo and
+authority. Other cats continue working. Presentation interpolates authoritative
+positions and animates authored cat parts without moving simulation state.
 
-`crates/cat-server` (tokio + axum) is a single binary:
+The built-in renderer uses shared Blender-authored meshes, simple materials, one
+directional light and bounded shadows. Terrain rendering reads discovered state;
+it must never generate authoritative tiles. Asset import, pivots, axes and
+rendering cost are checked in Blender and Unity.
 
-- `GET /health` → `"ok"` liveness probe; `GET /ready` checks persisted-state readiness.
-- `GET /ws` → WebSocket upgrade. Each connection is a task that reads `ClientAction` JSON
-  frames, calls `apply_action` against the shared `Arc<Mutex<WorldState>>`, and forwards the
-  broadcast `WorldSnapshot` stream.
-- A `tokio::spawn`ed loop schedules `world_tick` **once per second** for the whole world (not
-  currently configurable — the interval is `Duration::from_secs(1)` in `main.rs`). CPU-heavy
-  simulation, snapshot construction, and synchronous SQLite work run on Tokio's blocking pool.
-  A startup-initialized last-completed snapshot lets new sockets connect without waiting for an
-  in-progress world lock; saves clone completed state and release that lock before disk I/O.
-  Missed intervals skip rather than burst-replay. The server broadcasts after completed ticks,
-  saves every 5 ticks, and saves once on graceful shutdown (`SIGTERM`/Ctrl-C).
-- **Persistence** (`persistence.rs`) is `rusqlite` (bundled SQLite) with tables mirroring the
-  old Drizzle schema (`world`, `colonies`, `cats`, `jobs`, `buildings`, `world_tiles`, `events`,
-  `zones`, `elections`, `votes`, `raiders`) and additive `ALTER TABLE`-style migrations applied
-  on open — same "migrate on connect" discipline as the old `db/client.ts`. Mutable terrain and
-  Fish ecology additionally persist in the world-scoped `shared_world_tiles`/world Fish ledger;
-  per-colony spatial rows are compatibility/view caches, not competing authorities.
-- **Identity** (`identity.rs`) issues and verifies HMAC-signed sessions
-  (`SESSION_HMAC_SECRET`; refuses to boot in `NODE_ENV=production` without one, falls back to
-  an insecure dev secret otherwise) — the hardening the old TS game's `docs/plan.md` flagged as
-  a "forgeable sessionId, HMAC hardening is a flagged follow-up" is now implemented here.
-- **Routing and security** bind signed identity and selected-colony state to each socket. A join
-  reorders that socket's authorized shared-world projection so the selected colony is first while
-  mutation context targets the same colony. Anonymous sockets see the global village read-only;
-  authenticated sockets control it, owners additionally receive their personal village, and
-  discovered foreign villages remain summary-only. Owner identity never enters the wire DTO.
-- **Rate limiting** (`rate_limit.rs`) caps actions at 30 per 10-second window per session.
-- **Production host** can serve the Trunk SPA and tracked images from the same process, with
-  Brotli/gzip, cache headers, exact WebSocket Origin checks, and SPA fallback. The repository
-  `Dockerfile` packages that mode as a non-root image.
-- **Whole-game test host** is compiled only for tests. It binds the real Axum router to an
-  ephemeral loopback port, uses temporary SQLite plus normal HMAC/presence handling, replaces the
-  automatic ticker with deterministic monotonic advancement through `run_tick_once`, and supports
-  save/shutdown/restart/reconnect. Scenario code cannot mutate fixtures after the listener starts;
-  it observes only WebSocket action results and per-socket projected snapshots.
-
-Core env vars: `BIND_ADDR` (default `127.0.0.1`), `PORT` (default `8787`),
-`GAME_DB_PATH` (default `data/cat.db`), and `SESSION_HMAC_SECRET`. Static production mode adds
-`CAT_SERVER_WEB_DIST_DIR`, `CAT_SERVER_PUBLIC_IMAGES_DIR`, and
-`CAT_SERVER_ALLOWED_ORIGINS`; see `docs/DEPLOYMENT.md`.
-
-## cat-client / cat-desktop / cat-web — the renderer
-
-`crates/cat-client` is a Bevy 0.19 **library** (`pub fn run()`), shared by two thin binaries:
-`cat-desktop` (native) and `cat-web` (wasm, `wasm32-unknown-unknown`). It connects to
-`cat-server` over WebSocket via `ewebsock` (a cross-platform WS crate with a browser backend),
-deserializes `WorldSnapshot` on receipt, and stores it as a Bevy resource that render/UI
-systems read each frame.
-
-The renderer is **top-down**, not isometric — the maintained first game-vision pillar (see
-`docs/GAME_VISION.md`'s "Top-down, single level" pillar and `docs/migration/BOARD.md` P9). It
-draws: biome
-terrain generated client-side from the shared `world_seed` (via `cat_sim::generate_terrain_chunk`
-— the client doesn't need the server to stream tile data, just the seed), fog of war, paved
-roads, cats (shape-and-color specialization/officer badges, carrying marker, walk animation that interpolates toward
-the latest snapshot tile rather than teleporting), label-free roofed homes and typed open
-stations, stockpiles/gather spots, raiders, crop stages, and zone overlays. The compact world HUD
-shows critical survival stores and colony status; the Stores menu owns the full inventory, while
-category menus expose map tools and signed commands without a permanent button wall. Census,
-event log, trade, officers, village selection, authoritative election countdown/open-election controls, and
-cat/building inspectors. Its full-page research screen renders and purchases the complete
-487-study ("about 500") catalog with filter/search/pan/zoom.
-The maintained P18 Adventure 9-patch/button/progress/minimap/cursor foundation is implemented and
-native-framebuffer verified at 1024×768, 1280×800, and 1920×1080. The compact menus also pass
-current narrow/wide native inspection and the shared WASM compile gate.
-
-Art: curated pixel sprites under `public/images/game/{terrain,nature,buildings,interior,infra,
-props,farm,enemies}/`, with accepted cat/raider sheets under `public/images/cats/` — see
-`docs/assets/SELECTION.md` for the runtime mapping.
-
-Bevy-specific gotchas (camera Z-layering, sprite/text API shapes, asset-root resolution) are
-documented in `docs/HANDOFF.md` — read that before touching client rendering code.
-
-### Native vs. browser
-
-- **Native** (`cat-desktop`): `cargo run -p cat-desktop`, or `cargo dev` to launch server +
-  client together. Uses `bevy`'s `multi_threaded`, `x11`, `wayland` features.
-- **Browser** (`cat-web`): builds through Trunk for `wasm32-unknown-unknown`, serves the same
-  tracked assets, uses `ewebsock`, and derives its production WebSocket URL from
-  `window.location`. The bundle has been exercised end-to-end in Chromium and the combined
-  server/WASM production image is verified. Optional transfer/performance work is tracked in
-  `docs/migration/WASM.md`.
-
-## cat-dev — the local dev launcher
-
-`crates/cat-dev` is a tiny `std`-only binary (`cargo dev`, aliased in `.cargo/config.toml`)
-that builds `cat-server` + `cat-desktop`, starts the server, waits for it to accept
-connections, launches the desktop client pointed at it (`CAT_SERVER_URL`,
-`BEVY_ASSET_ROOT=<workspace root>`), and kills the server when the client window closes. It
-refuses to start if something is already listening on the target port, to avoid silently
-attaching a fresh client to a stale, pre-rebuild server.
-
-## Testing strategy
-
-- **`cat-sim`**: pure unit/integration tests plus golden-master fixtures under
-  `docs/migration/fixtures/` for modules ported from TS, generated by a one-off `npx tsx`
-  script run against the *frozen, never-edited* TS source (`AGENTS.md` rule #5 — the sole
-  permitted JS use in this codebase). Any new simulation constant needs a boundary test in the
-  owning module, same discipline the old TS project enforced.
-- **Test totals:** use `cargo nextest list --workspace`; dated feature sections in the audit retain
-  the exact gate that supported that evidence, but this architecture document does not freeze a
-  workspace count that becomes false on the next integrated slice.
-- **`cat-protocol`**: serde round-trip tests (serialize → deserialize → equal).
-- **`cat-server`**: focused transport tests may call the app in-process. Whole-game scenarios use
-  the real loopback WebSocket harness, deterministic ticks, SQLite restart, HMAC reconnect, bounded
-  milestones, and JSON failure traces. Data-driven manifests tie each scenario to the design audit
-  and fixed seed tier; typed catalog sweeps aggregate every mismatch across buildings, recipes,
-  crops, finite biome deposits, resources, item/material/quality variants, jobs, research, and
-  worker skills. The public-action contract
-  exercises valid, malformed, and invalid-authentication forms over real sockets, while queue and
-  exact work-slot edits assert their projected behavioral state.
-- **`cat-client`**: logic/UI-shape tests supplement manual visual checks. Rendering is verified
-  by capturing the client's own framebuffer to a PNG and reading it back (method documented in
-  `docs/HANDOFF.md`), since "it compiles" has previously hidden a black-screen regression. A
-  command-registry guard also serializes every visible dock command and pins its protocol action
-  tags. Direct renderer/input contracts cover complete building-footprint hit detection, stacked
-  target cycling, Den roof-without-floor composition, and distinct actual atlas frames for moving
-  cats.
-
-Local quality gate before any commit (per `AGENTS.md`): the focused test for touched behavior,
-`cargo nextest run --workspace --profile smoke`,
-`cargo clippy -p <crate> --all-targets -- -D warnings`, and `cargo fmt`. Lefthook wires formatting
-on pre-commit and Clippy plus the smoke profile on pre-push (`lefthook.yml`). Forgejo first runs the
-same stable gate on a generic runner, then runs one unpartitioned `profile ci` inventory with two
-test threads on the one-capacity `cat-idler-heavy` runner. Singleton/framebuffer tests use a serial
-Nextest group. Nightly fixed-seed playtests and weekly LLVM coverage share that runner and therefore
-queue rather than competing for homelab resources. Heavy jobs publish peak resource measurements,
-and the WASM gate enforces the maintained 10 MiB gzip transfer ceiling. The JS lint/typecheck/test hooks that used to
-gate the TypeScript game are no longer relevant.
-
-## Maintained follow-ups
-
-The P11 cutover and maintained gameplay implementation are complete. The integrated corrections
-listed in `docs/FIX_LOG.md` pass one generalized passive, signed player-guided, persistence, and
-multi-frame visual verification campaign with combined evidence recorded there. The TypeScript
-implementation lives only on `archive/web-game` (`web-final`), and the
-browser bundle plus combined production host run end-to-end. Optional WASM transfer tuning remains
-an external follow-up; new defects must be reproduced and recorded in `docs/FIX_LOG.md` rather than
-inferred from old phases. The maintained local-smoke/remote-full process is defined in
-`docs/TESTING.md`.
+[unity/DEVELOPMENT.md](unity/DEVELOPMENT.md) documents opening, running, building,
+inspection and tests. Apple Silicon macOS is the required native target. Other
+platforms are possible but require their own builds and verification.

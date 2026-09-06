@@ -1,0 +1,17 @@
+<Solution>
+  <Folder Name="/server/">
+    <Project Path="server/Forest.Authority/Forest.Authority.csproj" />
+    <Project Path="server/Forest.Server/Forest.Server.csproj" />
+    <Project Path="server/Forest.Tests/Forest.Tests.csproj" />
+  </Folder>
+  <Folder Name="/tools/" />
+  <Folder Name="/tools/presentation-fixture/">
+    <Project Path="tools/presentation-fixture/Forest.PresentationFixture.csproj" />
+  </Folder>
+  <Folder Name="/tools/save-import/">
+    <Project Path="tools/save-import/Forest.SaveImport/Forest.SaveImport.csproj" />
+  </Folder>
+  <Folder Name="/tools/scenarios/">
+    <Project Path="tools/scenarios/Forest.Scenarios.csproj" />
+  </Folder>
+</Solution>

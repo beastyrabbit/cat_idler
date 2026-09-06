@@ -1,0 +1,21 @@
+Campaign groups ran concurrently on source 6ee8080. Each elapsed time belongs to its group.
+
+GROUP fresh
+PASS campaign.fresh_48h_seed_7 155153.8ms
+PASS campaign.fresh_48h_seed_41 147088.1ms
+PASS campaign.fresh_48h_seed_127 143875.2ms
+RESULT total=3 failed=0 elapsed_ms=446120.4
+
+GROUP established
+PASS campaign.established_72h_seed_7 246070.7ms
+PASS campaign.established_72h_seed_41 236154.7ms
+PASS campaign.established_72h_seed_127 225111.4ms
+RESULT total=3 failed=0 elapsed_ms=707340.7
+
+GROUP shared
+PASS campaign.shared_personal_48h_seed_7 242846.1ms
+PASS campaign.shared_personal_48h_seed_41 230958.0ms
+PASS campaign.shared_personal_48h_seed_127 219343.8ms
+RESULT total=3 failed=0 elapsed_ms=693150.8
+
+COMBINED total=9 failed=0

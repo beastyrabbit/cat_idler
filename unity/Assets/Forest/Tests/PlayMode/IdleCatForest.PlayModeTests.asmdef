@@ -1,0 +1,6 @@
+{
+  "name": "IdleCatForest.PlayModeTests",
+  "references": ["IdleCatForest.Simulation", "IdleCatForest.Authority", "IdleCatForest.Presentation", "Unity.InputSystem"],
+  "optionalUnityReferences": ["TestAssemblies"],
+  "defineConstraints": ["UNITY_INCLUDE_TESTS"]
+}
