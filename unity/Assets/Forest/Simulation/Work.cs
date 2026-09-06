@@ -550,7 +550,21 @@ namespace IdleCatForest.Simulation
             if (j.Phase == "input_delivery")
             {
                 if (!Move(c, j.Position, 1))
+                {
+                    if (j.Kind == "haul" && c.BlockedReason == "blocked_route" && j.Local.Count == 0 && c.Cargo.Count > 0)
+                    {
+                        var carried = c.Cargo[0];
+                        var alternate = Storage(v, carried.Resource, carried.Amount, c.Position, j.SourceId);
+                        if (alternate != null)
+                        {
+                            j.TargetId = alternate.Id;
+                            j.Position = alternate.Position;
+                            c.Path.Clear();
+                            j.BlockedReason = c.BlockedReason = "";
+                        }
+                    }
                     return;
+                }
                 foreach (var s in c.Cargo)
                     Add(j.Local, s.Resource, s.Amount);
                 c.Cargo.Clear();

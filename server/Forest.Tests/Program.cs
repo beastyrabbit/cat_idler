@@ -455,6 +455,46 @@ foreach (bool automaticTicks in new[] { false, true })
         }
         finally { Directory.Delete(directory, true); }
     });
+Test("scalar haul retargets blocked destination across restart", () =>
+{
+    var directory = Path.Combine(Path.GetTempPath(), "forest-scalar-retarget-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(directory);
+    try
+    {
+        var path = Path.Combine(directory, "world.json"); var world = World.Create(41); var v = world.Villages.Single();
+        v.Buildings.RemoveAll(b => b.Kind != "den" && b.Kind != "shrine"); v.Stockpiles.RemoveRange(1, v.Stockpiles.Count - 1); v.Stockpiles[0].Accepts = new List<string> { "food", "water" };
+        var cat = v.Cats.First(c => c.Id != v.LeaderId); cat.Position = new Int2(1, 2); cat.X = 1; cat.Z = 2;
+        foreach (var other in v.Cats.Where(c => c.Id != cat.Id)) { other.ControlledBy = "fixture-observer"; other.ControlLeaseUntil = 10000; }
+        var source = new Stockpile { Id = world.Id("source-store"), Position = new Int2(-5, 1), Width = 1, Depth = 1, Capacity = 100, Accepts = new List<string> { "logs" }, Goods = new List<Stack> { new Stack("logs", 8) } };
+        var blocked = new Stockpile { Id = world.Id("original-store"), Position = new Int2(5, 1), Width = 1, Depth = 1, Capacity = 8, Accepts = new List<string> { "logs" } };
+        var alternate = new Stockpile { Id = world.Id("alternate-store"), Position = new Int2(5, 4), Width = 1, Depth = 1, Capacity = 8, Accepts = new List<string> { "logs" } };
+        v.Stockpiles.Add(source); v.Stockpiles.Add(blocked); v.Stockpiles.Add(alternate);
+        var context = new PlayerContext { PlayerId = "fixture-scalar-hauler", VillageId = v.Id }; string catId = cat.Id, sourceId = source.Id, blockedId = blocked.Id, alternateId = alternate.Id;
+        var result = world.Apply(context, new GameAction { Kind = "HaulGatherSpot", CatId = cat.Id, TargetId = source.Id }); Check(result.Success, "scalar haul rejected: " + result.Error); string jobId = result.EntityId; var job = v.Jobs.Single(j => j.Id == jobId);
+        Check(job.TargetId == blockedId && job.Amount == 8, "haul did not choose the initial nearer store");
+        for (int tick = 0; tick < 100 && job.Phase != "input_delivery"; tick++) world.Step(1);
+        Check(job.Phase == "input_delivery" && World.Amount(cat.Cargo, "logs") == 8 && World.Amount(source.Goods, "logs") == 0, "scalar haul did not enter its carried input_delivery phase");
+        result = world.Apply(context, new GameAction { Kind = "CreateZone", Resource = "avoid", Position = blocked.Position, End = blocked.Position }); Check(result.Success, "public original-store obstruction failed: " + result.Error); string zoneId = result.EntityId;
+        void Restart()
+        {
+            AuthorityRuntime.ValidateWorld(world); SaveStore.Save(path, world); world = SaveStore.Load<World>(path); AuthorityRuntime.ValidateWorld(world);
+            v = world.Villages.Single(); cat = v.Cats.Single(c => c.Id == catId); job = v.Jobs.Single(j => j.Id == jobId); source = v.Stockpiles.Single(p => p.Id == sourceId); blocked = v.Stockpiles.Single(p => p.Id == blockedId); alternate = v.Stockpiles.Single(p => p.Id == alternateId);
+        }
+        Restart();
+        Check(job.Phase == "input_delivery" && job.TargetId == blockedId && job.Position.Equals(blocked.Position) && cat.JobId == jobId && World.Amount(cat.Cargo, "logs") == 8, "restart did not retain the already-saved original input-delivery target and cargo");
+        for (int tick = 0; tick < 100 && !job.Completed; tick++)
+        {
+            world.Step(1); Check(v.Stockpiles.Any(p => p.Id == zoneId) && !world.Walkable(v, blocked.Position), "recovery removed the saved obstruction");
+            Check(job.CatId == catId && (job.Completed || cat.JobId == jobId), "recovery replaced the saved carrier or work owner");
+            Check(World.Amount(source.Goods, "logs") == 0 && World.Amount(blocked.Goods, "logs") == 0, "recovery returned cargo to source or delivered through the obstruction");
+            Check(v.Stockpiles.Sum(p => World.Amount(p.Goods, "logs")) + v.Cats.Sum(c => World.Amount(c.Cargo, "logs")) + v.Jobs.Where(j => !j.Completed).Sum(j => World.Amount(j.Local, "logs")) == 8, "restarted retargeting changed finite scalar ownership");
+        }
+        Check(job.Completed && job.TargetId == alternateId && job.Position.Equals(alternate.Position) && cat.Position.Equals(alternate.Position) && cat.Cargo.Count == 0 && World.Amount(alternate.Goods, "logs") == 8, "saved scalar input_delivery never recovered to the reachable alternate store");
+        Restart(); world.Step(2);
+        Check(v.Jobs.Count(j => j.Id == jobId) == 1 && job.Completed && cat.JobId == "" && World.Amount(alternate.Goods, "logs") == 8 && World.Amount(source.Goods, "logs") == 0 && World.Amount(blocked.Goods, "logs") == 0 && world.Reservations.Count == 0, "completed scalar recovery replayed or retained stale claims after another restart");
+    }
+    finally { Directory.Delete(directory, true); }
+});
 Test("exact crafted haul survives claimed pickup and full-storage restarts", () =>
 {
     var directory = Path.Combine(Path.GetTempPath(), "forest-exact-haul-" + Guid.NewGuid().ToString("N"));

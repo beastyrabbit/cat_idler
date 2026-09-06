@@ -6,10 +6,10 @@ shrine, surrounding roads, connected entrances, four gates, joined fence corners
 responsive zoom and a readable management interface. Existing played saves keep
 their layout and progress; a separate new save exercises the revised founding.
 
-The revised simulation passed 653 noncampaign scenarios, including 151 regressions.
+The revised simulation passed 655 noncampaign scenarios, including 153 regressions.
 Nine earlier campaign twins passed within the scope described below.
-Unity passed 659 EditMode and 34 PlayMode tests.
-The authority/import suite passed 46 tests. The real SQLite pipeline passed four
+Unity passed 661 EditMode and 34 PlayMode tests.
+The authority/import suite passed 47 tests. The real SQLite pipeline passed four
 tests in 24.959 seconds. Blender reimport verified 82 models, 88 meshes and 145,611
 triangles. These checks establish the tested behavior, not the player's approval
 of the visual design. Native observations and current costs appear below and in
@@ -46,7 +46,7 @@ time and random-state controls.
 | Knowledge and progression | All 487 studies pass public purchase traversal with separate effect scenarios. Normal UI research spent 20,000 → 19,995 points on Research Hut and displayed the dependency map. | Verified |
 | Equipment, defense and trade | Exact item identity, condition, repair, finite traders, raids, warriors, rail/shipping and physical barter pass scenarios and real socket tests. | Verified |
 | Persistent shared authority | Two identities, private-village denial, filtered reports, restart and physical trade pass real socket tests. The native app connected to a synthetic server, founded 15-cat Mosslight, then reconnected to the same village, ID 74. | Verified |
-| Saves and migration | 46 authority/import tests and the real SQLite conversion pipeline pass. Jobs, cargo, claims, identities and returning trade survive restart without replay. Imported exact-item capacity, physical pickup, mixed output delivery and newly staffed empty queues preserve their limits and identities. Import preserves source bytes and refuses unknown schemas and destination overwrite. The packaged app opened the converted world and resumed both imported jobs. | Verified |
+| Saves and migration | 47 authority/import tests and the real SQLite conversion pipeline pass. Jobs, cargo, claims, identities and returning trade survive restart without replay. Imported exact-item capacity, physical pickup, mixed output delivery and newly staffed empty queues preserve their limits and identities. Import preserves source bytes and refuses unknown schemas and destination overwrite. The packaged app opened the converted world and resumed both imported jobs. | Verified |
 | 3D management and cat control | Blender geometry passes export/import checks. Editor and native UI inspect and control the same cat, walk, take five food and return it to AI while the colony continues. Native deposit emptied its cargo into the original store. | Verified |
 | Normal UI operation | Editor and native inspect, staffing, queues, research, construction and direct-control flows were exercised with saved-state checks. Native repeat persisted as true and pause/resume returned to unpaused work. Editor queue delivery passed; its repeat click did not persist. Original native connection, return and reconnect refreshed the open Village panel and preserved the server address. Corrective-revision road, construction and queue observations appear below. | Verified within this scope |
 | Extended operation | Nine campaign twins cover fresh 48-hour, established 72-hour and shared/personal 48-hour worlds at seeds 7, 41 and 127. | Verified in .NET |
@@ -54,13 +54,13 @@ time and random-state controls.
 
 ## Test and build evidence
 
-- [Simulation results](../../tools/scenarios/VALIDATION.md): 653 focused cases,
-  including 151 regressions, passed in 30.0004 seconds. Nine campaign twins passed
+- [Simulation results](../../tools/scenarios/VALIDATION.md): 655 focused cases,
+  including 153 regressions, passed in 30.5763 seconds. Nine campaign twins passed
   in 213.7647 seconds after the complete road and shore-placement corrections.
   Campaigns compare partitioned time, validate claims and retain founding IDs.
   The established fixture has finite supplies and one repeating wood-processing
   station; it does not prove indefinite operation of every mature production chain.
-- Unity EditMode passed 659 noncampaign tests in 95.630 seconds. The unfiltered
+- Unity EditMode passed 661 noncampaign tests in 95.056 seconds. The unfiltered
   Editor run timed out after 600 seconds, so no Editor campaign pass is claimed.
   The same nine campaign scenarios passed in the .NET runner.
 - The complete corrective-revision PlayMode run passed 34 tests.
@@ -76,7 +76,7 @@ time and random-state controls.
   and nonoverlapping narrow headers with usable Cats/Inspect scroll areas at
   600×360 and 550×336 panel units. A public 4×3 farm designation visibly covers
   every occupied tile, and clearing it removes the whole crop footprint.
-- [Authority and import checks](PERSISTENCE.md) passed 46 tests in 30.88 seconds. The real Rust
+- [Authority and import checks](PERSISTENCE.md) passed 47 tests in 31.75 seconds. The real Rust
   SQLite writer → normalizer → C# continuation pipeline passed four tests; the
   archival exporter passed two. All test worlds and identities are synthetic.
 - [Blender verification](../../source-art/verification.json) passed for 82 models,
@@ -120,8 +120,10 @@ becomes full or unreachable. Public destination removal, replacement and
 deposit/pickup actions exercise recovery. Ten exact-item hauling checks also
 passed in 0.1531 seconds; combined implementation smoke took 0.4277 seconds.
 
+Two public avoid-zone regressions and a real SaveStore restart test also failed before the final retargeting guard. Five focused scalar cases then passed in 0.1579 seconds and the restart case in 0.34 seconds. The original store remains blocked while the same loaded carrier reaches an alternate accepting store. A second reload preserves delivery without replay. Combined implementation smoke took about 0.90 seconds.
+
 Local reports are `artifacts/tests/territory-focused.txt`,
-`artifacts/tests/revision-scalar-haul-authority.txt`, `artifacts/tests/revision-scalar-haul-editmode.xml`, `artifacts/tests/revision-scalar-haul-playmode.xml`
+`artifacts/tests/revision-retarget-authority.txt`, `artifacts/tests/revision-retarget-editmode.xml`, `artifacts/tests/revision-retarget-playmode.xml`
 and `artifacts/fresh-checkout/27ab713-verification.txt`. The fresh-checkout report
 covers the clean build; subsequent interactive scene opening and Play mode were
 checked through Pipeline and Computer Use. These ignored reports are local

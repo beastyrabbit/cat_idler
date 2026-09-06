@@ -119,6 +119,8 @@ namespace IdleCatForest.Acceptance
             yield return new Scenario("regression.review_scalar_haul_between_existing_stores", ScalarHaulStoredTransfer);
             yield return new Scenario("regression.review_scalar_haul_partial_reservations_and_destination_change", ScalarHaulPartialReservations);
             yield return new Scenario("regression.review_scalar_haul_full_blocked_destination_preserves_source", ScalarHaulFullDestination);
+            yield return new Scenario("regression.review_scalar_haul_avoid_reroute", () => ScalarHaulAvoidReroute(false));
+            yield return new Scenario("regression.review_scalar_haul_avoid_reroute_partial_claim", () => ScalarHaulAvoidReroute(true));
             foreach (var infrastructure in new[] { "road", "rail", "bridge", "dock", "wagon", "vessel" })
             {
                 string kind = infrastructure;
@@ -1060,6 +1062,31 @@ namespace IdleCatForest.Acceptance
             var recoveredId = Act(w, v, new GameAction { Kind = "DesignateStockpile", Position = destination.Position, End = destination.Position, Accepts = new List<string> { "logs" } }).EntityId; var recovered = v.Stockpiles.Single(p => p.Id == recoveredId);
             for (int tick = 0; tick < 100 && !first.Completed; tick++) w.Step(1);
             Check(first.Completed && first.Id == firstId && c.JobId == "" && c.Cargo.Count == 0 && source.Kind == "storage", "Replacement storage did not resume the same held scalar haul"); Near(World.Amount(recovered.Goods, "logs"), 8, "Replacement destination did not receive the retained larger load"); Near(World.Amount(small.Goods, "logs"), 4, "Recovery changed the delivered partial load"); Near(Goods(w, v, "logs"), 12, "Destination replacement lost or duplicated scalar cargo"); Valid(w);
+        }
+        static void ScalarHaulAvoidReroute(bool partialClaim)
+        {
+            var w = ScalarHaulFixture(partialClaim ? 12 : 8, 100, 8, out var v, out var c, out var source, out var destination);
+            var alternate = new Stockpile { Id = w.Id("alternate-store"), Position = new Int2(5, 4), Width = 1, Depth = 1, Capacity = partialClaim ? 4 : 8, Accepts = new List<string> { "logs" } }; v.Stockpiles.Add(alternate);
+            var helper = v.Cats[1]; Job competing = null;
+            if (partialClaim)
+            {
+                helper.ControlledBy = ""; helper.BuildingId = ""; helper.Position = c.Position; helper.X = c.X; helper.Z = c.Z;
+                var claimed = Act(w, v, new GameAction { Kind = "HaulGatherSpot", CatId = helper.Id, TargetId = source.Id }); competing = v.Jobs.Single(j => j.Id == claimed.EntityId);
+            }
+            var result = Act(w, v, new GameAction { Kind = "HaulGatherSpot", CatId = c.Id, TargetId = source.Id }); var job = v.Jobs.Single(j => j.Id == result.EntityId); double load = partialClaim ? 4 : 8; string identity = job.Id, carrier = c.Id;
+            Check(job.Amount == load && job.TargetId == destination.Id && job.Position.Equals(destination.Position), "Alternate-store fixture did not initially select the nearer original store"); Near(w.Reservations.Where(r => r.PileId == source.Id).Sum(r => r.Amount), partialClaim ? 12 : 8, "Initial scalar source claims changed");
+            for (int tick = 0; tick < 100 && !(World.Amount(c.Cargo, "logs") == load && (!partialClaim || World.Amount(helper.Cargo, "logs") == 8)); tick++) w.Step(1);
+            w.Step(1); Check(job.Phase == "input_delivery" && World.Amount(c.Cargo, "logs") == load && World.Amount(source.Goods, "logs") == 0, "Alternate-store fixture did not reach carried input_delivery");
+            var zone = Act(w, v, new GameAction { Kind = "CreateZone", Resource = "avoid", Position = destination.Position, End = destination.Position }).EntityId;
+            Check(!w.Walkable(v, destination.Position) && w.Path(c.Position, alternate.Position, v) != null, "Public avoid zone did not block only the original receiving store");
+            for (int tick = 0; tick < 100 && !job.Completed; tick++)
+            {
+                w.Step(1); Check(v.Stockpiles.Any(p => p.Id == zone) && !w.Walkable(v, destination.Position), "Haul recovery removed the original store's obstruction");
+                Check(job.Id == identity && job.CatId == carrier && (job.Completed || c.JobId == identity), "Alternate-store recovery replaced its job or carrier"); Near(Goods(w, v, "logs"), partialClaim ? 12 : 8, "Alternate-store recovery lost or duplicated scalar goods"); Near(World.Amount(source.Goods, "logs"), 0, "Alternate-store recovery returned picked-up goods to source");
+            }
+            Check(job.Completed && job.TargetId == alternate.Id && job.Position.Equals(alternate.Position) && c.Position.Equals(alternate.Position) && c.Cargo.Count == 0, "Loaded scalar haul remained stuck at avoided store instead of physically retargeting");
+            Check(source.Kind == "storage" && destination.Kind == "storage" && v.Stockpiles.Contains(source) && v.Stockpiles.Contains(destination) && v.Stockpiles.Contains(alternate), "Retargeting replaced a store identity"); Near(World.Amount(destination.Goods, "logs"), 0, "Haul delivered into the avoided store"); Near(World.Amount(alternate.Goods, "logs"), load, "Alternate store did not receive the actual carried quantity"); Check(w.Reservations.Count == 0, "Retargeting recreated consumed source claims");
+            if (partialClaim) Check(!competing.Completed && World.Amount(helper.Cargo, "logs") == 8 && helper.JobId == competing.Id && helper.BlockedReason == "blocked_route", "Four-unit alternate accepted or released the competing eight-unit load"); Valid(w);
         }
         static void ScalarHaulFullDestination()
         {
