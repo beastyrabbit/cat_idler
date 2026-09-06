@@ -34,6 +34,20 @@ namespace IdleCatForest.Simulation
         }
         public Village Village(string id) => Villages.Find(v => v.Id == id);
         public Cat Cat(string id) => Villages.SelectMany(v => v.Cats).FirstOrDefault(c => c.Id == id);
+        private bool CanModifyTerrain(string villageId, Int2 p, int width = 1, int depth = 1)
+        {
+            bool Overlaps(Int2 at, int w, int d) => at.X < (long)p.X + width && (long)at.X + w > p.X && at.Z < (long)p.Z + depth && (long)at.Z + d > p.Z;
+            if (width < 1 || depth < 1 || Tiles.Any(t => t.ClaimId != "" && t.ClaimId != villageId && Overlaps(t.Position, 1, 1)))
+                return false;
+            return !Villages.Where(v => v.Id != villageId).Any(v => v.ClaimedTiles.Any(at => Overlaps(at, 1, 1)) || v.Buildings.Any(b => Overlaps(b.Position, b.Width, b.Depth)) || v.Farms.Any(f => Overlaps(f.Position, f.Width, f.Depth)) || v.Stockpiles.Any(s => !s.Kind.StartsWith("zone_", StringComparison.Ordinal) && Overlaps(s.Position, s.Width, s.Depth)));
+        }
+        private bool CanFoundAt(string villageId, Int2 center, bool communal)
+        {
+            int radius = communal ? 9 : 6;
+            if (!CanModifyTerrain(villageId, new Int2(center.X - radius - 1, center.Z - radius - 1), radius * 2 + 3, radius * 2 + 3) || !CanModifyTerrain(villageId, new Int2(center.X + 2, center.Z + radius + 2)))
+                return false;
+            return new[] { new Int2(-radius - 2, 4), new Int2(-radius - 2, -4), new Int2(radius + 2, 3), new Int2(radius + 2, -4), new Int2(-radius - 4, -4), new Int2(radius + 4, -4), new Int2(radius + 4, 4), new Int2(-radius - 6, -4) }.All(offset => CanModifyTerrain(villageId, new Int2(center.X + offset.X, center.Z + offset.Z)));
+        }
         public Tile GetTile(Int2 p) => Tiles.Find(t => t.Position.Equals(p));
         public Tile TileAt(Int2 p)
         {
@@ -79,6 +93,8 @@ namespace IdleCatForest.Simulation
         }
         private Village Found(string id, string name, string owner, Int2 center, bool communal)
         {
+            if (!CanFoundAt(id, center, communal))
+                throw new InvalidOperationException("Founding site overlaps foreign territory");
             var v = new Village { Id = id, Name = name, OwnerId = owner, Communal = communal, Center = center, Radius = communal ? 9 : 6, FoundedAt = TimeSeconds, NextElection = TimeSeconds + 86400, LastMigration = TimeSeconds };
             int radius = v.Radius;
             for (int z = -radius - 2; z <= radius + 2; z++)

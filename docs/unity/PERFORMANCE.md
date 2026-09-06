@@ -4,10 +4,15 @@ The September 6, 2026 native samples held approximately 60 frames per second at
 6016 × 3080 on an Apple M1 Max with 32 GB of memory. The ARM64 IL2CPP player ran
 the local simulation at 1× speed in management view, with its 60 FPS target.
 The measured native build passed; Unity Editors were closed, and measurements
-preceded F9/F10 evidence capture. The samples include the final
+preceded F9/F10 evidence capture. The samples include the
 exact-item hauling, per-kind capacity, imported batch-delivery and carried-item
 rendering fixes. A later inspection-label correction does not run in these
 closed-panel management workloads.
+
+These measurements precede the final foreign-territory construction guards and
+unstaffed imported-output recovery fix. The prepared worlds contain no foreign
+construction or imported station output. The final simulation, authority and
+Unity suites verify those corrections; these samples do not measure their cost.
 
 These are observations of two finite review workloads. The frame cap hides spare
 rendering capacity, and the results do not establish performance at arbitrary

@@ -215,6 +215,15 @@ await AsyncTest("real loopback identities village privacy signed actions and res
             Check((await first.SendAsync(new GameAction { Kind = "EnterCatControl", CatId = cat.Id })).Success, "direct control denied for owned cat");
             Check(!(await second.SendAsync(new GameAction { Kind = "EnterCatControl", CatId = cat.Id })).Success, "foreign player possessed cat");
             Check((await first.SendAsync(new GameAction { Kind = "LeaveCatControl", CatId = cat.Id })).Success, "direct control handoff denied");
+            var owned = runtime.World.Village(firstVillage); var foreign = runtime.World.Village(secondVillage);
+            Int2 RoadSite(Village village) => runtime.World.Tiles.First(t => t.ClaimId == village.Id && !t.Wall && !t.Water && !t.Mountain && !t.Road && !t.Rail && runtime.World.Tiles.Any(n => n.Road && Int2.Distance(n.Position, t.Position) == 1)).Position;
+            var foreignSite = RoadSite(foreign); owned.Known.Add(foreignSite); World.Add(owned.Stockpiles[0].Goods, "materials", 2);
+            var beforeForeign = WireJson.Encode(runtime.World.GetTile(foreignSite)); var beforeJobs = WireJson.Encode(owned.Jobs); var beforeClaims = WireJson.Encode(runtime.World.Reservations);
+            var foreignRoad = await first.SendAsync(new GameAction { Kind = "BuildRoad", CatId = cat.Id, Position = foreignSite, End = foreignSite });
+            Check(!foreignRoad.Success, "signed coordinate construction bypassed another village's ownership");
+            Check(WireJson.Encode(runtime.World.GetTile(foreignSite)) == beforeForeign && WireJson.Encode(owned.Jobs) == beforeJobs && WireJson.Encode(runtime.World.Reservations) == beforeClaims, "denied foreign construction changed terrain, jobs or claims");
+            var ownSite = RoadSite(owned);
+            Check((await first.SendAsync(new GameAction { Kind = "BuildRoad", CatId = cat.Id, Position = ownSite, End = ownSite })).Success, "owned mapped road construction was incorrectly forbidden");
             Check(runtime.World.TimeSeconds == 0, "client advanced server clock"); runtime.Advance(1); runtime.Save();
             first.Dispose(); second.Dispose(); await app.StopAsync();
         }

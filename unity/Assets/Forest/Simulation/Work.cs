@@ -105,6 +105,8 @@ namespace IdleCatForest.Simulation
                 {
                     if (pending.CatId != "")
                         return ActionResult.Fail("Expansion already active");
+                    if (!CanConstructJob(v, pending))
+                        return ActionResult.Fail("Foreign territory blocks expansion");
                     if (c.Cargo.Count > 0)
                         Spill(v, c.Position, c.Cargo);
                     pending.CatId = c.Id;
@@ -113,6 +115,8 @@ namespace IdleCatForest.Simulation
                     return ActionResult.Ok(pending.Id);
                 }
                 int radius = v.Radius + 2;
+                if (!CanModifyTerrain(v.Id, new Int2(v.Center.X - radius, v.Center.Z - radius), radius * 2 + 1, radius * 2 + 1))
+                    return ActionResult.Fail("Foreign territory blocks expansion");
                 var perimeter = new List<Int2>();
                 for (int x = -radius; x <= radius; x++)
                 {
@@ -341,8 +345,31 @@ namespace IdleCatForest.Simulation
                 item.Condition = Math.Max(0, item.Condition - 0.1);
             Note(v, "completed", c.Name + " completed " + j.Kind, j.Id);
         }
+        private bool CanConstructJob(Village v, Job j)
+        {
+            if (j.Kind == "expand")
+            {
+                int radius = v.Radius + 2;
+                return j.OriginalKind == "expand_village" ? CanModifyTerrain(v.Id, j.Position) : CanModifyTerrain(v.Id, new Int2(v.Center.X - radius, v.Center.Z - radius), radius * 2 + 1, radius * 2 + 1);
+            }
+            if (j.Kind == "build")
+            {
+                var scaffold = v.Buildings.Find(b => b.Id == j.TargetId);
+                return scaffold == null || CanModifyTerrain(v.Id, scaffold.Position, scaffold.Width, scaffold.Depth);
+            }
+            if (j.Kind == "road" || j.Kind == "rail" || j.Kind == "bridge" || j.Kind == "dock" || j.Kind == "wagon" || j.Kind == "vessel")
+                return j.Path.All(p => CanModifyTerrain(v.Id, p)) && (j.Kind != "wagon" && j.Kind != "vessel" || CanModifyTerrain(v.Id, j.Position));
+            return true;
+        }
         private void TickJob(Village v, Cat c, Job j)
         {
+            if (!CanConstructJob(v, j))
+            {
+                j.BlockedReason = c.BlockedReason = "foreign_territory";
+                return;
+            }
+            if (j.BlockedReason == "foreign_territory")
+                j.BlockedReason = c.BlockedReason = "";
             if (j.Kind == "production" && j.Phase != "output_delivery")
             {
                 var station = v.Buildings.Find(b => b.Id == j.TargetId);

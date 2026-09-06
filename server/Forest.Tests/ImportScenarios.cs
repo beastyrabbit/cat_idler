@@ -40,6 +40,52 @@ static class ImportScenarios
     }
     public static void Run(Action<string, Action> test, Action<bool, string> check)
     {
+        foreach (var workerCount in new[] { 1, 2 })
+            test("import unstaffed exact station output resumes with " + workerCount + " workers", () =>
+            {
+                var input = Base(); Cat(Tables(input), "receiver", 0);
+                Building(input, "bench", "woodworking", "", 6)["productionQueue"] = "[]";
+                Colony(input)["upgradeTree"] = Json(new { ownedNodeIds = new[] { "woodworking_crews" }, researchPoints = 0 });
+                input["Derived"] = Row("c", Row("PileResourceLimits", Row("store", Row("tools", 1))));
+                Colony(input)["items"] = Json(new
+                {
+                    nextSerial = 3,
+                    instances = new[]
+                    {
+                        Row("id", "output-a", "item", "tool:wood:3", "durability", 17, "maxDurability", 42, "location", Row("kind", "station", "building_id", "bench", "compartment", "local_output")),
+                        Row("id", "output-b", "item", "tool:wood:2", "durability", 19, "maxDurability", 43, "location", Row("kind", "station", "building_id", "bench", "compartment", "local_output"))
+                    }
+                });
+                var world = Restart(Convert(input)); var v = world.Village("c"); var station = v.Buildings.Single(); var store = v.Stockpiles.Single();
+                var context = new PlayerContext { PlayerId = "fixture-owner", VillageId = v.Id };
+                check(station.Queue.Count == 0 && station.Slots.All(s => s.CatId == "" && s.Queue.Count == 0) && v.Jobs.Count == 0 && v.Items.All(i => i.LocationId == station.Id), "unstaffed import did not retain exact station output with an empty queue");
+                foreach (var worker in new[] { "worker", "keeper" }.Take(workerCount))
+                    check(world.Apply(context, new GameAction { Kind = "AssignWorker", BuildingId = station.Id, CatId = "c\u001f" + worker }).Success, "public staffing failed");
+                world.Step(1);
+                check(v.Items.All(i => i.LocationId == station.Id), "distant worker picked up exact output without reaching the station");
+                for (int tick = 0; tick < 40; tick++)
+                {
+                    world.Step(1);
+                    check(v.Items.Count == 2 && v.Items.Count(i => i.LocationId == store.Id) <= 1, "station recovery duplicated items or exceeded receiving capacity");
+                    check(v.Jobs.Where(j => j.Kind == "production").SelectMany(j => j.ItemIds).Distinct().Count() == v.Jobs.Where(j => j.Kind == "production").Sum(j => j.ItemIds.Count), "workers double-claimed exact output");
+                }
+                var delivery = v.Jobs.SingleOrDefault(j => j.Kind == "production");
+                check(delivery != null && !delivery.Completed && delivery.ItemIds.Count == 1 && v.Items.Count(i => i.LocationId == store.Id) == 1, "staffing an empty queue stranded the imported exact outputs instead of delivering up to capacity");
+                var deliveryId = delivery.Id;
+                check(v.Items.Single(i => i.LocationId != store.Id).LocationId == deliveryId && delivery.BlockedReason == "output_storage_full_or_unreachable", "full receiving storage lost pending output ownership");
+                world = Restart(world); v = world.Village("c"); delivery = v.Jobs.Single(j => j.Id == deliveryId);
+                world.Step(2);
+                check(!delivery.Completed && delivery.ItemIds.Count == 1 && v.Jobs.Count(j => j.Kind == "production") == 1, "restart duplicated the station delivery or discarded pending output");
+                var first = v.Items.Single(i => i.LocationId == store.Id);
+                check(world.Apply(context, new GameAction { Kind = "EquipItem", CatId = "c\u001freceiver", TargetId = first.Id }).Success, "public equip did not free receiving capacity");
+                for (int tick = 0; tick < 40 && !delivery.Completed; tick++) world.Step(1);
+                check(delivery.Completed && delivery.ItemIds.Count == 0, "freeing capacity did not finish the adopted output delivery");
+                world = Restart(world); v = world.Village("c");
+                var a = v.Items.Single(i => i.Id == "c\u001foutput-a"); var b = v.Items.Single(i => i.Id == "c\u001foutput-b");
+                check(v.Items.Count == 2 && v.Items.Single(i => i.Id == first.Id).LocationId == "c\u001freceiver" && v.Items.Single(i => i.Id != first.Id).LocationId == store.Id, "delivery restart changed exact identities or final ownership");
+                check(a.Condition == 17 && a.MaxCondition == 42 && a.Quality == 3 && b.Condition == 19 && b.MaxCondition == 43 && b.Quality == 2, "output adoption changed item condition or quality");
+                check(v.Stockpiles.All(p => World.Amount(p.Goods, "tools") == 0) && v.Jobs.Count(j => j.Kind == "production") == 1 && world.Validate().Count == 0, "output recovery created scalar duplicates, duplicate work, or invalid state");
+            });
         test("import multiple exact station outputs respect receiving capacity", () =>
         {
             var input = Base();

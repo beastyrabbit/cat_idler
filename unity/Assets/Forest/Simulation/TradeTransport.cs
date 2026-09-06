@@ -285,6 +285,8 @@ namespace IdleCatForest.Simulation
             }
             if (path.Count > 128 || path.Any(at => !v.Known.Contains(at) || !Walkable(at) || TileAt(at).Road || TileAt(at).Rail || v.Jobs.Any(j => !j.Completed && (j.Kind == "road" || j.Kind == "rail") && j.Path.Contains(at))))
                 return ActionResult.Fail("Route must be mapped, free, dry, and unclaimed");
+            if (path.Any(at => !CanModifyTerrain(v.Id, at)))
+                return ActionResult.Fail("Foreign territory cannot be modified");
             if (kind == "road" && !path.Any(at => Neighbors(at).Any(n => TileAt(n).Road)))
                 return ActionResult.Fail("Road must join shrine road network");
             var result = CreateInputJob(v, cat, kind, path[0], kind == "rail" ? "metal" : "materials", path.Count, 30 * path.Count, "");
@@ -296,6 +298,8 @@ namespace IdleCatForest.Simulation
         {
             if (!v.Known.Contains(a.Position))
                 return ActionResult.Fail("Mapped infrastructure site required");
+            if (!CanModifyTerrain(v.Id, a.Position))
+                return ActionResult.Fail("Foreign territory cannot be modified");
             if (kind == "bridge" && (!TileAt(a.Position).Water || !Neighbors(a.Position).Any(Walkable)))
                 return ActionResult.Fail("Bridge needs a narrow reachable crossing");
             if (kind == "dock" && (!Walkable(a.Position) || !Neighbors(a.Position).Any(p => TileAt(p).Water)))

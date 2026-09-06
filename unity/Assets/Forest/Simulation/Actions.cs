@@ -33,8 +33,12 @@ namespace IdleCatForest.Simulation
                     return ActionResult.Fail("Village name requires 1–48 characters");
                 uint hash = Hash(context.PlayerId);
                 var center = new Int2(80 + (int)(hash % 8) * 80, 80 + (int)((hash / 8) % 8) * 80);
-                while (Villages.Any(v => Int2.Distance(v.Center, center) < 48))
+                while (Villages.Any(v => Int2.Distance(v.Center, center) < 48) || !CanFoundAt("", center, false))
+                {
                     center.X += 80;
+                    if (center.X > 1000000)
+                        return ActionResult.Fail("No unclaimed founding site available");
+                }
                 var v = Found(Id("village"), action.Name.Trim(), context.PlayerId, center, false);
                 Villages.Add(v);
                 player.PersonalVillageId = player.SelectedVillageId = v.Id;
@@ -419,6 +423,8 @@ namespace IdleCatForest.Simulation
         {
             if (width < 1 || depth < 1 || width > 16 || depth > 16)
                 return false;
+            if (!CanModifyTerrain(v.Id, p, width, depth))
+                return false;
             for (int x = 0; x < width; x++)
                 for (int z = 0; z < depth; z++)
                 {
@@ -483,6 +489,8 @@ namespace IdleCatForest.Simulation
                 return ActionResult.Fail("Invalid stockpile area");
             if (a.Accepts.Any(r => !Catalog.Resources.Contains(r) || r == "blessings"))
                 return ActionResult.Fail("Invalid stored resource");
+            if (!CanModifyTerrain(v.Id, p, width, depth))
+                return ActionResult.Fail("Foreign territory cannot host this work site");
             var pile = new Stockpile { Id = Id("pile"), Position = p, Width = width, Depth = depth, Capacity = width * depth * 100, Kind = kind == "zone" ? "zone_" + a.Resource : kind == "designatestockpile" ? "storage" : kind == "designatefishingspot" ? "fishing" : "gather", Accepts = new List<string>(a.Accepts) };
             if (kind == "designategatherspot")
                 pile.Accepts = new List<string> { a.Resource };
@@ -502,7 +510,7 @@ namespace IdleCatForest.Simulation
             int w = Math.Abs(a.Position.X - a.End.X) + 1, d = Math.Abs(a.Position.Z - a.End.Z) + 1;
             if (!FreeSite(v, p, w, d, true) || Path(v.Center, p) == null)
                 return ActionResult.Fail("Farm requires reachable mapped exterior ground");
-            var handoff = Neighbors(p).FirstOrDefault(at => !Contains(p, w, d, at) && Walkable(at) && Path(p, at) != null);
+            var handoff = Neighbors(p).FirstOrDefault(at => !Contains(p, w, d, at) && CanModifyTerrain(v.Id, at) && Walkable(at) && Path(p, at) != null);
             if (handoff.Equals(default(Int2)) && !p.Equals(default(Int2)))
                 return ActionResult.Fail("No adjacent physical harvest handoff");
             var f = new Farm { Id = Id("farm"), Position = p, Width = w, Depth = d, Crop = crop, Handoff = handoff };

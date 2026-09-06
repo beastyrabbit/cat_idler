@@ -23,46 +23,47 @@ time and random-state controls.
 | Manual and automated work | Leader safety work, seven officer prerequisites and vacancies, public job actions and staffed queues pass scenarios. Normal UI logging passes a focused PlayMode check. | Verified |
 | Physical economy | All 108 recipes carry inputs, perform work and deliver outputs. Native Wood Cutter production delivered nine planks; the Editor completed one batch and delivered one plank. | Verified |
 | Scarcity and interruption | Contended inputs and beds, cancellation, reassignment, death, blocked routes, full storage, shipping recovery and direct-control handoffs pass conservation and ownership checks. | Verified |
-| Construction and territory | Placement, material delivery, roads, bridges, expansion and farms pass scenarios. Normal UI placed and completed a Den with 16 planks, eight blocks and 300 work. | Verified |
+| Construction and territory | Placement, material delivery, roads, bridges, expansion and farms pass scenarios. Thirty regressions protect foreign territory during planning, work, founding and recovery. Normal UI placed and completed a Den with 16 planks, eight blocks and 300 work. | Verified |
 | Knowledge and progression | All 487 studies pass public purchase traversal with separate effect scenarios. Normal UI research spent 20,000 → 19,995 points on Research Hut and displayed the dependency map. | Verified |
 | Equipment, defense and trade | Exact item identity, condition, repair, finite traders, raids, warriors, rail/shipping and physical barter pass scenarios and real socket tests. | Verified |
 | Persistent shared authority | Two identities, private-village denial, filtered reports, restart and physical trade pass real socket tests. The native app connected to a synthetic server, founded 15-cat Mosslight, then reconnected to the same village, ID 74. | Verified |
-| Saves and migration | 31 authority/import tests and the real SQLite conversion pipeline pass. Jobs, cargo, claims, identities and returning trade survive restart without replay. Imported exact-item capacity and mixed output delivery preserve their limits and identities. Import preserves source bytes and refuses unknown schemas and destination overwrite. The packaged app opened the converted world and resumed both imported jobs. | Verified |
+| Saves and migration | 33 authority/import tests and the real SQLite conversion pipeline pass. Jobs, cargo, claims, identities and returning trade survive restart without replay. Imported exact-item capacity, mixed output delivery and newly staffed empty queues preserve their limits and identities. Import preserves source bytes and refuses unknown schemas and destination overwrite. The packaged app opened the converted world and resumed both imported jobs. | Verified |
 | 3D management and cat control | Blender geometry passes export/import checks. Editor and native UI inspect and control the same cat, walk, take five food and return it to AI while the colony continues. Native deposit emptied its cargo into the original store. | Verified |
 | Normal UI operation | Editor and native inspect, staffing, queues, research, construction and direct-control flows were exercised with saved-state checks. Native repeat persisted as true and pause/resume returned to unpaused work. Editor queue delivery passed; its repeat click did not persist. Final native connection, return and reconnect refreshed the open Village panel and preserved the server address. | Verified within this scope |
 | Extended operation | Nine campaign twins cover fresh 48-hour, established 72-hour and shared/personal 48-hour worlds at seeds 7, 41 and 127. | Verified in .NET |
-| Measured performance | Final native 30/150-cat samples measured 16.67 ms median frames, 17.49/17.22 ms p95 frames and 2.74/1.42 ms p95 economy ticks at 6016×3080 on an M1 Max. Workloads, windows and limits are in [performance evidence](PERFORMANCE.md). | Verified |
+| Measured performance | Native 30/150-cat samples measured 16.67 ms median frames, 17.49/17.22 ms p95 frames and 2.74/1.42 ms p95 economy ticks at 6016×3080 on an M1 Max. Workloads, source timing and limits are in [performance evidence](PERFORMANCE.md). | Verified |
 
 ## Test and build evidence
 
-- [Simulation results](../../tools/scenarios/VALIDATION.md): 558 focused cases,
-  including 56 regressions, passed in 8.2346 seconds. Nine campaign twins passed
-  in 163.8627 seconds before the final imported-batch delivery fix.
+- [Simulation results](../../tools/scenarios/VALIDATION.md): 588 focused cases,
+  including 86 regressions, passed in 8.5028 seconds. Nine campaign twins passed
+  in 165.208 seconds after the final territory and imported-output fixes.
   Campaigns compare partitioned time, validate claims and retain founding IDs.
   The established fixture has finite supplies and one repeating wood-processing
   station; it does not prove indefinite operation of every mature production chain.
-- Unity EditMode passed 564 noncampaign tests in 55.564 seconds. The unfiltered
+- Unity EditMode passed 594 noncampaign tests in 55.617 seconds. The unfiltered
   Editor run timed out after 600 seconds, so no Editor campaign pass is claimed.
   The same nine campaign scenarios passed in the .NET runner.
-- Unity PlayMode passed all 16 tests in 8.857 seconds. These include ordinary UI
+- Unity PlayMode passed all 16 tests in 8.799 seconds. These include ordinary UI
   logging, research, queues after reload, direct control at 8× speed, village
   selection, stockpile corners, merchant sales, work boosts, authored geometry
   and terrain categories/bounds during camera movement. Exact crafted cargo
   appears after physical pickup and follows its carrier.
-- [Authority and import checks](PERSISTENCE.md) passed 31 tests. The real Rust
+- [Authority and import checks](PERSISTENCE.md) passed 33 tests in 6.683 seconds. The real Rust
   SQLite writer → normalizer → C# continuation pipeline passed three tests; the
   archival exporter passed two. All test worlds and identities are synthetic.
 - [Blender verification](../../source-art/verification.json) passed for 80 models,
   86 meshes and 92,593 triangles. [Art documentation](../../source-art/README.md)
   records editable sources, orientation, units, pivots and reproduction commands.
 
-The final focused, authority and Unity suites include the imported-batch fix.
-The campaign workloads use no transport routes or imported batch outputs, so
-their earlier pass provides no evidence for that delivery path. The import test
-checks partial delivery, mixed item filters, full storage and restart directly.
+The final focused, authority, campaign and Unity suites include the territory
+and imported-output fixes. Campaign workloads use no transport routes or
+imported batch outputs, so their pass provides no evidence for that delivery
+path. Import tests check partial delivery, mixed item filters, full storage,
+public staffing and restart directly.
 
-Local reports are `artifacts/tests/delivery-focused.txt`,
-`artifacts/tests/delivery-authority.txt`, `artifacts/tests/editmode.xml`, `artifacts/tests/playmode.xml`
+Local reports are `artifacts/tests/territory-focused.txt`,
+`artifacts/tests/territory-authority.txt`, `artifacts/tests/editmode.xml`, `artifacts/tests/playmode.xml`
 and `artifacts/fresh-checkout/27ab713-verification.txt`. The fresh-checkout report
 covers the clean build; subsequent interactive scene opening and Play mode were
 checked through Pipeline and Computer Use. These ignored reports are local
@@ -124,6 +125,15 @@ every paid outer-wall segment, clears the obsolete interior walls and opens its
 south gate. Imported barter whose outward goods have arrived cannot be cancelled
 to reclaim payment. Scalar and exact payment cargo finish their return route,
 including full-storage waits and restart, without paying either village twice.
+
+Coordinate work rejects foreign claims and physical footprints before reserving
+goods and again before construction advances. Founding skips conflicting sites,
+including distant starter deposits. A conflicting extinction recovery reports
+the block before changing reservations or trades. The signed two-client socket
+test denies a foreign road without mutation, then accepts an owned road.
+Imported exact outputs on empty, unstaffed queues now wait for a worker to reach
+the station. One- and two-worker restart tests verify exclusive adoption and
+delivery without changing identity, condition, quality or storage limits.
 
 [Gameplay decisions](GAMEPLAY_ACCEPTANCE.md), [save compatibility](PERSISTENCE.md)
 and [development commands](DEVELOPMENT.md) describe the implemented behavior and

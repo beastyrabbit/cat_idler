@@ -282,6 +282,12 @@ namespace IdleCatForest.Simulation
             var alive = v.Cats.Where(c => c.Alive).ToArray();
             if (alive.Length == 0)
             {
+                if (!CanFoundAt(v.Id, v.Center, v.Communal))
+                {
+                    if (!v.Events.Any(e => e.Kind == "recovery_blocked"))
+                        Note(v, "recovery_blocked", "Refounding blocked by foreign territory", v.Id);
+                    return;
+                }
                 foreach (var r in Reservations.Where(r => r.VillageId == v.Id).ToArray())
                     Reservations.Remove(r);
                 foreach (var trade in TradeOffers.Where(t => t.FromVillageId == v.Id || t.ToVillageId == v.Id).ToArray())
@@ -461,11 +467,20 @@ namespace IdleCatForest.Simulation
                     }
                     if (b.Kind == "accounting_tent")
                         continue;
-                    if (b.Outputs.Count > 0)
+                    var outputItems = v.Items.Where(i => i.LocationId == b.Id && i.StationCompartment == "local_output").ToArray();
+                    if (b.Outputs.Count > 0 || outputItems.Length > 0)
                     {
+                        if (outputItems.Length > 0 && !Move(c, b.Position, 1))
+                            continue;
                         var delivery = new Job { Kind = "production", Phase = "output_delivery", TargetId = b.Id, Position = b.Position, Local = b.Outputs.Select(s => new Stack(s.Resource, s.Amount)).ToList() };
                         b.Outputs.Clear();
                         StartJob(v, c, delivery);
+                        slot.JobId = delivery.Id;
+                        foreach (var item in outputItems)
+                        {
+                            item.LocationId = delivery.Id;
+                            delivery.ItemIds.Add(item.Id);
+                        }
                         continue;
                     }
                     if (b.Kind == "mouse_farm")
