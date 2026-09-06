@@ -43,7 +43,7 @@ namespace IdleCatForest.Simulation
                 Int2 destination = raid.Phase == "departing" ? new Int2(v.Center.X, v.Center.Z + v.Radius + 3) : v.Center;
                 if (!raid.Position.Equals(destination))
                 {
-                    if (raid.Path.Count == 0 || !Walkable(raid.Path[0]))
+                    if (raid.Path.Count == 0 || !Walkable(raid.Path[0]) || !Crossable(raid.Position, raid.Path[0]))
                         raid.Path = Path(raid.Position, destination) ?? new System.Collections.Generic.List<Int2>();
                     raid.Progress += 0.5;
                     if (raid.Progress >= 1 && raid.Path.Count > 0)

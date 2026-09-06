@@ -6,9 +6,9 @@ shrine, surrounding roads, connected entrances, four gates, joined fence corners
 responsive zoom and a readable management interface. Existing played saves keep
 their layout and progress; a separate new save exercises the revised founding.
 
-The revised simulation passed 645 noncampaign scenarios, including 143 regressions.
+The revised simulation passed 650 noncampaign scenarios, including 148 regressions.
 Nine earlier campaign twins passed within the scope described below.
-Unity passed 651 EditMode and 33 PlayMode tests.
+Unity passed 656 EditMode and 34 PlayMode tests.
 The authority/import suite passed 46 tests. The real SQLite pipeline passed four
 tests in 24.959 seconds. Blender reimport verified 82 models, 88 meshes and 145,611
 triangles. These checks establish the tested behavior, not the player's approval
@@ -54,16 +54,16 @@ time and random-state controls.
 
 ## Test and build evidence
 
-- [Simulation results](../../tools/scenarios/VALIDATION.md): 645 focused cases,
-  including 143 regressions, passed in 29.6758 seconds. Nine campaign twins passed
+- [Simulation results](../../tools/scenarios/VALIDATION.md): 650 focused cases,
+  including 148 regressions, passed in 30.6156 seconds. Nine campaign twins passed
   in 213.7647 seconds after the complete road and shore-placement corrections.
   Campaigns compare partitioned time, validate claims and retain founding IDs.
   The established fixture has finite supplies and one repeating wood-processing
   station; it does not prove indefinite operation of every mature production chain.
-- Unity EditMode passed 651 noncampaign tests in 90.865 seconds. The unfiltered
+- Unity EditMode passed 656 noncampaign tests in 95.675 seconds. The unfiltered
   Editor run timed out after 600 seconds, so no Editor campaign pass is claimed.
   The same nine campaign scenarios passed in the .NET runner.
-- The complete corrective-revision PlayMode run passed 33 tests.
+- The complete corrective-revision PlayMode run passed 34 tests.
   These include ordinary UI logging, research, queues after reload, direct control
   at 8× speed, village selection, stockpile corners, merchant sales, work boosts, authored geometry
   and terrain categories/bounds during camera movement. Exact crafted cargo
@@ -76,7 +76,7 @@ time and random-state controls.
   and nonoverlapping narrow headers with usable Cats/Inspect scroll areas at
   600×360 and 550×336 panel units. A public 4×3 farm designation visibly covers
   every occupied tile, and clearing it removes the whole crop footprint.
-- [Authority and import checks](PERSISTENCE.md) passed 46 tests in 31.31 seconds. The real Rust
+- [Authority and import checks](PERSISTENCE.md) passed 46 tests in 31.27 seconds. The real Rust
   SQLite writer → normalizer → C# continuation pipeline passed four tests; the
   archival exporter passed two. All test worlds and identities are synthetic.
 - [Blender verification](../../source-art/verification.json) passed for 82 models,
@@ -106,9 +106,16 @@ an accepted caravan blocked by a newly completed farm fence. The same routes
 resume and conserve their cargo after needs or access recover. Two socket bursts
 verify that throttled requests avoid full projections while correlated failures,
 scheduled snapshots and another player's accepted actions still arrive.
+Five further scenarios cover cached merchant and raid routes at new fence edges,
+including lawful rerouting after public farm expansion with retained finite goods.
+A PlayMode regression first showed a stopped caravan across its blocked edge.
+Rendering now uses authoritative coordinates for stopped and resumed snapshots,
+retaining the same visible cart. Its focused RED took 0.6524 seconds and GREEN
+took 0.6798 seconds. The combined implementation smoke for these last corrections,
+including fixture setup attempts, took 6.8180 seconds.
 
 Local reports are `artifacts/tests/territory-focused.txt`,
-`artifacts/tests/revision-transport-authority.txt`, `artifacts/tests/revision-transport-editmode.xml`, `artifacts/tests/revision-transport-playmode.xml`
+`artifacts/tests/revision-land-movers-authority.txt`, `artifacts/tests/revision-land-movers-editmode.xml`, `artifacts/tests/revision-land-movers-playmode.xml`
 and `artifacts/fresh-checkout/27ab713-verification.txt`. The fresh-checkout report
 covers the clean build; subsequent interactive scene opening and Play mode were
 checked through Pipeline and Computer Use. These ignored reports are local
@@ -171,7 +178,7 @@ opened its inspector with the building visible beside it. At 114.6 seconds the
 checksum-verified save retained 30 living cats, 16 buildings and the centered
 3×3 shrine. Its dedicated runtime log contained no error marker.
 
-The final transport and socket-budget source also built as an ARM64 IL2CPP app.
+The transport and socket-budget source also built as an ARM64 IL2CPP app before the later merchant, raid and caravan-rendering guards.
 Another unused seed-41 world opened the Cats panel and Fern's inspector, entered
 direct control with Tab, accepted walking input and returned to management with
 Tab. The checksum-verified save retained all 30 living cats, 16 buildings and

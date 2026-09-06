@@ -235,7 +235,7 @@ namespace IdleCatForest.Simulation
                 t.PathIndex = 0;
                 t.Phase = "departing";
             }
-            if (t.Path.Count == 0 || t.PathIndex < t.Path.Count && !Walkable(t.Path[t.PathIndex]))
+            if (t.Path.Count == 0 || t.PathIndex < t.Path.Count && (!Walkable(t.Path[t.PathIndex]) || !Crossable(t.Position, t.Path[t.PathIndex])))
             {
                 t.BlockedReason = "blocked_route";
                 if ((long)TimeSeconds % 10 == 0)

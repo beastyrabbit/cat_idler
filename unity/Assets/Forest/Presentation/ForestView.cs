@@ -316,7 +316,7 @@ namespace IdleCatForest.Presentation
             }
             foreach (var vehicle in v.Vehicles) Entity("vehicle:" + vehicle.Id, vehicle.Mode == "shipping" ? "boat" : "cart", At(vehicle.Position), 1);
             foreach (var trade in world.TradeOffers.Where(t => t.Status == "outbound" || t.Status == "returning" || t.Status == "travelling"))
-                if (trade.Path.Count > 0) Entity("trade:" + trade.Id, "cart", At(trade.Path[Mathf.Clamp(trade.PathIndex, 0, trade.Path.Count - 1)]), .8f);
+                if (trade.Path.Count > 0) Entity("trade:" + trade.Id, "cart", new Vector3((float)trade.X, 0, (float)trade.Z), .8f);
             foreach (var raid in v.Raids) { var go = Entity("raid:" + raid.Id, "cat", At(raid.Position), 1.1f); Tint(go, Material("raider", new Color(.46f, .18f, .16f))); }
             foreach (var key in entities.Keys.Where(k => !touched.Contains(k)).ToArray()) { Destroy(entities[key]); entities.Remove(key); entityAssets.Remove(key); }
         }

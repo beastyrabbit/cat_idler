@@ -161,6 +161,37 @@ namespace IdleCatForest.Tests
         }
 
         [UnityTest]
+        public IEnumerator CaravanRenderingKeepsBlockedAndResumedSnapshotsOnTheirAuthoritativeTile()
+        {
+            game.View.enabled = false;
+            var world = game.CurrentWorld; var village = game.Selected;
+            var before = new Int2(11, 0); var next = new Int2(11, 1);
+            village.BoundaryEdges.Add(new BoundaryEdge { From = before, To = next });
+            foreach (var p in new[] { before, next, new Int2(11, 2) })
+            {
+                var tile = world.TileAt(p); tile.Wall = tile.Water = tile.Mountain = false;
+                if (!village.Known.Contains(p)) village.Known.Add(p);
+            }
+            // Isolated snapshots from an accepted route: the simulation regressions exercise
+            // its public expansion and recovery. The renderer must not predict its next step.
+            var trade = new TradeOffer { Id = "rendered-blocked-caravan", FromVillageId = village.Id, ToVillageId = "snapshot-destination", Status = "outbound", X = before.X, Z = before.Z, Offered = new IdleCatForest.Simulation.Stack("logs", 8), Requested = new IdleCatForest.Simulation.Stack("stone", 5) };
+            trade.Path.Add(next); trade.Path.Add(new Int2(11, 2)); world.TradeOffers.Add(trade);
+            var reconcile = typeof(ForestView).GetMethod("Reconcile", Private);
+            Assert.That(world.Crossable(before, next), Is.False);
+            reconcile.Invoke(game.View, null); yield return null;
+            var cart = GameObject.Find("trade:" + trade.Id);
+            Assert.That(cart, Is.Not.Null);
+            Assert.That(cart.transform.position, Is.EqualTo(new Vector3(11, 0, 0)), "A stopped caravan must remain on the near side of its blocked edge.");
+            trade.Status = "returning"; reconcile.Invoke(game.View, null);
+            Assert.That(cart.transform.position, Is.EqualTo(new Vector3(11, 0, 0)), "Returning cargo uses its actual position too.");
+            village.BoundaryEdges.Clear(); trade.X = next.X; trade.Z = next.Z; trade.PathIndex = 1;
+            reconcile.Invoke(game.View, null); yield return null;
+            Assert.That(GameObject.Find("trade:" + trade.Id), Is.SameAs(cart));
+            Assert.That(cart.transform.position, Is.EqualTo(new Vector3(11, 0, 1)), "The next snapshot moves the same cart to the reached tile, not its following waypoint.");
+            Assert.That(trade.Offered.Amount, Is.EqualTo(8)); Assert.That(trade.Requested.Amount, Is.EqualTo(5));
+        }
+
+        [UnityTest]
         public IEnumerator FenceRailsMeetAtBothArmsOfACornerAndGatesStayOpen()
         {
             game.View.enabled = false;
