@@ -27,7 +27,7 @@ time and random-state controls.
 | Knowledge and progression | All 487 studies pass public purchase traversal with separate effect scenarios. Normal UI research spent 20,000 → 19,995 points on Research Hut and displayed the dependency map. | Verified |
 | Equipment, defense and trade | Exact item identity, condition, repair, finite traders, raids, warriors, rail/shipping and physical barter pass scenarios and real socket tests. | Verified |
 | Persistent shared authority | Two identities, private-village denial, filtered reports, restart and physical trade pass real socket tests. The native app connected to a synthetic server, founded 15-cat Mosslight, then reconnected to the same village, ID 74. | Verified |
-| Saves and migration | 22 authority tests and the real SQLite conversion pipeline pass. Jobs, cargo, claims, identities and returning trade survive restart without replay. Import preserves source bytes and refuses unknown schemas and destination overwrite. The packaged app opened the converted world and resumed both imported jobs. | Verified |
+| Saves and migration | 26 authority tests and the real SQLite conversion pipeline pass. Jobs, cargo, claims, identities and returning trade survive restart without replay. Import preserves source bytes and refuses unknown schemas and destination overwrite. The packaged app opened the converted world and resumed both imported jobs. | Verified |
 | 3D management and cat control | Blender geometry passes export/import checks. Editor and native UI inspect and control the same cat, walk, take five food and return it to AI while the colony continues. Native deposit emptied its cargo into the original store. | Verified |
 | Normal UI operation | Editor and native inspect, staffing, queues, research, construction and direct-control flows were exercised with saved-state checks. Native repeat persisted as true and pause/resume returned to unpaused work. Editor queue delivery passed; its repeat click did not persist. Final native connection, return and reconnect refreshed the open Village panel and preserved the server address. | Verified within this scope |
 | Extended operation | Nine campaign twins cover fresh 48-hour, established 72-hour and shared/personal 48-hour worlds at seeds 7, 41 and 127. | Verified in .NET |
@@ -35,19 +35,19 @@ time and random-state controls.
 
 ## Test and build evidence
 
-- [Simulation results](../../tools/scenarios/VALIDATION.md): 540 focused cases
-  passed in 8.11 seconds and nine campaign twins passed in 161.26 seconds.
+- [Simulation results](../../tools/scenarios/VALIDATION.md): 548 focused cases
+  passed in 8.38 seconds and nine campaign twins passed in 173.54 seconds.
   Campaigns compare partitioned time, validate claims and retain founding IDs.
   The established fixture has finite supplies and one repeating wood-processing
   station; it does not prove indefinite operation of every mature production chain.
-- Unity EditMode passed 546 noncampaign tests in 48.839 seconds. The unfiltered
+- Unity EditMode passed 554 noncampaign tests in 50.890 seconds. The unfiltered
   Editor run timed out after 600 seconds, so no Editor campaign pass is claimed.
   The same nine campaign scenarios passed in the .NET runner.
-- Unity PlayMode passed all 15 tests in 7.655 seconds. These include ordinary UI
+- Unity PlayMode passed all 15 tests in 8.139 seconds. These include ordinary UI
   logging, research, queues after reload, direct control at 8× speed, village
   selection, stockpile corners, merchant sales, work boosts, authored geometry
   and terrain categories/bounds during camera movement.
-- [Authority and import checks](PERSISTENCE.md) passed 22 tests. The real Rust
+- [Authority and import checks](PERSISTENCE.md) passed 26 tests. The real Rust
   SQLite writer → normalizer → C# continuation pipeline passed three tests; the
   archival exporter passed two. All test worlds and identities are synthetic.
 - [Blender verification](../../source-art/verification.json) passed for 80 models,
@@ -89,7 +89,7 @@ builds and tests worked. Frozen compatibility libraries remain under
 `tools/save-import/legacy` for read-only import and catalog export. Their locked
 builds and the import pipeline still pass after retirement.
 
-Independent candidate reviews found and resolved four issues. Construction
+Independent candidate reviews found and resolved several issues. Construction
 reassignment now leaves unrelated carried goods in a physical pile, while
 entering direct control preserves the cat's existing cargo. Armor-only storage
 accepts produced and unequipped armor with its exact identity and condition.
@@ -100,6 +100,14 @@ searches. Focused failing tests preceded the behavior fixes. The terrain check
 preserved mesh categories, bounds and unknown tiles across camera movement.
 The rebuilt native app also panned across the expanded village and returned with
 Home without missing terrain or runtime errors.
+
+Further handoff tests cover new building placement, offerings, scouting, hauling
+and adoption of pending road, rail and expansion jobs. Each new work owner leaves
+unrelated cargo recoverable and consumes only its own bill. Expansion retains
+every paid outer-wall segment, clears the obsolete interior walls and opens its
+south gate. Imported barter whose outward goods have arrived cannot be cancelled
+to reclaim payment. Scalar and exact payment cargo finish their return route,
+including full-storage waits and restart, without paying either village twice.
 
 [Gameplay decisions](GAMEPLAY_ACCEPTANCE.md), [save compatibility](PERSISTENCE.md)
 and [development commands](DEVELOPMENT.md) describe the implemented behavior and

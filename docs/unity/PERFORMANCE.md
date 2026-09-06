@@ -3,8 +3,10 @@
 The September 6, 2026 native samples held approximately 60 frames per second at
 6016 × 3080 on an Apple M1 Max with 32 GB of memory. The ARM64 IL2CPP player ran
 the local simulation at 1× speed in management view, with its 60 FPS target.
-The final native build passed after all fixes. Unity Editors were closed, and
-measurements preceded F9/F10 evidence capture.
+The measured native build passed; Unity Editors were closed, and measurements
+preceded F9/F10 evidence capture. Its implementation is recorded at `3bbce916`.
+Later delivery fixes cover cargo handoff, expansion cutover and cancellation of
+imported returning barter; these prepared worlds did not exercise those paths.
 
 These are observations of two finite review workloads. The frame cap hides spare
 rendering capacity, and the results do not establish performance at arbitrary

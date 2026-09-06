@@ -31,6 +31,13 @@ static class ImportScenarios
     static World Convert(JObject source) => LegacyImport.Convert(source.ToString());
     static World Restart(World world)
     { var path = Path.Combine(Path.GetTempPath(), "forest-import-roundtrip-" + Guid.NewGuid().ToString("N") + ".json"); try { SaveStore.Save(path, world, true); return SaveStore.Load<World>(path); } finally { if (File.Exists(path)) File.Delete(path); } }
+    static JObject ReturningTrade(string phase = "returning", bool exactPayment = false)
+    {
+        var input = Base(); AddVillage(Tables(input), "d", false, 10);
+        var payment = exactPayment ? new JArray(Row("id", "d\u001fpayment-tool", "item", "tool:wood:3", "durability", 17, "maxDurability", 42, "location", Row("kind", "caravan"))) : new JArray();
+        Colony(input)["villageTradeCaravans"] = Json(new[] { Row("id", "trade", "actorId", "actor", "fromColonyId", "c", "toColonyId", "d", "offeredKind", "food", "offeredAmount", 3, "requestedKind", exactPayment ? "tools" : "logs", "requestedAmount", exactPayment ? 1 : 2, "offeredSources", new JArray(), "requestedSources", new JArray(), "offeredItems", new JArray(), "requestedItems", payment, "outboundRoute", new[] { new { x = 10, y = 0 } }, "returnRoute", new[] { new { x = 4, y = 0 }, new { x = 2, y = 0 }, new { x = 0, y = 0 } }, "nextWaypoint", 0, "phase", phase, "position", new { x = phase == "returning" ? 6 : 0, y = 0 }, "acceptedAt", 1000000, "lastAdvancedAt", 1001000) });
+        return input;
+    }
     public static void Run(Action<string, Action> test, Action<bool, string> check)
     {
         test("import keeps colony coordinates recipe queues and refunded retired research", () =>
@@ -75,9 +82,47 @@ static class ImportScenarios
         });
         test("import returning barter does not replay delivered side", () =>
         {
-            var input = Base(); AddVillage(Tables(input), "d", false, 10); Colony(input)["villageTradeCaravans"] = Json(new[] { new { id = "trade", actorId = "actor", fromColonyId = "c", toColonyId = "d", offeredKind = "food", offeredAmount = 3, requestedKind = "logs", requestedAmount = 2, offeredSources = Array.Empty<object>(), requestedSources = Array.Empty<object>(), offeredItems = Array.Empty<object>(), requestedItems = Array.Empty<object>(), outboundRoute = new[] { new { x = 10, y = 0 } }, returnRoute = new[] { new { x = 0, y = 0 } }, nextWaypoint = 0, phase = "returning", position = new { x = 0, y = 0 }, acceptedAt = 1000000, lastAdvancedAt = 1001000 } });
-            var world = Restart(Convert(input)); world.Step(5); check(world.TradeOffers.Single().Status == "completed", "returning caravan did not complete: " + world.TradeOffers.Single().Status); check(world.Total(world.Village("c"), "logs") == 22, "requested escrow failed delivery"); check(world.Total(world.Village("d"), "food") == 100, "previously delivered offered side was duplicated");
+            var world = Restart(Convert(ReturningTrade())); world.Step(5); check(world.TradeOffers.Single().Status == "completed", "returning caravan did not complete: " + world.TradeOffers.Single().Status); check(world.Total(world.Village("c"), "logs") == 22, "requested escrow failed delivery"); check(world.Total(world.Village("d"), "food") == 100, "previously delivered offered side was duplicated");
         });
+        foreach (var phase in new[] { "returning", "waiting_at_source" })
+            foreach (var exact in new[] { false, true })
+                test("import delivered trade rejects cancellation and preserves " + (exact ? "exact" : "scalar") + " payment while " + phase, () =>
+                {
+                    var input = ReturningTrade(phase, exact);
+                    var piles = JArray.Parse((string)Colony(input)["stockpiles"]); piles[0]["contents"]["stone"] = 420; Colony(input)["stockpiles"] = piles.ToString();
+                    var world = Restart(Convert(input)); var trade = world.TradeOffers.Single(); var sender = world.Village("c"); var recipient = world.Village("d");
+                    var senderContext = new PlayerContext { PlayerId = "fixture-sender", VillageId = sender.Id };
+                    var recipientContext = new PlayerContext { PlayerId = "owner-d", VillageId = recipient.Id };
+                    check(world.Apply(senderContext, new GameAction { Kind = "EnterCatControl", CatId = sender.Cats[0].Id }).Success, "fixture sender could not wait beside its storage");
+                    check(trade.OfferedDelivered, "fixture did not retain completed outward delivery");
+                    var beforeTrade = Json(trade); var beforeSender = Json(sender); var beforeRecipient = Json(recipient);
+                    foreach (var controller in new[] { recipientContext, senderContext })
+                        check(!world.Apply(controller, new GameAction { Kind = "CancelVillageTrade", TargetId = trade.Id }).Success, "delivered trade cancellation refunded the recipient's earned payment");
+                    check(Json(trade) == beforeTrade && Json(sender) == beforeSender && Json(recipient) == beforeRecipient, "rejected cancellation changed delivery or village state");
+                    if (phase == "returning")
+                    {
+                        world.Step(1);
+                        check(trade.Status == "returning" && trade.X == 6 && world.Total(sender, exact ? "tools" : "logs") == (exact ? 0 : 20), "returning payment skipped its physical route");
+                    }
+                    world.Step(8);
+                    check(trade.Status == "unloading", "full source storage did not retain the return payment");
+                    world = Restart(world); trade = world.TradeOffers.Single(); sender = world.Village("c"); recipient = world.Village("d");
+                    check(!world.Apply(recipientContext, new GameAction { Kind = "CancelVillageTrade", TargetId = trade.Id }).Success && trade.Status == "unloading", "restart allowed a waiting payment to be refunded");
+                    if (exact) check(trade.RequestedItems.Single().Id == "d\u001fpayment-tool" && trade.RequestedItems.Single().Condition == 17 && trade.RequestedItems.Single().MaxCondition == 42, "waiting escrow lost exact item identity or condition");
+                    var cat = sender.Cats[0]; var store = sender.Stockpiles.Single();
+                    check(world.Apply(senderContext, new GameAction { Kind = "EnterCatControl", CatId = cat.Id }).Success, "sender could not approach its storage");
+                    check(world.Apply(senderContext, new GameAction { Kind = "InteractCat", CatId = cat.Id, TargetId = store.Id, Resource = "stone", Amount = 2 }).Success, "sender could not free finite receiving capacity");
+                    world.Step(2);
+                    check(trade.Status == "completed" && world.Total(sender, exact ? "tools" : "logs") == (exact ? 1 : 22), "earned return payment did not arrive after storage was freed");
+                    check(world.Total(recipient, "food") == 100 && world.Total(recipient, exact ? "tools" : "logs") == (exact ? 0 : 20), "recipient received duplicate goods or retained its payment");
+                    if (exact)
+                    {
+                        var item = sender.Items.Single(i => i.Id == "d\u001fpayment-tool");
+                        check(item.Condition == 17 && item.MaxCondition == 42 && item.Quality == 3 && item.LocationId == store.Id && trade.RequestedItems.Count == 0, "completed exact payment changed identity or remained in escrow");
+                    }
+                    world = Restart(world); world.Step(2);
+                    check(world.Total(world.Village("c"), exact ? "tools" : "logs") == (exact ? 1 : 22), "completed payment replayed after restart");
+                });
         test("import completes only the saved frontier tile and exact boundary", () =>
         {
             var input = Base(); Colony(input)["claimedTiles"] = Json(new[] { new { x = 0, y = 0 } });

@@ -14,6 +14,8 @@ namespace IdleCatForest.Simulation
         {
             if (c.JobId != "" || v.Jobs.Any(job => !job.Completed && job.CatId == c.Id))
                 throw new InvalidOperationException("Cat already owns active work");
+            if (c.Cargo.Count > 0)
+                Spill(v, c.Position, c.Cargo);
             if (j.Id == "")
                 j.Id = Id("job");
             j.CatId = c.Id;
@@ -103,6 +105,8 @@ namespace IdleCatForest.Simulation
                 {
                     if (pending.CatId != "")
                         return ActionResult.Fail("Expansion already active");
+                    if (c.Cargo.Count > 0)
+                        Spill(v, c.Position, c.Cargo);
                     pending.CatId = c.Id;
                     c.JobId = pending.Id;
                     c.Path.Clear();
@@ -836,7 +840,6 @@ namespace IdleCatForest.Simulation
         }
         private void Expand(Village v)
         {
-            int old = v.Radius;
             v.Radius += 2;
             v.ClaimedTiles.Clear();
             v.AgriculturalTiles.Clear();
@@ -860,8 +863,6 @@ namespace IdleCatForest.Simulation
                     t.ClaimId = v.Id;
                     t.Biome = "meadow";
                     t.Wall = (Math.Abs(x) == v.Radius || Math.Abs(z) == v.Radius) && !(x == 0 && z == v.Radius);
-                    if (Math.Abs(x) == old || Math.Abs(z) == old)
-                        t.Wall = false;
                     if (!v.Known.Contains(p))
                         v.Known.Add(p);
                 }

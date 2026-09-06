@@ -13,6 +13,8 @@ namespace IdleCatForest.Simulation
                 var worker = AvailableCat(v, JobLabor(pending.Kind));
                 if (worker == null)
                     break;
+                if (worker.Cargo.Count > 0)
+                    Spill(v, worker.Position, worker.Cargo);
                 pending.CatId = worker.Id;
                 worker.JobId = pending.Id;
                 worker.Goal = pending.Kind;

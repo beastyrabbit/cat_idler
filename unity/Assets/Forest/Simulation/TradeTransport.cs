@@ -99,6 +99,8 @@ namespace IdleCatForest.Simulation
                 return ActionResult.Fail("Trade controller required");
             if (t.Status == "completed" || t.Status == "cancelled")
                 return ActionResult.Fail("Trade already closed");
+            if (t.OfferedDelivered)
+                return ActionResult.Fail("The outward delivery is complete. Payment must finish returning.");
             if (t.Status != "offered")
             {
                 var from = Village(t.FromVillageId);
