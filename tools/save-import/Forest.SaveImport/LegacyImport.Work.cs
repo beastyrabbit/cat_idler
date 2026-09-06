@@ -65,6 +65,9 @@ public static partial class LegacyImport
             foreach (var b in v.Buildings.Where(b => b.Completed))
             {
                 var raw = Raw(v.Id, b.Id); var inputs = TakeLocal(v, "station-input:" + raw); var outputs = TakeLocal(v, "station-output:" + raw);
+                // Functional output counters mirror identities at the building's local-output compartment.
+                foreach (var pair in new[] { ("tools", "tool"), ("weapons", "weapon"), ("armor", "armor") })
+                { double units = v.Items.Count(i => i.Kind == pair.Item2 && i.LocationKind == "station" && i.LocationId == b.Id && i.StationCompartment == "local_output"); World.Add(outputs, pair.Item1, -Math.Min(units, World.Amount(outputs, pair.Item1))); }
                 // Inputs are station-owned and only transferred to one slot once. Other slots compete for the remainder.
                 Merge(b.Inputs, inputs); Merge(b.Outputs, outputs);
                 foreach (var slot in b.Slots.Where(s => s.CatId != ""))
@@ -104,7 +107,7 @@ public static partial class LegacyImport
                     c.PersonalBrewUsed = B(saved, "brewUsed"); c.ResumeJobId = v.Jobs.Find(j => !j.Completed && j.CatId == c.Id)?.Id ?? ""; continue;
                 }
                 // The hidden transit pile mirrors the on-paw amount in the old aggregate. Move it rather than credit it twice.
-                if (parts.Length >= 3 && (parts[0] == "station-in" || parts[0] == "construction-in" || parts[0] == "station-out"))
+                if (parts.Length >= 3 && (parts[0] == "station-in" || parts[0] == "construction-in"))
                 {
                     var hidden = v.Stockpiles.Find(p => p.Id == Q(v.Id, parts[2])); if (hidden != null) foreach (var cargo in c.Cargo) World.Add(hidden.Goods, cargo.Resource, -Math.Min(cargo.Amount, World.Amount(hidden.Goods, cargo.Resource)));
                 }
@@ -112,8 +115,16 @@ public static partial class LegacyImport
                 if (job == null) { job = new Job { Id = Q(v.Id, "import-cargo-" + Raw(v.Id, c.Id)), Kind = "haul", OriginalKind = "loose_cargo", CatId = c.Id, Position = c.Position, Origin = c.Position, Phase = "output_delivery", StartedAt = world.TimeSeconds }; v.Jobs.Add(job); }
                 else if (marker.StartsWith("station-out|", StringComparison.Ordinal) || marker.StartsWith("farm-out|", StringComparison.Ordinal) || marker.StartsWith("steward-haul|", StringComparison.Ordinal)) job.Phase = "output_delivery";
                 else if (marker.StartsWith("station-in|", StringComparison.Ordinal)) job.Phase = "input_delivery";
+                var carriedItems = v.Items.Where(i => i.LocationKind == "carrier" && i.LocationId == c.Id).ToArray();
                 if (parts.Length >= 4 && parts[3].StartsWith("item:", StringComparison.Ordinal))
-                { var id = Q(v.Id, parts[3].Substring(5)); var item = v.Items.Find(i => i.Id == id); if (item == null) throw new InvalidDataException("Carried item identity is absent."); job.ItemIds.Add(item.Id); item.LocationId = job.Id; c.Cargo.RemoveAll(s => s.Resource == "tools" || s.Resource == "weapons" || s.Resource == "armor"); }
+                { var id = Q(v.Id, parts[3].Substring(5)); var item = carriedItems.FirstOrDefault(i => i.Id == id); if (item == null) throw new InvalidDataException("Carried item identity is absent."); carriedItems = new[] { item }; }
+                else if (parts[0] != "station-out") carriedItems = Array.Empty<Item>();
+                if (carriedItems.Length > 0)
+                {
+                    foreach (var item in carriedItems) { job.ItemIds.Add(item.Id); item.LocationId = job.Id; }
+                    // Legacy Carrying has one scalar kind/amount: here it only projects the exact cargo, including Refined variants.
+                    c.Cargo.Clear();
+                }
             }
             foreach (var p in v.Stockpiles.Where(p => p.Kind == "legacy_local").ToArray())
             { if (p.Goods.Count == 0) v.Stockpiles.Remove(p); else if (Raw(v.Id, p.Id).StartsWith("construction-input:", StringComparison.Ordinal)) { var b = v.Buildings.Find(b => Raw(v.Id, p.Id) == "construction-input:" + Raw(v.Id, b.Id)); if (b == null) throw new InvalidDataException("Construction local owner is absent.");/* deliveredLumber etc already own the exact material */v.Stockpiles.Remove(p); } else { p.Kind = "spill"; p.ResourceLimits.Clear(); p.Capacity = Math.Max(p.Capacity, p.Goods.Sum(s => s.Amount)); v.Events.Add(new Event { Time = world.TimeSeconds, Kind = "migration", Text = "Unassigned transit goods remain at their saved position in a recoverable pile.", EntityId = p.Id }); } }

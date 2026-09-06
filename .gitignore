@@ -49,6 +49,7 @@ crates/cat-client/reference/*.png
 /unity/*.sln
 /unity/*.slnx
 **/bin/
+!/tools/save-import/normalize-legacy/src/bin/
 **/obj/
 *.blend1
 *.blend2

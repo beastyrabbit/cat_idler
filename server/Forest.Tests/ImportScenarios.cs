@@ -40,6 +40,69 @@ static class ImportScenarios
     }
     public static void Run(Action<string, Action> test, Action<bool, string> check)
     {
+        test("import station outbound destination stock is not mirrored transit", () =>
+        {
+            var input = Base(); Building(input, "bench", "wood_cutter", "worker", 6)["productionQueue"] = "[]";
+            var piles = JArray.Parse((string)Colony(input)["stockpiles"]); piles[0]["contents"]["planks"] = 10; Colony(input)["stockpiles"] = piles.ToString();
+            Tables(input)["cats"][0]["carrying"] = Json(new { kind = "planks", amount = 3, jobEndedAt = 1000000, sourceGatherSpot = "station-out|bench|store" });
+            var world = Restart(Convert(input)); var v = world.Village("c");
+            check(World.Amount(v.Stockpiles.Single().Goods, "planks") == 10 && World.Amount(v.Cats.Single(c => c.Id == "c\u001fworker").Cargo, "planks") == 3 && world.Total(v, "planks") + v.Cats.Sum(c => World.Amount(c.Cargo, "planks")) == 13, "outbound import debited existing destination goods as mirrored transit");
+            world.Step(2); world = Restart(world); v = world.Village("c");
+            check(World.Amount(v.Stockpiles.Single().Goods, "planks") == 13 && v.Cats.All(c => World.Amount(c.Cargo, "planks") == 0) && world.Validate().Count == 0, "outbound delivery or restart lost finite preexisting destination stock");
+        });
+        foreach (var equipment in new[] { (Kind: "tool", Resource: "tools"), (Kind: "weapon", Resource: "weapons"), (Kind: "armor", Resource: "armor") })
+            test("import unsuffixed station outbound exact " + equipment.Resource + " preserves carrier ownership", () =>
+            {
+                var input = Base(); Cat(Tables(input), "receiver", 0); Building(input, "bench", "woodworking", "worker", 6)["productionQueue"] = "[]";
+                Pile(input, "station-output:bench", 6, equipment.Resource, 1, "planks", 2);
+                input["Derived"] = Row("c", Row("PileResourceLimits", Row("store", Row(equipment.Resource, 1))));
+                Tables(input)["cats"][0]["carrying"] = Json(new { kind = equipment.Resource, amount = 3, jobEndedAt = 1000000, sourceGatherSpot = "station-out|bench|store" });
+                var items = new JArray();
+                for (int i = 0; i < 3; i++) items.Add(Row("id", "carried-" + i, "item", equipment.Kind + ":wood:" + i, "durability", 17 + i, "maxDurability", 42 + i, "location", Row("kind", "carrier", "cat_id", "worker")));
+                items.Add(Row("id", "equipped", "item", equipment.Kind + ":bone:3", "durability", 21, "maxDurability", 46, "location", Row("kind", "equipped", "cat_id", "worker")));
+                items.Add(Row("id", "leftover", "item", equipment.Kind + ":metal:2", "durability", 22, "maxDurability", 47, "location", Row("kind", "station", "building_id", "bench", "compartment", "local_output")));
+                Colony(input)["items"] = Json(new { nextSerial = 6, instances = items });
+                var world = Restart(Convert(input)); var v = world.Village("c"); var job = v.Jobs.Single(); var store = v.Stockpiles.Single();
+                check(job.ItemIds.Count == 3 && v.Items.Where(i => i.Id.StartsWith("c\u001fcarried-", StringComparison.Ordinal)).All(i => i.LocationId == job.Id) && v.Cats.Single(c => c.Id == "c\u001fworker").Cargo.Count == 0, "unsuffixed functional cargo left exact identities on the cat or retained scalar compatibility goods");
+                check(World.Amount(v.Buildings.Single().Outputs, equipment.Resource) == 0 && World.Amount(v.Buildings.Single().Outputs, "planks") == 2, "resident exact station output retained its functional scalar mirror or lost unrelated planks");
+                check(v.Items.Single(i => i.Id == "c\u001fequipped").LocationId == "c\u001fworker" && v.Cats.Single(c => c.Id == "c\u001fworker").Equipment.SequenceEqual(new[] { "c\u001fequipped" }) && v.Items.Single(i => i.Id == "c\u001fleftover").LocationId == "c\u001fbench", "outbound adoption took equipped or station-owned items");
+                world.Step(2); world = Restart(world); v = world.Village("c"); job = v.Jobs.Single();
+                check(!job.Completed && job.ItemIds.Count == 2 && v.Items.Count(i => i.LocationId == store.Id) == 1 && job.BlockedReason == "output_storage_full_or_unreachable", "multi-item outbound delivery bypassed one-item receiving capacity");
+                var context = new PlayerContext { PlayerId = "fixture-owner", VillageId = v.Id };
+                foreach (var receiver in new[] { "keeper", "receiver" })
+                {
+                    var stored = v.Items.Single(i => i.LocationId == store.Id);
+                    check(world.Apply(context, new GameAction { Kind = "EquipItem", CatId = "c\u001f" + receiver, TargetId = stored.Id }).Success, "public equip could not free exact outbound capacity");
+                    world.Step(1); world = Restart(world); v = world.Village("c"); job = v.Jobs.Single(j => j.Id == job.Id);
+                }
+                check(job.Completed && job.ItemIds.Count == 0 && v.Items.Count == 5 && v.Items.Count(i => i.LocationId == store.Id) == 1 && v.Items.Single(i => i.Id == "c\u001fleftover").LocationId == "c\u001fbench" && v.Items.Single(i => i.Id == "c\u001fequipped").LocationId == "c\u001fworker", "outbound completion lost identities, moved station leftovers, or unequipped the worker");
+                for (int i = 0; i < 3; i++) { var item = v.Items.Single(item => item.Id == "c\u001fcarried-" + i); check(item.Condition == 17 + i && item.MaxCondition == 42 + i && item.Quality == i, "functional outbound restart changed exact condition or quality"); }
+                check(World.Amount(v.Stockpiles.Single().Goods, equipment.Resource) == 0 && World.Amount(v.Buildings.Single().Outputs, equipment.Resource) == 0 && World.Amount(v.Buildings.Single().Outputs, "planks") == 2 && v.Cats.All(c => World.Amount(c.Cargo, equipment.Resource) == 0) && world.Validate().Count == 0, "functional output minted scalar copies or invalid ownership");
+            });
+        foreach (var kind in new[] { "mug", "trinket" })
+            test("import suffixed station outbound " + kind + " replaces refined compatibility cargo", () =>
+            {
+                var input = Base(); Building(input, "bench", "woodworking", "worker", 6)["productionQueue"] = "[]";
+                var piles = JArray.Parse((string)Colony(input)["stockpiles"]); piles[0]["contents"]["stone"] = 420; Colony(input)["stockpiles"] = piles.ToString();
+                Tables(input)["cats"][0]["carrying"] = Json(new { kind = "refined", amount = 1, jobEndedAt = 1000000, sourceGatherSpot = "station-out|bench|store|item:variant" });
+                Colony(input)["items"] = Json(new
+                {
+                    nextSerial = 3,
+                    instances = new[] {
+                    Row("id", "variant", "item", kind + ":gem:2", "durability", 17, "maxDurability", 42, "location", Row("kind", "carrier", "cat_id", "worker")),
+                    Row("id", "leftover", "item", kind + ":wood:1", "durability", 19, "maxDurability", 43, "location", Row("kind", "station", "building_id", "bench", "compartment", "local_output")) }
+                });
+                var world = Restart(Convert(input)); var v = world.Village("c"); var job = v.Jobs.Single(); var store = v.Stockpiles.Single();
+                check(job.ItemIds.SequenceEqual(new[] { "c\u001fvariant" }) && v.Items.Single(i => i.Id == "c\u001fvariant").LocationId == job.Id && v.Cats.Single(c => c.Id == "c\u001fworker").Cargo.Count == 0, "suffixed variant retained its refined compatibility cargo");
+                world.Step(2); world = Restart(world); v = world.Village("c"); job = v.Jobs.Single();
+                check(!job.Completed && job.ItemIds.Count == 1 && job.BlockedReason == "output_storage_full_or_unreachable" && v.Items.Single(i => i.Id == "c\u001fleftover").LocationId == "c\u001fbench", "full variant storage changed exact cargo or station ownership");
+                var context = new PlayerContext { PlayerId = "fixture-owner", VillageId = v.Id };
+                check(world.Apply(context, new GameAction { Kind = "EnterCatControl", CatId = "c\u001fkeeper" }).Success && world.Apply(context, new GameAction { Kind = "InteractCat", CatId = "c\u001fkeeper", TargetId = store.Id, Resource = "stone", Amount = 1 }).Success, "public pickup could not free variant receiving capacity");
+                world.Step(1); world = Restart(world); v = world.Village("c");
+                var item = v.Items.Single(i => i.Id == "c\u001fvariant");
+                check(item.LocationId == store.Id && item.Condition == 17 && item.MaxCondition == 42 && item.Quality == 2 && v.Jobs.Single(j => j.Id == job.Id).Completed && v.Items.Count == 2 && v.Items.Single(i => i.Id == "c\u001fleftover").LocationId == "c\u001fbench", "variant output recovery changed identity, condition, or station leftovers");
+                check(world.Total(v, "refined") == 0 && v.Cats.All(c => World.Amount(c.Cargo, "refined") == 0) && world.Total(v, "stone") + v.Cats.Sum(c => World.Amount(c.Cargo, "stone")) == 420 && world.Validate().Count == 0, "variant output created refined goods or lost finite capacity-release cargo");
+            });
         foreach (var outbound in new[] { "none", "scalar", "exact" })
             test("import staffed exact station output waits for physical pickup with " + outbound + " outbound cargo", () =>
             {
@@ -48,7 +111,7 @@ static class ImportScenarios
                 if (outbound != "none")
                 {
                     Pile(input, "station-output:bench", 6, "planks", 2);
-                    Tables(input)["cats"][0]["carrying"] = Json(new { kind = outbound == "exact" ? "tools" : "planks", amount = outbound == "exact" ? 1 : 3, jobEndedAt = 1000000, sourceGatherSpot = "station-out|bench|station-output:bench" + (outbound == "exact" ? "|item:carried" : "") });
+                    Tables(input)["cats"][0]["carrying"] = Json(new { kind = outbound == "exact" ? "tools" : "planks", amount = outbound == "exact" ? 1 : 3, jobEndedAt = 1000000, sourceGatherSpot = "station-out|bench|store" + (outbound == "exact" ? "|item:carried" : "") });
                     if (outbound == "exact") items.Add(Row("id", "carried", "item", "tool:bone:2", "durability", 19, "maxDurability", 43, "location", Row("kind", "carrier", "cat_id", "worker")));
                 }
                 Colony(input)["items"] = Json(new { nextSerial = 3, instances = items });
@@ -273,7 +336,7 @@ static class ImportScenarios
         });
         test("import resumes exact outbound equipment and construction reservations", () =>
         {
-            var input = Base(); Building(input, "bench", "wood_cutter", "worker", 2); var c = Tables(input)["cats"][0]; c["carrying"] = Json(new { kind = "tools", amount = 1, jobEndedAt = 1000000, sourceGatherSpot = "station-out|bench|station-output:bench|item:tool-a" });
+            var input = Base(); Building(input, "bench", "wood_cutter", "worker", 2); var c = Tables(input)["cats"][0]; c["carrying"] = Json(new { kind = "tools", amount = 1, jobEndedAt = 1000000, sourceGatherSpot = "station-out|bench|store|item:tool-a" });
             Colony(input)["items"] = Json(new { nextSerial = 2, instances = new[] { new { id = "tool-a", item = "tool:wood:3", durability = 17, maxDurability = 42, location = new { kind = "carrier", cat_id = "worker" }, credited = false, autoIssued = false } } });
             var construction = Building(input, "scaffold", "den", "", 4); construction["isComplete"] = 0; construction["constructionProgress"] = 0; construction["productionQueue"] = "[]"; construction["constructionCargo"] = Json(new { requiredLumber = 2, requiredPlanks = 0, requiredBlocks = 0, deliveredLumber = 1, deliveredPlanks = 0, deliveredBlocks = 0, consumed = false, reservations = new[] { new { sourceStockpileId = "timber", kind = "lumber", amount = 1 } } }); Pile(input, "timber", 0, "lumber", 1); Pile(input, "construction-input:scaffold", 4, "lumber", 1);
             ((JArray)Tables(input)["jobs"]).Add(Row("id", "builder-job", "colonyId", "c", "kind", "build_house", "status", "active", "requestedByType", "player", "assignedCatId", "keeper", "baseDurationSec", 100, "speedMultiplier", 1, "yieldMultiplier", 1, "metadata", Json(new { kind = "construction", phase = "construct_house", buildingType = "den", buildingId = "scaffold", site = new { x = 4, y = 0 } })));

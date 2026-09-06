@@ -6,6 +6,7 @@ new temporary directory; these tests never locate or open a player's database.
 import hashlib
 import json
 import os
+from contextlib import closing
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -54,6 +55,91 @@ class PlayableImport(unittest.TestCase):
         self.assertIn("PASS external synthetic SQLite world resumes deterministically", checked.stdout)
         return json.loads(envelope["Payload"]), json.loads(normalized.read_text())
 
+    def test_station_output_writer_markers_preserve_destination_and_exact_cargo(self):
+        self.source = self.root / "station-output.sqlite"
+        generated = run(BIN / "synthetic-fixture", self.source, "station-output")
+        self.assertEqual(generated.returncode, 0, generated.stderr)
+        with closing(sqlite3.connect(f"file:{self.source}?mode=ro", uri=True)) as connection:
+            cats = {name: (cat_id, json.loads(carrying)) for cat_id, name, carrying in
+                    connection.execute("SELECT id, name, carrying FROM cats WHERE name LIKE 'Fixture output %'")}
+            stockpiles, items = connection.execute("SELECT stockpiles, items FROM colonies").fetchone()
+        original_piles = json.loads(stockpiles)
+        original_items = json.loads(items)["instances"]
+        world, normalized = self.convert()
+        village = world["Villages"][0]
+        self.assertEqual(len(village["Cats"]), 30)
+        self.assertEqual(len(cats), 5)
+        def qualify(identity):
+            return identity if "\u001f" in identity or identity.startswith("world-item:") else village["Id"] + "\u001f" + identity
+        converted_items = {item["Id"]: item for item in village["Items"]}
+        self.assertEqual(set(converted_items), {qualify(item["id"]) for item in original_items})
+        normalized_cats = {cat["name"]: cat for cat in normalized["Tables"]["cats"]}
+
+        for label, resource, kind in (("planks", "planks", None), ("tools", "tools", "tool"),
+                                      ("weapons", "weapons", "weapon"), ("armor", "armor", "armor"),
+                                      ("trinket", "refined", "trinket")):
+            with self.subTest(output=label):
+                name = "Fixture output " + label
+                cat_id, carrying = cats[name]
+                self.assertEqual(json.loads(normalized_cats[name]["carrying"]), carrying)
+                marker = carrying["sourceGatherSpot"].split("|")
+                self.assertEqual(marker[:2], ["station-out", "fixture-output-" + label])
+                self.assertEqual(carrying["kind"], resource)
+                self.assertEqual(len(marker), 4 if label == "trinket" else 3)
+                destination = next(pile for pile in original_piles if pile["id"] == marker[2])
+                self.assertFalse(marker[2].startswith("station-"))
+                pile = next(pile for pile in village["Stockpiles"] if pile["Id"] == qualify(marker[2]))
+                cat = next(cat for cat in village["Cats"] if cat["Id"] == qualify(cat_id))
+                job = next(job for job in village["Jobs"] if job["CatId"] == cat["Id"])
+                self.assertEqual(job["Phase"], "output_delivery")
+                self.assertEqual(job["TargetId"], qualify(marker[1]))
+                self.assertEqual(cat["JobId"], job["Id"])
+
+                if kind is None:
+                    self.assertEqual(next(stack["Amount"] for stack in pile["Goods"] if stack["Resource"] == resource),
+                                     destination["contents"][resource])
+                    self.assertEqual(cat["Cargo"], [{"Resource": resource, "Amount": carrying["amount"]}])
+                    self.assertEqual(job["ItemIds"], [])
+                    continue
+
+                carried = [item for item in original_items if item["location"]["kind"] == "carrier"
+                           and qualify(item["location"]["cat_id"]) == qualify(cat_id)]
+                self.assertEqual(len(carried), carrying["amount"])
+                self.assertEqual(set(job["ItemIds"]), {qualify(item["id"]) for item in carried})
+                self.assertEqual(cat["Cargo"], [])
+                for original in carried:
+                    item = converted_items[qualify(original["id"])]
+                    self.assertEqual(item["LocationId"], job["Id"])
+                    self.assertEqual(item["Kind"], kind)
+                    self.assertEqual([item["Kind"], item["Material"], str(item["Quality"])], original["item"].split(":"))
+                    self.assertEqual(item["Condition"], original["durability"])
+                    self.assertEqual(item["MaxCondition"], original["maxDurability"])
+                    self.assertFalse(item["Credited"])
+                if label == "trinket":
+                    self.assertEqual(marker[3], "item:" + carried[0]["id"])
+                    self.assertEqual(next(stack["Amount"] for stack in pile["Goods"] if stack["Resource"] == "refined"),
+                                     destination["contents"]["refined"])
+                else:
+                    mirror = next(source for source in original_piles if source["id"] == "station-output:" + marker[1])
+                    self.assertEqual(mirror["contents"][resource], 1)
+                for original in original_items:
+                    location = original["location"]
+                    expected = None
+                    if location == {"kind": "stockpile", "stockpile_id": marker[2]}:
+                        expected = qualify(marker[2])
+                    elif location["kind"] == "equipped" and qualify(location["cat_id"]) == cat["Id"]:
+                        expected = cat["Id"]
+                    elif location == {"kind": "station", "building_id": marker[1], "compartment": "local_output"}:
+                        expected = qualify(marker[1])
+                    if expected is not None:
+                        self.assertEqual(converted_items[qualify(original["id"])]["LocationId"], expected)
+
+        for goods in ([pile["Goods"] for pile in village["Stockpiles"]]
+                      + [cat["Cargo"] for cat in village["Cats"]]
+                      + [job["Local"] for job in village["Jobs"]]
+                      + [building[field] for building in village["Buildings"] for field in ("Inputs", "Outputs")]):
+            self.assertFalse(any(stack["Resource"] in ("tools", "weapons", "armor") and stack["Amount"] != 0 for stack in goods))
+
     def test_current_typed_save_preserves_identity_geometry_and_source(self):
         world, source = self.convert()
         self.assertEqual(len(world["Villages"]), 1)
@@ -81,18 +167,18 @@ class PlayableImport(unittest.TestCase):
         self.assertEqual(worker["Cargo"], [{"Resource": "logs", "Amount": 3}])
 
     def test_older_additive_columns_are_migrated_only_in_memory(self):
-        with sqlite3.connect(self.source) as connection:
+        with closing(sqlite3.connect(self.source)) as connection, connection:
             for table, column in (("cats", "preferredLabors"), ("cats", "boosted"),
                                   ("colonies", "transportState"), ("colonies", "migrationState"),
                                   ("buildings", "additionalWorkSlots"), ("buildings", "constructionCargo")):
                 connection.execute(f'ALTER TABLE "{table}" DROP COLUMN "{column}"')
         world, _ = self.convert()
         self.assertEqual(len(world["Villages"][0]["Cats"]), 30)
-        with sqlite3.connect(f"file:{self.source}?mode=ro", uri=True) as connection:
+        with closing(sqlite3.connect(f"file:{self.source}?mode=ro", uri=True)) as connection:
             self.assertNotIn("boosted", [row[1] for row in connection.execute("PRAGMA table_info(cats)")])
 
     def test_unknown_schema_is_refused_without_output(self):
-        with sqlite3.connect(self.source) as connection:
+        with closing(sqlite3.connect(self.source)) as connection, connection:
             connection.execute("CREATE TABLE future_inventory (amount REAL)")
         before = self.source.read_bytes()
         result = run(BIN / "forest-normalize-legacy", self.source, self.root / "refused.json")
