@@ -49,8 +49,10 @@ not proof of a passed suite.
 The EditMode wrapper runs the shared noncampaign acceptance scenarios and
 Unity-specific simulation checks. The nine extended
 campaigns run through the standalone .NET executable, including in CI. Running
-all campaigns again under the Editor's Mono runtime exceeded the ten-minute local
-test limit. To select a specific Unity campaign, pass its name with `--filter`
+all campaigns again under the Editor's Mono runtime exceeded the previous
+ten-minute batch timeout. The noncampaign EditMode command now allows twenty
+minutes because the measured live-simulation run took just over ten minutes.
+To select a specific Unity campaign, pass its name with `--filter`
 and an appropriate `--timeout`; no campaign assertion is skipped or weakened.
 
 The acceptance ledger records the current test counts. Ten regressions cover exact-item

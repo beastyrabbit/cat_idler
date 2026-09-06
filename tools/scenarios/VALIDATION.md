@@ -2,19 +2,22 @@
 
 The executable suite and Unity EditMode tests share `AcceptanceScenarios.cs`. Results below came from the .NET executable on the development Mac. Unity Editor and packaged UI execution belong to the parent migration checks.
 
-The live-simulation revision passes all 678 noncampaign scenarios, including
-176 regressions, in 99.3138 seconds. Twenty-three new cases check 50-millisecond
+The live-simulation revision passes all 683 noncampaign scenarios, including
+181 regressions, in 118.1283 seconds. Twenty-three new cases check 50-millisecond
 movement and work, shared actor time, fractional partitions, transport,
 researched terrain speeds and missing-supply retries. The original emergency
 water scenario still requires physical recovery within 240 simulated seconds.
+Five further failed-path cases bound unchanged retries, check both endpoint changes
+and preserve physical recovery through fractional partitions. These first failed
+in 71.3 milliseconds, then passed in 98.3 milliseconds.
 Pickup and reboarding observations use the smaller steps with their original
 elapsed limits and conservation assertions. These execution times are test
 evidence, not native performance measurements.
 
-All nine campaign twins also pass on the live simulation at `90177b6`.
+All nine campaign twins also pass on the live simulation at `6ee8080`.
 Fresh 48-hour, established 72-hour and shared/personal 48-hour scenarios run at
-seeds 7, 41 and 127. The three groups ran concurrently and took 459.662, 739.764
-and 741.187 seconds respectively. Each twin comparison still checks partitioned
+seeds 7, 41 and 127. The three groups ran concurrently and took 446.120, 707.341
+and 693.151 seconds respectively. Each twin comparison still checks partitioned
 elapsed time, founding identities, ownership and resource invariants. The finite
 established workload and other campaign scope limits described below remain.
 
@@ -104,4 +107,4 @@ Three scalar-haul regressions first failed in 0.1331 seconds, then passed in 0.1
 
 Two later public avoid-zone cases first failed together in 0.0777 seconds. A real SaveStore test also failed after reloading the already-carried `input_delivery` phase in 0.32 seconds. The carrier now selects a reachable alternate store while the original remains obstructed, preserving the same job, carrier and finite load. Five scalar cases passed in 0.1579 seconds, including competing eight/four-unit loads and the existing no-alternative checks. The real restart case passed in 0.34 seconds and survived a second reload without replay. Combined implementation smoke took about 0.90 seconds.
 
-`latest-results.txt` retains every noncampaign result and its final `RESULT` line. `campaign-results.txt` retains each concurrent group's results and elapsed time, followed by the combined nine-case count. `regression-results.txt` extracts all 176 regression results from the current 678-case run and claims no separate timing. Read those counts and any named failures before describing a run as successful.
+`latest-results.txt` retains every noncampaign result and its final `RESULT` line. `campaign-results.txt` retains each concurrent group's results and elapsed time, followed by the combined nine-case count. `regression-results.txt` extracts all 181 regression results from the current 683-case run and claims no separate timing. Read those counts and any named failures before describing a run as successful.

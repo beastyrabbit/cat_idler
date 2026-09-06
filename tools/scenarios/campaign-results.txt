@@ -1,21 +1,21 @@
-Three groups ran concurrently. Each RESULT reports that group's elapsed time.
+Campaign groups ran concurrently on source 6ee8080. Each elapsed time belongs to its group.
 
 GROUP fresh
-PASS campaign.fresh_48h_seed_7 160155.9ms
-PASS campaign.fresh_48h_seed_41 152363.3ms
-PASS campaign.fresh_48h_seed_127 147136.7ms
-RESULT total=3 failed=0 elapsed_ms=459661.7
+PASS campaign.fresh_48h_seed_7 155153.8ms
+PASS campaign.fresh_48h_seed_41 147088.1ms
+PASS campaign.fresh_48h_seed_127 143875.2ms
+RESULT total=3 failed=0 elapsed_ms=446120.4
 
 GROUP established
-PASS campaign.established_72h_seed_7 252562.8ms
-PASS campaign.established_72h_seed_41 243091.1ms
-PASS campaign.established_72h_seed_127 244106.5ms
-RESULT total=3 failed=0 elapsed_ms=739763.6
+PASS campaign.established_72h_seed_7 246070.7ms
+PASS campaign.established_72h_seed_41 236154.7ms
+PASS campaign.established_72h_seed_127 225111.4ms
+RESULT total=3 failed=0 elapsed_ms=707340.7
 
 GROUP shared
-PASS campaign.shared_personal_48h_seed_7 252382.3ms
-PASS campaign.shared_personal_48h_seed_41 240771.4ms
-PASS campaign.shared_personal_48h_seed_127 248030.1ms
-RESULT total=3 failed=0 elapsed_ms=741186.7
+PASS campaign.shared_personal_48h_seed_7 242846.1ms
+PASS campaign.shared_personal_48h_seed_41 230958.0ms
+PASS campaign.shared_personal_48h_seed_127 219343.8ms
+RESULT total=3 failed=0 elapsed_ms=693150.8
 
-Combined: total=9 failed=0
+COMBINED total=9 failed=0

@@ -722,7 +722,8 @@ namespace IdleCatForest.Acceptance
             else
             {
                 var split = FailedPathFixture(out var otherVillage, out var otherCat);
-                w.Step(0.93); for (int i = 0; i < 20; i++) { split.Step(0.03); split.Step(0.02); } split.Step(0.03);
+                w.Step(0.93); for (int i = 0; i < 20; i++) { split.Step(0.03); split.Step(0.02); }
+                split.Step(0.03);
                 Check(Fingerprint(w) == Fingerprint(split), "Fractional partitions changed failed-route timing or authoritative state");
                 v.BoundaryEdges.Clear(); otherVillage.BoundaryEdges.Clear(); w.Step(1); split.Step(0.97); split.Step(0.03);
                 Check(Fingerprint(w) == Fingerprint(split) && c.X > 1 && otherCat.X > 1, "Fractional partitions changed blocked-route recovery");

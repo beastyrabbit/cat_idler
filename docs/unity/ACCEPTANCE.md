@@ -29,10 +29,19 @@ The four cases first failed at the obstacle and passed after adjacent traversal
 was restored. Timing-sensitive pickup and reboarding checks now sample every
 50 milliseconds with unchanged elapsed deadlines and conservation assertions.
 
-The live simulation passed 678 noncampaign scenarios, including 176 regressions,
+Independent review found that an unreachable ordinary work or reboarding target
+caused a full path search every 50 milliseconds. A failed search now retains its
+start, destination and next planning deadline. Unchanged failures retry at the
+next whole second; changed endpoints retry immediately. Five cases first failed
+in 71.3 milliseconds, then passed in 98.3 milliseconds after the correction.
+They count searches and verify recovery, endpoint changes and fractional time
+partitions. A real save test preserves the retry deadline and finite cargo across
+two restarts, then resumes physical movement and the same job.
+
+The live simulation passed 683 noncampaign scenarios, including 181 regressions,
 and all nine campaign twins within the scope described below.
-Unity passed 684 EditMode and 37 PlayMode tests.
-The authority/import suite passed 53 tests. Four real SQLite pipeline tests and
+Unity passed 689 EditMode and 37 PlayMode tests.
+The authority/import suite passed 54 tests. Four real SQLite pipeline tests and
 two archive checks passed in 25.169 seconds. Blender reimport verified 82 models, 88 meshes and 145,611
 triangles. These checks establish the tested behavior, not the player's approval
 of the visual design. Native observations and current costs appear below and in
@@ -69,7 +78,7 @@ time and random-state controls.
 | Knowledge and progression | All 487 studies pass public purchase traversal with separate effect scenarios. Normal UI research spent 20,000 → 19,995 points on Research Hut and displayed the dependency map. | Verified |
 | Equipment, defense and trade | Exact item identity, condition, repair, finite traders, raids, warriors, rail/shipping and physical barter pass scenarios and real socket tests. | Verified |
 | Persistent shared authority | Two identities, private-village denial, filtered reports, restart and physical trade pass real socket tests. The native app connected to a synthetic server, founded 15-cat Mosslight, then reconnected to the same village, ID 74. | Verified |
-| Saves and migration | 53 authority/import tests and the real SQLite conversion pipeline pass. Jobs, cargo, claims, identities, fractional elapsed time and returning trade survive restart without replay. Imported exact-item capacity, physical pickup, sparse return paths, mixed output delivery and newly staffed empty queues preserve their limits and identities. Import preserves source bytes and refuses unknown schemas and destination overwrite. The packaged app opened the converted world and resumed both imported jobs. | Verified |
+| Saves and migration | 54 authority/import tests and the real SQLite conversion pipeline pass. Jobs, cargo, claims, identities, fractional elapsed time and returning trade survive restart without replay. Imported exact-item capacity, physical pickup, sparse return paths, mixed output delivery and newly staffed empty queues preserve their limits and identities. Import preserves source bytes and refuses unknown schemas and destination overwrite. The packaged app opened the converted world and resumed both imported jobs. | Verified |
 | 3D management and cat control | Blender geometry passes export/import checks. Editor and native UI inspect and control the same cat, walk, take five food and return it to AI while the colony continues. Native deposit emptied its cargo into the original store. | Verified |
 | Normal UI operation | Editor and native inspect, staffing, queues, research, construction and direct-control flows were exercised with saved-state checks. Native repeat persisted as true and pause/resume returned to unpaused work. Editor queue delivery passed; its repeat click did not persist. Original native connection, return and reconnect refreshed the open Village panel and preserved the server address. Corrective-revision road, construction and queue observations appear below. | Verified within this scope |
 | Extended operation | Nine campaign twins cover fresh 48-hour, established 72-hour and shared/personal 48-hour worlds at seeds 7, 41 and 127. | Verified in .NET |
@@ -77,16 +86,16 @@ time and random-state controls.
 
 ## Test and build evidence
 
-- [Simulation results](../../tools/scenarios/VALIDATION.md): 678 focused cases,
-  including 176 regressions, passed in 99.3138 seconds. Nine campaign twins passed
-  on the live simulation. The three concurrent groups took 459.662, 739.764 and
-  741.187 seconds for fresh, established and shared/personal colonies.
+- [Simulation results](../../tools/scenarios/VALIDATION.md): 683 focused cases,
+  including 181 regressions, passed in 118.1283 seconds. Nine campaign twins passed
+  on the live simulation. The three concurrent groups took 446.120, 707.341 and
+  693.151 seconds for fresh, established and shared/personal colonies.
   Campaigns compare partitioned time, validate claims and retain founding IDs.
   The established fixture has finite supplies and one repeating wood-processing
   station; it does not prove indefinite operation of every mature production chain.
-- Unity EditMode passed 684 noncampaign tests in 595.298 seconds. Long campaigns
+- Unity EditMode passed 689 noncampaign tests in 602.576 seconds. Long campaigns
   are excluded from this Editor run and passed in the .NET runner.
-- The complete live-simulation PlayMode run passed 37 tests in 13.503 seconds.
+- The complete live-simulation PlayMode run passed 37 tests in 13.648 seconds.
   These include ordinary UI logging, research, queues after reload, direct control
   at 8× speed, village selection, stockpile corners, merchant sales, work boosts, authored geometry
   and terrain categories/bounds during camera movement. Exact crafted cargo
@@ -99,7 +108,7 @@ time and random-state controls.
   and nonoverlapping narrow headers with usable Cats/Inspect scroll areas at
   600×360 and 550×336 panel units. A public 4×3 farm designation visibly covers
   every occupied tile, and clearing it removes the whole crop footprint.
-- [Authority and import checks](PERSISTENCE.md) passed 53 tests. The real Rust
+- [Authority and import checks](PERSISTENCE.md) passed 54 tests. The real Rust
   SQLite writer → normalizer → C# continuation pipeline passed four tests; the
   archival exporter passed two. All test worlds and identities are synthetic.
 - [Blender verification](../../source-art/verification.json) passed for 82 models,
@@ -111,7 +120,7 @@ and imported-output fixes. Campaign workloads use no transport routes or
 imported batch outputs, so their pass provides no evidence for that delivery
 path. Import tests check partial delivery, mixed item filters, full storage,
 public staffing and restart directly.
-The current campaign run used `90177b6`, including the live clock and earlier
+The current campaign run used `6ee8080`, including the live clock and earlier
 farm-edge, crop-rendering and transport corrections. Campaigns contain no road, rail or expansion
 construction jobs and no designated farms; they do not exercise those changes.
 The final focused regressions cover future farm boundaries, paid construction,
@@ -178,6 +187,15 @@ Unity Editors and scenario runners; exact 30/150-cat results appear in
 The expanded world's normal inspector also showed Review Cat 2's production
 progress increasing from 382.0 to 391.1 of 600 work. A game-only capture records
 the latter state. Neither native log contained an exception or assertion marker.
+
+The failed-route correction at `6ee8080` also built from clean source in the
+separate checkout; all 29 copied app files matched. A new seed-41 founding save
+opened normally, and Cats → Hazel plus the zoom control worked. Work increased
+from 13.4 to 33.7, stayed at 33.7 while paused, then reached 64.6 after 1× resumed.
+The checksum-verified save at 131.3 seconds retained all 30 living cats and Hazel's
+same working Hunt job. Its native log contained no exception or assertion marker.
+The performance samples above predate only this failed-search retry correction;
+they measure the live clock and retain their exact source revision.
 
 ## Earlier corrective-revision native observations
 

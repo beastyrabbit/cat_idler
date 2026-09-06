@@ -2,7 +2,7 @@
 
 These scenarios compile the same C# simulation and scenario source into a .NET 10 executable and Unity EditMode tests. They do not launch Unity, contact a server, or call an AI provider.
 
-The current inventory is 655 noncampaign cases and nine campaign twins. See `VALIDATION.md` and the result files for the verified source and remaining limits.
+The suite includes focused noncampaign cases and nine campaign twins. Use `--list` for the current inventory; `VALIDATION.md` and the result files record the verified source, counts and workload limits.
 
 Build and list the cases:
 

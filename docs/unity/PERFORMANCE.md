@@ -6,6 +6,10 @@ the local simulation at 1× speed in management view, with its 60 FPS target.
 The clean build came from commit `90177b6c506900180ab0777df5ccdfbb2dcbe2b9`
 and includes the continuous simulation. Every 50-millisecond step advances actors.
 The p95 execution cost per step was 0.491 ms with 30 cats and 0.945 ms with 150.
+The later `6ee8080` correction limits repeated searches for unchanged unreachable
+actor destinations to the planning cadence. These measurements predate that
+correction and do not measure blocked-route recovery cost. Focused regressions
+verify the number of searches and eventual recovery separately.
 
 Both runs used the default management view without interaction, direct control,
 screenshots or recording during measurement. Unity Editors and test runners were
