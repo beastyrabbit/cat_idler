@@ -100,6 +100,7 @@ namespace IdleCatForest.Simulation
     [Serializable]
     public partial class Cat
     {
+        public string NeedSourceId = ""; public double NextNeedAttemptAt;
         public string Id = "", Name = "", VillageId = "", JobId = "", BuildingId = "", OfficerRole = "", Goal = "idle", BlockedReason = "", ControlledBy = "", BedId = "", Migration = "resident";
         public Int2 Position; public double X, Z, Hunger = 100, Thirst = 100, Rest = 100, Health = 100, AgeHours = 24, PregnantUntil = -1, ProbationUntil = -1, ControlLeaseUntil;
         public bool Alive = true, Boosted; public List<Stack> Cargo = new List<Stack>(), Skills = new List<Stack>();
@@ -109,6 +110,8 @@ namespace IdleCatForest.Simulation
     [Serializable]
     public partial class Job
     {
+        public double NextPlanningAt, NextStorageAttemptAt; public string DeliveryPileId = ""; public bool HasObservedPosition; public Int2 ObservedPosition;
+        public bool HasWorkStand; public Int2 WorkStand; public int WorkStandIndex = -1;
         public string Id = "", Kind = "", CatId = "", TargetId = "", Resource = "", Phase = "travel", BlockedReason = "", SourceId = "", RecipeId = "", SuspendedCargoPileId = "", AutomatedBy = "";
         public Int2 Position, Origin; public double Progress, RequiredWork = 10, Amount, StartedAt; public bool Manual, Completed; public int PathIndex;
         public List<Stack> Reserved = new List<Stack>(); public List<Int2> Path = new List<Int2>();
@@ -140,6 +143,7 @@ namespace IdleCatForest.Simulation
     [Serializable]
     public partial class TradeOffer
     {
+        public Int2 Position; public bool HasContinuousPosition;
         public string Id = "", FromVillageId = "", ToVillageId = "", Status = "offered", CarrierId = "";
         public Stack Offered = new Stack(), Requested = new Stack(); public List<Int2> Path = new List<Int2>(); public int PathIndex; public double Progress;
         public List<Item> OfferedItems = new List<Item>(), RequestedItems = new List<Item>();
@@ -153,11 +157,13 @@ namespace IdleCatForest.Simulation
     [Serializable]
     public partial class Vehicle
     {
+        public bool HasContinuousPosition; public double X, Z, Progress;
         public string Id = "", Mode = "", RouteId = ""; public Int2 Position; public List<Stack> Cargo = new List<Stack>(); public List<string> ItemIds = new List<string>();
     }
     [Serializable]
     public partial class Raid
     {
+        public bool HasContinuousPosition; public double X, Z;
         public string Id = "", Phase = "approaching"; public Int2 Position; public double Health = 30, Strength = 30, Progress; public List<Int2> Path = new List<Int2>(); public List<Stack> Loot = new List<Stack>();
     }
     [Serializable]
@@ -173,6 +179,7 @@ namespace IdleCatForest.Simulation
     [Serializable]
     public partial class Trader
     {
+        public bool HasContinuousPosition; public double X, Z;
         public string Phase = "absent"; public Int2 Position; public double NextAt = 3600, Until, Coins = 1000; public List<Stack> Goods = new List<Stack>(); public List<Item> Items = new List<Item>();
         public List<Int2> Path = new List<Int2>(); public int PathIndex; public double Progress; public string BlockedReason = "";
     }

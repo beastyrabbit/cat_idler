@@ -61,6 +61,60 @@ namespace IdleCatForest.Tests
         }
 
         [UnityTest]
+        public IEnumerator LocalLiveSimulationConsumesOneFiftyMillisecondStep()
+        {
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            typeof(ForestGame).GetField("accumulated", flags).SetValue(game, .05);
+            double before = game.CurrentWorld.TimeSeconds;
+            typeof(ForestGame).GetMethod("Update", flags).Invoke(game, null);
+            Assert.That(game.CurrentWorld.TimeSeconds - before, Is.EqualTo(.05).Within(1e-8), "Autonomous simulation must advance without waiting for a 100ms presentation batch.");
+            yield break;
+        }
+
+        [UnityTest]
+        public IEnumerator LiveInspectorUpdatesWorkWithoutRebuildingThePanel()
+        {
+            var cat = game.Selected.Cats[1];
+            var job = new Job { Id = "live-inspector-job", Kind = "woodcut", Phase = "working", CatId = cat.Id, Position = cat.Position, Progress = 1, RequiredWork = 20 };
+            game.Selected.Jobs.Add(job); cat.JobId = job.Id;
+            game.View.InspectCat(cat.Id); game.UI.OpenPanel("Inspect");
+            var root = game.GetComponent<UIDocument>().rootVisualElement;
+            var progress = root.Q<ProgressBar>("live-work-progress");
+            Assert.That(progress, Is.Not.Null, "Working cats need a live progress meter.");
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            typeof(ForestUI).GetField("nextRefresh", flags).SetValue(game.UI, float.MaxValue);
+            job.Progress = 1.05;
+            typeof(ForestUI).GetMethod("Update", flags).Invoke(game.UI, null);
+            Assert.That(root.Q<ProgressBar>("live-work-progress"), Is.SameAs(progress), "Live progress must not rebuild controls or reset interaction.");
+            Assert.That(progress.value, Is.EqualTo(1.05f).Within(1e-5));
+            yield break;
+        }
+
+        [UnityTest]
+        public IEnumerator LiveMoversFollowSubsecondPositionsBetweenReconciles()
+        {
+            game.View.enabled = false;
+            var point = new Int2(4, 3);
+            var vehicle = new Vehicle { Id = "live-cart", Mode = "rail", Position = point, HasContinuousPosition = true, X = 4, Z = 3 };
+            var raid = new Raid { Id = "live-raider", Position = point, HasContinuousPosition = true, X = 4, Z = 3 };
+            var trade = new TradeOffer { Id = "live-caravan", Status = "outbound", Position = point, HasContinuousPosition = true, X = 4, Z = 3 };
+            trade.Path.Add(new Int2(5, 3)); game.Selected.Vehicles.Add(vehicle); game.Selected.Raids.Add(raid); game.CurrentWorld.TradeOffers.Add(trade);
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            typeof(ForestView).GetMethod("Reconcile", flags).Invoke(game.View, null);
+            var objects = new[] { GameObject.Find("vehicle:" + vehicle.Id), GameObject.Find("raid:" + raid.Id), GameObject.Find("trade:" + trade.Id) };
+            foreach (var entity in objects) Assert.That(entity, Is.Not.Null);
+            vehicle.X = raid.X = trade.X = 4.05;
+            typeof(ForestView).GetMethod("AnimateCats", flags).Invoke(game.View, null);
+            foreach (var entity in objects)
+            {
+                Assert.That(entity.transform.position.x, Is.GreaterThan(4), "Movers must update between the slower scenery reconciliations.");
+                Assert.That(entity.transform.position.x, Is.LessThanOrEqualTo(4.05001f), "Presentation must not predict beyond authoritative progress.");
+                Assert.That(entity.transform.position.z, Is.EqualTo(3).Within(1e-6));
+            }
+            yield break;
+        }
+
+        [UnityTest]
         public IEnumerator GroundRebuildPreservesTerrainAndNeverGeneratesUnknownTiles()
         {
             game.View.enabled = false;

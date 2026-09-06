@@ -248,10 +248,10 @@ static class ImportScenarios
             var world = Restart(Convert(input)); var v = world.Village("c"); var store = v.Stockpiles.Single(p => p.Id == "c\u001fstore"); var armory = v.Stockpiles.Single(p => p.Id == "c\u001farmory");
             var station = v.Buildings.Single();
             check(v.Jobs.Count == 0 && v.Items.Count == 3 && v.Items.All(i => i.LocationId == station.Id), "import moved exact station output before physical pickup");
-            for (int tick = 0; tick < 20 && v.Jobs.Count == 0; tick++)
+            for (int tick = 0; tick < 400 && v.Jobs.Count == 0; tick++)
             {
                 check(v.Items.All(i => i.LocationId == station.Id), "unclaimed exact output left the station");
-                world.Step(1);
+                world.Step(World.SimulationStepSeconds);
             }
             var job = v.Jobs.Single(j => j.Kind == "production");
             check(v.Cats.Single(c => c.Id == job.CatId).Position.Equals(station.Position) && job.Phase == "output_delivery" && job.ItemIds.Count == 3 && v.Items.All(i => i.LocationId == job.Id), "physical pickup did not transfer the complete exact output batch to its worker");
@@ -361,8 +361,35 @@ static class ImportScenarios
         });
         test("import returning barter does not replay delivered side", () =>
         {
-            var world = Restart(Convert(ReturningTrade())); world.Step(5); check(world.TradeOffers.Single().Status == "completed", "returning caravan did not complete: " + world.TradeOffers.Single().Status); check(world.Total(world.Village("c"), "logs") == 22, "requested escrow failed delivery"); check(world.Total(world.Village("d"), "food") == 100, "previously delivered offered side was duplicated");
+            var world = Restart(Convert(ReturningTrade()));
+            for (int step = 0; step < 200 && world.TradeOffers.Single().Status != "completed"; step++) world.Step(World.SimulationStepSeconds);
+            check(world.TradeOffers.Single().Status == "completed", "returning caravan did not complete: " + world.TradeOffers.Single().Status); check(world.Total(world.Village("c"), "logs") == 22, "requested escrow failed delivery"); check(world.Total(world.Village("d"), "food") == 100, "previously delivered offered side was duplicated");
         });
+        foreach (var exact in new[] { false, true })
+            foreach (var fence in new[] { false, true })
+                test("import sparse return checks intermediate " + (fence ? "fence" : "wall") + " with " + (exact ? "exact" : "scalar") + " payment", () =>
+                {
+                    var world = Restart(Convert(ReturningTrade(exactPayment: exact)));
+                    var sender = world.Village("c"); var trade = world.TradeOffers.Single();
+                    var start = new Int2(6, 0); var blocked = new Int2(5, 0);
+                    if (fence) sender.BoundaryEdges.Add(new BoundaryEdge { From = start, To = blocked });
+                    else world.TileAt(blocked).Wall = true;
+                    world.Step(1);
+                    check(trade.Status == "returning" && trade.Position.Equals(start) && trade.X == 6 && trade.Z == 0 && trade.PathIndex == 0, "sparse imported return crossed an intermediate obstacle");
+                    world = Restart(world); sender = world.Village("c"); trade = world.TradeOffers.Single();
+                    world.Step(1);
+                    check(trade.Position.Equals(start) && trade.X == 6 && trade.PathIndex == 0, "restart bypassed the same intermediate obstacle");
+                    check(world.Total(sender, exact ? "tools" : "logs") == (exact ? 0 : 20) && world.Total(world.Village("d"), "food") == 100, "blocked return replayed delivery or credited escrow");
+                    if (exact) check(trade.RequestedItems.Single().Id == "d\u001fpayment-tool" && trade.RequestedItems.Single().Condition == 17, "blocked return lost finite payment identity");
+                    if (fence) sender.BoundaryEdges.Clear(); else world.TileAt(blocked).Wall = false;
+                    world.Step(World.SimulationStepSeconds);
+                    check(Math.Abs(trade.X - 5.96) < 1e-8 && trade.Position.Equals(start) && trade.PathIndex == 0, "cleared sparse route skipped its fractional adjacent step");
+                    world = Restart(world); sender = world.Village("c"); trade = world.TradeOffers.Single();
+                    for (int step = 0; step < 200 && trade.Status != "completed"; step++) world.Step(World.SimulationStepSeconds);
+                    check(trade.Status == "completed" && world.Total(sender, exact ? "tools" : "logs") == (exact ? 1 : 22) && world.Total(world.Village("d"), "food") == 100, "cleared sparse return did not deliver the same payment once");
+                    if (exact) check(sender.Items.Single(i => i.Id == "d\u001fpayment-tool").Condition == 17 && trade.RequestedItems.Count == 0, "resumed sparse return changed finite payment identity");
+                    check(world.Validate().Count == 0, "sparse return left invalid ownership");
+                });
         foreach (var phase in new[] { "returning", "waiting_at_source" })
             foreach (var exact in new[] { false, true })
                 test("import delivered trade rejects cancellation and preserves " + (exact ? "exact" : "scalar") + " payment while " + phase, () =>
@@ -381,7 +408,7 @@ static class ImportScenarios
                     if (phase == "returning")
                     {
                         world.Step(1);
-                        check(trade.Status == "returning" && trade.X == 6 && world.Total(sender, exact ? "tools" : "logs") == (exact ? 0 : 20), "returning payment skipped its physical route");
+                        check(trade.Status == "returning" && Math.Abs(trade.X - 5.2) < 1e-8 && trade.Position.Equals(new Int2(6, 0)) && world.Total(sender, exact ? "tools" : "logs") == (exact ? 0 : 20), "returning payment skipped its physical route");
                     }
                     world.Step(8);
                     check(trade.Status == "unloading", "full source storage did not retain the return payment");

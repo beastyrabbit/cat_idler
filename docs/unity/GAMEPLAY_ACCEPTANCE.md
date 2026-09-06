@@ -62,6 +62,21 @@ Breeding starts only after 36 game-hours, requires a reserved permanent bed, and
 
 ## Feature checks
 
+The live simulation advances movement, needs, work, farming, research, accounting,
+combat and transport in fixed 50-millisecond steps at 1×. Every cat shares one
+time budget across movement and work within a step. Reaching a workplace partway
+through a step leaves only the remaining time for work. Long-term planning and
+ecology keep their slower schedules. Pause consumes no simulated time; speed
+controls advance more of the same steps.
+
+The simulation persists its consumed time separately from a fractional elapsed
+remainder. Splitting elapsed time across frames or save/reload preserves the
+same state. Old saves start the finer clock at their existing time without
+replaying history. Vehicles, merchants, raids and caravans retain fractional
+positions, check physical boundaries and retreat to their last reached tile
+when an edge closes. Sparse imported caravan waypoints check each intervening
+tile and edge before advancing.
+
 | Feature | Acceptance |
 | --- | --- |
 | Survival | Cats physically fetch servings, eat or drink at a destination, and sleep in reserved beds. Fish and Preserves feed cats; finite Medicine heals them. Cargo blocked by full storage cannot prevent critical needs. |

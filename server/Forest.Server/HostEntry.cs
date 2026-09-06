@@ -119,9 +119,9 @@ public static class HostEntry
                 var clock = Stopwatch.StartNew();
                 var last = clock.Elapsed.TotalSeconds;
                 var saveAt = last + 5;
-                var snapshotAt = last + 1;
+                var snapshotAt = last + 0.1;
                 Task broadcast = Task.CompletedTask;
-                using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(100));
+                using var timer = new PeriodicTimer(TimeSpan.FromSeconds(World.SimulationStepSeconds));
                 try
                 {
                     while (await timer.WaitForNextTickAsync(app.Lifetime.ApplicationStopping))
@@ -130,8 +130,7 @@ public static class HostEntry
                         runtime.Advance(Math.Min(1, current - last)); last = current;
                         if (current >= snapshotAt && broadcast.IsCompleted)
                         {
-                            bool controlling; lock (runtime.Sync) controlling = runtime.World.Villages.Any(v => v.Cats.Any(c => c.ControlledBy.Length > 0));
-                            snapshotAt = current + (controlling ? 0.1 : 0.5);
+                            snapshotAt = current + 0.1;
                             broadcast = Task.Run(async () =>
                             {
                                 await Task.WhenAll(clients.Values.Select(async peer =>

@@ -57,6 +57,7 @@ namespace IdleCatForest.Presentation
         private readonly Dictionary<string, Label> resourceLabels = new Dictionary<string, Label>();
         private readonly Dictionary<string, Button> navigationButtons = new Dictionary<string, Button>();
         private readonly Dictionary<float, Button> speedButtons = new Dictionary<float, Button>();
+        private readonly List<Action> liveUpdates = new List<Action>();
         private string inspectOrigin = "Cats";
         private bool actionFailed;
         private string query = "", selectedResource = "food", selectedRecipe = "", selectedCat = "", selectedPile = "", selectedOther = "", selectedMode = "rail";
@@ -137,6 +138,8 @@ namespace IdleCatForest.Presentation
 
         private void Update()
         {
+            if (OpenSection != "" && Village?.Id == renderedVillageId)
+                foreach (var update in liveUpdates) update();
             if (Time.unscaledTime < nextRefresh) return; nextRefresh = Time.unscaledTime + .5f;
             if (Village == null) { headline.text = Game.Status; return; }
             if (OpenSection != "" && (renderedVillageId != Village.Id || renderedRemote != Game.IsRemote)) RenderPanel();
@@ -169,7 +172,7 @@ namespace IdleCatForest.Presentation
             OpenSection = section; drawer.style.display = DisplayStyle.Flex; drawer.EnableInClassList("wide", section == "Research");
             if (newPage) RenderPanelAtTop(); else RenderPanel();
         }
-        public void ClosePanel() { OpenSection = ""; drawer.style.display = DisplayStyle.None; placement = null; firstPoint = null; UpdateNavigation(); }
+        public void ClosePanel() { OpenSection = ""; liveUpdates.Clear(); drawer.style.display = DisplayStyle.None; placement = null; firstPoint = null; UpdateNavigation(); }
         private void UpdateNavigation()
         {
             foreach (var button in navigationButtons) button.Value.EnableInClassList("active", button.Key == (OpenSection == "Inspect" ? inspectOrigin : OpenSection));
@@ -177,7 +180,7 @@ namespace IdleCatForest.Presentation
         private void RenderPanelAtTop() { RenderPanel(); scroll.scrollOffset = Vector2.zero; }
         private void RenderPanel()
         {
-            if (Village == null) return; content.Clear(); drawerTitle.text = OpenSection;
+            if (Village == null) return; liveUpdates.Clear(); content.Clear(); drawerTitle.text = OpenSection;
             drawerSubtitle.text = SectionSummary(OpenSection); backButton.style.display = OpenSection == "Inspect" ? DisplayStyle.Flex : DisplayStyle.None; UpdateNavigation();
             renderedVillageId = Village.Id; renderedRemote = Game.IsRemote;
             renderedSubjectId = Game.View.SelectedCat?.Id ?? Game.View.SelectedBuilding?.Id ?? "";
@@ -236,12 +239,22 @@ namespace IdleCatForest.Presentation
             if (c != null)
             {
                 drawerTitle.text = c.Name; drawerSubtitle.text = c.Alive ? Pretty(c.Goal) + (c.OfficerRole == "" ? "" : " · " + Pretty(c.OfficerRole)) : "Dead";
-                var needs = Element(content, "need-grid"); Meter(needs, "Health", c.Health); Meter(needs, "Hunger", c.Hunger); Meter(needs, "Thirst", c.Thirst); Meter(needs, "Rest", c.Rest);
+                var needs = Element(content, "need-grid");
+                Meter(needs, "Health", () => Game.View.SelectedCat?.Health ?? 0);
+                Meter(needs, "Hunger", () => Game.View.SelectedCat?.Hunger ?? 0);
+                Meter(needs, "Thirst", () => Game.View.SelectedCat?.Thirst ?? 0);
+                Meter(needs, "Rest", () => Game.View.SelectedCat?.Rest ?? 0);
                 Text("Age " + c.AgeHours.ToString("0.0") + "h · " + c.Migration + " · " + (c.BedId == "" ? "No permanent bed" : "Permanent bed assigned"));
                 if (c.PregnantUntil >= 0) Text("Kitten expected at hour " + (c.PregnantUntil / 3600).ToString("0.0"));
                 if (c.BlockedReason != "") Text(HumanReason(c.BlockedReason), "warning");
                 var job = Village.Jobs.Find(j => j.Id == c.JobId);
-                if (job != null) { Text("Job: " + Pretty(job.Kind) + " · " + Pretty(job.Phase) + " · " + job.Progress.ToString("0") + " / " + job.RequiredWork.ToString("0") + " work"); if (job.BlockedReason != "" && job.BlockedReason != c.BlockedReason) Text(HumanReason(job.BlockedReason), "warning"); }
+                if (job != null)
+                {
+                    Text("Job: " + Pretty(job.Kind) + " · " + Pretty(job.Phase));
+                    if (job.RequiredWork > 0)
+                        WorkMeter(() => Village.Jobs.Find(j => j.Id == job.Id)?.Progress ?? 0, () => Village.Jobs.Find(j => j.Id == job.Id)?.RequiredWork ?? 1);
+                    if (job.BlockedReason != "" && job.BlockedReason != c.BlockedReason) Text(HumanReason(job.BlockedReason), "warning");
+                }
                 var carriedItems = job != null && !job.Completed && job.Phase != "item_fetch" ? Village.Items.Where(item => item.LocationId == job.Id).ToList() : new List<Item>();
                 if (c.Cargo.Count > 0 || carriedItems.Count == 0) Text("Cargo: " + Goods(c.Cargo));
                 foreach (var item in carriedItems) Text("Carried item: " + Pretty(item.Material) + " " + item.Kind + " · " + item.Id + " · " + item.Condition.ToString("0") + " / " + item.MaxCondition.ToString("0") + " condition");
@@ -271,6 +284,8 @@ namespace IdleCatForest.Presentation
         {
             drawerTitle.text = Pretty(b.Kind); drawerSubtitle.text = b.Width + " × " + b.Depth + " tiles · " + b.Position;
             Text(b.Completed ? "Completed workplace" : "Under construction · " + b.Progress.ToString("0") + " / " + b.RequiredWork.ToString("0"));
+            if (!b.Completed)
+                WorkMeter(() => Game.View.SelectedBuilding?.Progress ?? 0, () => Game.View.SelectedBuilding?.RequiredWork ?? 1);
             Text("Inputs: " + Goods(b.Inputs) + "\nOutputs waiting: " + Goods(b.Outputs));
             if (b.BlockedReason != "") Text(HumanReason(b.BlockedReason), "warning");
             Label(content, "Staff this workplace", "subtitle"); CatChoice(content); Button(content, "Assign worker", () => Act(new GameAction { Kind = "AssignWorker", BuildingId = b.Id, CatId = selectedCat })).AddToClassList("primary");
@@ -562,7 +577,23 @@ namespace IdleCatForest.Presentation
             Choice(parent, "Cat", names, current, x => selectedCat = x == "Choose available cat" ? "" : cats.Find(c => x.EndsWith(" · " + c.Id))?.Id ?? "");
         }
         private void ResourceChoice(VisualElement parent) => Choice(parent, "Resource", Catalog.Resources.Where(r => r != "blessings"), selectedResource, x => selectedResource = x);
-        private static void Meter(VisualElement parent, string name, double value) { var bar = new ProgressBar { title = name + " " + value.ToString("0"), value = (float)value, lowValue = 0, highValue = 100 }; parent.Add(bar); }
+        private void Meter(VisualElement parent, string name, Func<double> read)
+        {
+            var bar = new ProgressBar { lowValue = 0, highValue = 100 }; parent.Add(bar);
+            void Refresh() { double value = read(); bar.value = (float)value; bar.title = name + " " + value.ToString("0"); }
+            Refresh(); liveUpdates.Add(Refresh);
+        }
+        private void WorkMeter(Func<double> progress, Func<double> required)
+        {
+            var bar = new ProgressBar { name = "live-work-progress", lowValue = 0 }; content.Add(bar);
+            void Refresh()
+            {
+                double value = progress(), total = Math.Max(1, required());
+                bar.highValue = (float)total; bar.value = (float)value;
+                bar.title = "Work " + value.ToString("0.0") + " / " + total.ToString("0");
+            }
+            Refresh(); liveUpdates.Add(Refresh);
+        }
         private void Separator() => Element(content, "separator");
         private void Text(string text, string cls = "body") => Label(content, text, cls);
         private static void TextInto(VisualElement parent, string text, string cls) => Label(parent, text, cls);

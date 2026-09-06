@@ -26,9 +26,18 @@ keep simulation independent of the engine, rendering, network I/O and clocks.
 ## Time and decisions
 
 `World.Step(seconds)` receives explicit time. Seeded random state, stable IDs,
-job phases and reservations belong to the world. Economy and personal needs advance
-at one-second boundaries; controlled movement advances in smaller quanta. Different
-input partitions must produce the same state at the same simulation boundary.
+job phases and reservations belong to the world. Autonomous and controlled movement,
+needs, work, farming and transport advance in fixed 50-millisecond simulation steps.
+Each cat shares one time budget between movement and work. Rates are measured per
+simulated second, so shorter steps do not multiply production or consumption.
+Planning and ecology retain their slower schedules. Different input partitions
+must produce the same state at the same simulation boundary.
+
+The save retains both requested elapsed time and the last consumed simulation
+step. Loading a partial step continues its remaining time; older saves begin from
+their existing clock without replaying elapsed work. Moving vehicles, merchants,
+caravans and raiders retain fractional coordinates plus their last reached grid
+position, which remains the anchor for route and boundary checks.
 
 The Leader creates bounded primitive survival and scouting work. Specialist
 officers create work in their researched categories. Jobs execute physical travel,

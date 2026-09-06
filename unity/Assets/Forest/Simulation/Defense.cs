@@ -13,10 +13,18 @@ namespace IdleCatForest.Simulation
             double material = item.Material == "metal" ? 1.5 : item.Material == "stone" ? 1.2 : item.Material == "bone" ? 1.1 : 1;
             return 1 + (item.Quality + 1) * 0.2 * material * Math.Min(1, item.Condition / Math.Max(1, item.MaxCondition));
         }
-        private void TickRaids(Village v)
+        private void TickRaids(Village v, double dt, bool planning)
         {
             foreach (var raid in v.Raids.ToArray())
             {
+                bool firstPlan = !raid.HasContinuousPosition;
+                if (!raid.HasContinuousPosition)
+                {
+                    raid.X = raid.Position.X;
+                    raid.Z = raid.Position.Z;
+                    raid.Progress = 0;
+                    raid.HasContinuousPosition = true;
+                }
                 if (raid.Health <= 0)
                 {
                     Spill(v, raid.Position, raid.Loot);
@@ -30,27 +38,42 @@ namespace IdleCatForest.Simulation
                     if (warrior.JobId != "" || warrior.BuildingId != "")
                         CancelWork(v, warrior);
                     warrior.Goal = "defending";
-                    if (Move(warrior, raid.Position, 1))
+                    if (Move(warrior, raid.Position, dt) && Math.Abs(warrior.X - raid.X) + Math.Abs(warrior.Z - raid.Z) <= 1)
                     {
-                        raid.Health -= 0.1 * EquipmentPower(v, warrior, "weapon") * WorkRate(v, warrior, "fight", "barracks") * Catalog.Effect(v, "combatPower", 1) * Catalog.Effect(v, "combatPowerMult", 1) * Service(v, "barracks", "barracksReadiness", 1);
-                        warrior.Health -= 0.03 / Math.Max(1, EquipmentPower(v, warrior, "armor") * Catalog.Effect(v, "defensePower", 1) * Catalog.Effect(v, "defenseMult", 1) * Service(v, "walls", "wallDefense", 1));
-                        Add(warrior.Skills, "fight", 1.0 / 3600);
-                        foreach (var item in v.Items.Where(i => warrior.Equipment.Contains(i.Id)))
-                            item.Condition = Math.Max(0, item.Condition - 0.005);
-                        continue;
+                        double fighting = SpendActorTime(warrior);
+                        if (fighting > 0)
+                        {
+                            raid.Health -= fighting * 0.1 * EquipmentPower(v, warrior, "weapon") * WorkRate(v, warrior, "fight", "barracks") * Catalog.Effect(v, "combatPower", 1) * Catalog.Effect(v, "combatPowerMult", 1) * Service(v, "barracks", "barracksReadiness", 1);
+                            warrior.Health -= fighting * 0.03 / Math.Max(1, EquipmentPower(v, warrior, "armor") * Catalog.Effect(v, "defensePower", 1) * Catalog.Effect(v, "defenseMult", 1) * Service(v, "walls", "wallDefense", 1));
+                            Add(warrior.Skills, "fight", fighting / 3600);
+                            foreach (var item in v.Items.Where(i => warrior.Equipment.Contains(i.Id)))
+                                item.Condition = Math.Max(0, item.Condition - fighting * 0.005);
+                            continue;
+                        }
                     }
                 }
                 Int2 destination = raid.Phase == "departing" ? new Int2(v.Center.X, v.Center.Z + v.Radius + 3) : v.Center;
                 if (!raid.Position.Equals(destination))
                 {
                     if (raid.Path.Count == 0 || !Walkable(raid.Path[0]) || !Crossable(raid.Position, raid.Path[0]))
-                        raid.Path = Path(raid.Position, destination) ?? new System.Collections.Generic.List<Int2>();
-                    raid.Progress += 0.5;
-                    if (raid.Progress >= 1 && raid.Path.Count > 0)
                     {
-                        raid.Progress -= 1;
-                        raid.Position = raid.Path[0];
-                        raid.Path.RemoveAt(0);
+                        if (!AtTravelPoint(raid.X, raid.Z, raid.Position))
+                        {
+                            AdvanceTraveler(ref raid.X, ref raid.Z, raid.Position, 0.5, dt);
+                            raid.Progress = TravelProgress(raid.X, raid.Z, raid.Position);
+                            continue;
+                        }
+                        if (planning || firstPlan)
+                            raid.Path = Path(raid.Position, destination) ?? new System.Collections.Generic.List<Int2>();
+                    }
+                    if (raid.Path.Count > 0 && Walkable(raid.Path[0]) && Crossable(raid.Position, raid.Path[0]))
+                    {
+                        if (AdvanceTraveler(ref raid.X, ref raid.Z, raid.Path[0], 0.5, dt))
+                        {
+                            raid.Position = raid.Path[0];
+                            raid.Path.RemoveAt(0);
+                        }
+                        raid.Progress = TravelProgress(raid.X, raid.Z, raid.Position);
                     }
                     continue;
                 }

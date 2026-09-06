@@ -273,7 +273,7 @@ namespace IdleCatForest.Simulation
                 case "movecat":
                     if (cat == null || cat.ControlledBy != context.PlayerId)
                         return ActionResult.Fail("Control lease required");
-                    if (village.Routes.Any(r => r.CatId == cat.Id && r.CancelRequested && r.PathIndex > 0))
+                    if (village.Routes.Any(r => r.CatId == cat.Id && r.CancelRequested && (r.PathIndex > 0 || village.Vehicles.Any(vehicle => vehicle.Id == r.VehicleId && vehicle.HasContinuousPosition && Math.Abs(vehicle.X - vehicle.Position.X) + Math.Abs(vehicle.Z - vehicle.Position.Z) > 1e-9))))
                         return ActionResult.Fail("Vessel is physically returning this cat to its dock");
                     if (Math.Abs(action.Position.X) + Math.Abs(action.Position.Z) != 1)
                         return ActionResult.Fail("Movement must be one cardinal direction");
@@ -369,8 +369,8 @@ namespace IdleCatForest.Simulation
         {
             if (c == null || c.ControlledBy != "")
                 return ActionResult.Fail("Available living cat required");
-            if (v.Routes.Any(r => r.CatId == c.Id && r.Mode == "shipping" && r.PathIndex > 0))
-                return ActionResult.Fail("Return the vessel to its dock before reassigning its driver");
+            if (v.Routes.Any(r => r.CatId == c.Id && (r.Mode == "shipping" && r.PathIndex > 0 || v.Vehicles.Any(vehicle => vehicle.Id == r.VehicleId && vehicle.HasContinuousPosition && Math.Abs(vehicle.X - vehicle.Position.X) + Math.Abs(vehicle.Z - vehicle.Position.Z) > 1e-9))))
+                return ActionResult.Fail("Return the vehicle to a safe stopping point before reassigning its driver");
             if (b == null && a.TargetId != "")
             {
                 var farm = v.Farms.Find(f => f.Id == a.TargetId);

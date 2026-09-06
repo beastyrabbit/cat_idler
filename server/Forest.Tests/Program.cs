@@ -297,6 +297,33 @@ await AsyncTest("real loopback identities village privacy signed actions and res
     }
     finally { Directory.Delete(directory, true); }
 });
+await AsyncTest("autonomous live snapshots arrive throughout each second", async () =>
+{
+    var directory = Path.Combine(Path.GetTempPath(), "forest-live-snapshot-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(directory);
+    try
+    {
+        using var runtime = new AuthorityRuntime(Path.Combine(directory, "world.json"), 41);
+        await using var app = HostEntry.Build(runtime, "http://127.0.0.1:0", true);
+        await app.StartAsync();
+        var address = app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>().Addresses.Single().Replace("http://", "ws://") + "/ws";
+        using var client = new WorldClient(address, Path.Combine(directory, "client.json"));
+        await client.ConnectAsync();
+        var samples = new List<double>(); var clock = System.Diagnostics.Stopwatch.StartNew(); long sequence = client.LatestFrame.Sequence;
+        while (clock.Elapsed.TotalSeconds < 1.25)
+        {
+            await Task.Delay(10);
+            var frame = client.LatestFrame;
+            if (frame.Sequence == sequence) continue;
+            sequence = frame.Sequence; samples.Add(frame.World.TimeSeconds);
+            Check(frame.World.Villages.SelectMany(v => v.Cats).All(c => c.ControlledBy == ""), "snapshot test accidentally enabled direct-control cadence");
+        }
+        Check(samples.Count >= 6, "autonomous world delivered only " + samples.Count + " snapshots in 1.25 seconds");
+        Check(samples.Zip(samples.Skip(1), (a, b) => b - a).All(delta => delta > 0 && delta < 0.4), "autonomous snapshots remained on a coarse update cadence");
+        client.Dispose(); await app.StopAsync();
+    }
+    finally { Directory.Delete(directory, true); }
+});
 await AsyncTest("automatic broadcasts cannot roll back newer selection and cat control", async () =>
 {
     var directory = Path.Combine(Path.GetTempPath(), "forest-frame-order-test-" + Guid.NewGuid().ToString("N"));
@@ -455,6 +482,33 @@ foreach (bool automaticTicks in new[] { false, true })
         }
         finally { Directory.Delete(directory, true); }
     });
+Test("live simulation resumes fractional saves without replaying elapsed work", () =>
+{
+    var directory = Path.Combine(Path.GetTempPath(), "forest-live-restart-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(directory);
+    try
+    {
+        var path = Path.Combine(directory, "world.json"); var whole = World.Create(41); var village = whole.Villages.Single(); var cat = village.Cats[1];
+        var job = new Job { Id = whole.Id("job"), Kind = "woodcut", Phase = "working", Position = cat.Position, CatId = cat.Id, RequiredWork = 100 };
+        village.Jobs.Add(job); cat.JobId = job.Id;
+        whole.Step(.075); Check(job.Progress > 0 && job.Progress < 1, "live work did not advance before the first full second");
+        AuthorityRuntime.ValidateWorld(whole); SaveStore.Save(path, whole);
+        var resumed = SaveStore.Load<World>(path); AuthorityRuntime.ValidateWorld(resumed);
+        Check(resumed.TimeSeconds == whole.TimeSeconds && resumed.SimulationTimeSeconds == whole.SimulationTimeSeconds, "save lost its consumed step or fractional remainder");
+        whole.Step(.125); resumed.Step(.025); resumed.Step(.1);
+        Check(JToken.DeepEquals(JToken.Parse(WireJson.Encode(whole)), JToken.Parse(WireJson.Encode(resumed))), "fractional restart changed timing, identities, work or finite ownership");
+        var legacy = JObject.Parse(WireJson.Encode(whole)); legacy.Remove("SimulationTimeSeconds"); legacy.Remove("ContinuousClockInitialized");
+        legacy["TimeSeconds"] = 43200.025; legacy["PendingSeconds"] = .025;
+        SaveStore.Save(path, legacy); var oldSave = SaveStore.Load<World>(path);
+        double before = oldSave.Villages.Single().Jobs.Single(j => j.Id == job.Id).Progress;
+        oldSave.Step(.075); AuthorityRuntime.ValidateWorld(oldSave);
+        var retained = oldSave.Villages.Single().Jobs.Single(j => j.Id == job.Id);
+        Check(retained.CatId == cat.Id && retained.Progress >= before && retained.Progress - before < .2, "legacy save replayed elapsed work or replaced its carrier");
+        SaveStore.Save(path, oldSave); var again = SaveStore.Load<World>(path);
+        Check(again.ContinuousClockInitialized && again.SimulationTimeSeconds == oldSave.SimulationTimeSeconds, "upgraded fractional clock did not persist");
+    }
+    finally { Directory.Delete(directory, true); }
+});
 Test("scalar haul retargets blocked destination across restart", () =>
 {
     var directory = Path.Combine(Path.GetTempPath(), "forest-scalar-retarget-" + Guid.NewGuid().ToString("N"));

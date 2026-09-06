@@ -8,6 +8,10 @@ namespace IdleCatForest.Simulation
     [Serializable]
     public partial class World
     {
+        public const double SimulationStepSeconds = 0.05;
+        // Requested elapsed time remains TimeSeconds; this cursor persists consumed actor time.
+        public double SimulationTimeSeconds; public bool ContinuousClockInitialized;
+        [NonSerialized] private Dictionary<Cat, double> actorTime;
         public int FormatVersion = 1; public uint Seed, RandomState; public long EpochUnixMs, NextId = 1; public double TimeSeconds, PendingSeconds;
         public List<Village> Villages = new List<Village>(); public List<Player> Players = new List<Player>();
         public List<Tile> Tiles = new List<Tile>(); public List<TradeOffer> TradeOffers = new List<TradeOffer>(); public List<Reservation> Reservations = new List<Reservation>();
@@ -37,7 +41,20 @@ namespace IdleCatForest.Simulation
         private bool CanModifyTerrain(string villageId, Int2 p, int width = 1, int depth = 1)
         {
             bool Overlaps(Int2 at, int w, int d) => at.X < (long)p.X + width && (long)at.X + w > p.X && at.Z < (long)p.Z + depth && (long)at.Z + d > p.Z;
-            if (width < 1 || depth < 1 || Tiles.Any(t => t.ClaimId != "" && t.ClaimId != villageId && Overlaps(t.Position, 1, 1)))
+            if (width < 1 || depth < 1)
+                return false;
+            // Ownership is checked every actor quantum. Read small footprints through the
+            // existing index instead of scanning the entire generated world for each tile.
+            if ((long)width * depth < Tiles.Count)
+            {
+                if (tileIndex == null || tileIndex.Count != Tiles.Count)
+                    tileIndex = Tiles.ToDictionary(t => t.Position);
+                for (long x = p.X; x < (long)p.X + width; x++)
+                    for (long z = p.Z; z < (long)p.Z + depth; z++)
+                        if (x <= int.MaxValue && z <= int.MaxValue && tileIndex.TryGetValue(new Int2((int)x, (int)z), out var tile) && tile.ClaimId != "" && tile.ClaimId != villageId)
+                            return false;
+            }
+            else if (Tiles.Any(t => t.ClaimId != "" && t.ClaimId != villageId && Overlaps(t.Position, 1, 1)))
                 return false;
             return !Villages.Where(v => v.Id != villageId).Any(v => v.ClaimedTiles.Any(at => Overlaps(at, 1, 1)) || v.Buildings.Any(b => Overlaps(b.Position, b.Width, b.Depth)) || v.Farms.Any(f => Overlaps(f.Position, f.Width, f.Depth)) || v.Stockpiles.Any(s => !s.Kind.StartsWith("zone_", StringComparison.Ordinal) && Overlaps(s.Position, s.Width, s.Depth)));
         }
@@ -417,10 +434,15 @@ namespace IdleCatForest.Simulation
             }
             return null;
         }
+        private static double CatMovementSpeed(Village village, Tile tile)
+        {
+            double terrain = tile.Road ? 1.75 : tile.Dirt ? 1.05 : tile.Mountain ? 0.4 : tile.Biome.Contains("forest") ? 0.85 : 1;
+            return 1.6 * (village == null ? 1 : Catalog.Effect(village, "movementSpeed", 1) * Catalog.Effect(village, "moveSpeedMult", 1)) * terrain;
+        }
         private bool Move(Cat c, Int2 destination, double dt)
         {
             var village = Village(c.VillageId);
-            if (c.Position.Equals(destination))
+            if (c.Position.Equals(destination) && Math.Abs(c.X - destination.X) + Math.Abs(c.Z - destination.Z) < 1e-9)
             {
                 c.X = destination.X;
                 c.Z = destination.Z;
@@ -428,7 +450,36 @@ namespace IdleCatForest.Simulation
                 c.BlockedReason = "";
                 return true;
             }
-            if (c.Path.Count == 0 || !c.Path[c.Path.Count - 1].Equals(destination) || (village == null ? !Walkable(c.Path[0]) : !Walkable(village, c.Path[0])))
+            dt = Math.Min(dt, ActorTime(c));
+            if (dt <= 1e-12)
+                return false;
+            bool changed = c.Path.Count == 0 || !c.Path[c.Path.Count - 1].Equals(destination) || (village == null ? !Walkable(c.Path[0]) : !Walkable(village, c.Path[0])) || !Crossable(c.Position, c.Path[0]);
+            if (!changed)
+            {
+                double x = c.X - c.Position.X, z = c.Z - c.Position.Z;
+                int dx = c.Path[0].X - c.Position.X, dz = c.Path[0].Z - c.Position.Z;
+                changed = Math.Abs(x * dz - z * dx) > 1e-9 || x * dx + z * dz < -1e-9;
+            }
+            if (changed && Math.Abs(c.X - c.Position.X) + Math.Abs(c.Z - c.Position.Z) > 1e-9)
+            {
+                // A changed destination must first retrace the unfinished edge physically.
+                double dx = c.Position.X - c.X, dz = c.Position.Z - c.Z, distance = Math.Sqrt(dx * dx + dz * dz);
+                var segmentEnd = new Int2(c.Position.X + Math.Sign(c.X - c.Position.X), c.Position.Z + Math.Sign(c.Z - c.Position.Z));
+                double speed = CatMovementSpeed(village, TileAt(segmentEnd));
+                double used = Math.Min(dt, distance / speed);
+                c.X += dx / distance * used * speed;
+                c.Z += dz / distance * used * speed;
+                UseActorTime(c, used);
+                dt -= used;
+                if (used * speed + 1e-9 < distance)
+                    return false;
+                c.X = c.Position.X;
+                c.Z = c.Position.Z;
+                c.Path.Clear();
+                if (c.Position.Equals(destination))
+                    return true;
+            }
+            if (changed)
             {
                 c.Path = Path(c.Position, destination, village) ?? new List<Int2>();
                 if (c.Path.Count == 0)
@@ -437,8 +488,8 @@ namespace IdleCatForest.Simulation
                     return false;
                 }
             }
-            double travel = dt * 1.6 * (village == null ? 1 : Catalog.Effect(village, "movementSpeed", 1) * Catalog.Effect(village, "moveSpeedMult", 1));
-            while (travel > 0 && c.Path.Count > 0)
+            double remainingSeconds = dt;
+            while (remainingSeconds > 0 && c.Path.Count > 0)
             {
                 var next = c.Path[0];
                 if ((village == null ? !Walkable(next) : !Walkable(village, next)) || !Crossable(c.Position, next))
@@ -449,14 +500,15 @@ namespace IdleCatForest.Simulation
                 }
                 double dx = next.X - c.X, dz = next.Z - c.Z, dist = Math.Sqrt(dx * dx + dz * dz);
                 var tile = TileAt(next);
-                double speed = tile.Road ? 1.75 : tile.Dirt ? 1.05 : tile.Mountain ? 0.4 : tile.Biome.Contains("forest") ? 0.85 : 1;
-                double step = Math.Min(dist, travel * speed);
+                double speed = CatMovementSpeed(village, tile);
+                double step = Math.Min(dist, remainingSeconds * speed);
                 if (dist > 1e-9)
                 {
                     c.X += dx / dist * step;
                     c.Z += dz / dist * step;
                 }
-                travel -= step / speed;
+                remainingSeconds -= step / speed;
+                UseActorTime(c, step / speed);
                 if (step + 1e-9 >= dist)
                 {
                     c.Position = next;
@@ -500,28 +552,50 @@ namespace IdleCatForest.Simulation
         {
             if (!Finite(seconds) || seconds < 0 || seconds > 86400 * 366)
                 throw new ArgumentOutOfRangeException(nameof(seconds));
-            double end = TimeSeconds + seconds;
-            while (TimeSeconds + 1e-9 < end)
+            if (seconds == 0)
+                return;
+            if (!ContinuousClockInitialized)
             {
-                double boundary = Math.Floor(TimeSeconds + 1e-9) + 1;
-                double next = Math.Min(end, boundary);
-                bool controlling = Villages.Any(v => v.Cats.Any(c => c.Alive && c.ControlledBy != ""));
-                if (controlling)
-                    next = Math.Min(next, TimeSeconds + 0.05);
-                double delta = next - TimeSeconds;
-                TimeSeconds = Math.Round(next, 9);
-                if (controlling)
-                    TickControls(delta);
-                if (Math.Abs(TimeSeconds - boundary) < 1e-8)
-                {
-                    TimeSeconds = boundary;
-                    Ecology();
-                    foreach (var v in Villages.ToArray())
-                        TickVillage(v);
-                    TickTrades();
-                }
+                // Missing fields identify an old save. Never replay its already elapsed time.
+                SimulationTimeSeconds = TimeSeconds;
+                ContinuousClockInitialized = true;
             }
+            double end = Math.Round(TimeSeconds + seconds, 9);
+            double next = Math.Round((Math.Floor(SimulationTimeSeconds / SimulationStepSeconds + 1e-8) + 1) * SimulationStepSeconds, 9);
+            if (actorTime == null)
+                actorTime = new Dictionary<Cat, double>();
+            while (next <= end + 1e-9)
+            {
+                double delta = next - SimulationTimeSeconds;
+                TimeSeconds = SimulationTimeSeconds = next;
+                bool planning = Math.Abs(next - Math.Round(next)) < 1e-8;
+                actorTime.Clear();
+                foreach (var v in Villages)
+                    foreach (var c in v.Cats)
+                        if (c.Alive)
+                            actorTime[c] = delta;
+                TickControls(delta);
+                if (planning)
+                    Ecology();
+                foreach (var v in Villages.ToArray())
+                    TickVillage(v, delta, planning);
+                TickTrades(delta, planning);
+                next = Math.Round(next + SimulationStepSeconds, 9);
+            }
+            TimeSeconds = end;
             PendingSeconds = TimeSeconds - Math.Floor(TimeSeconds);
+        }
+        private double ActorTime(Cat c) => actorTime != null && actorTime.TryGetValue(c, out var remaining) ? remaining : 0;
+        private void UseActorTime(Cat c, double seconds)
+        {
+            if (actorTime != null)
+                actorTime[c] = Math.Max(0, ActorTime(c) - seconds);
+        }
+        private double SpendActorTime(Cat c)
+        {
+            double remaining = ActorTime(c);
+            UseActorTime(c, remaining);
+            return remaining;
         }
         public bool CanControl(PlayerContext context, Village village) => context != null && !string.IsNullOrEmpty(context.PlayerId) && village != null && (village.Communal || village.OwnerId == context.PlayerId);
         public List<string> Validate()
@@ -529,11 +603,24 @@ namespace IdleCatForest.Simulation
             var errors = new List<string>();
             if (!Finite(TimeSeconds) || TimeSeconds < 0)
                 errors.Add("Invalid clock");
+            if (ContinuousClockInitialized && (!Finite(SimulationTimeSeconds) || SimulationTimeSeconds < 0 || SimulationTimeSeconds > TimeSeconds + 1e-9 || TimeSeconds - SimulationTimeSeconds >= SimulationStepSeconds + 1e-8))
+                errors.Add("Invalid simulation cursor");
+            foreach (var trade in TradeOffers)
+                if (trade.HasContinuousPosition && !ValidContinuousPosition(trade.Position, trade.X, trade.Z))
+                    errors.Add("Invalid caravan position " + trade.Id);
             var ids = Villages.SelectMany(v => v.Cats.Select(c => c.Id).Concat(v.Buildings.Select(b => b.Id)).Concat(v.Stockpiles.Select(s => s.Id)).Concat(v.Items.Select(i => i.Id)).Concat(v.Jobs.Select(j => j.Id))).ToList();
             if (ids.Distinct().Count() != ids.Count)
                 errors.Add("Duplicate entity identity");
             foreach (var v in Villages)
             {
+                foreach (var vehicle in v.Vehicles)
+                    if (vehicle.HasContinuousPosition && !ValidContinuousPosition(vehicle.Position, vehicle.X, vehicle.Z))
+                        errors.Add("Invalid vehicle position " + vehicle.Id);
+                foreach (var raid in v.Raids)
+                    if (raid.HasContinuousPosition && !ValidContinuousPosition(raid.Position, raid.X, raid.Z))
+                        errors.Add("Invalid raid position " + raid.Id);
+                if (v.Trader.HasContinuousPosition && !ValidContinuousPosition(v.Trader.Position, v.Trader.X, v.Trader.Z))
+                    errors.Add("Invalid merchant position " + v.Trader.Id);
                 foreach (var pile in v.Stockpiles)
                 {
                     if (pile.Goods.Any(s => s.Amount < 0 || !Finite(s.Amount)))
@@ -554,5 +641,6 @@ namespace IdleCatForest.Simulation
             }
             return errors;
         }
+        private static bool ValidContinuousPosition(Int2 anchor, double x, double z) => Finite(x) && Finite(z) && Math.Abs(x - anchor.X) + Math.Abs(z - anchor.Z) <= 1 + 1e-8 && (Math.Abs(x - anchor.X) < 1e-8 || Math.Abs(z - anchor.Z) < 1e-8);
     }
 }

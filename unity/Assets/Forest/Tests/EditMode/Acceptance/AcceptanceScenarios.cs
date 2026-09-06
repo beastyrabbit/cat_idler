@@ -15,6 +15,34 @@ namespace IdleCatForest.Acceptance
     {
         public static IEnumerable<Scenario> Cases()
         {
+            yield return new Scenario("regression.continuous_npc_movement_and_needs", ContinuousNpc);
+            yield return new Scenario("regression.continuous_stationary_work_rate", ContinuousWork);
+            yield return new Scenario("regression.continuous_shared_movement_work_budget", ContinuousBudget);
+            yield return new Scenario("regression.continuous_direct_turn_retraces_edge", ContinuousDirectTurn);
+            foreach (string ground in new[] { "grass", "road", "forest" })
+            {
+                string terrain = ground;
+                yield return new Scenario("regression.continuous_segment_rate_turn_" + terrain, () => ContinuousTurnRate(terrain));
+            }
+            yield return new Scenario("regression.continuous_segment_rate_remaining_budget", ContinuousTurnRemainingBudget);
+            yield return new Scenario("regression.continuous_segment_rate_fractional_reboard", ContinuousReboardRate);
+            yield return new Scenario("regression.continuous_missing_supply_preserves_work_route", ContinuousMissingSupply);
+            yield return new Scenario("regression.continuous_fractional_partition", ContinuousPartition);
+            foreach (string activity in new[] { "research", "farm", "sleep" })
+            {
+                string kind = activity;
+                yield return new Scenario("regression.continuous_" + kind + "_rate", () => ContinuousRate(kind));
+            }
+            yield return new Scenario("regression.continuous_combat_shares_cat_budget", ContinuousCombatBudget);
+            yield return new Scenario("regression.continuous_rail_cancel_mid_edge", () => ContinuousTransportInterruption(false));
+            yield return new Scenario("regression.continuous_shipping_needs_and_cancel_mid_edge", () => ContinuousTransportInterruption(true));
+            yield return new Scenario("regression.continuous_legacy_caravan_positive", () => ContinuousLegacyCaravan(1));
+            yield return new Scenario("regression.continuous_legacy_caravan_negative", () => ContinuousLegacyCaravan(-1));
+            foreach (string mover in new[] { "merchant", "raid", "caravan", "rail" })
+            {
+                string kind = mover;
+                yield return new Scenario("regression.continuous_" + kind, () => ContinuousMover(kind));
+            }
             foreach (bool personal in new[] { false, true })
             {
                 bool own = personal;
@@ -620,6 +648,162 @@ namespace IdleCatForest.Acceptance
             v.Buildings.Remove(blocking); for (int tick = 0; tick < 600 && !job.Completed; tick++) w.Step(1);
             Check(job.Completed && job.Path.All(p => rail ? w.TileAt(p).Rail : w.TileAt(p).Road), "Cleared footprint did not resume the same infrastructure work"); Near(Goods(w, v, resource), 0, "Resumed infrastructure did not consume exact finite inputs"); Valid(w);
         }
+        static World ContinuousFixture(out Village v, out Cat c, bool working)
+        {
+            var w = Fixture(out v, out c);
+            foreach (var cat in v.Cats) { cat.ControlledBy = ""; cat.BuildingId = "fixture-held"; }
+            c.BuildingId = "";
+            c.Stats.Clear(); c.Stats.Add(new Stack("hunting", 50));
+            for (int x = 1; x <= 6; x++) { var tile = w.TileAt(new Int2(x, 2)); tile.Road = tile.Dirt = tile.Water = tile.Wall = tile.Mountain = false; tile.Biome = "grass"; }
+            if (working)
+            {
+                var job = new Job { Id = w.Id("continuous-work"), Kind = "hunt", Phase = "working", CatId = c.Id, Position = c.Position, RequiredWork = 1000 };
+                v.Jobs.Add(job); c.JobId = job.Id;
+            }
+            else c.Path = w.Path(c.Position, new Int2(4, 2), v);
+            return w;
+        }
+        static void ContinuousNpc()
+        {
+            var w = ContinuousFixture(out var v, out var c, false); double x = c.X, hunger = c.Hunger;
+            Check(v.Cats.All(cat => cat.ControlledBy == ""), "NPC fixture must not rely on a directly controlled cat");
+            w.Step(0.1); Near(c.X - x, 0.16, "NPC movement did not advance at its physical speed before one second");
+            Near(hunger - c.Hunger, 0.1 * 20 / 3600, "Needs did not advance continuously");
+            w.Step(0.9); Near(c.X - x, 1.6, "Fixed steps changed one-second movement speed");
+            Near(hunger - c.Hunger, 20.0 / 3600, "Fixed steps accelerated needs depletion"); Valid(w);
+        }
+        static void ContinuousWork()
+        {
+            var w = ContinuousFixture(out var v, out var c, true); var job = v.Jobs.Single();
+            w.Step(0.1); Near(job.Progress, 0.1, "Stationary work did not advance before one second");
+            w.Step(0.9); Near(job.Progress, 1, "Fixed steps accelerated work"); Valid(w);
+        }
+        static void ContinuousBudget()
+        {
+            var w = ContinuousFixture(out var v, out var c, true); var job = v.Jobs.Single();
+            job.Position = new Int2(2, 2); c.X = 1.96; c.Path = new List<Int2> { job.Position };
+            w.Step(0.05); Near(c.X, 2, "Cat did not finish its partial edge");
+            Near(job.Progress, 0.025, "Travel and work each received a full actor timestep"); Valid(w);
+        }
+        static void ContinuousPartition()
+        {
+            var whole = ContinuousFixture(out var a, out var ca, true); var split = ContinuousFixture(out var b, out var cb, true);
+            string paused = Fingerprint(whole); whole.Step(0); Check(Fingerprint(whole) == paused, "Zero elapsed time changed paused authoritative state");
+            whole.Step(1.03);
+            for (int i = 0; i < 20; i++) { split.Step(0.03); split.Step(0.02); }
+            split.Step(0.03); Check(Fingerprint(whole) == Fingerprint(split), "Fractional partitions changed authoritative state or random order");
+            Near(a.Jobs.Single().Progress, 1, "Only complete fixed quanta may advance behavior");
+            Near(whole.TimeSeconds, 1.03, "Requested elapsed time was discarded"); Near(whole.PendingSeconds, 0.03, "Legacy fractional-second save meaning changed");
+        }
+        static void ContinuousDirectTurn()
+        {
+            var w = ContinuousFixture(out var v, out var c, false); var tile = w.TileAt(new Int2(1, 3)); tile.Wall = tile.Water = tile.Mountain = tile.Road = tile.Dirt = false; tile.Biome = "grass";
+            Act(w, v, new GameAction { Kind = "EnterCat", CatId = c.Id }); Act(w, v, new GameAction { Kind = "MoveCat", CatId = c.Id, Position = new Int2(1, 0) });
+            w.Step(0.05); Near(c.X, 1.08, "Direct turn fixture did not enter its first edge");
+            Act(w, v, new GameAction { Kind = "MoveCat", CatId = c.Id, Position = new Int2(0, 1) }); w.Step(0.05);
+            Near(c.X, 1, "Mid-edge turn did not retrace the old segment"); Near(c.Z, 2, "Mid-edge turn cut diagonally across grid edges");
+            w.Step(0.05); Near(c.X, 1, "Second segment left the cardinal route"); Near(c.Z, 2.08, "Second segment did not continue after physical retreat"); Valid(w);
+        }
+        static void ContinuousTurnRate(string terrain)
+        {
+            var w = ContinuousFixture(out var v, out var c, false); v.Research.Add("mounted_scouts");
+            var oldSegment = w.TileAt(new Int2(2, 2)); oldSegment.Road = terrain == "road"; oldSegment.Biome = terrain == "forest" ? "forest" : "grass";
+            var newSegment = w.TileAt(new Int2(1, 3)); newSegment.Wall = newSegment.Water = newSegment.Mountain = newSegment.Road = newSegment.Dirt = false; newSegment.Biome = "grass";
+            double speed = 1.6 * 1.3 * (terrain == "road" ? 1.75 : terrain == "forest" ? 0.85 : 1);
+            Act(w, v, new GameAction { Kind = "EnterCat", CatId = c.Id }); Act(w, v, new GameAction { Kind = "MoveCat", CatId = c.Id, Position = new Int2(1, 0) });
+            w.Step(0.05); Near(c.X, 1 + speed * 0.05, "Forward segment did not use research and " + terrain + " movement rates");
+            Act(w, v, new GameAction { Kind = "MoveCat", CatId = c.Id, Position = new Int2(0, 1) }); w.Step(0.05);
+            Near(c.X, 1, "Retreat changed the researched " + terrain + " segment speed"); Near(c.Z, 2, "Retreat granted unearned time on the next segment");
+            w.Step(0.05); Near(c.X, 1, "Turn cut across the previous segment"); Near(c.Z, 2 + 1.6 * 1.3 * 0.05, "Turn did not resume at the new segment's own speed"); Valid(w);
+        }
+        static void ContinuousTurnRemainingBudget()
+        {
+            var w = ContinuousFixture(out var v, out var c, false); v.Research.Add("mounted_scouts"); c.X = 1 + 1.6 * 1.3 * 0.025;
+            var tile = w.TileAt(new Int2(1, 3)); tile.Wall = tile.Water = tile.Mountain = tile.Road = tile.Dirt = false; tile.Biome = "grass";
+            Act(w, v, new GameAction { Kind = "EnterCat", CatId = c.Id }); Act(w, v, new GameAction { Kind = "MoveCat", CatId = c.Id, Position = new Int2(0, 1) }); w.Step(0.05);
+            Near(c.X, 1, "Partial retreat did not return to its anchor"); Near(c.Z, 2 + 1.6 * 1.3 * 0.025, "Partial retreat did not leave its actual unused movement time"); Valid(w);
+        }
+        static void ContinuousReboardRate()
+        {
+            var w = ContinuousFixture(out var v, out var c, false); v.Research.Add("mounted_scouts"); c.Path.Clear();
+            var start = c.Position; var next = new Int2(2, 2); var end = new Int2(3, 2); w.TileAt(next).Road = true;
+            var vehicle = new Vehicle { Id = w.Id("rate-cart"), Mode = "rail", Position = start, HasContinuousPosition = true, X = 1.5, Z = 2, Progress = 0.5, Cargo = new List<Stack> { new Stack("logs", 8) } }; v.Vehicles.Add(vehicle);
+            var route = new TransportRoute { Id = w.Id("rate-route"), Mode = "rail", CatId = c.Id, VehicleId = vehicle.Id, SourceId = v.Stockpiles[0].Id, DestinationId = v.Stockpiles[0].Id, Resource = "logs", Amount = 8, Phase = "outbound", Path = new List<Int2> { start, next, end } }; v.Routes.Add(route); vehicle.RouteId = c.BuildingId = route.Id;
+            w.Step(0.05); Near(c.X, 1 + 1.6 * 1.3 * 1.75 * 0.05, "Fractional reboarding ignored the researched road movement speed"); Near(vehicle.X, 1.5, "Vehicle moved before physical reboarding"); Near(World.Amount(vehicle.Cargo, "logs"), 8, "Reboarding changed finite cargo"); Valid(w);
+        }
+        static void ContinuousMissingSupply()
+        {
+            var w = ContinuousFixture(out var v, out var c, true); var job = v.Jobs.Single();
+            v.Stockpiles[0].Goods.RemoveAll(s => s.Resource == "water"); c.Thirst = 1;
+            job.Position = new Int2(4, 2); job.Phase = "travel"; c.Path = w.Path(c.Position, job.Position, v); c.X = 1.95;
+            for (int tick = 0; tick < 40; tick++)
+            {
+                double x = c.X; w.Step(World.SimulationStepSeconds);
+                Check(c.X + 1e-9 >= x, "A missing need supply repeatedly reversed the active physical work route");
+                Check(c.JobId == job.Id && job.CatId == c.Id, "Missing-supply retry changed active work ownership");
+            }
+            Check(c.Position.Equals(job.Position) && job.Progress > 0, "Missing-supply retries prevented physical arrival and work");
+            Near(Goods(w, v, "water"), 0, "Missing-supply retry created water"); Check(c.Thirst < 1, "Missing-supply retry satisfied thirst without water"); Valid(w);
+        }
+        static void ContinuousRate(string activity)
+        {
+            var w = Fixture(out var v, out var c); c.Stats.Clear(); c.Stats.Add(new Stack("medicine", 50)); c.Stats.Add(new Stack("building", 50));
+            Farm farm = null; double before;
+            if (activity == "research") { var station = Station(w, v, "research_hut", c.Position); Act(w, v, new GameAction { Kind = "AssignWorker", CatId = c.Id, BuildingId = station.Id }); v.ResearchPoints = 0; before = 0; }
+            else if (activity == "farm") { farm = new Farm { Id = w.Id("continuous-farm"), WorkerId = c.Id, Position = c.Position, CycleSeconds = 600 }; v.Farms.Add(farm); c.BuildingId = farm.Id; before = 0; }
+            else { var den = v.Buildings.First(b => b.Id == c.BedId); c.Position = den.Position; c.X = c.Position.X; c.Z = c.Position.Z; c.Goal = "need_sleep"; c.Rest = 50; before = c.Rest; }
+            double Rate() => activity == "research" ? 1.0 / 600 : activity == "farm" ? 1 : 0.15 - 12.0 / 3600;
+            double Value() => activity == "research" ? v.ResearchPoints : activity == "farm" ? farm.Growth : c.Rest;
+            w.Step(0.2); Near(Value() - before, Rate() * 0.2, activity + " did not advance continuously at the original rate");
+            w.Step(0.8); Near(Value() - before, Rate(), activity + " accelerated with fixed steps"); Valid(w);
+        }
+        static void ContinuousCombatBudget()
+        {
+            var w = ContinuousFixture(out var v, out var c, true); foreach (var cat in v.Cats) cat.Skills.Clear(); c.Skills.Add(new Stack("fight", 1)); var job = v.Jobs.Single();
+            var first = new Raid { Id = w.Id("first-raid"), Position = c.Position }; var second = new Raid { Id = w.Id("second-raid"), Position = c.Position }; v.Raids.Add(first); v.Raids.Add(second);
+            w.Step(0.05); Near(job.Progress, 0.05, "Existing work lost the first actor quantum"); Near(first.Health + second.Health, 60, "Work and combat each received the same cat's full quantum");
+            w.Step(0.05); Check(first.Health < 30 && second.Health == 30, "One cat attacked two raids with the same quantum: first=" + first.Health + " second=" + second.Health + " goal=" + c.Goal + " path=" + c.Path.Count); Valid(w);
+        }
+        static void ContinuousTransportInterruption(bool shipping)
+        {
+            var w = Fixture(out var v, out var c); string mode = shipping ? "shipping" : "rail"; var start = new Int2(4, 2); var middle = new Int2(5, 2); var end = new Int2(6, 2);
+            foreach (var p in new[] { start, middle, end }) { var tile = w.TileAt(p); tile.Wall = tile.Mountain = false; tile.Rail = !shipping; tile.Water = shipping && p.Equals(middle); tile.Dock = shipping && !p.Equals(middle); }
+            c.Position = start; c.X = start.X; c.Z = start.Z; var station = Station(w, v, "research_hut", new Int2(2, 4)); var destination = new Stockpile { Id = w.Id("interruption-destination"), Position = end }; v.Stockpiles.Add(destination);
+            v.Stockpiles[0].Position = start;
+            var vehicle = new Vehicle { Id = w.Id("interruption-vehicle"), Mode = mode, Position = start, Cargo = new List<Stack> { new Stack("logs", 8) } }; v.Vehicles.Add(vehicle);
+            var route = new TransportRoute { Id = w.Id("interruption-route"), Mode = mode, CatId = c.Id, VehicleId = vehicle.Id, SourceId = v.Stockpiles[0].Id, DestinationId = destination.Id, Resource = "logs", Amount = 8, Phase = "outbound", Path = new List<Int2> { start, middle, end } }; vehicle.RouteId = c.BuildingId = route.Id; v.Routes.Add(route);
+            w.Step(0.2); Near(vehicle.X, start.X + 0.2, "Interruption fixture did not reach a partial edge");
+            Check(!w.Apply(Context(v), new GameAction { Kind = "AssignWorker", CatId = c.Id, BuildingId = station.Id }).Success, "Fractional vehicle driver was reassigned before stopping");
+            if (shipping) { c.Thirst = 0; w.Step(0.05); Near(c.X, vehicle.X, "Driver disembarked over water while its anchor was still the dock"); Check(!c.Goal.StartsWith("need_", StringComparison.Ordinal), "Shipping needs interrupted an undocked fractional segment"); }
+            Act(w, v, new GameAction { Kind = "CancelTransportRoute", TargetId = route.Id }); Check(v.Routes.Contains(route) && route.CancelRequested, "Cancellation discarded a vehicle mid-edge");
+            double x = vehicle.X; w.Step(0.05); Check(vehicle.X < x && vehicle.X >= x - 0.05 - 1e-9, "Cancellation snapped the vehicle to its anchor");
+            for (int tick = 0; tick < 400 && v.Routes.Contains(route); tick++) w.Step(0.05);
+            Check(!v.Routes.Contains(route) && vehicle.RouteId == "" && vehicle.Position.Equals(start), "Vehicle did not complete physical cancellation after the docked driver's need trip: phase=" + route.Phase + " goal=" + c.Goal + " x=" + vehicle.X + " catX=" + c.X); Near(vehicle.X, start.X, "Cancelled vehicle retained a fractional position"); Near(Goods(w, v, "logs"), 8, "Cancellation lost or duplicated finite cargo"); Valid(w);
+        }
+        static void ContinuousMover(string kind)
+        {
+            var w = Fixture(out var v, out var c); var start = new Int2(4, 2); var next = new Int2(5, 2); var end = new Int2(6, 2);
+            foreach (var p in new[] { start, next, end }) { var tile = w.TileAt(p); tile.Wall = tile.Water = tile.Mountain = false; tile.Rail = true; }
+            object mover; double speed;
+            if (kind == "merchant") { var trader = v.Trader; trader.Phase = "arriving"; trader.Position = start; trader.Progress = 0.8; trader.Path = new List<Int2> { next, end }; trader.VisitDestination = end; trader.Goods.Add(new Stack("logs", 8)); mover = trader; speed = 0.8; }
+            else if (kind == "raid") { var raid = new Raid { Id = w.Id("continuous-raid"), Position = start, Progress = 12, Path = new List<Int2> { next, end }, Loot = new List<Stack> { new Stack("logs", 8) } }; v.Raids.Add(raid); mover = raid; speed = 0.5; }
+            else if (kind == "caravan") { var trade = new TradeOffer { Id = w.Id("continuous-trade"), Status = "outbound", X = start.X, Z = start.Z, FromVillageId = v.Id, ToVillageId = v.Id, Offered = new Stack("logs", 8), Path = new List<Int2> { next, end } }; w.TradeOffers.Add(trade); mover = trade; speed = 0.8; }
+            else
+            {
+                c.Position = start; c.X = start.X; c.Z = start.Z; var destination = new Stockpile { Id = w.Id("continuous-destination"), Position = end }; v.Stockpiles.Add(destination);
+                var vehicle = new Vehicle { Id = w.Id("continuous-cart"), Mode = "rail", Position = start, Cargo = new List<Stack> { new Stack("logs", 8) } }; v.Vehicles.Add(vehicle);
+                var route = new TransportRoute { Id = w.Id("continuous-route"), Mode = "rail", CatId = c.Id, VehicleId = vehicle.Id, SourceId = v.Stockpiles[0].Id, DestinationId = destination.Id, Resource = "logs", Amount = 8, Phase = "outbound", Path = new List<Int2> { start, next, end } }; vehicle.RouteId = route.Id; v.Routes.Add(route); mover = vehicle; speed = 1;
+            }
+            w.Step(0.2); var xField = mover.GetType().GetField("X"); double x = xField == null ? start.X : (double)xField.GetValue(mover);
+            Near(x, start.X + speed * 0.2, kind + " did not advance its authoritative fractional position");
+            var position = mover.GetType().GetField("Position"); if (position != null) Check(((Int2)position.GetValue(mover)).Equals(start), kind + " grid anchor moved before reaching the next tile");
+        }
+        static void ContinuousLegacyCaravan(int direction)
+        {
+            var w = Fixture(out var v, out var c); var next = new Int2(direction * 5, 2); var tile = w.TileAt(next); tile.Wall = tile.Water = tile.Mountain = false;
+            var trade = new TradeOffer { Id = w.Id("legacy-fractional-caravan"), Status = "outbound", X = direction * 4.6, Z = 2, Progress = 0.8, FromVillageId = v.Id, ToVillageId = v.Id, Offered = new Stack("logs", 8), Path = new List<Int2> { next, new Int2(direction * 6, 2) } }; w.TradeOffers.Add(trade);
+            w.Step(0.2); Near(trade.X, direction * 4.76, "Legacy caravan fractional position was rounded or received old cadence credit twice"); Check(trade.Position.Equals(new Int2(direction * 4, 2)), "Legacy caravan did not retain the last reached grid anchor"); Near(trade.Offered.Amount, 8, "Legacy continuous initialization changed finite cargo");
+        }
         static void Check(bool condition, string message) { if (!condition) throw new InvalidOperationException(message); }
         static void Near(double actual, double expected, string message, double tolerance = 0.00001) => Check(Math.Abs(actual - expected) <= tolerance, message + " expected=" + expected + " actual=" + actual);
         static PlayerContext Context(Village v) => new PlayerContext { PlayerId = "acceptance-player", VillageId = v.Id };
@@ -674,6 +858,12 @@ namespace IdleCatForest.Acceptance
             var vehicle = new Vehicle { Id = w.Id("wagon"), Mode = "rail", Position = source.Position }; v.Vehicles.Add(vehicle);
             Act(w, v, new GameAction { Kind = "CreateTransportRoute", CatId = c.Id, TargetId = source.Id, BuildingId = destination.Id, Mode = "rail", Resource = "logs", Amount = 8, Path = path, Repeat = true }); w.Step(3);
             Act(w, v, new GameAction { Kind = "EnterCat", CatId = c.Id }); Act(w, v, new GameAction { Kind = "LeaveCat", CatId = c.Id });
+            for (int tick = 0; tick < 2 / World.SimulationStepSeconds && v.Routes.Any(r => r.CatId == c.Id); tick++)
+            {
+                double x = vehicle.X, z = vehicle.Z; w.Step(World.SimulationStepSeconds);
+                Check(Math.Sqrt((vehicle.X - x) * (vehicle.X - x) + (vehicle.Z - z) * (vehicle.Z - z)) <= World.SimulationStepSeconds + 1e-8, "Direct-control cancellation teleported its fractional wagon");
+            }
+            Check(!v.Routes.Any(r => r.CatId == c.Id) && vehicle.X == vehicle.Position.X && vehicle.Z == vehicle.Position.Z, "Direct-control cancellation did not physically settle its wagon");
             var station = Station(w, v, "research_hut"); Act(w, v, new GameAction { Kind = "AssignWorker", CatId = c.Id, BuildingId = station.Id }); w.Step(10);
             Check(!v.Routes.Any(r => r.CatId == c.Id), "Route retained reassigned cat ownership"); Near(Goods(w, v, "logs"), 20, "Direct-control transport conservation"); Valid(w);
         }
@@ -1024,7 +1214,7 @@ namespace IdleCatForest.Acceptance
             Act(w, v, new GameAction { Kind = "HaulGatherSpot", CatId = c.Id, TargetId = source.Id }); var job = v.Jobs.Single(j => !j.Completed && j.CatId == c.Id);
             Check(job.Phase == "item_fetch" && item.LocationId == job.Id && !c.Position.Equals(source.Position), "Stored item fixture did not reserve before physical pickup");
             Check(!w.HasRoom(v, source, "logs", 1), "Exact item claim freed source capacity before physical pickup");
-            for (int tick = 0; tick < 100 && job.Phase == "item_fetch"; tick++) w.Step(1);
+            for (int tick = 0; tick < 100 / World.SimulationStepSeconds && job.Phase == "item_fetch"; tick++) w.Step(World.SimulationStepSeconds);
             Check(job.Phase == "output_delivery" && c.Position.Equals(source.Position) && w.HasRoom(v, source, "logs", 1), "Physical pickup did not free the source capacity");
             FinishExactHaul(w, v, c, job, item, destination);
         }
@@ -1042,7 +1232,7 @@ namespace IdleCatForest.Acceptance
             Near(World.Amount(source.Goods, "logs"), 12, "Scalar haul removed source goods before physical pickup"); Near(w.Reservations.Where(r => r.OwnerId == job.Id && r.PileId == source.Id && r.Resource == "logs").Sum(r => r.Amount), 8, "Scalar haul did not exclusively claim its finite load");
             Check(!w.Apply(Context(v), new GameAction { Kind = "RemoveStockpile", TargetId = source.Id }).Success && source.Kind == "storage", "Source removal discarded a pending scalar pickup");
             var unrelated = v.Stockpiles.Single(p => p.Kind == "spill" && p.Position.Equals(origin) && World.Amount(p.Goods, "stone") == 3); Check(c.Cargo.Count == 0, "New scalar haul kept unrelated carried goods mixed with its claim");
-            for (int tick = 0; tick < 100 && World.Amount(c.Cargo, "logs") == 0; tick++) w.Step(1);
+            for (int tick = 0; tick < 100 / World.SimulationStepSeconds && World.Amount(c.Cargo, "logs") == 0; tick++) w.Step(World.SimulationStepSeconds);
             Check(c.Position.Equals(source.Position) && World.Amount(c.Cargo, "logs") == 8 && !w.Reservations.Any(r => r.OwnerId == job.Id), "Scalar source stock did not become the same cat's physical cargo"); Near(World.Amount(source.Goods, "logs"), 4, "Scalar pickup debited the wrong amount"); Near(World.Amount(destination.Goods, "logs"), 0, "Scalar pickup credited delivery before travel");
             for (int tick = 0; tick < 100 && !job.Completed; tick++) w.Step(1);
             Check(job.Completed && c.JobId == "" && c.Cargo.Count == 0 && source.Kind == "storage" && v.Stockpiles.Contains(source), "Scalar haul did not finish while preserving its source store"); Near(World.Amount(source.Goods, "logs"), 4, "Scalar delivery returned cargo to the original store"); Near(World.Amount(destination.Goods, "logs"), 8, "Scalar haul did not physically deliver to a different store"); Near(Goods(w, v, "logs"), 12, "Scalar store transfer lost or duplicated goods"); Near(World.Amount(unrelated.Goods, "stone"), 3, "Scalar haul consumed unrelated cargo"); Valid(w);
@@ -1095,7 +1285,11 @@ namespace IdleCatForest.Acceptance
             var id = Act(w, v, new GameAction { Kind = "HaulGatherSpot", TargetId = source.Id, CatId = c.Id }).EntityId; var job = v.Jobs.Single(j => j.Id == id);
             Act(w, v, new GameAction { Kind = "EnterCat", CatId = helper.Id }); Act(w, v, new GameAction { Kind = "InteractCat", CatId = helper.Id, TargetId = destination.Id });
             void Tick(int count) { for (int tick = 0; tick < count; tick++) { if (helper.ControlLeaseUntil - w.TimeSeconds <= 2) Act(w, v, new GameAction { Kind = "KeepCatControl", CatId = helper.Id }); w.Step(1); } }
-            for (int tick = 0; tick < 100 && World.Amount(c.Cargo, "logs") == 0; tick++) Tick(1);
+            for (int tick = 0; tick < 100 / World.SimulationStepSeconds && World.Amount(c.Cargo, "logs") == 0; tick++)
+            {
+                if (helper.ControlLeaseUntil - w.TimeSeconds <= 2) Act(w, v, new GameAction { Kind = "KeepCatControl", CatId = helper.Id });
+                w.Step(World.SimulationStepSeconds);
+            }
             Check(World.Amount(c.Cargo, "logs") == 8 && c.Position.Equals(source.Position), "Full-destination fixture did not perform its finite source pickup");
             var edges = new[] { new Int2(4, 1), new Int2(6, 1), new Int2(5, 0), new Int2(5, 2) }.Select(p => new BoundaryEdge { From = destination.Position, To = p }).ToArray(); foreach (var edge in edges) v.BoundaryEdges.Add(edge);
             Tick(4); Check(!job.Completed && World.Amount(c.Cargo, "logs") == 8 && c.BlockedReason == "blocked_route", "New destination obstruction bypassed the carrier's physical route"); Near(World.Amount(source.Goods, "logs"), 0, "Blocked carrier returned its picked-up load to source"); foreach (var edge in edges) v.BoundaryEdges.Remove(edge);
@@ -1159,7 +1353,9 @@ namespace IdleCatForest.Acceptance
             for (int tick = 0; tick < 200 && job.Phase != "working"; tick++) w.Step(1);
             Check(job.Phase == "working" && !job.Completed, "Fixture must change ownership during funded construction");
             w.TileAt(at).ClaimId = foreign.Id; string terrain = TerrainState(w.TileAt(at)); double progress = job.Progress;
-            var quantities = new[] { "materials", "metal", "lumber" }.Select(r => Goods(w, v, r)).ToArray(); w.Step(180);
+            var quantities = new[] { "materials", "metal", "lumber" }.Select(r => Goods(w, v, r)).ToArray(); w.Step(World.SimulationStepSeconds);
+            Check(job.BlockedReason == "foreign_territory" && job.Progress == progress, "Foreign ownership did not stop construction in the first actor quantum");
+            w.Step(180 - World.SimulationStepSeconds);
             Check(!job.Completed && job.BlockedReason == "foreign_territory" && job.Progress == progress, "Pending " + kind + " advanced after its site became foreign");
             Check(TerrainState(w.TileAt(at)) == terrain && v.Vehicles.Count == 0, "Pending " + kind + " changed foreign terrain or created a vehicle there");
             for (int i = 0; i < quantities.Length; i++) Near(Goods(w, v, new[] { "materials", "metal", "lumber" }[i]), quantities[i], "Blocked foreign construction consumed its retained inputs"); Valid(w);
@@ -1484,7 +1680,7 @@ namespace IdleCatForest.Acceptance
             var fieldId = Act(w, v, new GameAction { Kind = "PlanBuilding", Name = "field", Position = new Int2(-2, 15), CatId = c.Id }).EntityId; var field = v.Buildings.Single(b => b.Id == fieldId); for (int tick = 0; tick < 1000 && !field.Completed; tick++) w.Step(1); Check(field.Completed, "Public merchant Field did not complete");
             Act(w, v, new GameAction { Kind = "DesignateFarm", Resource = "grain", Position = new Int2(1, 10), End = new Int2(3, 10) });
             double materials = Goods(w, v, "materials"); var expansionId = Act(w, v, new GameAction { Kind = "RequestJob", Name = "expand", CatId = c.Id }).EntityId; var expansion = v.Jobs.Single(j => j.Id == expansionId);
-            for (int tick = 0; tick < 12000 && expansion.PathIndex < expansion.Path.Count; tick++) w.Step(1);
+            for (int tick = 0; tick < 12000 / World.SimulationStepSeconds && expansion.PathIndex < expansion.Path.Count; tick++) w.Step(World.SimulationStepSeconds);
             var trader = v.Trader; Check(!expansion.Completed && expansion.PathIndex == expansion.Path.Count && w.TimeSeconds < trader.NextAt, "Merchant fixture did not reach the pre-cutover checkpoint before its natural visit");
             Act(w, v, new GameAction { Kind = "EnterCat", CatId = c.Id });
             while (w.TimeSeconds < trader.NextAt) { Act(w, v, new GameAction { Kind = "KeepCatControl", CatId = c.Id }); w.Step(Math.Min(20, trader.NextAt - w.TimeSeconds)); }
@@ -1497,12 +1693,13 @@ namespace IdleCatForest.Acceptance
             Act(w, v, new GameAction { Kind = "LeaveCat", CatId = c.Id }); w.Step(1);
             Check(expansion.Completed && v.Radius == 11 && w.Walkable(from) && w.Walkable(to) && !w.Crossable(from, to), "Public expansion did not close the cached walkable merchant edge");
             bool stopped = false, rerouted = false, raidRerouted = false;
-            for (int tick = 0; tick < 100 && (trader.Phase != "trading" || raid.Phase != "departing"); tick++)
+            for (int tick = 0; tick < 100 / World.SimulationStepSeconds && (trader.Phase != "trading" || raid.Phase != "departing"); tick++)
             {
-                var before = trader.Position; var raidBefore = raid.Position; double progress = trader.Progress; w.Step(1);
+                var before = trader.Position; var raidBefore = raid.Position; double progress = trader.Progress, x = trader.X, z = trader.Z; w.Step(World.SimulationStepSeconds);
+                Check(Math.Sqrt((trader.X - x) * (trader.X - x) + (trader.Z - z) * (trader.Z - z)) <= 0.8 * World.SimulationStepSeconds + 1e-8, "Merchant rerouting teleported its authoritative position");
                 Check(before.Equals(trader.Position) || Int2.Distance(before, trader.Position) == 1 && w.Crossable(before, trader.Position), "Automatic merchant crossed the completed public farm fence");
                 Check(raidBefore.Equals(raid.Position) || Int2.Distance(raidBefore, raid.Position) == 1 && w.Crossable(raidBefore, raid.Position), "Active raid crossed the completed public farm fence");
-                if (before.Equals(from) && before.Equals(trader.Position) && trader.BlockedReason == "blocked_route") { stopped = true; Check(trader.Progress == progress, "Blocked merchant consumed movement progress before replanning"); }
+                if (before.Equals(from) && before.Equals(trader.Position) && trader.BlockedReason == "blocked_route") { stopped = true; Check(trader.Progress <= progress && progress - trader.Progress <= 0.8 * World.SimulationStepSeconds + 1e-8, "Blocked merchant advanced across the closed edge or teleported during retreat"); }
                 rerouted |= !ReferenceEquals(originalPath, trader.Path);
                 raidRerouted |= !ReferenceEquals(raidPath, raid.Path); Check(v.Raids.Contains(raid), "Farm fence removed the active raid identity"); Near(World.Amount(raid.Loot, "logs"), 8, "Farm-fence raid reroute changed its finite loot");
                 Check(trader.Id == identity && v.TraderVisitCount == visits && trader.Coins == coins && trader.Goods.Count == cargo.Length, "Merchant reroute replaced its visit, purse or finite cargo"); foreach (var stack in cargo) Near(World.Amount(trader.Goods, stack.Resource), stack.Amount, "Public fence changed merchant cargo");
@@ -1526,11 +1723,18 @@ namespace IdleCatForest.Acceptance
             }
             else v.Raids.Add(raid);
             w.Step(1); Check((kind == "merchant" ? trader.Position : raid.Position).Equals(start), "Land mover advanced before its movement budget was ready");
-            v.BoundaryEdges.Add(edge); double progress = trader.Progress; string identity = kind == "merchant" ? trader.Id : raid.Id; w.Step(3);
+            v.BoundaryEdges.Add(edge); string identity = kind == "merchant" ? trader.Id : raid.Id;
+            // A closed edge requires a bounded physical retreat from its fractional position.
+            for (int tick = 0; tick < 30; tick++)
+            {
+                double x = kind == "merchant" ? trader.X : raid.X, z = kind == "merchant" ? trader.Z : raid.Z; w.Step(0.1);
+                double dx = (kind == "merchant" ? trader.X : raid.X) - x, dz = (kind == "merchant" ? trader.Z : raid.Z) - z;
+                Check(Math.Sqrt(dx * dx + dz * dz) <= (kind == "merchant" ? 0.08 : 0.05) + 1e-8, "Blocked mover teleported during its return to the last safe anchor");
+            }
             Check((kind == "merchant" ? trader.Position : raid.Position).Equals(start), "Cached " + kind + " " + (departing ? "departure" : "arrival") + " crossed a newly blocked edge");
             if (kind == "merchant")
             {
-                Check(trader.BlockedReason == "blocked_route" && trader.Progress == progress && trader.PathIndex == 0 && trader.Phase == (departing ? "departing" : "arriving") && trader.Id == identity, "Blocked merchant changed its phase, progress or visit identity");
+                Check(trader.BlockedReason == "blocked_route" && trader.Progress == 0 && trader.X == start.X && trader.Z == start.Z && trader.PathIndex == 0 && trader.Phase == (departing ? "departing" : "arriving") && trader.Id == identity, "Blocked merchant did not stop at its safe anchor with the same phase and visit identity");
                 Check(trader.Items.Count == 1 && trader.Items[0] == item && item.Condition == 57 && item.MaxCondition == 88 && item.Quality == 3, "Blocked merchant changed exact cargo identity or condition"); Near(World.Amount(trader.Goods, "logs"), 8, "Blocked merchant lost its finite goods"); Near(trader.Coins, 17, "Blocked merchant changed its purse"); Check(trader.LastDepartedAt < 0, "Blocked merchant completed its departure");
             }
             else { Check(v.Raids.Single().Id == identity && raid.Phase == (departing ? "departing" : "approaching"), "Blocked raid changed identity or phase"); Near(World.Amount(raid.Loot, "logs"), 8, "Blocked raid lost finite loot"); Near(Goods(w, v, "food"), food, "Blocked raid looted through the edge"); }
@@ -1578,7 +1782,7 @@ namespace IdleCatForest.Acceptance
             var fieldId = Act(w, v, new GameAction { Kind = "PlanBuilding", Name = "field", Position = new Int2(15, -2), CatId = c.Id }).EntityId; var field = v.Buildings.Single(b => b.Id == fieldId); for (int tick = 0; tick < 1000 && !field.Completed; tick++) w.Step(1); Check(field.Completed, "Public caravan Field did not complete");
             var farmId = Act(w, v, new GameAction { Kind = "DesignateFarm", Resource = "grain", Position = new Int2(10, 1), End = new Int2(10, 3) }).EntityId;
             var expansionId = Act(w, v, new GameAction { Kind = "RequestJob", Name = "expand", CatId = c.Id }).EntityId; var expansion = v.Jobs.Single(j => j.Id == expansionId);
-            for (int tick = 0; tick < 12000 && expansion.PathIndex < expansion.Path.Count; tick++) w.Step(1);
+            for (int tick = 0; tick < 12000 / World.SimulationStepSeconds && expansion.PathIndex < expansion.Path.Count; tick++) w.Step(World.SimulationStepSeconds);
             var from = new Int2(11, 0); var to = new Int2(11, 1); Check(!expansion.Completed && expansion.PathIndex == expansion.Path.Count && w.Crossable(from, to), "Caravan was not accepted immediately before public farm-fence completion");
             var tradeId = Act(w, v, new GameAction { Kind = "OfferVillageTrade", OtherVillageId = other.Id, Resource = "logs", Amount = 8, OtherResource = "stone", OtherAmount = 5 }).EntityId; Act(w, other, new GameAction { Kind = "AcceptVillageTrade", TargetId = tradeId }); var trade = w.TradeOffers.Single(t => t.Id == tradeId);
             int crossing = trade.Path.FindIndex(p => p.Equals(from)); Check(crossing >= 0 && crossing + 1 < trade.Path.Count && trade.Path[crossing + 1].Equals(to), "Public accepted caravan did not cache the future farm-fence edge");
@@ -1604,18 +1808,20 @@ namespace IdleCatForest.Acceptance
             for (int tick = 0; tick < 100 && !(route.Phase == "outbound" && route.PathIndex == 2); tick++) w.Step(1);
             Check(route.Phase == "outbound" && route.PathIndex == 2 && c.Position.Equals(vehicle.Position) && World.Amount(vehicle.Cargo, "logs") == 8, "Needs fixture did not load and physically depart");
             if (shipping) c.Rest = 19; else c.Thirst = 34;
+            const double dt = World.SimulationStepSeconds;
+            bool Aboard() => c.Position.Equals(vehicle.Position) && Math.Abs(c.X - vehicle.X) < 1e-9 && Math.Abs(c.Z - vehicle.Z) < 1e-9;
             double water = Goods(w, v, "water"), age = c.AgeHours, health = c.Health; var parked = vehicle.Position; int parkedIndex = route.PathIndex; bool departed = false, satisfied = false, reboarded = false; var edges = new List<BoundaryEdge>();
-            for (int tick = 0; tick < (shipping ? 900 : 150) && !satisfied; tick++)
+            for (int tick = 0; tick < (shipping ? 900 : 150) / dt && !satisfied; tick++)
             {
-                var before = vehicle.Position; double x = c.X, z = c.Z, rest = c.Rest, hunger = c.Hunger, thirst = c.Thirst, offshoreAge = c.AgeHours, offshoreHealth = c.Health; bool aboard = c.Position.Equals(before) && c.X == before.X && c.Z == before.Z;
-                w.Step(1);
-                Check(Math.Sqrt((c.X - x) * (c.X - x) + (c.Z - z) * (c.Z - z)) <= 2.80001, "Need interruption teleported the transport driver");
-                if (!aboard) Check(vehicle.Position.Equals(before), "Vehicle moved before its driver physically reboarded");
+                var before = vehicle.Position; double x = c.X, z = c.Z, rest = c.Rest, hunger = c.Hunger, thirst = c.Thirst, offshoreAge = c.AgeHours, offshoreHealth = c.Health, vehicleX = vehicle.X, vehicleZ = vehicle.Z; bool aboard = Aboard();
+                w.Step(dt);
+                Check(Math.Sqrt((c.X - x) * (c.X - x) + (c.Z - z) * (c.Z - z)) <= 2.80001 * dt, "Need interruption teleported the transport driver");
+                if (!aboard) Check(vehicle.Position.Equals(before) && Math.Abs(vehicle.X - vehicleX) + Math.Abs(vehicle.Z - vehicleZ) < 1e-9, "Vehicle moved before its driver physically reboarded");
                 if (shipping && !w.Walkable(v, before))
                 {
                     Check(c.Position.Equals(vehicle.Position) && c.Rest <= rest, "Offshore sleep left the vessel or restored rest without reaching its bed");
                     Check(c.Hunger < hunger && c.Thirst < thirst && c.AgeHours > offshoreAge && c.Health <= offshoreHealth, "Offshore need deferral stopped aging or restored needs without physical service");
-                    Check(!vehicle.Position.Equals(before), "Sleep need stranded the loaded vessel offshore");
+                    Check(Math.Abs(vehicle.X - vehicleX) + Math.Abs(vehicle.Z - vehicleZ) > 1e-9, "Sleep need stranded the loaded vessel offshore");
                 }
                 if (!c.Position.Equals(vehicle.Position))
                 {
@@ -1637,12 +1843,12 @@ namespace IdleCatForest.Acceptance
                     foreach (var edge in edges) v.BoundaryEdges.Remove(edge);
                 }
             }
-            for (int tick = 0; tick < 100 && v.Routes.Any(r => r.Id == id); tick++)
+            for (int tick = 0; tick < 100 / dt && v.Routes.Any(r => r.Id == id); tick++)
             {
-                var before = vehicle.Position; bool aboard = c.Position.Equals(before) && c.X == before.X && c.Z == before.Z; double x = c.X, z = c.Z; w.Step(1);
-                Check(Math.Sqrt((c.X - x) * (c.X - x) + (c.Z - z) * (c.Z - z)) <= 2.80001, "Reboarding teleported the transport driver");
-                if (!aboard) Check(vehicle.Position.Equals(before), "Transport resumed before its driver's return completed");
-                if (departed && c.Position.Equals(vehicle.Position) && c.X == vehicle.Position.X && c.Z == vehicle.Position.Z) reboarded = true;
+                var before = vehicle.Position; bool aboard = Aboard(); double x = c.X, z = c.Z, vehicleX = vehicle.X, vehicleZ = vehicle.Z; w.Step(dt);
+                Check(Math.Sqrt((c.X - x) * (c.X - x) + (c.Z - z) * (c.Z - z)) <= 2.80001 * dt, "Reboarding teleported the transport driver");
+                if (!aboard) Check(vehicle.Position.Equals(before) && Math.Abs(vehicle.X - vehicleX) + Math.Abs(vehicle.Z - vehicleZ) < 1e-9, "Transport resumed before its driver's return completed");
+                if (departed && Aboard()) reboarded = true;
             }
             Check(reboarded && !v.Routes.Any(r => r.Id == id) && vehicle.RouteId == "" && c.BuildingId == "" && vehicle.Position.Equals(source.Position) && vehicle.Cargo.Count == 0, "Satisfied driver did not reboard, finish and release the same transport"); Near(World.Amount(destination.Goods, "logs"), 8, "Resumed needs route did not deliver exactly once"); Near(Goods(w, v, "logs"), 8, "Resumed needs route changed cargo totals"); Valid(w);
         }

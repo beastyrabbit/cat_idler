@@ -320,10 +320,10 @@ namespace IdleCatForest.Simulation
                 if (f.WorkerId == c.Id)
                     f.WorkerId = "";
             c.JobId = "";
-            c.BuildingId = "";
+            c.BuildingId = v.Routes.FirstOrDefault(r => r.CatId == c.Id)?.Id ?? "";
             c.ResumeJobId = "";
             c.Path.Clear();
-            c.Goal = "idle";
+            c.Goal = c.BuildingId == "" ? "idle" : "transport returning";
         }
         private void Finish(Village v, Cat c, Job j)
         {
@@ -363,7 +363,7 @@ namespace IdleCatForest.Simulation
                 return j.Path.All(p => CanModifyTerrain(v.Id, p)) && (j.Kind != "wagon" && j.Kind != "vessel" || CanModifyTerrain(v.Id, j.Position));
             return true;
         }
-        private void TickJob(Village v, Cat c, Job j)
+        private void TickJob(Village v, Cat c, Job j, double dt)
         {
             if (!CanConstructJob(v, j))
             {
@@ -372,36 +372,43 @@ namespace IdleCatForest.Simulation
             }
             if (j.BlockedReason == "foreign_territory")
                 j.BlockedReason = c.BlockedReason = "";
-            if (j.Kind == "expand" && j.OriginalKind != "expand_village")
+            bool planning = TimeSeconds + 1e-9 >= j.NextPlanningAt;
+            if (!planning && (j.BlockedReason == "expansion_footprint_blocked" || j.BlockedReason == "infrastructure_footprint_blocked" || j.BlockedReason == "building_entrance_disconnected"))
+                return;
+            if (planning)
             {
-                if (ExpansionFootprintBlocked(v, v.Radius + 2, j.Path))
+                j.NextPlanningAt = Math.Floor(TimeSeconds) + 1;
+                if (j.Kind == "expand" && j.OriginalKind != "expand_village")
                 {
-                    j.BlockedReason = c.BlockedReason = "expansion_footprint_blocked";
-                    return;
+                    if (ExpansionFootprintBlocked(v, v.Radius + 2, j.Path))
+                    {
+                        j.BlockedReason = c.BlockedReason = "expansion_footprint_blocked";
+                        return;
+                    }
+                    if (j.BlockedReason == "expansion_footprint_blocked")
+                        j.BlockedReason = c.BlockedReason = "";
                 }
-                if (j.BlockedReason == "expansion_footprint_blocked")
-                    j.BlockedReason = c.BlockedReason = "";
-            }
-            if (j.Kind == "road" || j.Kind == "rail")
-            {
-                if (j.Path.Any(p => !FreeInfrastructureFootprint(v, j.Kind, p)))
+                if (j.Kind == "road" || j.Kind == "rail")
                 {
-                    j.BlockedReason = c.BlockedReason = "infrastructure_footprint_blocked";
-                    return;
+                    if (j.Path.Any(p => !FreeInfrastructureFootprint(v, j.Kind, p)))
+                    {
+                        j.BlockedReason = c.BlockedReason = "infrastructure_footprint_blocked";
+                        return;
+                    }
+                    if (j.BlockedReason == "infrastructure_footprint_blocked")
+                        j.BlockedReason = c.BlockedReason = "";
                 }
-                if (j.BlockedReason == "infrastructure_footprint_blocked")
-                    j.BlockedReason = c.BlockedReason = "";
-            }
-            if (j.Kind == "build")
-            {
-                var scaffold = v.Buildings.Find(b => b.Id == j.TargetId);
-                if (scaffold != null && !ConnectedEntrance(v, scaffold))
+                if (j.Kind == "build")
                 {
-                    j.BlockedReason = c.BlockedReason = "building_entrance_disconnected";
-                    return;
+                    var scaffold = v.Buildings.Find(b => b.Id == j.TargetId);
+                    if (scaffold != null && !ConnectedEntrance(v, scaffold))
+                    {
+                        j.BlockedReason = c.BlockedReason = "building_entrance_disconnected";
+                        return;
+                    }
+                    if (j.BlockedReason == "building_entrance_disconnected")
+                        j.BlockedReason = c.BlockedReason = "";
                 }
-                if (j.BlockedReason == "building_entrance_disconnected")
-                    j.BlockedReason = c.BlockedReason = "";
             }
             if (j.Kind == "production" && j.Phase != "output_delivery")
             {
@@ -418,7 +425,7 @@ namespace IdleCatForest.Simulation
             {
                 if (c.Cargo.Count == 0 && Reservations.Any(r => r.OwnerId == j.Id + ":resume"))
                 {
-                    PickupClaim(v, c, j.Id + ":resume", j);
+                    PickupClaim(v, c, j.Id + ":resume", j, dt);
                     return;
                 }
                 if (!Reservations.Any(r => r.OwnerId == j.Id + ":resume"))
@@ -427,7 +434,7 @@ namespace IdleCatForest.Simulation
             c.Goal = j.Kind + " · " + j.Phase;
             if (j.Phase == "item_fetch")
             {
-                if (!Move(c, j.Position, 1))
+                if (!Move(c, j.Position, dt))
                     return;
                 j.Phase = "output_delivery";
                 c.Path.Clear();
@@ -435,23 +442,28 @@ namespace IdleCatForest.Simulation
             }
             if (j.Kind == "scout")
             {
-                for (int z = -2; z <= 2; z++)
-                    for (int x = -2; x <= 2; x++)
-                    {
-                        var p = new Int2(c.Position.X + x, c.Position.Z + z);
-                        var observed = TileAt(p);
-                        if (!c.ScoutNotes.Contains(p))
-                            c.ScoutNotes.Add(p);
-                        if (j.Resource != "" && j.Phase != "return" && ((j.Resource == "water" && observed.Water) || SourceAmount(observed, j.Resource) > 0))
+                if (planning || !j.HasObservedPosition || !j.ObservedPosition.Equals(c.Position))
+                {
+                    j.HasObservedPosition = true;
+                    j.ObservedPosition = c.Position;
+                    for (int z = -2; z <= 2; z++)
+                        for (int x = -2; x <= 2; x++)
                         {
-                            j.Phase = "return";
-                            j.TargetId = p.ToString();
-                            c.Path.Clear();
+                            var p = new Int2(c.Position.X + x, c.Position.Z + z);
+                            var observed = TileAt(p);
+                            if (!c.ScoutNotes.Contains(p))
+                                c.ScoutNotes.Add(p);
+                            if (j.Resource != "" && j.Phase != "return" && ((j.Resource == "water" && observed.Water) || SourceAmount(observed, j.Resource) > 0))
+                            {
+                                j.Phase = "return";
+                                j.TargetId = p.ToString();
+                                c.Path.Clear();
+                            }
                         }
-                    }
+                }
                 if (j.Phase == "return")
                 {
-                    if (Move(c, v.Center, 1))
+                    if (Move(c, v.Center, dt))
                     {
                         foreach (var p in c.ScoutNotes)
                             if (!v.Known.Contains(p))
@@ -469,7 +481,7 @@ namespace IdleCatForest.Simulation
                     }
                     return;
                 }
-                if (Move(c, j.Position, 1))
+                if (Move(c, j.Position, dt))
                 {
                     if (j.Path.Count > 0 && j.PathIndex + 1 < j.Path.Count)
                     {
@@ -497,11 +509,11 @@ namespace IdleCatForest.Simulation
                     return;
                 if (b.Required.All(s => Amount(b.Inputs, s.Resource) >= s.Amount))
                 {
-                    if (!Move(c, b.Position, 1))
+                    if (!Move(c, b.Position, dt))
                         return;
                     j.Phase = "working";
-                    b.Progress += WorkRate(v, c, "build", b.Kind);
-                    if (b.Progress >= b.RequiredWork)
+                    b.Progress += SpendActorTime(c) * WorkRate(v, c, "build", b.Kind);
+                    if (b.Progress + 1e-9 >= b.RequiredWork)
                     {
                         b.Inputs.Clear();
                         Commission(v, b);
@@ -512,7 +524,7 @@ namespace IdleCatForest.Simulation
                 }
                 if (c.Cargo.Count > 0)
                 {
-                    if (!Move(c, b.Position, 1))
+                    if (!Move(c, b.Position, dt))
                         return;
                     foreach (var s in c.Cargo)
                         Add(b.Inputs, s.Resource, s.Amount);
@@ -529,7 +541,7 @@ namespace IdleCatForest.Simulation
                         return;
                     }
                 }
-                PickupClaim(v, c, b.Id, j);
+                PickupClaim(v, c, b.Id, j, dt);
                 return;
             }
             if (j.Phase == "fetch")
@@ -542,14 +554,14 @@ namespace IdleCatForest.Simulation
                 }
                 if (Reservations.Any(r => r.OwnerId == j.Id))
                 {
-                    PickupClaim(v, c, j.Id, j);
+                    PickupClaim(v, c, j.Id, j, dt);
                     return;
                 }
                 j.Phase = "input_delivery";
             }
             if (j.Phase == "input_delivery")
             {
-                if (!Move(c, j.Position, 1))
+                if (!Move(c, j.Position, dt))
                 {
                     if (j.Kind == "haul" && c.BlockedReason == "blocked_route" && j.Local.Count == 0 && c.Cargo.Count > 0)
                     {
@@ -585,7 +597,7 @@ namespace IdleCatForest.Simulation
             }
             if (j.Phase == "travel")
             {
-                if (!Move(c, j.Position, 1))
+                if (!Move(c, j.Position, dt))
                     return;
                 j.Phase = "working";
             }
@@ -633,10 +645,10 @@ namespace IdleCatForest.Simulation
                 {
                     if (j.OriginalKind == "expand_village")
                     {
-                        if (!Move(c, j.Position, 1))
+                        if (!Move(c, j.Position, dt))
                             return;
-                        j.Progress += WorkRate(v, c, "build", "");
-                        if (j.Progress >= j.RequiredWork)
+                        j.Progress += SpendActorTime(c) * WorkRate(v, c, "build", "");
+                        if (j.Progress + 1e-9 >= j.RequiredWork)
                         {
                             ClaimLegacyTile(v, j);
                             Finish(v, c, j);
@@ -657,10 +669,23 @@ namespace IdleCatForest.Simulation
                         return;
                     }
                     var target = j.Path[j.PathIndex];
-                    var stand = Neighbors(target).Where(Walkable).OrderBy(p => Int2.Distance(p, c.Position)).FirstOrDefault(p => Path(c.Position, p) != null);
+                    if (!j.HasWorkStand || j.WorkStandIndex != j.PathIndex || !Walkable(j.WorkStand))
+                    {
+                        if (!planning && j.WorkStandIndex == j.PathIndex)
+                            return;
+                        j.WorkStandIndex = j.PathIndex;
+                        var stand = Neighbors(target).Where(Walkable).OrderBy(p => Int2.Distance(p, c.Position)).Where(p => Path(c.Position, p) != null).Select(p => (Int2?)p).FirstOrDefault();
+                        j.HasWorkStand = stand.HasValue;
+                        if (!stand.HasValue)
+                        {
+                            j.BlockedReason = c.BlockedReason = "blocked_route";
+                            return;
+                        }
+                        j.WorkStand = stand.Value;
+                    }
                     if (c.Cargo.Count == 0)
                     {
-                        if (!Move(c, j.Position, 1))
+                        if (!Move(c, j.Position, dt))
                             return;
                         if (Amount(j.Local, "materials") < 1)
                         {
@@ -670,10 +695,14 @@ namespace IdleCatForest.Simulation
                         Add(j.Local, "materials", -1);
                         Add(c.Cargo, "materials", 1);
                     }
-                    if (!Move(c, stand, 1))
+                    if (!Move(c, j.WorkStand, dt))
+                    {
+                        if (c.BlockedReason == "blocked_route")
+                            j.HasWorkStand = false;
                         return;
-                    j.Progress++;
-                    if (j.Progress < 10)
+                    }
+                    j.Progress += SpendActorTime(c);
+                    if (j.Progress + 1e-9 < 10)
                         return;
                     j.Progress = 0;
                     TileAt(target).Wall = true;
@@ -691,7 +720,7 @@ namespace IdleCatForest.Simulation
                     var target = j.Path[j.PathIndex];
                     if (c.Cargo.Count == 0)
                     {
-                        if (!Move(c, j.Position, 1))
+                        if (!Move(c, j.Position, dt))
                             return;
                         if (Amount(j.Local, j.Resource) < 1)
                         {
@@ -701,10 +730,10 @@ namespace IdleCatForest.Simulation
                         Add(j.Local, j.Resource, -1);
                         Add(c.Cargo, j.Resource, 1);
                     }
-                    if (!Move(c, target, 1))
+                    if (!Move(c, target, dt))
                         return;
-                    j.Progress++;
-                    if (j.Progress < 30)
+                    j.Progress += SpendActorTime(c);
+                    if (j.Progress + 1e-9 < 30)
                         return;
                     j.Progress = 0;
                     var tile = TileAt(target);
@@ -719,10 +748,10 @@ namespace IdleCatForest.Simulation
                     j.PathIndex++;
                     return;
                 }
-                if (!Move(c, j.Position, 1))
+                if (!Move(c, j.Position, dt))
                     return;
-                j.Progress += WorkRate(v, c, j.Kind == "production" ? Catalog.Recipe(j.RecipeId)?.Labor ?? "process" : JobLabor(j.Kind), j.Kind == "production" ? Catalog.Recipe(j.RecipeId)?.Building : "") * j.SpeedMultiplier;
-                if (j.Progress < j.RequiredWork)
+                j.Progress += SpendActorTime(c) * WorkRate(v, c, j.Kind == "production" ? Catalog.Recipe(j.RecipeId)?.Labor ?? "process" : JobLabor(j.Kind), j.Kind == "production" ? Catalog.Recipe(j.RecipeId)?.Building : "") * j.SpeedMultiplier;
+                if (j.Progress + 1e-9 < j.RequiredWork)
                     return;
                 if (j.Kind == "production")
                 {
@@ -835,7 +864,7 @@ namespace IdleCatForest.Simulation
             {
                 if (c.Cargo.Count == 0 && j.Local.Count > 0)
                 {
-                    if (!Move(c, j.Position, 1))
+                    if (!Move(c, j.Position, dt))
                         return;
                     var s = j.Local[0];
                     double take = Math.Min(CarryCapacity(v, s.Resource), s.Amount);
@@ -850,14 +879,31 @@ namespace IdleCatForest.Simulation
                     Finish(v, c, j);
                     return;
                 }
-                var pile = Storage(v, resource, cargo?.Amount ?? 1, c.Position, j.Kind == "haul" ? j.SourceId : null);
+                var pile = v.Stockpiles.Find(s => s.Id == j.DeliveryPileId);
+                if (pile != null && !HasRoom(v, pile, resource, cargo?.Amount ?? 1))
+                    pile = null;
+                if (pile == null && TimeSeconds + 1e-9 < j.NextStorageAttemptAt)
+                    return;
+                if (pile == null)
+                {
+                    pile = Storage(v, resource, cargo?.Amount ?? 1, c.Position, j.Kind == "haul" ? j.SourceId : null);
+                    j.NextStorageAttemptAt = Math.Floor(TimeSeconds) + 1;
+                }
                 if (pile == null)
                 {
                     j.BlockedReason = c.BlockedReason = "output_storage_full_or_unreachable";
                     return;
                 }
-                if (!Move(c, pile.Position, 1))
+                j.DeliveryPileId = pile.Id;
+                if (!Move(c, pile.Position, dt))
+                {
+                    if (c.BlockedReason == "blocked_route")
+                    {
+                        j.DeliveryPileId = "";
+                        j.NextStorageAttemptAt = Math.Floor(TimeSeconds) + 1;
+                    }
                     return;
+                }
                 if (cargo != null)
                 {
                     Add(pile.Goods, cargo.Resource, cargo.Amount);
@@ -869,11 +915,12 @@ namespace IdleCatForest.Simulation
                     j.ItemIds.Remove(deliveredItem.Id);
                 }
                 Add(c.Skills, "haul", 0.25);
+                j.DeliveryPileId = "";
                 if (j.Local.Count == 0 && c.Cargo.Count == 0 && j.ItemIds.Count == 0)
                     Finish(v, c, j);
             }
         }
-        private void PickupClaim(Village v, Cat c, string ownerId, Job j)
+        private void PickupClaim(Village v, Cat c, string ownerId, Job j, double dt)
         {
             var claim = Reservations.FirstOrDefault(r => r.OwnerId == ownerId);
             if (claim == null)
@@ -885,7 +932,7 @@ namespace IdleCatForest.Simulation
                 j.BlockedReason = "source_changed";
                 return;
             }
-            if (!Move(c, pile.Position, 1))
+            if (!Move(c, pile.Position, dt))
                 return;
             double quantity = Math.Min(CarryCapacity(v, claim.Resource), claim.Amount);
             Add(pile.Goods, claim.Resource, -quantity);

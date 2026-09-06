@@ -6,20 +6,21 @@ namespace IdleCatForest.Simulation
 {
     public partial class World
     {
-        private void TickVillage(Village v)
+        private void TickVillage(Village v, double dt, bool planning)
         {
-            foreach (var pending in v.Jobs.Where(j => !j.Completed && j.CatId == "" && (j.AutomatedBy == "" || j.AutomatedBy == "leader" || HasOfficer(v, j.AutomatedBy))).ToArray())
-            {
-                var worker = AvailableCat(v, JobLabor(pending.Kind));
-                if (worker == null)
-                    break;
-                if (worker.Cargo.Count > 0)
-                    Spill(v, worker.Position, worker.Cargo);
-                pending.CatId = worker.Id;
-                worker.JobId = pending.Id;
-                worker.Goal = pending.Kind;
-            }
-            if ((long)TimeSeconds % 60 == 0)
+            if (planning)
+                foreach (var pending in v.Jobs.Where(j => !j.Completed && j.CatId == "" && (j.AutomatedBy == "" || j.AutomatedBy == "leader" || HasOfficer(v, j.AutomatedBy))).ToArray())
+                {
+                    var worker = AvailableCat(v, JobLabor(pending.Kind));
+                    if (worker == null)
+                        break;
+                    if (worker.Cargo.Count > 0)
+                        Spill(v, worker.Position, worker.Cargo);
+                    pending.CatId = worker.Id;
+                    worker.JobId = pending.Id;
+                    worker.Goal = pending.Kind;
+                }
+            if (planning && (long)TimeSeconds % 60 == 0)
                 foreach (var tile in Tiles.Where(t => t.RegrowAt >= 0 && t.RegrowAt <= TimeSeconds).ToArray())
                 {
                     tile.Amount = tile.Resource == "logs" ? 40 : 30;
@@ -33,16 +34,16 @@ namespace IdleCatForest.Simulation
                     continue;
                 }
                 double resilience = Math.Max(0.45, 1 - UpgradeLevel(v, "resilience") * 0.08);
-                c.AgeHours += (c.AgeHours < 24 ? Service(v, "nursery", "kittenGrowth", 1) : 1) / 3600;
-                c.Hunger = Math.Max(0, c.Hunger - 20.0 / 3600 * resilience);
-                c.Thirst = Math.Max(0, c.Thirst - 30.0 / 3600 * resilience / Catalog.Effect(v, "waterEfficiency", 1) / Service(v, "water_bowl", "waterStewardship", 1));
-                c.Rest = Math.Max(0, c.Rest - 12.0 / 3600 / Service(v, "den", "denStewardship", 1));
+                c.AgeHours += dt * (c.AgeHours < 24 ? Service(v, "nursery", "kittenGrowth", 1) : 1) / 3600;
+                c.Hunger = Math.Max(0, c.Hunger - dt * 20.0 / 3600 * resilience);
+                c.Thirst = Math.Max(0, c.Thirst - dt * 30.0 / 3600 * resilience / Catalog.Effect(v, "waterEfficiency", 1) / Service(v, "water_bowl", "waterStewardship", 1));
+                c.Rest = Math.Max(0, c.Rest - dt * 12.0 / 3600 / Service(v, "den", "denStewardship", 1));
                 if (c.Health < 100 && c.Hunger > 50 && c.Thirst > 50)
-                    c.Health = Math.Min(100, c.Health + 0.002 * Catalog.Effect(v, "healthRecovery", 1));
+                    c.Health = Math.Min(100, c.Health + dt * 0.002 * Catalog.Effect(v, "healthRecovery", 1));
                 if (c.Hunger <= 0)
-                    c.Health -= 2.0 / 60;
+                    c.Health -= dt * 2.0 / 60;
                 if (c.Thirst <= 0)
-                    c.Health -= 3.0 / 60;
+                    c.Health -= dt * 3.0 / 60;
                 if (c.Health <= 0)
                 {
                     Die(v, c, "needs");
@@ -51,7 +52,7 @@ namespace IdleCatForest.Simulation
                 if (c.Migration == "arriving" || c.Migration == "departing")
                 {
                     Int2 destination = c.Migration == "arriving" ? v.Center : c.MigrationExterior ?? new Int2(v.Center.X, v.Center.Z + v.Radius + 3);
-                    if (Move(c, destination, 1))
+                    if (Move(c, destination, dt))
                     {
                         if (c.Migration == "arriving")
                         {
@@ -78,18 +79,21 @@ namespace IdleCatForest.Simulation
                     else
                         continue;
                 }
-                if (TickNeeds(v, c))
+                if (TickNeeds(v, c, dt))
+                {
+                    SpendActorTime(c);
                     continue;
+                }
                 var job = v.Jobs.Find(j => j.Id == c.JobId && !j.Completed);
                 if (job != null)
-                    TickJob(v, c, job);
+                    TickJob(v, c, job, dt);
                 else if (c.JobId != "")
                     c.JobId = "";
                 else if (c.BuildingId == "")
                 {
                     if (c.Path.Count > 0)
-                        Move(c, c.Path[c.Path.Count - 1], 1);
-                    else if ((long)TimeSeconds % 20 == Hash(c.Id) % 20)
+                        Move(c, c.Path[c.Path.Count - 1], dt);
+                    else if (planning && (long)TimeSeconds % 20 == Hash(c.Id) % 20)
                     {
                         int x = (int)(Hash(c.Id + ":" + (long)TimeSeconds) % 9) - 4, z = (int)(Hash(c.Id + ":z:" + (long)TimeSeconds) % 9) - 4;
                         var target = new Int2(v.Center.X + x, v.Center.Z + z);
@@ -98,26 +102,27 @@ namespace IdleCatForest.Simulation
                     }
                 }
             }
-            TickStations(v);
-            TickFarms(v);
-            TickAccounting(v);
-            TickTransport(v);
-            TickTrader(v);
-            if ((long)TimeSeconds % 10 == 0)
+            TickStations(v, dt, planning);
+            TickFarms(v, dt);
+            TickAccounting(v, dt);
+            TickTransport(v, dt, planning);
+            TickTrader(v, dt, planning);
+            if (planning && (long)TimeSeconds % 10 == 0)
                 Direct(v);
-            Governance(v);
-            if ((long)TimeSeconds % 60 == 0)
+            if (planning)
+                Governance(v);
+            if (planning && (long)TimeSeconds % 60 == 0)
             {
                 Population(v);
                 Spoilage(v);
                 v.Jobs.RemoveAll(j => j.Completed && TimeSeconds - j.StartedAt > 600);
             }
-            TickRaids(v);
+            TickRaids(v, dt, planning);
         }
-        private bool TickNeeds(Village v, Cat c)
+        private bool TickNeeds(Village v, Cat c, double dt)
         {
             // Stay aboard over water; the same needs can be met physically after docking.
-            if (v.Routes.Any(r => r.CatId == c.Id && r.Mode == "shipping" && r.Phase != "boarding" && v.Vehicles.Any(vehicle => vehicle.Id == r.VehicleId && vehicle.Position.Equals(c.Position) && !Walkable(v, vehicle.Position))))
+            if (v.Routes.Any(r => r.CatId == c.Id && r.Mode == "shipping" && r.Phase != "boarding" && v.Vehicles.Any(vehicle => vehicle.Id == r.VehicleId && vehicle.Position.Equals(c.Position) && (!Walkable(v, vehicle.Position) || vehicle.HasContinuousPosition && Math.Abs(vehicle.X - vehicle.Position.X) + Math.Abs(vehicle.Z - vehicle.Position.Z) > 1e-9))))
             {
                 if (c.Goal.StartsWith("need_", StringComparison.Ordinal))
                     Resume(c);
@@ -133,8 +138,8 @@ namespace IdleCatForest.Simulation
                         c.Goal = "idle";
                         return false;
                     }
-                    if (Move(c, den.Position, 1))
-                        c.Rest = Math.Min(100, c.Rest + 0.15 * Catalog.Effect(v, "restRecovery", 1));
+                    if (Move(c, den.Position, dt))
+                        c.Rest = Math.Min(100, c.Rest + SpendActorTime(c) * 0.15 * Catalog.Effect(v, "restRecovery", 1));
                     if (c.Rest >= 95)
                         Resume(c);
                     return true;
@@ -143,23 +148,41 @@ namespace IdleCatForest.Simulation
                 if (c.Cargo.Count == 0)
                 {
                     var choices = c.Goal == "need_drink" ? (!c.PersonalBrewUsed && Available(v, "water") >= 0.75 ? new[] { "brew", "water" } : new[] { "water" }) : c.Goal == "need_heal" ? new[] { "medicine", "herbs" } : new[] { "fish", "preserves", "food" };
-                    Stockpile pile = null;
-                    foreach (var choice in choices)
+                    Stockpile pile = v.Stockpiles.Find(s => s.Id == c.NeedSourceId);
+                    if (pile != null)
                     {
-                        resource = choice;
-                        double serving = resource == "brew" ? 0.25 : resource == "water" && c.PersonalBrewUsed ? 0.75 : 1;
-                        pile = v.Stockpiles.Where(s => s.Kind == "storage" && Amount(s.Goods, resource) - Reservations.Where(r => r.PileId == s.Id && r.Resource == resource).Sum(r => r.Amount) >= serving).OrderBy(s => Int2.Distance(c.Position, s.Position)).FirstOrDefault(s => Path(c.Position, s.Position, v) != null);
-                        if (pile != null)
-                            break;
+                        resource = choices.FirstOrDefault(choice => Amount(pile.Goods, choice) - Reservations.Where(r => r.PileId == pile.Id && r.Resource == choice).Sum(r => r.Amount) >= (choice == "brew" ? 0.25 : choice == "water" && c.PersonalBrewUsed ? 0.75 : 1));
+                        if (resource == null)
+                            pile = null;
                     }
+                    if (pile == null && TimeSeconds < c.NextNeedAttemptAt)
+                        return true;
+                    if (pile == null)
+                        foreach (var choice in choices)
+                        {
+                            resource = choice;
+                            double serving = resource == "brew" ? 0.25 : resource == "water" && c.PersonalBrewUsed ? 0.75 : 1;
+                            pile = v.Stockpiles.Where(s => s.Kind == "storage" && Amount(s.Goods, resource) - Reservations.Where(r => r.PileId == s.Id && r.Resource == resource).Sum(r => r.Amount) >= serving).OrderBy(s => Int2.Distance(c.Position, s.Position)).FirstOrDefault(s => Path(c.Position, s.Position, v) != null);
+                            if (pile != null)
+                                break;
+                        }
                     if (pile == null)
                     {
                         c.BlockedReason = "need_supply_missing";
-                        Resume(c);
+                        c.NextNeedAttemptAt = Math.Floor(TimeSeconds) + 1;
+                        Resume(c, preservePath: true);
                         return false;
                     }
-                    if (!Move(c, pile.Position, 1))
+                    c.NeedSourceId = pile.Id;
+                    if (!Move(c, pile.Position, dt))
+                    {
+                        if (c.BlockedReason == "blocked_route")
+                        {
+                            c.NeedSourceId = "";
+                            c.NextNeedAttemptAt = Math.Floor(TimeSeconds) + 1;
+                        }
                         return true;
+                    }
                     double wanted = resource == "brew" ? 0.25 : resource == "water" && c.PersonalBrewUsed ? 0.75 : 1;
                     double free = Amount(pile.Goods, resource) - Reservations.Where(r => r.PileId == pile.Id && r.Resource == resource).Sum(r => r.Amount);
                     if (free < wanted)
@@ -169,9 +192,10 @@ namespace IdleCatForest.Simulation
                     }
                     Add(pile.Goods, resource, -wanted);
                     Add(c.Cargo, resource, wanted);
+                    c.NeedSourceId = "";
                     return true;
                 }
-                if (!Move(c, v.Center, 1))
+                if (!Move(c, v.Center, dt))
                     return true;
                 if (c.Goal == "need_drink")
                 {
@@ -237,19 +261,25 @@ namespace IdleCatForest.Simulation
                     }
                 }
             }
+            if (TimeSeconds < c.NextNeedAttemptAt)
+                return false;
             string need = c.Thirst < 35 ? "need_drink" : c.Hunger < 35 ? "need_eat" : c.Health < 40 ? "need_heal" : c.Rest < 20 && c.BedId != "" ? "need_sleep" : "";
             if (need == "")
                 return false;
             c.ResumeJobId = c.JobId;
             c.Goal = need;
-            c.Path.Clear();
+            c.NeedSourceId = "";
+            // Keep moving work recoverable until a real need destination is selected.
+            // Move replaces the path when that destination differs from the active route.
             return true;
         }
-        private void Resume(Cat c)
+        private void Resume(Cat c, bool preservePath = false)
         {
+            c.NeedSourceId = "";
             c.JobId = c.ResumeJobId;
             c.ResumeJobId = "";
-            c.Path.Clear();
+            if (!preservePath)
+                c.Path.Clear();
             c.Goal = "idle";
         }
         private void Die(Village v, Cat c, string reason)
@@ -454,7 +484,7 @@ namespace IdleCatForest.Simulation
                     v.LastLeaderResearch = TimeSeconds;
             }
         }
-        private void TickStations(Village v)
+        private void TickStations(Village v, double dt, bool planning)
         {
             foreach (var b in v.Buildings.Where(b => b.Completed))
                 foreach (var slot in b.Slots.ToArray())
@@ -465,10 +495,11 @@ namespace IdleCatForest.Simulation
                     if (b.Kind == "research_hut" || b.Kind == "school")
                     {
                         c.Goal = "research";
-                        if (Move(c, b.Position, 1))
+                        if (Move(c, b.Position, dt))
                         {
-                            v.ResearchPoints += WorkRate(v, c, "research", b.Kind) * Catalog.Effect(v, "researchRateMult", 1) * Catalog.BuildingEffect(v, b.Kind, "output", 1) / 600;
-                            Add(c.Skills, "research", 1.0 / 3600);
+                            double worked = SpendActorTime(c);
+                            v.ResearchPoints += worked * WorkRate(v, c, "research", b.Kind) * Catalog.Effect(v, "researchRateMult", 1) * Catalog.BuildingEffect(v, b.Kind, "output", 1) / 600;
+                            Add(c.Skills, "research", worked / 3600);
                         }
                         continue;
                     }
@@ -477,7 +508,7 @@ namespace IdleCatForest.Simulation
                     var outputItems = v.Items.Where(i => i.LocationId == b.Id && i.StationCompartment == "local_output").ToArray();
                     if (b.Outputs.Count > 0 || outputItems.Length > 0)
                     {
-                        if (outputItems.Length > 0 && !Move(c, b.Position, 1))
+                        if (outputItems.Length > 0 && !Move(c, b.Position, dt))
                             continue;
                         var delivery = new Job { Kind = "production", Phase = "output_delivery", TargetId = b.Id, Position = b.Position, Local = b.Outputs.Select(s => new Stack(s.Resource, s.Amount)).ToList() };
                         b.Outputs.Clear();
@@ -490,6 +521,8 @@ namespace IdleCatForest.Simulation
                         }
                         continue;
                     }
+                    if (!planning)
+                        continue;
                     if (b.Kind == "mouse_farm")
                     {
                         if (Available(v, "grain") < 1)
@@ -563,7 +596,7 @@ namespace IdleCatForest.Simulation
                     slot.BlockedReason = b.BlockedReason = "";
                 }
         }
-        private void TickFarms(Village v)
+        private void TickFarms(Village v, double dt)
         {
             foreach (var f in v.Farms)
             {
@@ -580,7 +613,7 @@ namespace IdleCatForest.Simulation
                 {
                     if (c.Cargo.Count == 0)
                     {
-                        if (!Move(c, f.Position, 1))
+                        if (!Move(c, f.Position, dt))
                         {
                             f.BlockedReason = "blocked_harvest_route";
                             continue;
@@ -591,7 +624,7 @@ namespace IdleCatForest.Simulation
                         f.Phase = "hauling";
                         continue;
                     }
-                    if (!Move(c, f.Handoff, 1))
+                    if (!Move(c, f.Handoff, dt))
                     {
                         f.BlockedReason = "blocked_handoff_route";
                         continue;
@@ -614,17 +647,18 @@ namespace IdleCatForest.Simulation
                     f.BlockedReason = "";
                     continue;
                 }
-                if (!Move(c, f.Position, 1))
+                if (!Move(c, f.Position, dt))
                 {
                     f.BlockedReason = "blocked_route";
                     continue;
                 }
                 f.BlockedReason = "";
-                f.Growth += WorkRate(v, c, "farm", "field") * Service(v, "field", "fieldStewardship", 1) * (f.FertilityAffectsGrowth ? Math.Max(0, f.Fertility) : 1);
-                Add(c.Skills, "farm", 1.0 / 3600);
+                double worked = SpendActorTime(c);
+                f.Growth += worked * WorkRate(v, c, "farm", "field") * Service(v, "field", "fieldStewardship", 1) * (f.FertilityAffectsGrowth ? Math.Max(0, f.Fertility) : 1);
+                Add(c.Skills, "farm", worked / 3600);
                 double cycle = Math.Max(1, f.CycleSeconds), fraction = f.Growth / cycle;
                 f.Phase = fraction < 1.0 / 12 ? "soil" : fraction < 0.25 ? "sprout" : fraction < 0.5 ? "growing" : fraction < 0.75 ? "mature" : "flowering";
-                if (f.Growth >= cycle)
+                if (f.Growth + 1e-9 >= cycle)
                 {
                     f.Harvest = f.YieldPerTile * f.Width * f.Depth * (f.FertilityAffectsGrowth ? 1 : Math.Max(0, f.Fertility)) * Catalog.Effect(v, "farmYield", 1) * Catalog.Effect(v, "farmYieldMult", 1) * Catalog.BuildingEffect(v, "field", "output", 1);
                     f.Growth = 0;
@@ -632,7 +666,7 @@ namespace IdleCatForest.Simulation
                 }
             }
         }
-        private void TickAccounting(Village v)
+        private void TickAccounting(Village v, double dt)
         {
             var tent = v.Buildings.Find(b => b.Kind == "accounting_tent" && b.Completed && b.Slots.Any(s => s.CatId != ""));
             if (tent == null || !HasOfficer(v, "accountant"))
@@ -651,8 +685,8 @@ namespace IdleCatForest.Simulation
             }
             if (round.Phase == "waiting")
             {
-                round.DwellSeconds += 1;
-                if (round.DwellSeconds < 60)
+                round.DwellSeconds += SpendActorTime(c);
+                if (round.DwellSeconds + 1e-9 < 60)
                     return;
                 round.Phase = "returning";
                 round.DwellSeconds = 0;
@@ -660,7 +694,7 @@ namespace IdleCatForest.Simulation
             if (round.Phase == "returning" || round.Phase == "return_to_tent" || round.Phase == "")
             {
                 c.Goal = "accounting · returning to tent";
-                if (!Move(c, tent.Position, 1))
+                if (!Move(c, tent.Position, dt))
                     return;
                 round.Pending = v.Stockpiles.Where(s => s.Kind == "storage").OrderBy(s => Int2.Distance(tent.Position, s.Position)).ThenBy(s => s.Id, StringComparer.Ordinal).Select(s => s.Id).ToList();
                 round.Unreachable.Clear();
@@ -687,7 +721,7 @@ namespace IdleCatForest.Simulation
                 }
                 if (round.TargetId == "")
                 {
-                    if (Move(c, tent.Position, 1))
+                    if (Move(c, tent.Position, dt))
                     {
                         round.Phase = "waiting";
                         round.DwellSeconds = 0;
@@ -702,7 +736,7 @@ namespace IdleCatForest.Simulation
                 return;
             }
             c.Goal = "accounting · " + pile.Id;
-            if (!Move(c, pile.Position, 1))
+            if (!Move(c, pile.Position, dt))
             {
                 if (c.BlockedReason == "blocked_route")
                 {
@@ -712,9 +746,9 @@ namespace IdleCatForest.Simulation
                 return;
             }
             round.Phase = "counting";
-            round.DwellSeconds += Service(v, "accounting_tent", "accountingSpeed", 1);
+            round.DwellSeconds += SpendActorTime(c) * Service(v, "accounting_tent", "accountingSpeed", 1);
             tent.Progress = round.DwellSeconds;
-            if (round.DwellSeconds >= 5)
+            if (round.DwellSeconds + 1e-9 >= 5)
             {
                 pile.Report = pile.Goods.Select(s => new Stack(s.Resource, s.Amount)).ToList();
                 foreach (var kind in new[] { "tools", "weapons", "armor" })

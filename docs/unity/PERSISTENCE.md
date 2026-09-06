@@ -27,7 +27,11 @@ Each write creates a private temporary file, flushes it and atomically replaces 
 
 To inspect a failed save, stop its authority and work on a copy. To recover the previous file, explicitly copy the selected `.previous` file to a new save path and start the host with that path. No code automatically rolls back player progress or overwrites the suspected source.
 
-The server advances explicit simulation time every 100 milliseconds. It publishes snapshots at a 100-millisecond target while a cat is controlled and a 500-millisecond target otherwise. Slow clients cannot delay the simulation clock. Saves run every five seconds. I/O and write-permission failures leave simulation running and retry at the next save interval. `/ready` fails after three consecutive save failures and recovers after a successful save. Graceful shutdown attempts a final save. An abrupt stop can lose work since the last complete save, but must not expose a partial replacement.
+The server advances explicit simulation time on a 50-millisecond timer. It publishes snapshots at a 100-millisecond target during both autonomous play and direct control. Slow clients cannot delay the simulation clock. Saves run every five seconds. I/O and write-permission failures leave simulation running and retry at the next save interval. `/ready` fails after three consecutive save failures and recovers after a successful save. Graceful shutdown attempts a final save. An abrupt stop can lose work since the last complete save, but must not expose a partial replacement.
+
+The continuous simulation persists its last consumed 50-millisecond step separately from requested elapsed time. A fractional save retains the unused portion and resumes without replay. Older saves without this cursor initialize it at their existing clock. New fractional mover coordinates retain a separate last-reached grid position for collision checks. These additions preserve existing layouts, identities, jobs and goods.
+
+Older merchants and raiders stored a whole-tile position plus cadence credit rather than a physical intermediate position. On first advance, they continue from that saved tile and discard the old cadence credit, including credit accumulated while blocked. This prevents a burst of catch-up movement. Existing fractional caravan coordinates remain intact.
 
 ## Identities and permissions
 

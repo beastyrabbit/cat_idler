@@ -54,6 +54,11 @@ camera, and E interacts with nearby storage or the shrine. Colony simulation
 continues during direct control. The management categories expose construction,
 manual jobs, queues, staffing, study purchases, stores, officers, defense and trade.
 
+Autonomous movement, work, needs and transport run in 50-millisecond simulation
+steps at 1× speed. Pause stops simulated time; 4× and 8× advance more of the same
+steps. The inspector updates needs and work progress between its slower content
+refreshes. Existing saves acquire the finer clock without resetting their world.
+
 ## Host and test
 
 ```sh
@@ -124,10 +129,11 @@ timestamp and do not contain credentials. Capture can briefly slow rendering, so
 record performance before capturing or after its samples leave the rolling window.
 Without this explicit option, the app does not write capture files.
 
-The performance report includes up to 3,600 frames and simulation steps, complete
-one-second economy tick samples, population, active jobs, resolution, machine and
-local/remote mode. These are observations of the current workload. A remote
-client cannot measure the server's simulation cost.
+The performance report includes up to 3,600 frames and 50-millisecond simulation
+steps, plus steps that also cross a whole-second planning boundary. It records
+population, active jobs, resolution, machine and local/remote mode. These are
+observations of the current workload. A remote client cannot measure the server's
+simulation cost.
 
 ## Live agent inspection
 

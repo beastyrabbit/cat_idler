@@ -314,10 +314,11 @@ namespace IdleCatForest.Presentation
                     if (item != null) Entity("cargo:" + c.Id, ItemCargoAsset(item.Kind), go.transform.position + Vector3.up * .6f, .3f);
                 }
             }
-            foreach (var vehicle in v.Vehicles) Entity("vehicle:" + vehicle.Id, vehicle.Mode == "shipping" ? "boat" : "cart", At(vehicle.Position), 1);
+            foreach (var vehicle in v.Vehicles) Entity("vehicle:" + vehicle.Id, vehicle.Mode == "shipping" ? "boat" : "cart", vehicle.HasContinuousPosition ? MovingPosition(vehicle.X, vehicle.Z) : At(vehicle.Position), 1, !vehicle.HasContinuousPosition);
             foreach (var trade in world.TradeOffers.Where(t => t.Status == "outbound" || t.Status == "returning" || t.Status == "travelling"))
-                if (trade.Path.Count > 0) Entity("trade:" + trade.Id, "cart", new Vector3((float)trade.X, 0, (float)trade.Z), .8f);
-            foreach (var raid in v.Raids) { var go = Entity("raid:" + raid.Id, "cat", At(raid.Position), 1.1f); Tint(go, Material("raider", new Color(.46f, .18f, .16f))); }
+                if (trade.Path.Count > 0) Entity("trade:" + trade.Id, "cart", MovingPosition(trade.X, trade.Z), .8f, !trade.HasContinuousPosition);
+            if (v.Trader.Phase != "absent") Entity("trader:" + v.Id, "cart", v.Trader.HasContinuousPosition ? MovingPosition(v.Trader.X, v.Trader.Z) : At(v.Trader.Position), 1, !v.Trader.HasContinuousPosition);
+            foreach (var raid in v.Raids) { var go = Entity("raid:" + raid.Id, "cat", raid.HasContinuousPosition ? MovingPosition(raid.X, raid.Z) : At(raid.Position), 1.1f, !raid.HasContinuousPosition); Tint(go, Material("raider", new Color(.46f, .18f, .16f))); }
             foreach (var key in entities.Keys.Where(k => !touched.Contains(k)).ToArray()) { Destroy(entities[key]); entities.Remove(key); entityAssets.Remove(key); }
         }
 
@@ -425,6 +426,24 @@ namespace IdleCatForest.Presentation
                 var motion = go.GetComponent<CatMotion>(); if (motion != null) motion.Animate(walking, c.Goal);
                 if (entities.TryGetValue("cargo:" + c.Id, out var cargo)) cargo.transform.position = go.transform.position + Vector3.up * .6f;
             }
+            foreach (var vehicle in Game.Selected.Vehicles)
+                MoveVisual("vehicle:" + vehicle.Id, vehicle.HasContinuousPosition ? MovingPosition(vehicle.X, vehicle.Z) : At(vehicle.Position));
+            foreach (var trade in Game.CurrentWorld.TradeOffers)
+                MoveVisual("trade:" + trade.Id, MovingPosition(trade.X, trade.Z));
+            foreach (var raid in Game.Selected.Raids)
+                MoveVisual("raid:" + raid.Id, raid.HasContinuousPosition ? MovingPosition(raid.X, raid.Z) : At(raid.Position));
+            var trader = Game.Selected.Trader;
+            if (trader.Phase != "absent") MoveVisual("trader:" + Game.Selected.Id, trader.HasContinuousPosition ? MovingPosition(trader.X, trader.Z) : At(trader.Position));
+        }
+
+        private static Vector3 MovingPosition(double x, double z) => new Vector3((float)x, 0, (float)z);
+        private void MoveVisual(string id, Vector3 position)
+        {
+            if (!entities.TryGetValue(id, out var entity)) return;
+            var delta = position - entity.transform.position;
+            entity.transform.position = Vector3.Lerp(entity.transform.position, position, 1 - Mathf.Exp(-Time.unscaledDeltaTime * 14));
+            if (delta.sqrMagnitude > .0004f)
+                entity.transform.rotation = Quaternion.Slerp(entity.transform.rotation, Quaternion.LookRotation(delta.normalized, Vector3.up), Time.unscaledDeltaTime * 10);
         }
 
         private void UpdateSelection()

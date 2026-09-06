@@ -91,12 +91,12 @@ namespace IdleCatForest.Presentation
             if (remote != null) { Status = remote.Status; return; }
             accumulated += Math.Min(Time.unscaledDeltaTime, .25) * Speed;
             int count = 0;
-            while (accumulated >= .1 && count < 40)
+            while (accumulated + 1e-9 >= World.SimulationStepSeconds && count < 40)
             {
                 count++;
                 var before = local.World.TimeSeconds;
                 var step = System.Diagnostics.Stopwatch.StartNew();
-                local.Advance(.1);
+                local.Advance(World.SimulationStepSeconds);
                 if (local.World.TimeSeconds > before)
                 {
                     StepMilliseconds.Add(step.Elapsed.TotalMilliseconds);
@@ -104,8 +104,8 @@ namespace IdleCatForest.Presentation
                     if (Math.Floor(local.World.TimeSeconds) > Math.Floor(before))
                     { EconomyMilliseconds.Add(step.Elapsed.TotalMilliseconds); if (EconomyMilliseconds.Count > 3600) EconomyMilliseconds.RemoveAt(0); }
                 }
-                accumulated -= .1;
-                sinceSave += .1;
+                accumulated = Math.Max(0, accumulated - World.SimulationStepSeconds);
+                sinceSave += World.SimulationStepSeconds;
                 Revision++;
             }
             if (StepMilliseconds.Count > 0) TickMilliseconds = StepMilliseconds[StepMilliseconds.Count - 1];
@@ -159,7 +159,8 @@ namespace IdleCatForest.Presentation
                 editor = Application.isEditor,
                 remote = IsRemote,
                 directControl = View.DirectControl,
-                speed = Speed
+                speed = Speed,
+                simulationStepSeconds = World.SimulationStepSeconds
             };
         }
 
@@ -167,7 +168,7 @@ namespace IdleCatForest.Presentation
         public class PerformanceSample
         {
             public int population, buildings, workingCats, reservations, frames, steps, economyTicks, width, height;
-            public double frameP50, frameP95, stepP50, stepP95, economyP50, economyP95, speed;
+            public double frameP50, frameP95, stepP50, stepP95, economyP50, economyP95, speed, simulationStepSeconds;
             public string processor, graphics; public bool editor, remote, directControl;
         }
 
