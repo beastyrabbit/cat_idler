@@ -504,7 +504,7 @@ namespace IdleCatForest.Simulation
             }
             if (j.Kind == "build")
             {
-                var b = v.Buildings.Find(x => x.Id == j.TargetId) ?? ResolveScaffold(v, c, j);
+                var b = v.Buildings.Find(x => x.Id == j.TargetId) ?? (planning ? ResolveScaffold(v, c, j) : null);
                 if (b == null)
                     return;
                 if (b.Required.All(s => Amount(b.Inputs, s.Resource) >= s.Amount))
@@ -563,10 +563,11 @@ namespace IdleCatForest.Simulation
             {
                 if (!Move(c, j.Position, dt))
                 {
-                    if (j.Kind == "haul" && c.BlockedReason == "blocked_route" && j.Local.Count == 0 && c.Cargo.Count > 0)
+                    if (j.Kind == "haul" && c.BlockedReason == "blocked_route" && j.Local.Count == 0 && c.Cargo.Count > 0 && TimeSeconds + 1e-9 >= j.NextStorageAttemptAt)
                     {
                         var carried = c.Cargo[0];
                         var alternate = Storage(v, carried.Resource, carried.Amount, c.Position, j.SourceId);
+                        j.NextStorageAttemptAt = alternate == null ? Math.Floor(TimeSeconds) + 1 : 0;
                         if (alternate != null)
                         {
                             j.TargetId = alternate.Id;
@@ -879,7 +880,7 @@ namespace IdleCatForest.Simulation
                     Finish(v, c, j);
                     return;
                 }
-                var pile = v.Stockpiles.Find(s => s.Id == j.DeliveryPileId);
+                var pile = v.Stockpiles.Find(s => s.Id == j.DeliveryPileId && s.Kind == "storage");
                 if (pile != null && !HasRoom(v, pile, resource, cargo?.Amount ?? 1))
                     pile = null;
                 if (pile == null && TimeSeconds + 1e-9 < j.NextStorageAttemptAt)

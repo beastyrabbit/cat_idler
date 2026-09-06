@@ -157,6 +157,8 @@ namespace IdleCatForest.Simulation
                 }
                 if (t.Status == "unloading")
                 {
+                    if (!planning)
+                        continue;
                     var source = Village(t.FromVillageId);
                     var target = Village(t.ToVillageId);
                     if (source == null || target == null)

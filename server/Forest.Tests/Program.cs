@@ -549,6 +549,47 @@ Test("failed path retry cache survives fractional save and resumes once", () =>
     }
     finally { Directory.Delete(directory, true); }
 });
+foreach (bool exactPayment in new[] { false, true })
+    Test("blocked caravan unload retry survives restart " + (exactPayment ? "exact" : "scalar"), () =>
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "forest-unload-retry-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(directory);
+        try
+        {
+            var whole = new World { Seed = 41 };
+            var source = new Village { Id = "unload-source", Center = new Int2(0, 0), Communal = true };
+            var target = new Village { Id = "unload-target", Center = new Int2(10, 0), OwnerId = "unload-owner" };
+            whole.Villages.AddRange(new[] { source, target });
+            for (int x = -1; x <= 3; x++) for (int z = -1; z <= 1; z++)
+                whole.Tiles.Add(new Tile { Position = new Int2(x, z), Biome = "grass", Wall = x == -1 || x == 3 || z != 0 });
+            whole.Tiles.Add(new Tile { Position = target.Center, Biome = "grass" });
+            source.Stockpiles.Add(new Stockpile { Id = "unload-receiving", Position = new Int2(2, 0), Kind = "storage", Capacity = 100 });
+            target.Stockpiles.Add(new Stockpile { Id = "unload-peer-store", Position = target.Center, Kind = "storage", Capacity = 100 });
+            source.BoundaryEdges.Add(new BoundaryEdge { From = new Int2(1, 0), To = new Int2(2, 0) });
+            // Explicit persisted state: the caravan has returned, but its receiving store is fenced off.
+            var trade = new TradeOffer { Id = "unload-trade", FromVillageId = source.Id, ToVillageId = target.Id, Status = "unloading", Position = source.Center, HasContinuousPosition = true, Offered = new Stack("logs", 3), Requested = new Stack(exactPayment ? "tools" : "gem", exactPayment ? 1 : 2) };
+            if (exactPayment) trade.RequestedItems.Add(new Item { Id = "unload-exact-tool", Kind = "tool", Material = "wood", Quality = 3, Condition = 17, MaxCondition = 42, VillageId = target.Id, LocationId = trade.Id });
+            whole.TradeOffers.Add(trade);
+            long Searches(World world) => (long)typeof(World).GetField("pathSearchCount", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(world)!;
+            whole.Step(.075); Check(Searches(whole) == 0, "waiting caravan searched storage between planning boundaries");
+            var path = Path.Combine(directory, "world.json"); AuthorityRuntime.ValidateWorld(whole); SaveStore.Save(path, whole); var resumed = SaveStore.Load<World>(path);
+            void SameState() => Check(JToken.DeepEquals(JToken.Parse(WireJson.Encode(whole)), JToken.Parse(WireJson.Encode(resumed))), "unloading retry changed authoritative state across partitions/restart");
+            whole.Step(.925); resumed.Step(.425); resumed.Step(.5); SameState();
+            Check(Searches(whole) == 1 && Searches(resumed) == 1 && trade.Status == "unloading", "unreachable storage did not get one planning search");
+            whole.Step(.95); resumed.Step(.45); resumed.Step(.5); SameState();
+            Check(Searches(whole) == 1 && Searches(resumed) == 1 && source.Stockpiles[0].Goods.Count == 0 && target.Stockpiles[0].Goods.Count == 0 && source.Items.Count == 0, "blocked unload repeated searches or credited escrow");
+            source.BoundaryEdges.Clear(); resumed.Villages[0].BoundaryEdges.Clear();
+            whole.Step(.05); resumed.Step(.025); resumed.Step(.025); SameState();
+            Check(trade.Status == "completed" && trade.OfferedDelivered && World.Amount(target.Stockpiles[0].Goods, "logs") == 3, "cleared unload failed exactly-once delivery");
+            if (exactPayment)
+            {
+                var item = source.Items.Single(); Check(item.Id == "unload-exact-tool" && item.Condition == 17 && item.Quality == 3 && item.LocationId == source.Stockpiles[0].Id && item.VillageId == source.Id && trade.RequestedItems.Count == 0, "unload changed exact payment identity or ownership");
+            }
+            else Check(World.Amount(source.Stockpiles[0].Goods, "gem") == 2, "unload changed scalar payment");
+            SaveStore.Save(path, resumed); resumed = SaveStore.Load<World>(path); whole.Step(1.075); resumed.Step(.475); resumed.Step(.6); SameState(); AuthorityRuntime.ValidateWorld(resumed);
+            Check(World.Amount(target.Stockpiles[0].Goods, "logs") == 3 && (exactPayment ? source.Items.Count == 1 : World.Amount(source.Stockpiles[0].Goods, "gem") == 2), "completed unload replayed after restart");
+        }
+        finally { Directory.Delete(directory, true); }
+    });
 Test("scalar haul retargets blocked destination across restart", () =>
 {
     var directory = Path.Combine(Path.GetTempPath(), "forest-scalar-retarget-" + Guid.NewGuid().ToString("N"));

@@ -15,6 +15,12 @@ namespace IdleCatForest.Acceptance
     {
         public static IEnumerable<Scenario> Cases()
         {
+            yield return new Scenario("regression.continuous_storage_input_retry", () => ContinuousInputStorage(false));
+            yield return new Scenario("regression.continuous_storage_input_immediate_alternate", () => ContinuousInputStorage(true));
+            yield return new Scenario("regression.continuous_storage_removed_scalar_destination", () => ContinuousRemovedStorage(false));
+            yield return new Scenario("regression.continuous_storage_removed_exact_destination", () => ContinuousRemovedStorage(true));
+            yield return new Scenario("regression.continuous_storage_removed_need_source", ContinuousRemovedNeedSource);
+            yield return new Scenario("regression.continuous_storage_missing_scaffold_retry", ContinuousMissingScaffoldRetry);
             foreach (string mode in new[] { "cadence", "recovery", "destination", "start", "partition" })
             {
                 string check = mode;
@@ -690,6 +696,78 @@ namespace IdleCatForest.Acceptance
             return w;
         }
         static long PathSearches(World w) => (long)typeof(World).GetField("pathSearchCount", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).GetValue(w);
+        static void ContinuousInputStorage(bool alternative)
+        {
+            var w = FailedPathFixture(out var v, out var c); var job = v.Jobs.Single(); job.Kind = "haul"; job.Phase = "input_delivery";
+            var destination = v.Stockpiles[0]; destination.Position = job.Position; job.TargetId = destination.Id;
+            c.Cargo.Add(new Stack("logs", 8));
+            if (alternative) { destination = new Stockpile { Id = w.Id("alternate-store"), Position = new Int2(2, 2), Width = 1, Depth = 1 }; v.Stockpiles.Add(destination); }
+            long before = PathSearches(w); w.Step(0.05);
+            Check(PathSearches(w) - before == 2 && c.X == 1, "Blocked haul must try its route and an initial alternate lookup immediately");
+            if (alternative)
+            {
+                Check(job.TargetId == destination.Id && job.Position.Equals(destination.Position), "Reachable alternate storage was not selected immediately");
+                w.Step(0.05); Near(c.X, 1.08, "Immediate alternate lookup did not resume physical carrying");
+            }
+            else
+            {
+                before = PathSearches(w); w.Step(0.85);
+                Check(PathSearches(w) == before, "Blocked scalar haul repeated alternate-storage path searches within the planning interval");
+                Near(World.Amount(c.Cargo, "logs"), 8, "Blocked alternate lookup changed finite carried goods");
+                v.BoundaryEdges.Clear(); w.Step(0.05); Near(c.X, 1, "Unchanged blocked destination retried before planning");
+                w.Step(0.05); Near(c.X, 1.08, "Reopened storage route did not resume at the next planning boundary");
+            }
+            w.Step(4); Check(job.Completed && c.JobId == "" && c.Cargo.Count == 0, "Scalar haul did not finish and release its original worker");
+            Near(World.Amount(destination.Goods, "logs"), 8, "Scalar haul did not deliver exactly once to its physical destination"); Near(Goods(w, v, "logs"), 8, "Retargeted scalar haul lost or duplicated goods"); Valid(w);
+        }
+        static void ContinuousRemovedStorage(bool exact)
+        {
+            var w = ContinuousFixture(out var v, out var c, true); var job = v.Jobs.Single(); job.Kind = "haul"; job.Phase = "output_delivery";
+            var removed = v.Stockpiles[0]; var destination = new Stockpile { Id = w.Id("remaining-store"), Position = new Int2(5, 2), Width = 1, Depth = 1 }; v.Stockpiles.Add(destination);
+            Item item = null;
+            if (exact) { item = new Item { Id = w.Id("carried-mug"), Kind = "mug", Material = "clay", Quality = 2, Condition = 54.25, MaxCondition = 120, VillageId = v.Id, LocationId = job.Id }; v.Items.Add(item); job.ItemIds.Add(item.Id); }
+            else c.Cargo.Add(new Stack("logs", 8));
+            w.Step(0.1); Check(job.DeliveryPileId == removed.Id && c.X > 1 && c.X < removed.Position.X, "Delivery did not cache a store while physically approaching");
+            string original = string.Join("|", removed.Goods.Select(s => s.Resource + ":" + s.Amount));
+            Act(w, v, new GameAction { Kind = "RemoveStockpile", TargetId = removed.Id });
+            Check(removed.Kind == "spill" && v.Stockpiles.Contains(removed), "Public nonempty removal did not preserve the physical pile identity");
+            w.Step(5); Check(job.Completed && c.JobId == "" && job.ItemIds.Count == 0 && c.Cargo.Count == 0, "Removed-store delivery did not finish its original job");
+            Check(string.Join("|", removed.Goods.Select(s => s.Resource + ":" + s.Amount)) == original, "Cached delivery deposited cargo into a removed stockpile");
+            if (exact) Check(item.LocationId == destination.Id && item.Condition == 54.25 && item.Quality == 2 && v.Items.Count(i => i.Id == item.Id) == 1, "Removed-store retargeting lost exact cargo identity or condition");
+            else { Near(World.Amount(destination.Goods, "logs"), 8, "Removed-store scalar cargo did not reach valid storage"); Near(Goods(w, v, "logs"), 8, "Removed-store delivery lost or duplicated scalar cargo"); }
+            Valid(w);
+        }
+        static void ContinuousRemovedNeedSource()
+        {
+            var w = ContinuousFixture(out var v, out var c, true); c.Thirst = 34;
+            var removed = v.Stockpiles[0]; var destination = new Stockpile { Id = w.Id("remaining-water"), Position = new Int2(5, 2), Width = 1, Depth = 1, Goods = new List<Stack> { new Stack("water", 10) } }; v.Stockpiles.Add(destination);
+            w.Step(0.1); Check(c.NeedSourceId == removed.Id && c.X > 1 && c.X < removed.Position.X, "Thirst did not cache its source while approaching");
+            double oldWater = World.Amount(removed.Goods, "water"); string jobId = c.JobId;
+            Act(w, v, new GameAction { Kind = "RemoveStockpile", TargetId = removed.Id });
+            for (int tick = 0; tick < 300 && c.Thirst < 80; tick++) w.Step(0.05);
+            Check(c.Thirst >= 80 && c.JobId == jobId && removed.Kind == "spill", "Need source invalidation lost the suspended job or failed to drink");
+            Near(World.Amount(removed.Goods, "water"), oldWater, "Cached need consumed a serving from a removed stockpile");
+            Near(World.Amount(destination.Goods, "water"), 9, "Need retargeting did not consume one finite serving from valid storage"); Check(c.Cargo.Count == 0, "Completed need retained a duplicate serving"); Valid(w);
+        }
+        static void ContinuousMissingScaffoldRetry()
+        {
+            var w = ContinuousFixture(out var v, out var c, true); var job = v.Jobs.Single(); job.Kind = "build"; job.PendingBuildingKind = "wood_cutter"; job.TargetId = ""; job.RequiredWork = 1;
+            var helper = v.Cats[1]; var held = new Job { Id = w.Id("held-construction-input"), Kind = "hunt", Phase = "working", CatId = helper.Id, Position = helper.Position, RequiredWork = 1000 }; v.Jobs.Add(held); helper.JobId = held.Id;
+            foreach (var resource in new[] { new Stack("planks", 4), new Stack("blocks", 2) })
+            {
+                World.Add(v.Stockpiles[0].Goods, resource.Resource, resource.Amount);
+                w.Reservations.Add(new Reservation { OwnerId = held.Id, VillageId = v.Id, PileId = v.Stockpiles[0].Id, Resource = resource.Resource, Amount = resource.Amount });
+            }
+            long before = PathSearches(w); w.Step(0.1);
+            Check(job.TargetId == "" && job.BlockedReason == "missing_scaffold_input", "Missing scaffold did not retain its imported work while inputs were claimed");
+            Check(PathSearches(w) - before == 1, "Missing scaffold repeated its site/path resolution within the planning interval");
+            Act(w, v, new GameAction { Kind = "EnterCat", CatId = helper.Id }); Check(held.Completed && w.Reservations.Count == 0, "Public interruption did not release the competing input claims");
+            w.Step(0.85); Check(job.TargetId == "", "Missing scaffold resolved before its next planning boundary");
+            w.Step(0.05); Check(job.TargetId != "" && job.CatId == c.Id, "Released finite inputs did not resume the same imported building job");
+            for (int tick = 0; tick < 400 && !job.Completed; tick++) w.Step(0.05);
+            Check(job.Completed && v.Buildings.Single(b => b.Id == job.TargetId).Completed, "Retried scaffold did not complete through its original worker");
+            Near(Goods(w, v, "planks"), 0, "Scaffold retry changed its exact timber bill"); Near(Goods(w, v, "blocks"), 0, "Scaffold retry changed its exact block bill"); Check(w.Reservations.Count == 0, "Completed scaffold retained claims"); Valid(w);
+        }
         static void ContinuousFailedPath(string mode)
         {
             var w = FailedPathFixture(out var v, out var c); var job = v.Jobs.Single(); long before = PathSearches(w);

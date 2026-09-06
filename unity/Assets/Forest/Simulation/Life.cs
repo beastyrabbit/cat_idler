@@ -148,7 +148,7 @@ namespace IdleCatForest.Simulation
                 if (c.Cargo.Count == 0)
                 {
                     var choices = c.Goal == "need_drink" ? (!c.PersonalBrewUsed && Available(v, "water") >= 0.75 ? new[] { "brew", "water" } : new[] { "water" }) : c.Goal == "need_heal" ? new[] { "medicine", "herbs" } : new[] { "fish", "preserves", "food" };
-                    Stockpile pile = v.Stockpiles.Find(s => s.Id == c.NeedSourceId);
+                    Stockpile pile = v.Stockpiles.Find(s => s.Id == c.NeedSourceId && s.Kind == "storage");
                     if (pile != null)
                     {
                         resource = choices.FirstOrDefault(choice => Amount(pile.Goods, choice) - Reservations.Where(r => r.PileId == pile.Id && r.Resource == choice).Sum(r => r.Amount) >= (choice == "brew" ? 0.25 : choice == "water" && c.PersonalBrewUsed ? 0.75 : 1));
