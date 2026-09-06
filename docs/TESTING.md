@@ -46,11 +46,20 @@ Reports are written to ignored `artifacts/tests`. Inspect the NUnit counts,
 failures and Editor/runtime logs. A successful CLI envelope or process launch is
 not proof of a passed suite.
 
-The EditMode wrapper runs the 554 noncampaign simulation tests. The nine extended
+The EditMode wrapper runs 564 noncampaign tests, including the 558 shared
+acceptance scenarios. The nine extended
 campaigns run through the standalone .NET executable, including in CI. Running
 all campaigns again under the Editor's Mono runtime exceeded the ten-minute local
 test limit. To select a specific Unity campaign, pass its name with `--filter`
 and an appropriate `--timeout`; no campaign assertion is skipped or weakened.
+
+The current focused inventory includes 56 regressions. Ten cover exact-item
+hauling through production spills, pickup, cancellation, death, full storage,
+competing claims, steward recovery and sale. The authority suite separately tests
+real save/reload boundaries and imported per-kind capacity and mixed output
+delivery. PlayMode checks that crafted cargo becomes visible only after pickup
+and follows the carrier. See the acceptance ledger for the completed run counts
+and the campaign timing relative to the final imported-batch fix.
 
 Use the normal UI in both Play mode and the packaged app to inspect cats, build,
 assign workers, edit queues, purchase studies, enter a cat, walk, interact and

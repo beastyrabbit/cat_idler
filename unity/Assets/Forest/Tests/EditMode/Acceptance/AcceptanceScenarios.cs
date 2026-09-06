@@ -47,6 +47,16 @@ namespace IdleCatForest.Acceptance
             yield return new Scenario("regression.review_resume_expansion_preserves_controlled_food", () => ControlledResumeCargo("expand"));
             yield return new Scenario("regression.review_armor_production_accepting_storage", ArmorProductionStorage);
             yield return new Scenario("regression.review_armor_unequip_accepting_storage", ArmorUnequipStorage);
+            yield return new Scenario("regression.exact_haul_produced_mug_remove_recover_sell", () => ProducedItemRecovery(false));
+            yield return new Scenario("regression.exact_haul_cancelled_production_recover_sell", () => ProducedItemRecovery(true));
+            yield return new Scenario("regression.exact_haul_cancel_before_pickup", () => ExactHaulInterruption(false, false));
+            yield return new Scenario("regression.exact_haul_cancel_after_pickup", () => ExactHaulInterruption(true, false));
+            yield return new Scenario("regression.exact_haul_death_before_pickup", () => ExactHaulInterruption(false, true));
+            yield return new Scenario("regression.exact_haul_death_after_pickup", () => ExactHaulInterruption(true, true));
+            yield return new Scenario("regression.exact_haul_claims_and_full_storage", ExactHaulClaims);
+            yield return new Scenario("regression.exact_haul_steward_recovers_item_only_spill", ExactHaulSteward);
+            yield return new Scenario("regression.exact_haul_source_capacity_until_pickup", ExactHaulSourceCapacity);
+            yield return new Scenario("regression.exact_haul_between_existing_stores", ExactHaulStoredTransfer);
             yield return new Scenario("catalog.research_487_public_purchase", ResearchGraph);
             yield return new Scenario("catalog.all_buildings_public_construction", AllBuildings);
             yield return new Scenario("capability.rail_public_construction", RailCapability);
@@ -369,6 +379,118 @@ namespace IdleCatForest.Acceptance
             Check(v.Items.Count == 1 && v.Items.Single().Id == id && item.LocationId == destination.Id && !c.Equipment.Contains(id), "Unequipping lost exact armor identity or failed to use accepting storage");
             Near(item.Condition, 37.5, "Unequipping changed armor condition"); Near(item.MaxCondition, 73, "Unequipping changed armor maximum condition");
             Near(Goods(w, v, "armor"), 0, "Unequipping duplicated an exact item as scalar goods"); Valid(w);
+        }
+        static Stockpile MugPile(World w, Village v, Int2 at)
+        {
+            var result = Act(w, v, new GameAction { Kind = "DesignateStockpile", Position = at, End = at });
+            return v.Stockpiles.Single(p => p.Id == result.EntityId);
+        }
+        static World ExactHaulFixture(out Village v, out Cat c, out Item item, out Stockpile source, out Stockpile destination)
+        {
+            var w = Fixture(out v, out c); c.BuildingId = ""; v.Stockpiles[0].Accepts.AddRange(new[] { "food", "water" });
+            source = MugPile(w, v, new Int2(-5, 1)); destination = MugPile(w, v, new Int2(5, 1));
+            item = new Item { Id = w.Id("mug"), Kind = "mug", Material = "clay", Quality = 2, Condition = 54.25, MaxCondition = 120, VillageId = v.Id, LocationId = source.Id };
+            v.Items.Add(item); return w;
+        }
+        static void FinishExactHaul(World w, Village v, Cat c, Job job, Item item, Stockpile destination)
+        {
+            string id = item.Id, material = item.Material; double condition = item.Condition, maximum = item.MaxCondition; int quality = item.Quality;
+            bool carried = false;
+            for (int tick = 0; tick < 300 && !job.Completed; tick++)
+            {
+                w.Step(1); carried |= job.Phase == "output_delivery" && item.LocationId == job.Id && job.ItemIds.Contains(id);
+            }
+            Check(job.Completed && carried, "Exact haul did not physically pick up and carry its item before completing");
+            Check(v.Items.Count(i => i.Id == id) == 1 && item.LocationId == destination.Id && job.ItemIds.Count == 0, "Exact haul did not release one unchanged identity to its destination");
+            Check(item.Material == material && item.Quality == quality, "Exact haul changed item material or quality"); Near(item.Condition, condition, "Exact haul changed item condition"); Near(item.MaxCondition, maximum, "Exact haul changed maximum condition");
+            Near(Goods(w, v, "mugs"), 0, "Exact haul created scalar item copies"); Valid(w);
+        }
+        static void ProducedItemRecovery(bool interruptProduction)
+        {
+            var w = Fixture(out var v, out var c); v.Research = Catalog.Research.Select(n => n.Id).ToList(); v.Trader.Phase = "trading"; v.Trader.Until = 100000;
+            var recipe = Catalog.Recipe("clay_mug"); var station = Station(w, v, recipe.Building); var source = MugPile(w, v, new Int2(-5, 1));
+            v.Stockpiles[0].Accepts.AddRange(new[] { "food", "water", "clay" }); World.Add(v.Stockpiles[0].Goods, "clay", w.RecipeInput(v, recipe, recipe.Inputs.Single().Amount));
+            Act(w, v, new GameAction { Kind = "AssignWorker", CatId = c.Id, BuildingId = station.Id }); Act(w, v, new GameAction { Kind = "EditProductionQueue", BuildingId = station.Id, Edit = "add", RecipeId = recipe.Id });
+            for (int tick = 0; tick < 1800 && !(interruptProduction ? v.Items.Count > 0 : v.Jobs.Any(j => j.Kind == "production" && j.Completed)); tick++) w.Step(1);
+            var item = v.Items.Single(); string id = item.Id; Check(item.Kind == "mug", "Production did not create a mug");
+            Check(interruptProduction ? v.Jobs.Any(j => !j.Completed && j.ItemIds.Contains(id) && item.LocationId == j.Id) : item.LocationId == source.Id, "Produced mug did not reach the requested interruption stage");
+            Act(w, v, new GameAction { Kind = "AssignWorker", CatId = c.Id }); Act(w, v, new GameAction { Kind = "RemoveStockpile", TargetId = source.Id });
+            if (interruptProduction) source = v.Stockpiles.Single(p => p.Id == item.LocationId);
+            Check(source.Kind == "spill" && source.Goods.Count == 0 && item.LocationId == source.Id, "Removing mug-only storage did not preserve the exact item in a spill");
+            var destination = MugPile(w, v, new Int2(5, 1));
+            Act(w, v, new GameAction { Kind = "HaulGatherSpot", CatId = c.Id, TargetId = source.Id }); var haul = v.Jobs.Single(j => !j.Completed && j.CatId == c.Id);
+            FinishExactHaul(w, v, c, haul, item, destination);
+            double coins = v.Coins; Act(w, v, new GameAction { Kind = "SellGoods", TargetId = id });
+            Check(v.Items.All(i => i.Id != id) && v.Trader.Items.Count(i => i.Id == id) == 1 && v.Coins > coins, "Recovered produced mug could not be sold under its original identity");
+        }
+        static void ExactHaulInterruption(bool pickedUp, bool death)
+        {
+            var w = ExactHaulFixture(out var v, out var c, out var item, out var source, out var destination);
+            var helper = v.Cats[1]; helper.ControlledBy = ""; helper.BuildingId = "fixture-held";
+            Act(w, v, new GameAction { Kind = "RemoveStockpile", TargetId = source.Id });
+            Act(w, v, new GameAction { Kind = "HaulGatherSpot", CatId = c.Id, TargetId = source.Id }); var job = v.Jobs.Single(j => !j.Completed && j.CatId == c.Id);
+            if (pickedUp) for (int tick = 0; tick < 100 && job.Phase != "output_delivery"; tick++) w.Step(1);
+            if (pickedUp) for (int tick = 0; tick < 10 && c.Position.Equals(source.Position) && !job.Completed; tick++) w.Step(1);
+            Check(pickedUp ? job.Phase == "output_delivery" && !job.Completed && !c.Position.Equals(source.Position) : !c.Position.Equals(source.Position), "Exact haul fixture did not reach requested interruption stage");
+            var carrierPosition = c.Position;
+            if (death) { c.Health = 0; w.Step(1); Check(!c.Alive, "Exact carrier death did not use the normal lifecycle"); }
+            else Act(w, v, new GameAction { Kind = "EnterCat", CatId = c.Id });
+            Check(job.Completed && job.ItemIds.Count == 0 && v.Items.Count(i => i.Id == item.Id) == 1, "Interrupted exact haul retained a claim or lost its item");
+            var recovered = v.Stockpiles.Single(p => p.Id == item.LocationId);
+            Check(pickedUp ? recovered.Position.Equals(carrierPosition) : recovered.Id == source.Id, "Interruption teleported exact cargo before pickup or lost its physical carrier position");
+            Near(item.Condition, 54.25, "Interruption changed exact item condition"); Near(item.MaxCondition, 120, "Interruption changed maximum condition");
+            Act(w, v, new GameAction { Kind = "AssignWorker", CatId = helper.Id });
+            Act(w, v, new GameAction { Kind = "HaulGatherSpot", CatId = helper.Id, TargetId = recovered.Id }); var resumed = v.Jobs.Single(j => !j.Completed && j.CatId == helper.Id);
+            FinishExactHaul(w, v, helper, resumed, item, destination);
+        }
+        static void ExactHaulClaims()
+        {
+            var w = ExactHaulFixture(out var v, out var c, out var item, out var source, out var destination);
+            var helper = v.Cats[1]; helper.ControlledBy = ""; helper.BuildingId = "";
+            var filler = new Item { Id = w.Id("mug"), Kind = "mug", VillageId = v.Id, LocationId = destination.Id }; v.Items.Add(filler); destination.Capacity = 1;
+            Act(w, v, new GameAction { Kind = "RemoveStockpile", TargetId = source.Id });
+            Check(!w.Apply(Context(v), new GameAction { Kind = "HaulGatherSpot", CatId = c.Id, TargetId = source.Id }).Success && item.LocationId == source.Id, "Full destination accepted or claimed an undeliverable item");
+            Act(w, v, new GameAction { Kind = "RemoveStockpile", TargetId = destination.Id }); destination = MugPile(w, v, new Int2(5, 4));
+            Act(w, v, new GameAction { Kind = "HaulGatherSpot", CatId = c.Id, TargetId = source.Id }); var job = v.Jobs.Single(j => !j.Completed && j.CatId == c.Id);
+            Check(item.LocationId == job.Id && job.ItemIds.SequenceEqual(new[] { item.Id }), "Exact haul did not claim one identity exclusively");
+            v.Trader.Phase = "trading"; v.Trader.Until = 100000;
+            Check(!w.Apply(Context(v), new GameAction { Kind = "SellGoods", TargetId = item.Id }).Success && item.LocationId == job.Id, "Trader sold an exact item already claimed for physical hauling");
+            Check(!w.Apply(Context(v), new GameAction { Kind = "HaulGatherSpot", CatId = helper.Id, TargetId = source.Id }).Success, "Second carrier double-claimed an exact item");
+            Check(!w.Apply(Context(v), new GameAction { Kind = "RemoveGatherSpot", TargetId = source.Id }).Success, "Removing a source discarded a pending exact pickup");
+            Act(w, v, new GameAction { Kind = "RemoveStockpile", TargetId = destination.Id });
+            for (int tick = 0; tick < 100 && job.Phase != "output_delivery"; tick++) w.Step(1);
+            w.Step(10); Check(!job.Completed && item.LocationId == job.Id && job.ItemIds.Count == 1 && c.BlockedReason == "output_storage_full_or_unreachable", "Losing accepting storage discarded carried exact cargo");
+            destination = MugPile(w, v, new Int2(5, 6)); FinishExactHaul(w, v, c, job, item, destination);
+            Check(filler.LocationId != destination.Id, "Recovery silently moved an unrelated exact item");
+        }
+        static void ExactHaulSteward()
+        {
+            var w = ExactHaulFixture(out var v, out var c, out var item, out var source, out var destination);
+            Station(w, v, "workshop", new Int2(5, 6)); v.Research.Add("basic_tools");
+            Act(w, v, new GameAction { Kind = "AssignOfficer", Role = "steward", CatId = c.Id });
+            Act(w, v, new GameAction { Kind = "RemoveStockpile", TargetId = source.Id }); w.Step(10);
+            var job = v.Jobs.SingleOrDefault(j => !j.Completed && j.Kind == "haul" && j.SourceId == source.Id);
+            Check(job != null && job.AutomatedBy == "steward" && item.LocationId == job.Id, "Steward did not claim a recoverable item-only spill");
+            FinishExactHaul(w, v, c, job, item, destination);
+        }
+        static void ExactHaulSourceCapacity()
+        {
+            var w = ExactHaulFixture(out var v, out var c, out var item, out var source, out var destination); source.Capacity = 1;
+            Check(!w.HasRoom(v, source, "logs", 1), "Fixture item did not occupy its physical source capacity");
+            Act(w, v, new GameAction { Kind = "HaulGatherSpot", CatId = c.Id, TargetId = source.Id }); var job = v.Jobs.Single(j => !j.Completed && j.CatId == c.Id);
+            Check(job.Phase == "item_fetch" && item.LocationId == job.Id && !c.Position.Equals(source.Position), "Stored item fixture did not reserve before physical pickup");
+            Check(!w.HasRoom(v, source, "logs", 1), "Exact item claim freed source capacity before physical pickup");
+            for (int tick = 0; tick < 100 && job.Phase == "item_fetch"; tick++) w.Step(1);
+            Check(job.Phase == "output_delivery" && c.Position.Equals(source.Position) && w.HasRoom(v, source, "logs", 1), "Physical pickup did not free the source capacity");
+            FinishExactHaul(w, v, c, job, item, destination);
+        }
+        static void ExactHaulStoredTransfer()
+        {
+            var w = ExactHaulFixture(out var v, out var c, out var item, out var source, out var destination);
+            Check(w.HasRoom(v, source, "logs", 1), "Fixture source must retain spare storage capacity");
+            Act(w, v, new GameAction { Kind = "HaulGatherSpot", CatId = c.Id, TargetId = source.Id }); var job = v.Jobs.Single(j => !j.Completed && j.CatId == c.Id);
+            FinishExactHaul(w, v, c, job, item, destination);
+            Check(source.Kind == "storage" && item.LocationId != source.Id, "Exact haul returned its cargo to the original source instead of moving it");
         }
         static List<string> Ancestors(Study node)
         { var result = new HashSet<string>(); void Visit(string id) { if (!result.Add(id)) return; foreach (var p in Catalog.Study(id).Prerequisites) Visit(p); } foreach (var p in node.Prerequisites) Visit(p); return result.OrderBy(x => x, StringComparer.Ordinal).ToList(); }

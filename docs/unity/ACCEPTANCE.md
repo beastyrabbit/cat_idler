@@ -8,8 +8,8 @@ The migration started from `main` at
 `8c5ea0f2d0871a1f12dfdafd831e6d4a78d40cec`. A clean checkout of
 `27ab7138fe419e5c701e5384cf9b7329589ebdb9` passed dependency resolution, compilation,
 native build, scene opening and Play mode. The later Village panel refresh passed
-its focused regression, the complete 15-test PlayMode suite and a rebuilt native
-app check of connection, local return and reconnect.
+its focused regression and a rebuilt native app check of connection, local return
+and reconnect. The latest complete PlayMode suite passed 16 tests.
 
 The maintained inventory is 25 buildings, 108 recipes, 487 studies, seven
 specialist officers and 19 labors. The legacy action inventory had 53 variants,
@@ -27,34 +27,42 @@ time and random-state controls.
 | Knowledge and progression | All 487 studies pass public purchase traversal with separate effect scenarios. Normal UI research spent 20,000 → 19,995 points on Research Hut and displayed the dependency map. | Verified |
 | Equipment, defense and trade | Exact item identity, condition, repair, finite traders, raids, warriors, rail/shipping and physical barter pass scenarios and real socket tests. | Verified |
 | Persistent shared authority | Two identities, private-village denial, filtered reports, restart and physical trade pass real socket tests. The native app connected to a synthetic server, founded 15-cat Mosslight, then reconnected to the same village, ID 74. | Verified |
-| Saves and migration | 26 authority tests and the real SQLite conversion pipeline pass. Jobs, cargo, claims, identities and returning trade survive restart without replay. Import preserves source bytes and refuses unknown schemas and destination overwrite. The packaged app opened the converted world and resumed both imported jobs. | Verified |
+| Saves and migration | 31 authority/import tests and the real SQLite conversion pipeline pass. Jobs, cargo, claims, identities and returning trade survive restart without replay. Imported exact-item capacity and mixed output delivery preserve their limits and identities. Import preserves source bytes and refuses unknown schemas and destination overwrite. The packaged app opened the converted world and resumed both imported jobs. | Verified |
 | 3D management and cat control | Blender geometry passes export/import checks. Editor and native UI inspect and control the same cat, walk, take five food and return it to AI while the colony continues. Native deposit emptied its cargo into the original store. | Verified |
 | Normal UI operation | Editor and native inspect, staffing, queues, research, construction and direct-control flows were exercised with saved-state checks. Native repeat persisted as true and pause/resume returned to unpaused work. Editor queue delivery passed; its repeat click did not persist. Final native connection, return and reconnect refreshed the open Village panel and preserved the server address. | Verified within this scope |
 | Extended operation | Nine campaign twins cover fresh 48-hour, established 72-hour and shared/personal 48-hour worlds at seeds 7, 41 and 127. | Verified in .NET |
-| Measured performance | Final native 30/150-cat samples measured 16.67 ms median frames, 17.40/17.21 ms p95 frames and 1.91/1.32 ms p95 economy ticks at 6016×3080 on an M1 Max. Workloads, windows and limits are in [performance evidence](PERFORMANCE.md). | Verified |
+| Measured performance | Final native 30/150-cat samples measured 16.67 ms median frames, 17.49/17.22 ms p95 frames and 2.74/1.42 ms p95 economy ticks at 6016×3080 on an M1 Max. Workloads, windows and limits are in [performance evidence](PERFORMANCE.md). | Verified |
 
 ## Test and build evidence
 
-- [Simulation results](../../tools/scenarios/VALIDATION.md): 548 focused cases
-  passed in 8.38 seconds and nine campaign twins passed in 173.54 seconds.
+- [Simulation results](../../tools/scenarios/VALIDATION.md): 558 focused cases,
+  including 56 regressions, passed in 8.2346 seconds. Nine campaign twins passed
+  in 163.8627 seconds before the final imported-batch delivery fix.
   Campaigns compare partitioned time, validate claims and retain founding IDs.
   The established fixture has finite supplies and one repeating wood-processing
   station; it does not prove indefinite operation of every mature production chain.
-- Unity EditMode passed 554 noncampaign tests in 50.890 seconds. The unfiltered
+- Unity EditMode passed 564 noncampaign tests in 55.564 seconds. The unfiltered
   Editor run timed out after 600 seconds, so no Editor campaign pass is claimed.
   The same nine campaign scenarios passed in the .NET runner.
-- Unity PlayMode passed all 15 tests in 8.139 seconds. These include ordinary UI
+- Unity PlayMode passed all 16 tests in 8.857 seconds. These include ordinary UI
   logging, research, queues after reload, direct control at 8× speed, village
   selection, stockpile corners, merchant sales, work boosts, authored geometry
-  and terrain categories/bounds during camera movement.
-- [Authority and import checks](PERSISTENCE.md) passed 26 tests. The real Rust
+  and terrain categories/bounds during camera movement. Exact crafted cargo
+  appears after physical pickup and follows its carrier.
+- [Authority and import checks](PERSISTENCE.md) passed 31 tests. The real Rust
   SQLite writer → normalizer → C# continuation pipeline passed three tests; the
   archival exporter passed two. All test worlds and identities are synthetic.
 - [Blender verification](../../source-art/verification.json) passed for 80 models,
   86 meshes and 92,593 triangles. [Art documentation](../../source-art/README.md)
   records editable sources, orientation, units, pivots and reproduction commands.
 
-Local reports are `artifacts/tests/editmode.xml`, `artifacts/tests/playmode.xml`
+The final focused, authority and Unity suites include the imported-batch fix.
+The campaign workloads use no transport routes or imported batch outputs, so
+their earlier pass provides no evidence for that delivery path. The import test
+checks partial delivery, mixed item filters, full storage and restart directly.
+
+Local reports are `artifacts/tests/delivery-focused.txt`,
+`artifacts/tests/delivery-authority.txt`, `artifacts/tests/editmode.xml`, `artifacts/tests/playmode.xml`
 and `artifacts/fresh-checkout/27ab713-verification.txt`. The fresh-checkout report
 covers the clean build; subsequent interactive scene opening and Play mode were
 checked through Pipeline and Computer Use. These ignored reports are local
@@ -95,6 +103,14 @@ entering direct control preserves the cat's existing cargo. Armor-only storage
 accepts produced and unequipped armor with its exact identity and condition.
 Fresh Accountant reports include exact equipment when deciding shared-client
 visibility; stale reports and unreported piles still hide their contents.
+Ten exact-item hauling regressions cover produced Mug recovery and sale,
+cancelled production, cancellation and death before and after pickup, competing
+claims, full storage, Steward recovery, source occupancy and transfer between
+existing stores. Real save/reload checks retain the claim and condition through
+blocked delivery. Imported equipment respects per-kind capacity, and mixed
+station batches deliver each item only when its accepting store has space.
+PlayMode checks that claimed cargo stays invisible before pickup and that carried
+exact items follow their cat afterward.
 Terrain rebuilding uses one position index instead of thousands of linear
 searches. Focused failing tests preceded the behavior fixes. The terrain check
 preserved mesh categories, bounds and unknown tiles across camera movement.

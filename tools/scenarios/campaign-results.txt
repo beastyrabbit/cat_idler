@@ -1,10 +1,10 @@
-PASS campaign.fresh_48h_seed_7 16782.6ms
-PASS campaign.established_72h_seed_7 24572.1ms
-PASS campaign.shared_personal_48h_seed_7 21055.6ms
-PASS campaign.fresh_48h_seed_41 13358.0ms
-PASS campaign.established_72h_seed_41 21846.9ms
-PASS campaign.shared_personal_48h_seed_41 21996.8ms
-PASS campaign.fresh_48h_seed_127 13091.1ms
-PASS campaign.established_72h_seed_127 21239.9ms
-PASS campaign.shared_personal_48h_seed_127 19588.3ms
-RESULT total=9 failed=0 elapsed_ms=173535.6
+PASS campaign.fresh_48h_seed_7 14676.0ms
+PASS campaign.established_72h_seed_7 23034.1ms
+PASS campaign.shared_personal_48h_seed_7 21755.6ms
+PASS campaign.fresh_48h_seed_41 12933.4ms
+PASS campaign.established_72h_seed_41 20970.9ms
+PASS campaign.shared_personal_48h_seed_41 18850.2ms
+PASS campaign.fresh_48h_seed_127 12489.1ms
+PASS campaign.established_72h_seed_127 20493.2ms
+PASS campaign.shared_personal_48h_seed_127 18654.7ms
+RESULT total=9 failed=0 elapsed_ms=163862.7

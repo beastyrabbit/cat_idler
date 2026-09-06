@@ -4,9 +4,10 @@ The September 6, 2026 native samples held approximately 60 frames per second at
 6016 × 3080 on an Apple M1 Max with 32 GB of memory. The ARM64 IL2CPP player ran
 the local simulation at 1× speed in management view, with its 60 FPS target.
 The measured native build passed; Unity Editors were closed, and measurements
-preceded F9/F10 evidence capture. Its implementation is recorded at `3bbce916`.
-Later delivery fixes cover cargo handoff, expansion cutover and cancellation of
-imported returning barter; these prepared worlds did not exercise those paths.
+preceded F9/F10 evidence capture. The samples include the final
+exact-item hauling, per-kind capacity, imported batch-delivery and carried-item
+rendering fixes. A later inspection-label correction does not run in these
+closed-panel management workloads.
 
 These are observations of two finite review workloads. The frame cap hides spare
 rendering capacity, and the results do not establish performance at arbitrary
@@ -23,15 +24,15 @@ All timings below are milliseconds. Exact samples are preserved in
 | Buildings | 16 | 54 |
 | Cats with an active job at sampling | 5 | 10 |
 | Active reservations at sampling | 0 | 0 |
-| Frame interval p50 | 16.667 | 16.666 |
-| Frame interval p95 | 17.402 | 17.206 |
-| Local 0.1-second advance p50 | 0.0121 | 0.0119 |
-| Local 0.1-second advance p95 | 0.3143 | 0.5518 |
-| Complete economy tick p50 | 0.3236 | 0.5536 |
-| Complete economy tick p95 | 1.9122 | 1.3225 |
+| Frame interval p50 | 16.671 | 16.666 |
+| Frame interval p95 | 17.490 | 17.215 |
+| Local 0.1-second advance p50 | 0.0119 | 0.0119 |
+| Local 0.1-second advance p95 | 0.3132 | 0.5858 |
+| Complete economy tick p50 | 0.3184 | 0.5866 |
+| Complete economy tick p95 | 2.7427 | 1.4211 |
 | Frame samples | 3,600 | 3,600 |
-| Local advance samples | 1,402 | 1,502 |
-| Complete economy tick samples | 140 | 150 |
+| Local advance samples | 1,703 | 1,602 |
+| Complete economy tick samples | 170 | 160 |
 
 The populations perform different work, and their simulation sampling windows
 differ. The lower 150-cat economy p95 does not imply that adding cats makes the
@@ -54,7 +55,7 @@ runs outside this stopwatch; its cost can appear in frame intervals.
 
 Each list retains at most 3,600 samples. At the observed 60 FPS, the frame list
 covers approximately the latest minute. The 30-cat advance and economy lists
-cover approximately 2.33 minutes at 1×; the 150-cat lists cover 2.5 minutes.
+cover approximately 2.84 minutes at 1×; the 150-cat lists cover 2.67 minutes.
 Consequently, frame and simulation percentiles do not describe identical time
 windows. Percentiles sort the retained samples and select index `floor(q × N)`
 without interpolation. The player writes a report every ten seconds when

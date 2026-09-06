@@ -134,7 +134,7 @@ namespace IdleCatForest.Simulation
                     var pile = village.Stockpiles.Find(s => s.Id == action.TargetId);
                     if (pile == null)
                         return ActionResult.Fail("Unknown pile");
-                    if (Reservations.Any(r => r.PileId == pile.Id))
+                    if (Reservations.Any(r => r.PileId == pile.Id) || village.Jobs.Any(j => !j.Completed && j.Phase == "item_fetch" && j.SourceId == pile.Id && j.ItemIds.Count > 0))
                         return ActionResult.Fail("Pile has active claims");
                     if (pile.Goods.Count > 0 || village.Items.Any(i => i.LocationId == pile.Id))
                     {
@@ -146,7 +146,7 @@ namespace IdleCatForest.Simulation
                         village.Stockpiles.Remove(pile);
                     return ActionResult.Ok();
                 case "haulgatherspot":
-                    var source = village.Stockpiles.Find(s => s.Id == action.TargetId && s.Goods.Any(g => g.Amount > 0));
+                    var source = village.Stockpiles.Find(s => s.Id == action.TargetId && (s.Goods.Any(g => g.Amount > 0) || village.Items.Any(i => i.LocationId == s.Id)));
                     if (source == null)
                         return ActionResult.Fail("No source goods");
                     return StartHaul(village, cat, source);

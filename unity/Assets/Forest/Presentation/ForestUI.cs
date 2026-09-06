@@ -165,7 +165,9 @@ namespace IdleCatForest.Presentation
                 if (c.BlockedReason != "") Text(c.BlockedReason, "warning");
                 var job = Village.Jobs.Find(j => j.Id == c.JobId);
                 if (job != null) Text("Job: " + job.Kind + " / " + job.Phase + " · " + job.Progress.ToString("0") + " / " + job.RequiredWork.ToString("0") + " work\n" + job.BlockedReason);
-                Text("Cargo: " + Goods(c.Cargo));
+                var carriedItems = job != null && !job.Completed && job.Phase != "item_fetch" ? Village.Items.Where(item => item.LocationId == job.Id).ToList() : new List<Item>();
+                if (c.Cargo.Count > 0 || carriedItems.Count == 0) Text("Cargo: " + Goods(c.Cargo));
+                foreach (var item in carriedItems) Text("Carried item: " + Pretty(item.Material) + " " + item.Kind + " · " + item.Id + " · " + item.Condition.ToString("0") + " / " + item.MaxCondition.ToString("0") + " condition");
                 if (c.ControlledBy == Game.PlayerId && c.ControlledBy != "")
                 {
                     Button(content, "Return to management", Game.View.LeaveCat);

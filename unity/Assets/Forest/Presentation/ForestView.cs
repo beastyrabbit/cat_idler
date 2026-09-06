@@ -222,6 +222,8 @@ namespace IdleCatForest.Presentation
                 var go = Entity("boundary:" + edge.From + ":" + edge.To, "fence", (At(edge.From) + At(edge.To)) * .5f, 1.05f);
                 go.transform.rotation = Quaternion.Euler(0, edge.From.X == edge.To.X ? 0 : 90, 0);
             }
+            var carriedItems = v.Items.ToLookup(item => item.LocationId);
+            var awaitingPickup = new HashSet<string>(v.Jobs.Where(job => !job.Completed && job.Phase == "item_fetch").Select(job => job.Id));
             foreach (var c in v.Cats.Where(c => c.Alive))
             {
                 var go = Entity("cat:" + c.Id, "cat", Position(c), .85f, false);
@@ -230,6 +232,11 @@ namespace IdleCatForest.Presentation
                 visual.CatId = c.Id;
                 if (c.Cargo.Count > 0 && c.Cargo[0].Amount > 0)
                     Entity("cargo:" + c.Id, "cargo_" + c.Cargo[0].Resource.ToLowerInvariant(), go.transform.position + Vector3.up * .6f, .3f);
+                else if (c.JobId != "" && !awaitingPickup.Contains(c.JobId))
+                {
+                    var item = carriedItems[c.JobId].FirstOrDefault();
+                    if (item != null) Entity("cargo:" + c.Id, ItemCargoAsset(item.Kind), go.transform.position + Vector3.up * .6f, .3f);
+                }
             }
             foreach (var vehicle in v.Vehicles) Entity("vehicle:" + vehicle.Id, vehicle.Mode == "shipping" ? "boat" : "cart", At(vehicle.Position), 1);
             foreach (var trade in world.TradeOffers.Where(t => t.Status == "outbound" || t.Status == "returning" || t.Status == "travelling"))
@@ -237,6 +244,14 @@ namespace IdleCatForest.Presentation
             foreach (var raid in v.Raids) { var go = Entity("raid:" + raid.Id, "cat", At(raid.Position), 1.1f); Tint(go, Material("raider", new Color(.46f, .18f, .16f))); }
             foreach (var key in entities.Keys.Where(k => !touched.Contains(k)).ToArray()) { Destroy(entities[key]); entities.Remove(key); entityAssets.Remove(key); }
         }
+
+        private static string ItemCargoAsset(string kind) => kind switch
+        {
+            "tool" => "cargo_tools", "weapon" => "cargo_weapons", "armor" => "cargo_armor",
+            "mug" => "cargo_brew", "bowl" => "water_bowl", "furniture" => "cargo_lumber",
+            "clothing" => "cargo_cloth", "trinket" => "cargo_gem", "toy" => "cargo_bone",
+            "brick" => "cargo_blocks", _ => "cargo_materials"
+        };
 
         private string TileAsset(Tile tile)
         {

@@ -342,6 +342,53 @@ Test("movement rate budget preserves ordinary action limits", () =>
     for (int i = 0; i < 120; i++) budget.Allow("ip", "socket", "owner", true, 12000);
     Check(!budget.Allow("ip", "other-socket", "owner", true, 12000), "reconnection bypassed signed player movement limit");
 });
+Test("exact crafted haul survives claimed pickup and full-storage restarts", () =>
+{
+    var directory = Path.Combine(Path.GetTempPath(), "forest-exact-haul-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(directory);
+    try
+    {
+        var path = Path.Combine(directory, "world.json");
+        var world = World.Create(41); var v = world.Villages.Single();
+        var cat = v.Cats.First(c => c.Id != v.LeaderId);
+        cat.X = -4; cat.Z = 0;
+        foreach (var other in v.Cats.Where(c => c.Id != cat.Id)) { other.ControlledBy = "fixture-observer"; other.ControlLeaseUntil = 10000; }
+        foreach (var pile in v.Stockpiles) pile.Accepts = new List<string> { "food", "water" };
+        var source = new Stockpile { Id = world.Id("store"), Kind = "storage", Position = new Int2(0, 0), Width = 1, Depth = 1, Capacity = 1, Accepts = new List<string> { "mugs" } };
+        var destination = new Stockpile { Id = world.Id("store"), Kind = "storage", Position = new Int2(4, 0), Width = 1, Depth = 1, Capacity = 1, Accepts = new List<string> { "mugs" } };
+        v.Stockpiles.Add(source); v.Stockpiles.Add(destination);
+        var item = new Item { Id = world.Id("mug"), Kind = "mug", Material = "wood", VillageId = v.Id, LocationId = source.Id, Quality = 3, Condition = 17, MaxCondition = 42 };
+        v.Items.Add(item);
+        string catId = cat.Id, itemId = item.Id, destinationId = destination.Id, sourceId = source.Id;
+        var context = new PlayerContext { PlayerId = "fixture-hauler", VillageId = v.Id };
+        var result = world.Apply(context, new GameAction { Kind = "HaulGatherSpot", CatId = cat.Id, TargetId = source.Id });
+        Check(result.Success, "exact crafted recovery rejected: " + result.Error);
+        string jobId = result.EntityId;
+        void RestartHaul()
+        {
+            AuthorityRuntime.ValidateWorld(world); SaveStore.Save(path, world); world = SaveStore.Load<World>(path);
+            AuthorityRuntime.ValidateWorld(world); v = world.Villages.Single(); cat = v.Cats.Single(c => c.Id == catId); item = v.Items.Single(i => i.Id == itemId);
+        }
+        RestartHaul();
+        Check(v.Jobs.Single(j => j.Id == jobId).Phase == "item_fetch" && item.LocationId == jobId, "restart lost exclusive pre-pickup ownership");
+        Check(!world.HasRoom(v, v.Stockpiles.Single(p => p.Id == sourceId), "mugs", 1), "Claiming an item freed its physical source space before pickup");
+        Check(!world.Apply(context, new GameAction { Kind = "HaulGatherSpot", TargetId = sourceId }).Success, "restart made claimed item available twice");
+        for (int i = 0; i < 30 && v.Jobs.Single(j => j.Id == jobId).Phase == "item_fetch"; i++) world.Step(1);
+        Check(v.Jobs.Single(j => j.Id == jobId).Phase == "output_delivery" && item.LocationId == jobId, "physical pickup failed");
+        Check(world.HasRoom(v, v.Stockpiles.Single(p => p.Id == sourceId), "mugs", 1), "Physical pickup did not free source capacity");
+        Check(world.Apply(context, new GameAction { Kind = "RemoveStockpile", TargetId = sourceId }).Success, "Could not retire the emptied source before delivery");
+        RestartHaul();
+        var blocker = new Item { Id = world.Id("occupied"), Kind = "mug", VillageId = v.Id, LocationId = destinationId };
+        v.Items.Add(blocker); world.Step(10);
+        Check(!v.Jobs.Single(j => j.Id == jobId).Completed && item.LocationId == jobId, "full storage consumed or duplicated the returning item");
+        RestartHaul(); v.Items.RemoveAll(i => i.Id == blocker.Id);
+        for (int i = 0; i < 30 && !v.Jobs.Single(j => j.Id == jobId).Completed; i++) world.Step(1);
+        Check(v.Jobs.Single(j => j.Id == jobId).Completed && item.LocationId == destinationId, "restarted delivery never used the freed capacity");
+        RestartHaul(); world.Step(2);
+        Check(v.Items.Count(i => i.Id == itemId) == 1 && item.LocationId == destinationId && item.Condition == 17 && item.MaxCondition == 42 && item.Quality == 3, "delivered identity, quality or condition changed or replayed");
+    }
+    finally { Directory.Delete(directory, true); }
+});
 ImportScenarios.Run(Test, Check);
 if (Environment.GetEnvironmentVariable("FOREST_IMPORTED_WORLD") is string importedWorld)
     Test("external synthetic SQLite world resumes deterministically", () =>

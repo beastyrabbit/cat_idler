@@ -424,7 +424,7 @@ namespace IdleCatForest.Simulation
             }
             if (HasOfficer(v, "steward"))
             {
-                foreach (var pile in v.Stockpiles.Where(s => new[] { "gather", "spill", "farm_output", "fishing" }.Contains(s.Kind) && s.Goods.Count > 0).ToArray())
+                foreach (var pile in v.Stockpiles.Where(s => new[] { "gather", "spill", "farm_output", "fishing" }.Contains(s.Kind) && (s.Goods.Count > 0 || v.Items.Any(i => i.LocationId == s.Id))).ToArray())
                 {
                     if (!v.Jobs.Any(j => j.SourceId == pile.Id && !j.Completed))
                         MarkOfficerJob(v, StartHaul(v, null, pile), "steward");

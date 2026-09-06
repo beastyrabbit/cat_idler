@@ -127,6 +127,37 @@ namespace IdleCatForest.Tests
         }
 
         [UnityTest]
+        public IEnumerator ExactCraftedCargoAppearsOnlyAfterPickupAndFollowsItsCat()
+        {
+            var village = game.Selected;
+            var cat = village.Cats.First(c => c.Alive && c.Id != village.LeaderId);
+            var source = village.Stockpiles.First();
+            var job = new Job { Id = "visible-item-haul", Kind = "haul", Phase = "item_fetch", CatId = cat.Id, SourceId = source.Id };
+            var item = new Item { Id = "visible-mug", Kind = "mug", Material = "wood", LocationId = job.Id };
+            job.ItemIds.Add(item.Id); village.Jobs.Add(job); village.Items.Add(item); cat.JobId = job.Id;
+            yield return new WaitForSecondsRealtime(.25f);
+            Assert.That(GameObject.Find("cargo:" + cat.Id), Is.Null, "A reserved item is still at its source before pickup.");
+            game.View.InspectCat(cat.Id); game.UI.OpenPanel("Inspect");
+            Assert.That(game.GetComponent<UIDocument>().rootVisualElement.Query<Label>().ToList().Any(label => label.text.StartsWith("Carried item:", StringComparison.Ordinal)), Is.False);
+            job.Phase = "output_delivery";
+            yield return new WaitForSecondsRealtime(.25f);
+            var cargo = GameObject.Find("cargo:" + cat.Id);
+            Assert.That(cargo, Is.Not.Null, "Finished exact goods must visibly travel with their carrier.");
+            Assert.That(cargo.GetComponentsInChildren<MeshFilter>().Sum(m => m.sharedMesh.vertexCount), Is.GreaterThan(30), "Carried goods use authored geometry.");
+            game.View.InspectCat(cat.Id); game.UI.OpenPanel("Inspect");
+            Assert.That(game.GetComponent<UIDocument>().rootVisualElement.Query<Label>().ToList().Any(label => label.text.StartsWith("Carried item:", StringComparison.Ordinal) && label.text.Contains(item.Id)), Is.True, "Inspection must identify the same carried exact item.");
+            var before = cargo.transform.position;
+            cat.X += 1;
+            yield return new WaitForSecondsRealtime(.25f);
+            Assert.That(cargo.transform.position.x, Is.GreaterThan(before.x + .5f));
+            item.LocationId = source.Id; job.ItemIds.Clear(); job.Completed = true; cat.JobId = "";
+            yield return new WaitForSecondsRealtime(.25f);
+            Assert.That(GameObject.Find("cargo:" + cat.Id), Is.Null, "Delivered items cannot remain on the cat.");
+            game.UI.OpenPanel("Inspect");
+            Assert.That(game.GetComponent<UIDocument>().rootVisualElement.Query<Label>().ToList().Any(label => label.text.StartsWith("Carried item:", StringComparison.Ordinal)), Is.False);
+        }
+
+        [UnityTest]
         public IEnumerator InspectButtonControlsTheSameCatAndRestoresManagement()
         {
             var cat = game.Selected.Cats.First(c => c.Alive && c.Id != game.Selected.LeaderId);

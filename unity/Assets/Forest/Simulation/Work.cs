@@ -199,7 +199,20 @@ namespace IdleCatForest.Simulation
                 return ActionResult.Fail("No available carrier");
             var resource = source.Goods.FirstOrDefault(s => s.Amount > 0);
             if (resource == null)
-                return ActionResult.Fail("Empty source");
+            {
+                var item = v.Items.Where(i => i.LocationId == source.Id).OrderBy(i => i.Id, StringComparer.Ordinal).FirstOrDefault();
+                if (item == null)
+                    return ActionResult.Fail("Empty source");
+                var itemStorage = ItemHaulStorage(v, ItemResource(item.Kind), source.Position, source.Id);
+                if (itemStorage == null)
+                    return ActionResult.Fail("No accepting destination");
+                if (Path(c.Position, source.Position, v) == null)
+                    return ActionResult.Fail("Source unreachable");
+                var haul = new Job { Id = Id("job"), Kind = "haul", Phase = "item_fetch", SourceId = source.Id, TargetId = itemStorage.Id, Position = source.Position, Resource = ItemResource(item.Kind), Amount = 1, ItemIds = new List<string> { item.Id } };
+                StartJob(v, c, haul);
+                item.LocationId = haul.Id;
+                return ActionResult.Ok(haul.Id);
+            }
             double amount = Math.Min(8, resource.Amount);
             var destination = Storage(v, resource.Resource, amount, source.Position);
             if (destination == null || destination.Id == source.Id)
@@ -213,6 +226,7 @@ namespace IdleCatForest.Simulation
             StartJob(v, c, new Job { Id = id, Kind = "haul", Phase = "fetch", SourceId = source.Id, TargetId = destination.Id, Position = destination.Position, Resource = resource.Resource, Amount = amount });
             return ActionResult.Ok(id);
         }
+        private Stockpile ItemHaulStorage(Village v, string resource, Int2 from, string sourceId) => v.Stockpiles.Where(p => p.Kind == "storage" && p.Id != sourceId && HasRoom(v, p, resource, 1)).OrderBy(p => Int2.Distance(p.Position, from)).ThenBy(p => p.Id, StringComparer.Ordinal).FirstOrDefault(p => Path(from, p.Position, v) != null);
         private Stockpile Spill(Village v, Int2 p, List<Stack> goods)
         {
             if (goods.Count == 0)
@@ -266,11 +280,18 @@ namespace IdleCatForest.Simulation
                         var item = v.Items.Find(i => i.Id == itemId);
                         if (item != null)
                         {
-                            var spill = new Stockpile { Id = Id("spill"), Kind = "spill", Width = 1, Depth = 1, Position = c.Position, Capacity = 10000 };
+                            var source = job.Phase == "item_fetch" ? v.Stockpiles.Find(p => p.Id == job.SourceId) : null;
+                            if (source != null)
+                            {
+                                item.LocationId = source.Id;
+                                continue;
+                            }
+                            var spill = new Stockpile { Id = Id("spill"), Kind = "spill", Width = 1, Depth = 1, Position = job.Phase == "item_fetch" ? job.Position : c.Position, Capacity = 10000 };
                             v.Stockpiles.Add(spill);
                             item.LocationId = spill.Id;
                         }
                     }
+                    job.ItemIds.Clear();
                     job.Completed = true;
                     job.CatId = "";
                 }
@@ -344,6 +365,14 @@ namespace IdleCatForest.Simulation
                     j.SuspendedCargoPileId = "";
             }
             c.Goal = j.Kind + " · " + j.Phase;
+            if (j.Phase == "item_fetch")
+            {
+                if (!Move(c, j.Position, 1))
+                    return;
+                j.Phase = "output_delivery";
+                c.Path.Clear();
+                return;
+            }
             if (j.Kind == "scout")
             {
                 for (int z = -2; z <= 2; z++)
@@ -739,13 +768,15 @@ namespace IdleCatForest.Simulation
                     Add(c.Cargo, s.Resource, take);
                     Add(j.Local, s.Resource, -take);
                 }
-                string resource = c.Cargo.FirstOrDefault()?.Resource ?? (j.ItemIds.Count > 0 ? ItemResource(v.Items.Find(i => i.Id == j.ItemIds[0])?.Kind) : "");
+                var cargo = c.Cargo.FirstOrDefault();
+                var deliveredItem = cargo == null && j.ItemIds.Count > 0 ? v.Items.Find(i => i.Id == j.ItemIds[0]) : null;
+                string resource = cargo?.Resource ?? (deliveredItem != null ? ItemResource(deliveredItem.Kind) : "");
                 if (resource == "")
                 {
                     Finish(v, c, j);
                     return;
                 }
-                var pile = Storage(v, resource, c.Cargo.Sum(s => s.Amount) + (j.ItemIds.Count > 0 ? 1 : 0), c.Position);
+                var pile = j.Kind == "haul" && deliveredItem != null ? ItemHaulStorage(v, resource, c.Position, j.SourceId) : Storage(v, resource, cargo?.Amount ?? 1, c.Position);
                 if (pile == null)
                 {
                     j.BlockedReason = c.BlockedReason = "output_storage_full_or_unreachable";
@@ -753,18 +784,18 @@ namespace IdleCatForest.Simulation
                 }
                 if (!Move(c, pile.Position, 1))
                     return;
-                foreach (var s in c.Cargo)
-                    Add(pile.Goods, s.Resource, s.Amount);
-                c.Cargo.Clear();
-                foreach (var itemId in j.ItemIds)
+                if (cargo != null)
                 {
-                    var item = v.Items.Find(i => i.Id == itemId);
-                    if (item != null)
-                        item.LocationId = pile.Id;
+                    Add(pile.Goods, cargo.Resource, cargo.Amount);
+                    c.Cargo.Remove(cargo);
                 }
-                j.ItemIds.Clear();
+                if (deliveredItem != null)
+                {
+                    deliveredItem.LocationId = pile.Id;
+                    j.ItemIds.Remove(deliveredItem.Id);
+                }
                 Add(c.Skills, "haul", 0.25);
-                if (j.Local.Count == 0)
+                if (j.Local.Count == 0 && c.Cargo.Count == 0 && j.ItemIds.Count == 0)
                     Finish(v, c, j);
             }
         }

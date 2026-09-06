@@ -40,6 +40,91 @@ static class ImportScenarios
     }
     public static void Run(Action<string, Action> test, Action<bool, string> check)
     {
+        test("import multiple exact station outputs respect receiving capacity", () =>
+        {
+            var input = Base();
+            Building(input, "bench", "woodworking", "worker", 2)["productionQueue"] = Json(new[] { new { recipe_id = "planks_and_blocks_to_tools", repeat = false } });
+            Pile(input, "armory", 5, "weapons", 0);
+            var piles = JArray.Parse((string)Colony(input)["stockpiles"]);
+            piles[0]["accepts"] = new JArray("food", "water", "logs", "tools"); piles[1]["accepts"] = new JArray("weapons"); Colony(input)["stockpiles"] = piles.ToString();
+            input["Derived"] = Row("c", Row("PileResourceLimits", Row("store", Row("tools", 1), "armory", Row("weapons", 1))));
+            Colony(input)["items"] = Json(new
+            {
+                nextSerial = 4,
+                instances = new[]
+                {
+                    Row("id", "output-a", "item", "tool:wood:3", "durability", 17, "maxDurability", 42, "location", Row("kind", "station", "building_id", "bench", "compartment", "local_output")),
+                    Row("id", "output-b", "item", "tool:wood:2", "durability", 19, "maxDurability", 43, "location", Row("kind", "station", "building_id", "bench", "compartment", "local_output")),
+                    Row("id", "output-c", "item", "weapon:bone:1", "durability", 23, "maxDurability", 47, "location", Row("kind", "station", "building_id", "bench", "compartment", "local_output"))
+                }
+            });
+            var world = Restart(Convert(input)); var v = world.Village("c"); var store = v.Stockpiles.Single(p => p.Id == "c\u001fstore"); var armory = v.Stockpiles.Single(p => p.Id == "c\u001farmory");
+            var job = v.Jobs.Single(j => j.Kind == "production");
+            check(job.Phase == "output_delivery" && job.ItemIds.Count == 3 && v.Items.All(i => i.LocationId == job.Id), "import did not retain all exact local-output items in its delivery job");
+            for (int tick = 0; tick < 8; tick++)
+            {
+                world.Step(1);
+                check(v.Items.Count(i => i.LocationId == store.Id && i.Kind == "tool") <= 1, "imported station delivered multiple exact items into one-item receiving capacity");
+                check(v.Items.Count == 3 && v.Items.All(i => i.LocationId == store.Id || i.LocationId == armory.Id || i.LocationId == job.Id), "capacity blocking lost exact output ownership");
+                check(!v.Items.Any(i => i.LocationId == store.Id && i.Kind != "tool" || i.LocationId == armory.Id && i.Kind != "weapon"), "mixed station output bypassed the receiving pile's acceptance filter");
+            }
+            world = Restart(world); v = world.Village("c");
+            check(v.Items.Single(i => i.Id == "c\u001foutput-a").Condition == 17 && v.Items.Single(i => i.Id == "c\u001foutput-a").MaxCondition == 42 && v.Items.Single(i => i.Id == "c\u001foutput-b").Condition == 19 && v.Items.Single(i => i.Id == "c\u001foutput-b").MaxCondition == 43, "blocked output restart changed exact identity or condition");
+            check(v.Stockpiles.All(p => World.Amount(p.Goods, "tools") + World.Amount(p.Goods, "weapons") == 0) && world.Validate().Count == 0, "blocked exact outputs became scalar goods or invalid ownership");
+            job = v.Jobs.Single(j => j.Kind == "production");
+            check(!job.Completed && job.ItemIds.Count > 0, "partially delivered station job finished with pending exact items");
+            var first = v.Items.Single(i => i.LocationId == store.Id && i.Kind == "tool");
+            var context = new PlayerContext { PlayerId = "fixture-owner", VillageId = v.Id };
+            check(world.Apply(context, new GameAction { Kind = "EquipItem", CatId = "c\u001fkeeper", TargetId = first.Id }).Success, "public equip failed to free receiving capacity for the pending output");
+            world = Restart(world); v = world.Village("c"); job = v.Jobs.Single(j => j.Kind == "production");
+            for (int tick = 0; tick < 60 && !job.Completed; tick++)
+            {
+                world.Step(1);
+                check(v.Items.Count(i => i.LocationId == store.Id) <= 1 && v.Items.Count(i => i.LocationId == armory.Id) <= 1, "continued mixed output exceeded per-kind receiving capacity");
+                check(!v.Items.Any(i => i.LocationId == store.Id && i.Kind != "tool" || i.LocationId == armory.Id && i.Kind != "weapon"), "continued mixed output entered incompatible storage");
+            }
+            check(job.Completed && job.ItemIds.Count == 0, "freeing one exact-item slot did not allow all remaining outputs to finish");
+            world = Restart(world); v = world.Village("c");
+            var second = v.Items.Single(i => i.Kind == "tool" && i.Id != first.Id); var weapon = v.Items.Single(i => i.Id == "c\u001foutput-c");
+            check(v.Items.Count == 3 && v.Items.Single(i => i.Id == first.Id).LocationId == "c\u001fkeeper" && second.LocationId == store.Id && weapon.LocationId == armory.Id, "completed mixed output restart changed identities or locations");
+            check(v.Items.Single(i => i.Id == "c\u001foutput-a").Condition == 17 && v.Items.Single(i => i.Id == "c\u001foutput-a").MaxCondition == 42 && v.Items.Single(i => i.Id == "c\u001foutput-b").Condition == 19 && v.Items.Single(i => i.Id == "c\u001foutput-b").MaxCondition == 43 && weapon.Condition == 23 && weapon.MaxCondition == 47, "completed output recovery changed condition");
+            check(v.Stockpiles.All(p => World.Amount(p.Goods, "tools") + World.Amount(p.Goods, "weapons") == 0) && world.Validate().Count == 0, "completed exact outputs became duplicate scalar goods or invalid ownership");
+        });
+        foreach (var equipment in new[] { (Kind: "tool", Resource: "tools"), (Kind: "weapon", Resource: "weapons"), (Kind: "armor", Resource: "armor") })
+            test("import exact equipment per-kind capacity " + equipment.Resource, () =>
+            {
+                var input = Base();
+                input["Derived"] = Row("c", Row("PileResourceLimits", Row("store", Row("tools", 1, "weapons", 1, "armor", 1))));
+                var piles = JArray.Parse((string)Colony(input)["stockpiles"]);
+                foreach (var resource in new[] { "tools", "weapons", "armor" }) piles[0]["contents"][resource] = 1;
+                Colony(input)["stockpiles"] = piles.ToString();
+                var items = new JArray(
+                    Row("id", "stored", "item", equipment.Kind + ":metal:3", "durability", 17, "maxDurability", 42, "location", Row("kind", "stockpile", "stockpile_id", "store")),
+                    Row("id", "equipped", "item", equipment.Kind + ":metal:2", "durability", 9, "maxDurability", 31, "location", Row("kind", "equipped", "cat_id", "worker")));
+                foreach (var kind in new[] { "tool", "weapon", "armor" }.Where(k => k != equipment.Kind))
+                    items.Add(Row("id", "other-" + kind, "item", kind + ":wood:1", "durability", 13, "maxDurability", 27, "location", Row("kind", "stockpile", "stockpile_id", "store")));
+                Colony(input)["items"] = Json(new { nextSerial = 5, instances = items });
+                var world = Restart(Convert(input)); var v = world.Village("c"); var store = v.Stockpiles.Single();
+                var context = new PlayerContext { PlayerId = "fixture-owner", VillageId = v.Id };
+                check(v.Items.Count == 4 && new[] { "tools", "weapons", "armor" }.All(r => World.Amount(store.Goods, r) == 0), "import did not replace scalar equipment counters with exact identities");
+                check(store.ResourceLimits.Count == 3 && store.ResourceLimits.All(l => l.Amount == 1), "import lost the one-item per-kind limits");
+                for (int attempt = 0; attempt < 2; attempt++)
+                {
+                    var before = Json(v);
+                    check(!world.Apply(context, new GameAction { Kind = "UnequipItem", CatId = "c\u001fworker", TargetId = "c\u001fequipped" }).Success, "full imported " + equipment.Resource + " limit admitted a second exact item");
+                    check(Json(v) == before, "rejected unequip changed item ownership or condition");
+                    world = Restart(world); v = world.Village("c");
+                }
+                check(world.Apply(context, new GameAction { Kind = "EquipItem", CatId = "c\u001fkeeper", TargetId = "c\u001fstored" }).Success, "public equip did not free the occupied per-kind slot");
+                check(world.Apply(context, new GameAction { Kind = "UnequipItem", CatId = "c\u001fworker", TargetId = "c\u001fequipped" }).Success, "unrelated exact item kinds incorrectly consumed the freed slot");
+                world = Restart(world); v = world.Village("c"); store = v.Stockpiles.Single();
+                var stored = v.Items.Single(i => i.Id == "c\u001fstored"); var returned = v.Items.Single(i => i.Id == "c\u001fequipped");
+                check(v.Items.Count == 4 && stored.LocationId == "c\u001fkeeper" && returned.LocationId == store.Id && v.Cats.Single(c => c.Id == "c\u001fkeeper").Equipment.Contains(stored.Id), "restart changed exact item identity or location");
+                check(stored.Condition == 17 && stored.MaxCondition == 42 && stored.Quality == 3 && returned.Condition == 9 && returned.MaxCondition == 31 && returned.Quality == 2, "capacity rejection or transfer changed equipment condition");
+                check(new[] { "tools", "weapons", "armor" }.All(r => World.Amount(store.Goods, r) == 0), "capacity recovery invented scalar equipment counters");
+                check(!world.Apply(context, new GameAction { Kind = "UnequipItem", CatId = "c\u001fkeeper", TargetId = stored.Id }).Success, "reloaded receiving pile exceeded its exact-item limit");
+                check(world.Validate().Count == 0, "capacity recovery violated world invariants");
+            });
         test("import keeps colony coordinates recipe queues and refunded retired research", () =>
         {
             var input = Base(); Colony(input)["anchorX"] = 6; Tables(input)["cats"][0]["position"] = Json(new { map = "colony", x = 2.25, y = 2.5 }); Colony(input)["upgradeTree"] = Json(new { ownedNodeIds = new[] { "den_stores", "basic_tools" }, researchPoints = 3 });

@@ -217,9 +217,17 @@ namespace IdleCatForest.Simulation
             if (s.Accepts.Count > 0 && !s.Accepts.Contains(resource))
                 return false;
             var limit = s.ResourceLimits.Find(l => l.Resource == resource);
-            return limit != null ? Amount(s.Goods, resource) + amount <= limit.Amount + ResourceCapacityBonus(v, resource) : PileLoad(v, s) + amount <= ResourceCapacity(v, s, resource);
+            return limit != null ? Amount(s.Goods, resource) + PileItemCount(v, s, resource) + amount <= limit.Amount + ResourceCapacityBonus(v, resource) : PileLoad(v, s) + amount <= ResourceCapacity(v, s, resource);
         }
-        private static double PileLoad(Village v, Stockpile s) => s.Goods.Sum(g => g.Amount) + v.Items.Count(i => i.LocationId == s.Id);
+        private static int PileItemCount(Village v, Stockpile s, string resource = null)
+        {
+            bool Matches(Item item) => resource == null || ItemResource(item.Kind) == resource;
+            int count = v.Items.Count(i => i.LocationId == s.Id && Matches(i));
+            foreach (var job in v.Jobs.Where(j => !j.Completed && j.Phase == "item_fetch" && j.SourceId == s.Id))
+                count += v.Items.Count(i => i.LocationId == job.Id && job.ItemIds.Contains(i.Id) && Matches(i));
+            return count;
+        }
+        private static double PileLoad(Village v, Stockpile s) => s.Goods.Sum(g => g.Amount) + PileItemCount(v, s);
         public double Capacity(Village v, Stockpile s)
         {
             var building = v.Buildings.Find(b => b.Id == s.ManagedBy);
