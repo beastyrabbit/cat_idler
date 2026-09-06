@@ -11,6 +11,10 @@ expansion jobs. Unity Editors were closed, and both samples preceded F9/F10 evid
 player's earlier native game instance remained open in the background to preserve
 that session, so these are not measurements on an otherwise idle machine.
 
+Neither prepared workload contains designated farms. The later correction that
+renders every cell of a rectangular farm is therefore outside these samples;
+they do not measure rendering cost for large cultivated areas.
+
 The 30-cat run included brief world-click inspection, a research purchase and
 navigation through a prerequisite link. Neither run entered direct control or
 captured images while sampling. The prepared worlds exercise the new building

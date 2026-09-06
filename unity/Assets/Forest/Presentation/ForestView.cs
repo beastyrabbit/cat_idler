@@ -252,7 +252,8 @@ namespace IdleCatForest.Presentation
                 }
             }
             foreach (var f in v.Farms)
-                Entity("farm:" + f.Id, f.Crop == "grain" ? "grain_plot" : f.Crop == "catnip" ? "catnip_plot" : "herb_plot", At(f.Position), .85f + (float)Math.Min(1, f.Growth) * .15f);
+                for (int x = 0; x < f.Width; x++) for (int z = 0; z < f.Depth; z++)
+                    Entity("farm:" + f.Id + ":" + x + ":" + z, f.Crop == "grain" ? "grain_plot" : f.Crop == "catnip" ? "catnip_plot" : "herb_plot", At(new Int2(f.Position.X + x, f.Position.Z + z)), .85f + (float)Math.Min(1, f.Growth) * .15f);
             var known = new HashSet<Int2>(v.Known);
             var tiles = world.Tiles.ToDictionary(t => t.Position);
             bool Wall(Int2 p) => known.Contains(p) && tiles.TryGetValue(p, out var t) && t.Wall;

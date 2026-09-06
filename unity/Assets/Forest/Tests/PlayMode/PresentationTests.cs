@@ -115,6 +115,40 @@ namespace IdleCatForest.Tests
         }
 
         [UnityTest]
+        public IEnumerator FarmRenderingCoversBothDesignatedCornersAndClearsAllCells()
+        {
+            var world = game.CurrentWorld; var village = game.Selected;
+            var origin = new Int2(village.Center.X + village.Radius + 6, village.Center.Z);
+            for (int x = village.Radius + 1; x <= village.Radius + 10; x++)
+                for (int z = -4; z <= 3; z++)
+                {
+                    var at = new Int2(village.Center.X + x, village.Center.Z + z);
+                    var tile = world.TileAt(at);
+                    tile.Wall = tile.Water = tile.Mountain = tile.Road = tile.Rail = false;
+                    tile.ClaimId = tile.Resource = ""; tile.Amount = 0;
+                    if (!village.Known.Contains(at)) village.Known.Add(at);
+                }
+            village.Buildings.Add(new Building { Id = world.Id("fixture-field"), Kind = "field", Position = new Int2(origin.X, origin.Z - 4), Completed = true });
+            var result = game.Send(new GameAction { Kind = "DesignateFarm", Resource = "grain", Position = origin, End = new Int2(origin.X + 3, origin.Z + 2) }).Result;
+            Assert.That(result.Success, Is.True, result.Error);
+            var farm = village.Farms.Single(f => f.Id == result.EntityId);
+            Assert.That(farm.Width, Is.EqualTo(4)); Assert.That(farm.Depth, Is.EqualTo(3));
+            yield return new WaitForSecondsRealtime(.25f);
+            Transform[] Plots() => UnityEngine.Object.FindObjectsByType<Transform>(FindObjectsSortMode.None).Where(t => t.name.StartsWith("farm:" + farm.Id, StringComparison.Ordinal)).ToArray();
+            var plots = Plots();
+            Assert.That(plots, Is.Not.Empty, "The public farm must have a rendered crop before checking its full extent.");
+            var visible = plots.SelectMany(t => t.GetComponentsInChildren<Renderer>()).Select(r => r.bounds).ToArray();
+            for (int x = 0; x < farm.Width; x++) for (int z = 0; z < farm.Depth; z++)
+            {
+                float px = origin.X + x, pz = origin.Z + z;
+                Assert.That(visible.Any(b => b.min.x <= px && b.max.x >= px && b.min.z <= pz && b.max.z >= pz), Is.True, "The crop footprint must visibly cover designated tile " + px + "," + pz);
+            }
+            Assert.That(game.Send(new GameAction { Kind = "ClearFarm", TargetId = farm.Id }).Result.Success, Is.True);
+            yield return new WaitForSecondsRealtime(.25f);
+            Assert.That(Plots(), Is.Empty, "Clearing a farm must remove its entire visible footprint.");
+        }
+
+        [UnityTest]
         public IEnumerator ExistingResourceViewChangesWhenInfrastructureReplacesIt()
         {
             var tile = game.CurrentWorld.Tiles.First(t => game.Selected.Known.Contains(t.Position) && t.Resource == "logs" && t.Amount > 0 && !t.Wall && !t.Road);

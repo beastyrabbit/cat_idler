@@ -45,6 +45,11 @@ namespace IdleCatForest.Acceptance
                 string sequence = order;
                 yield return new Scenario("regression.review_expansion_upstream_road_" + sequence, () => ExpansionRoadConnection(sequence));
             }
+            foreach (string order in new[] { "field_first", "expansion_first", "alternate_route", "loaded_conflict" })
+            {
+                string sequence = order;
+                yield return new Scenario("regression.review_expansion_farm_edge_" + sequence, () => ExpansionFarmEdge(sequence));
+            }
             foreach (string shore in new[] { "road", "entrance", "pending_wall", "duplicate", "unmapped", "legal_owned", "legal_exterior" })
             {
                 string placement = shore;
@@ -406,6 +411,58 @@ namespace IdleCatForest.Acceptance
                 Near(Goods(w, v, "materials"), 1000 - expansion.Path.Count, "Expansion with alternate access changed its wall bill");
             }
             Check(w.BuildingEntrance(v, new Building { Position = at }).Equals(entry), "Existing Field lost its shrine-connected doorway"); Valid(w);
+        }
+        static void ExpansionFarmEdge(string order)
+        {
+            var w = Fixture(out var v, out var c); c.BuildingId = ""; PrepareExpansion(w, v);
+            World.Add(v.Stockpiles[0].Goods, "materials", 1020); World.Add(v.Stockpiles[0].Goods, "planks", 10); World.Add(v.Stockpiles[0].Goods, "blocks", 5); v.Research = Catalog.Research.Select(n => n.Id).ToList();
+            for (int x = 10; x <= 15; x++) for (int z = 0; z <= 6; z++)
+            { var p = new Int2(x, z); var tile = w.TileAt(p); tile.Wall = tile.Water = tile.Mountain = tile.Road = false; tile.ClaimId = ""; if (!v.Known.Contains(p)) v.Known.Add(p); }
+            w.TileAt(new Int2(10, 0)).Road = true;
+            void Road(Int2 from, Int2 to)
+            {
+                var id = Act(w, v, new GameAction { Kind = "BuildRoad", Position = from, End = to, CatId = c.Id }).EntityId; var job = v.Jobs.Single(j => j.Id == id);
+                for (int tick = 0; tick < 1000 && !job.Completed; tick++) w.Step(1); Check(job.Completed, "Farm-edge fixture road did not complete");
+            }
+            Building Field(Int2 position)
+            {
+                var id = Act(w, v, new GameAction { Kind = "PlanBuilding", Name = "field", Position = position, CatId = c.Id }).EntityId; var building = v.Buildings.Single(b => b.Id == id);
+                for (int tick = 0; tick < 1000 && !building.Completed; tick++) w.Step(1); Check(building.Completed, "Farm-edge fixture Field did not complete"); return building;
+            }
+            Road(new Int2(11, 0), new Int2(13, 0)); var existing = Field(new Int2(13, 1));
+            Road(new Int2(11, 1), new Int2(11, 3)); Road(new Int2(12, 3), new Int2(12, 3));
+            if (order == "alternate_route") { Road(new Int2(12, 1), new Int2(12, 1)); Road(new Int2(12, 2), new Int2(12, 2)); }
+            var at = new Int2(12, 4); var entry = new Int2(12, 3); var edgeFrom = new Int2(11, 0); var edgeTo = new Int2(11, 1); Building target = null;
+            if (order == "field_first" || order == "alternate_route") target = Field(at);
+            Act(w, v, new GameAction { Kind = "DesignateFarm", Resource = "grain", Position = new Int2(10, 1), End = new Int2(10, 3) });
+            Check(w.BuildingEntrance(v, new Building { Position = at }).Equals(entry) && w.Crossable(edgeFrom, edgeTo), "Farm-edge fixture must start with a connected road across the future fence");
+            int claims = w.Reservations.Count, jobs = v.Jobs.Count, radius = v.Radius; double materials = Goods(w, v, "materials");
+            var expanded = w.Apply(Context(v), new GameAction { Kind = "RequestJob", Name = "expand", CatId = c.Id });
+            if (order == "field_first")
+            {
+                Check(!expanded.Success, "Expansion accepted a future farm fence that disconnects an existing Field");
+                Check(v.Jobs.Count == jobs && w.Reservations.Count == claims && v.Radius == radius && v.BoundaryEdges.Count == 0, "Rejected farm-edge expansion changed work, claims or fences"); Near(Goods(w, v, "materials"), materials, "Rejected farm-edge expansion consumed materials"); Valid(w); return;
+            }
+            Check(expanded.Success, "Clear farm-edge expansion was rejected: " + expanded.Error); var expansion = v.Jobs.Single(j => j.Id == expanded.EntityId);
+            Check(!expansion.Path.Contains(edgeFrom) && !expansion.Path.Contains(edgeTo) && !expansion.Path.Contains(entry), "Farm-edge fixture accidentally relies on a future wall tile");
+            if (order == "expansion_first")
+            {
+                var builder = v.Cats[1]; builder.ControlledBy = ""; claims = w.Reservations.Count; jobs = v.Jobs.Count; int buildings = v.Buildings.Count; double timber = Goods(w, v, "planks"), blocks = Goods(w, v, "blocks");
+                var placement = w.Apply(Context(v), new GameAction { Kind = "PlanBuilding", Name = "field", Position = at, CatId = builder.Id });
+                Check(!placement.Success, "New Field accepted a road that the pending farm fence will disconnect");
+                Check(v.Buildings.Count == buildings && v.Jobs.Count == jobs && w.Reservations.Count == claims, "Rejected Field changed structures, jobs or claims"); Near(Goods(w, v, "planks"), timber, "Rejected Field consumed timber"); Near(Goods(w, v, "blocks"), blocks, "Rejected Field consumed blocks"); Valid(w); return;
+            }
+            if (order == "loaded_conflict")
+            {
+                // Saved-state conflict from a prior version: the later Field already exists.
+                target = new Building { Id = w.Id("loaded-field"), Kind = "field", Position = at, Entrance = entry, HasEntrance = true, Completed = true }; v.Buildings.Add(target);
+                claims = w.Reservations.Count; double progress = expansion.Progress; w.Step(3);
+                Check(expansion.BlockedReason == "expansion_footprint_blocked" && expansion.Progress == progress && expansion.PathIndex == 0 && w.Reservations.Count == claims, "Loaded Field did not pause expansion before its future farm fence cut the road"); Near(Goods(w, v, "materials"), materials, "Blocked farm-edge expansion consumed materials"); Check(w.Crossable(edgeFrom, edgeTo), "Blocked expansion changed the farm fence"); Valid(w); return;
+            }
+            for (int tick = 0; tick < 12000 && !expansion.Completed; tick++) w.Step(1);
+            Check(expansion.Completed && v.Radius == radius + 2 && !w.Crossable(edgeFrom, edgeTo) && w.TileAt(edgeFrom).Road && w.TileAt(edgeTo).Road && !w.TileAt(edgeTo).Wall, "Expansion did not create the expected edge fence while retaining its road tiles");
+            Check(w.BuildingEntrance(v, new Building { Position = at }).Equals(entry) && w.Path(v.Center, target.Position, v) != null && w.BuildingEntrance(v, new Building { Position = existing.Position }).Equals(existing.Entrance), "Alternate road did not preserve both Fields across the completed farm fence");
+            Near(Goods(w, v, "materials"), materials - expansion.Path.Count, "Farm-edge expansion changed its exact wall bill"); Check(w.Reservations.Count == 0, "Completed farm-edge expansion retained claims"); Valid(w);
         }
         static void FishingPlacement(string placement)
         {

@@ -934,8 +934,9 @@ namespace IdleCatForest.Simulation
         private bool PendingExpansionWall(Village v, Int2 at) => v.Jobs.Any(j => !j.Completed && j.Kind == "expand" && j.OriginalKind != "expand_village" && j.Path.Contains(at));
         private Int2? FreeBuildingEntrance(Village v, Int2 position)
         {
-            var walls = v.Jobs.Where(j => !j.Completed && j.Kind == "expand" && j.OriginalKind != "expand_village").SelectMany(j => j.Path).ToHashSet();
-            var roads = ConnectedRoads(v, walls);
+            var expansions = v.Jobs.Where(j => !j.Completed && j.Kind == "expand" && j.OriginalKind != "expand_village").ToArray();
+            var walls = expansions.SelectMany(j => j.Path).ToHashSet();
+            var roads = ConnectedRoads(v, walls, expansions.Length > 0 ? v.Radius + 2 : 0);
             foreach (var at in EntranceCandidates(new Building { Position = position }).OrderBy(p => Int2.Distance(p, v.Center)).ThenBy(p => p.Z).ThenBy(p => p.X))
                 if (roads.Contains(at))
                     return at;
@@ -952,7 +953,7 @@ namespace IdleCatForest.Simulation
             if (v.Jobs.Any(j => !j.Completed && (j.Kind == "road" || j.Kind == "rail") && j.Path.Any(walls.Contains)))
                 return true;
             var currentRoads = ConnectedRoads(v);
-            var roads = ConnectedRoads(v, walls);
+            var roads = ConnectedRoads(v, walls, radius);
             bool WallCrosses(Int2 origin, int width, int depth)
             {
                 for (int x = 0; x < width; x++)
@@ -973,6 +974,11 @@ namespace IdleCatForest.Simulation
                 }
             }
             return v.Stockpiles.Any(p => p.Kind != "spill" && !p.Kind.StartsWith("zone_", StringComparison.Ordinal) && WallCrosses(p.Position, p.Width, p.Depth));
+        }
+        private bool ExpansionFarmBoundary(Village v, int radius, Int2 from, Int2 to)
+        {
+            bool Inside(Int2 p) => Math.Abs(p.X - v.Center.X) <= radius && Math.Abs(p.Z - v.Center.Z) <= radius;
+            return Inside(from) && Inside(to) && FarmExterior(v, from, radius) != FarmExterior(v, to, radius);
         }
         private void Expand(Village v)
         {

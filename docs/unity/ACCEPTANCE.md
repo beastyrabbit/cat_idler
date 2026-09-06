@@ -6,8 +6,8 @@ shrine, surrounding roads, connected entrances, four gates, joined fence corners
 responsive zoom and a readable management interface. Existing played saves keep
 their layout and progress; a separate new save exercises the revised founding.
 
-The revised simulation passed 632 noncampaign scenarios, including 130 regressions,
-and nine campaign twins. Unity passed 638 EditMode and 32 PlayMode tests.
+The revised simulation passed 636 noncampaign scenarios, including 134 regressions,
+and nine campaign twins. Unity passed 642 EditMode and 33 PlayMode tests.
 The authority/import suite passed 43 tests. The real SQLite pipeline passed four
 tests in 24.959 seconds. Blender reimport verified 82 models, 88 meshes and 145,611
 triangles. These checks establish the tested behavior, not the player's approval
@@ -25,7 +25,7 @@ native build, scene opening and Play mode. The later Village panel refresh passe
 its focused regression and a rebuilt native app check of connection, local return
 and reconnect.
 
-The corrective revision at `28ca62a33d831b6f42966bae01e99125b4592916` also passed
+The corrective revision at `61d29f13f6f4102a456975b2203b4966dedfead4` also passed
 locked .NET restore and an ARM64 IL2CPP build in a new checkout with no existing
 Unity Library. No Library, played save or identity directory was copied into it.
 
@@ -53,16 +53,16 @@ time and random-state controls.
 
 ## Test and build evidence
 
-- [Simulation results](../../tools/scenarios/VALIDATION.md): 632 focused cases,
-  including 130 regressions, passed in 21.4884 seconds. Nine campaign twins passed
+- [Simulation results](../../tools/scenarios/VALIDATION.md): 636 focused cases,
+  including 134 regressions, passed in 23.2803 seconds. Nine campaign twins passed
   in 213.7647 seconds after the complete road and shore-placement corrections.
   Campaigns compare partitioned time, validate claims and retain founding IDs.
   The established fixture has finite supplies and one repeating wood-processing
   station; it does not prove indefinite operation of every mature production chain.
-- Unity EditMode passed 638 noncampaign tests in 84.599 seconds. The unfiltered
+- Unity EditMode passed 642 noncampaign tests in 89.616 seconds. The unfiltered
   Editor run timed out after 600 seconds, so no Editor campaign pass is claimed.
   The same nine campaign scenarios passed in the .NET runner.
-- The complete corrective-revision PlayMode run passed 32 tests.
+- The complete corrective-revision PlayMode run passed 33 tests.
   These include ordinary UI logging, research, queues after reload, direct control
   at 8× speed, village selection, stockpile corners, merchant sales, work boosts, authored geometry
   and terrain categories/bounds during camera movement. Exact crafted cargo
@@ -73,7 +73,8 @@ time and random-state controls.
   legacy orientation, silent successful control heartbeats, world-click framing,
   navigation that resets scroll for a new subject while preserving live refresh,
   and nonoverlapping narrow headers with usable Cats/Inspect scroll areas at
-  600×360 and 550×336 panel units.
+  600×360 and 550×336 panel units. A public 4×3 farm designation visibly covers
+  every occupied tile, and clearing it removes the whole crop footprint.
 - [Authority and import checks](PERSISTENCE.md) passed 43 tests in 8.076 seconds. The real Rust
   SQLite writer → normalizer → C# continuation pipeline passed four tests; the
   archival exporter passed two. All test worlds and identities are synthetic.
@@ -86,12 +87,14 @@ and imported-output fixes. Campaign workloads use no transport routes or
 imported batch outputs, so their pass provides no evidence for that delivery
 path. Import tests check partial delivery, mixed item filters, full storage,
 public staffing and restart directly.
-The final campaign run includes the housing and expansion corrections.
-Campaigns contain no road, rail or expansion construction jobs; the focused
-regressions exercise those guards, paid construction and interrupted resumption.
+The last campaign run used `61d29f1`, before the final farm-edge projection and
+crop-rendering correction. Campaigns contain no road, rail or expansion
+construction jobs and no designated farms; they do not exercise those changes.
+The final focused regressions cover future farm boundaries, paid construction
+and interrupted resumption. PlayMode checks the complete visible farm footprint.
 
 Local reports are `artifacts/tests/territory-focused.txt`,
-`artifacts/tests/revision-connectivity-authority.txt`, `artifacts/tests/revision-connectivity-editmode.xml`, `artifacts/tests/revision-connectivity-playmode.xml`
+`artifacts/tests/revision-farm-authority.txt`, `artifacts/tests/revision-farm-editmode.xml`, `artifacts/tests/revision-farm-playmode.xml`
 and `artifacts/fresh-checkout/27ab713-verification.txt`. The fresh-checkout report
 covers the clean build; subsequent interactive scene opening and Play mode were
 checked through Pipeline and Computer Use. These ignored reports are local
@@ -140,6 +143,13 @@ ordinary seed-41 save with 30 cats, 16 buildings and a 3×3 shrine at `(-1,-1)`.
 Its save checksum verified. Cats reached the exterior, the zoom button responded,
 and a world click opened the Stone Prep inspector with its workplace in view.
 The dedicated runtime log contained no exception, assertion or error marker.
+
+The final farm check used another isolated, fully researched save. Public road construction and
+Field construction completed before a public 4×3 grain designation. The native
+app displayed all twelve crop cells beside the east gate. Work → Clear farm
+removed the whole crop rectangle while keeping the Field workplace and road.
+The checksum-verified save retained 30 living cats, one completed Field and no
+designated farm. Its dedicated native log contained no runtime-error marker.
 
 The save and performance files continued updating during observation. Current
 measured samples are in [the performance report](PERFORMANCE.md). Captures use

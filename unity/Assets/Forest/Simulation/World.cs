@@ -199,7 +199,7 @@ namespace IdleCatForest.Simulation
             }
         }
         private bool RoadSpace(Village v, Int2 p) => !v.Buildings.Any(b => Contains(b.Position, b.Width, b.Depth, p)) && !v.Stockpiles.Any(s => s.Kind != "spill" && !s.Kind.StartsWith("zone_", StringComparison.Ordinal) && Contains(s.Position, s.Width, s.Depth, p)) && !v.Farms.Any(f => Contains(f.Position, f.Width, f.Depth, p));
-        private HashSet<Int2> ConnectedRoads(Village v, HashSet<Int2> excluded = null)
+        private HashSet<Int2> ConnectedRoads(Village v, HashSet<Int2> excluded = null, int expansionRadius = 0)
         {
             var seen = new HashSet<Int2>();
             var pending = new Queue<Int2>();
@@ -213,7 +213,7 @@ namespace IdleCatForest.Simulation
             {
                 var at = pending.Dequeue();
                 foreach (var p in Neighbors(at))
-                    if (!seen.Contains(p) && (excluded == null || !excluded.Contains(p)) && RoadSurface(GetTile(p)) && RoadSpace(v, p) && Walkable(v, p) && (!ReferenceEquals(Village(v.Id), v) || Crossable(at, p)))
+                    if (!seen.Contains(p) && (excluded == null || !excluded.Contains(p)) && RoadSurface(GetTile(p)) && RoadSpace(v, p) && Walkable(v, p) && (!ReferenceEquals(Village(v.Id), v) || Crossable(at, p, expansionRadius > 0 ? v : null, expansionRadius)))
                     {
                         seen.Add(p);
                         pending.Enqueue(p);
@@ -472,11 +472,12 @@ namespace IdleCatForest.Simulation
             c.BlockedReason = "";
             return c.Position.Equals(destination);
         }
-        public bool Crossable(Int2 a, Int2 b)
+        public bool Crossable(Int2 a, Int2 b) => Crossable(a, b, null, 0);
+        private bool Crossable(Int2 a, Int2 b, Village expanding, int expansionRadius)
         {
             foreach (var v in Villages)
             {
-                if (v.BoundaryEdges.Any(edge => edge.From.Equals(a) && edge.To.Equals(b) || edge.From.Equals(b) && edge.To.Equals(a)))
+                if (ReferenceEquals(v, expanding) ? ExpansionFarmBoundary(v, expansionRadius, a, b) : v.BoundaryEdges.Any(edge => edge.From.Equals(a) && edge.To.Equals(b) || edge.From.Equals(b) && edge.To.Equals(a)))
                     return false;
                 foreach (var building in v.Buildings)
                 {
