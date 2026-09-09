@@ -4,6 +4,12 @@ This directory holds the original Blender geometry for the Unity migration. The 
 
 `idle_cat_forest.blend` is the editable source. Each named collection contains one asset, arranged on a gallery floor for inspection. `build_forest.py` creates the source and all 82 FBX exports with Blender 5.2.1 LTS. The script uses seed `271828`; it needs no addons, downloaded models, texture files or external Python packages.
 
+The separate [world kit](WORLD_KIT.md) adds 16 modular road, dungeon, plant and
+creature assets. Its editable source is `world_kit.blend`; `build_world.py`
+reproduces and reimports those exports. The combined library contains 98 assets.
+Unity generates terrain from saved heights and uses its own included water
+shader for depth tint, transparency and small surface ripples.
+
 ## Rebuild and inspect
 
 Run these commands from the repository root:

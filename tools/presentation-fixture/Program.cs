@@ -37,9 +37,12 @@ static void PrepareFounding(LocalAuthority authority)
 static void Populate(LocalAuthority authority, int count)
 {
     var w = authority.World; var v = w.Villages[0]; v.Radius = 23; v.LayoutVersion = 1; v.Buildings.Clear(); v.Stockpiles.Clear(); v.Cats.Clear(); v.Jobs.Clear(); v.Farms.Clear(); v.Items.Clear(); v.Officers.Clear(); v.Known.Clear(); v.ClaimedTiles.Clear(); v.Routes.Clear(); v.Vehicles.Clear(); v.Raids.Clear(); v.BoundaryEdges.Clear(); w.Reservations.Clear();
+    w.Dungeons.Clear(); w.Creatures.Clear(); w.Tiles.Clear(); w.SurfacePlateaus.Clear();
+    w.PrepareFoundingTerrain(v);
     for (int z = -27; z <= 27; z++) for (int x = -27; x <= 27; x++)
     {
         var p = new Int2(x, z); var t = w.TileAt(p); t.Wall = t.Water = t.Mountain = false; t.Road = t.Rail = t.Dock = t.Bridge = t.Dirt = false; t.Overlay = ""; t.PathWear = 0; t.Resource = ""; t.Amount = t.FishCapacity = 0; t.Deposits.Clear(); t.ClaimId = Math.Abs(x) <= v.Radius && Math.Abs(z) <= v.Radius ? v.Id : ""; t.Biome = "meadow"; v.Known.Add(p);
+        World.ClearSurface(t, 0);
         if (t.ClaimId == v.Id)
         {
             v.ClaimedTiles.Add(p);
@@ -49,7 +52,7 @@ static void Populate(LocalAuthority authority, int count)
         else if (Math.Max(Math.Abs(x), Math.Abs(z)) == v.Radius + 1) { t.Dirt = true; t.Road = x == 0 || z == 0; }
     }
     foreach (var data in new[] { ("water", 2, 25), ("food", 25, 2), ("logs", -25, 2), ("stone", -25, -2), ("fibre", 25, -2), ("ore", -25, 6), ("clay", 25, 6), ("sand", 25, 10), ("gem", -25, 10) })
-    { var tile = w.TileAt(new Int2(data.Item2, data.Item3)); tile.Resource = data.Item1 == "water" ? "fish" : data.Item1; tile.Amount = data.Item1 == "water" ? 24 : 2000; tile.Water = data.Item1 == "water"; tile.FishCapacity = tile.Water ? 24 : 0; }
+    { var tile = w.TileAt(new Int2(data.Item2, data.Item3)); tile.Resource = data.Item1 == "water" ? "fish" : data.Item1; tile.Amount = data.Item1 == "water" ? 24 : 2000; if (data.Item1 == "water") World.SetWaterSurface(tile, 0, .35); }
     v.Buildings.Add(new Building { Id = w.Id("shrine"), Kind = "shrine", Position = new Int2(v.Center.X - 1, v.Center.Z - 1), Width = 3, Depth = 3, Completed = true, ConstructionConsumed = true });
     var store = new Stockpile { Id = w.Id("review-store"), Position = new Int2(3, 3), Width = 4, Depth = 4, Capacity = 40000 }; v.Stockpiles.Add(store);
     var sites = new Queue<Int2>();
@@ -76,6 +79,7 @@ static void Populate(LocalAuthority authority, int count)
     foreach (string stationKind in new[] { "research_hut", "school", "accounting_tent" }) { var station = v.Buildings.First(b => b.Kind == stationKind); Apply(authority, new GameAction { Kind = "AssignWorker", BuildingId = station.Id, CatId = v.Cats[worker++].Id }); }
     Apply(authority, new GameAction { Kind = "AssignOfficer", Role = "accountant", CatId = v.Cats[worker - 1].Id });
     Check(Catalog.Research.Any(n => !v.Research.Contains(n.Id) && n.Prerequisites.All(v.Research.Contains) && n.Cost <= v.ResearchPoints), "Fixture must leave a normal research purchase available");
+    w.EnsureVillageDungeon(v);
     authority.Advance(15);
 }
 static void AddBuilding(World w, Village v, string kind, Int2 position)

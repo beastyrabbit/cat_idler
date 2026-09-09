@@ -32,7 +32,7 @@ namespace IdleCatForest.Simulation
                     Note(v, "defense", "Raid repelled", raid.Id);
                     continue;
                 }
-                var warrior = v.Cats.Where(c => c.Alive && c.ControlledBy == "" && !c.Goal.StartsWith("need_", StringComparison.Ordinal) && Amount(c.Skills, "fight") > 0).OrderByDescending(c => Amount(c.Skills, "fight")).FirstOrDefault();
+                var warrior = v.Cats.Where(c => c.Alive && c.ControlledBy == "" && c.Position.Level == 0 && !IsDungeonExplorer(c) && !c.Goal.StartsWith("need_", StringComparison.Ordinal) && Amount(c.Skills, "fight") > 0).OrderByDescending(c => Amount(c.Skills, "fight")).FirstOrDefault();
                 if (warrior != null)
                 {
                     if (warrior.JobId != "" || warrior.BuildingId != "")

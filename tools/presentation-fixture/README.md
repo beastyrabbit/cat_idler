@@ -16,3 +16,9 @@ Both modes use the centered 3 × 3 shrine, its complete surrounding road ring, a
 Before saving and after reloading, the generator checks the ring, all four gates, nonoverlapping footprints, connected entrances and actual authoritative paths through those entrances. This makes the expanded performance workload exercise entrance routing rather than unrestricted movement through workshop walls. Creating a fixture is authoring test data; it does not simulate the time or resources spent on constructing that prepared village.
 
 This is a test-only command. It adds no developer bypass to the game or server and does not migrate or overwrite an existing save.
+
+For generation version 1, the expanded fixture authors a level radius-23 plateau
+before placing its roads and buildings. It creates new dungeon sites outside
+that expanded settlement, rather than retaining the smaller founding world's
+stair openings inside the prepared town. Its finite pond has an explicit bed
+and water depth. The 30-cat fixture retains the normal communal founding terrain.

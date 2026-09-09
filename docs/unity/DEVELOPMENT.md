@@ -54,6 +54,21 @@ camera, and E interacts with nearby storage or the shrine. Colony simulation
 continues during direct control. The management categories expose construction,
 manual jobs, queues, staffing, study purchases, stores, officers, defense and trade.
 
+In new worlds, **World** lists known dungeon entrances and the selected cat's
+readiness. Dispatch an equipped or trained adult, follow its expedition, or recall
+it. Page Up / Page Down and the World panel switch discovered levels. Selecting
+an explorer follows its next descent; explicitly choosing Surface stops that
+follow. In direct control, walk toward a staircase to descend or climb. E attacks
+an adjacent guardian or collects a chest at the cat's position. Releasing control
+underground starts a physical return to the village.
+
+The generator creates coherent biomes, surface slopes, shallow river crossings,
+deep lake shelves and two- or three-floor dungeon sites. Existing saves retain
+their older terrain. Use a new save path to test this generation. The system has
+no swimming, fluid simulation or arbitrary excavation. Using 3D geometry does
+not itself guarantee a lower rendering cost; measured workloads are recorded in
+[PERFORMANCE.md](PERFORMANCE.md).
+
 Autonomous movement, work, needs and transport run in 50-millisecond simulation
 steps at 1× speed. Pause stops simulated time; 4× and 8× advance more of the same
 steps. The inspector updates needs and work progress between its slower content

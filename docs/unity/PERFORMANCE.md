@@ -1,5 +1,44 @@
 # Native performance
 
+## September 9 generated-world measurements
+
+The new terrain renderer initially repeated a controlled-cat search for each
+cell. The 150-cat workload exposed 100.09 ms p95 frames even though simulation
+steps cost about 1.14 ms at p95. Resolving the viewed level once per rendering
+pass and collecting stair openings once per ground rebuild removed that cost.
+
+The rebuilt ARM64 IL2CPP app measured the following at 2400 × 1500, 1× local
+speed, in the default management camera on the Apple M1 Max. Unity and scenario
+runners were closed for the final samples. The user's earlier player remained
+open in the background. The 30- and 150-cat saves were resumed isolated fixtures,
+with the revised generation and finite inventories. No recording occurred
+during either measurement window.
+
+| Measurement, milliseconds | 30 cats | 150 cats |
+| --- | ---: | ---: |
+| Buildings | 16 | 54 |
+| Active workers at sampling | 9 | 10 |
+| Frame p50 | 16.667 | 16.667 |
+| Frame p95 | 17.639 | 17.465 |
+| Simulation step p50 | 0.1885 | 0.4183 |
+| Simulation step p95 | 1.4085 | 1.0358 |
+| Step with planning p50 | 0.2601 | 0.5965 |
+| Step with planning p95 | 3.3819 | 1.2235 |
+| Frame samples | 3,600 | 3,600 |
+| Simulation step samples | 1,603 | 1,595 |
+| Planning step samples | 80 | 80 |
+
+Exact reports are [30 cats](world-performance-30.json) and
+[150 cats](world-performance-150.json). Their current jobs differ, so the smaller
+population's slower planning percentile is not a scaling comparison. Neither
+sample measures active combat, a remote server, unlimited populations or the
+maximum visible terrain area. These samples precede the cat-only upright yaw
+correction, which does not change the simulation or terrain workload.
+Earlier measurements below retain their original
+revision and conditions.
+
+## Earlier live-simulation measurements
+
 The September 6, 2026 native samples held approximately 60 frames per second at
 2400 × 1500 on an Apple M1 Max with 32 GB of memory. The ARM64 IL2CPP player ran
 the local simulation at 1× speed in management view, with its 60 FPS target.

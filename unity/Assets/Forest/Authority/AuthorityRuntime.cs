@@ -144,6 +144,23 @@ namespace IdleCatForest.Authority
                 }
                 var knowledge = projected.Villages.SelectMany(village => village.Known).ToHashSet();
                 projected.Tiles.RemoveAll(tile => !knowledge.Contains(tile.Position));
+                projected.SurfacePlateaus.RemoveAll(plateau => !allowed.Contains(plateau.VillageId));
+                projected.Dungeons.RemoveAll(site => !site.RumoredBy.Any(allowed.Contains) && !knowledge.Contains(site.Entrance));
+                foreach (var site in projected.Dungeons)
+                {
+                    site.RumoredBy.RemoveAll(id => !allowed.Contains(id));
+                    site.Stairs.RemoveAll(stair => !knowledge.Contains(stair.From) || !knowledge.Contains(stair.To));
+                    site.Floors.RemoveAll(floor => !floor.Cells.Any(knowledge.Contains));
+                    foreach (var floor in site.Floors)
+                    {
+                        floor.Cells.RemoveAll(p => !knowledge.Contains(p));
+                        if (!knowledge.Contains(floor.Spawn)) floor.Spawn = default;
+                        if (!knowledge.Contains(floor.LootPosition)) { floor.Loot.Clear(); floor.LootPosition = default; }
+                    }
+                }
+                projected.Creatures.RemoveAll(creature => !knowledge.Contains(creature.Position));
+                foreach (var creature in projected.Creatures) { creature.Path.Clear(); creature.Home = creature.Position; creature.TargetCatId = ""; }
+                foreach (var cat in projected.Villages.SelectMany(village => village.Cats)) cat.Path.RemoveAll(p => p.Level < 0 && !knowledge.Contains(p));
                 projected.TradeOffers.RemoveAll(offer => playerId.Length == 0 || !allowed.Contains(offer.FromVillageId) && !allowed.Contains(offer.ToVillageId));
                 foreach (var offer in projected.TradeOffers) { offer.OfferedSources.Clear(); offer.RequestedSources.Clear(); }
                 var selectedVillage = World.Villages.FirstOrDefault(village => village.Id == selected);

@@ -8,7 +8,9 @@ Idle Cat Forest is developed and distributed solely as a non-commercial game pro
 1. **Readable 3D places.** An orthographic management camera shows the forest's
    tiles, workshops, stockpiles and cats. Blender-authored geometry also works in
    a closer third-person camera when the player controls an existing cat. The
-   simulation uses a single walkable ground level; the presentation has real height.
+   simulation owns surface elevations, water depths and stacked dungeon floors.
+   Cats descend through physical stairs while the management camera shows the
+   selected level as a cutaway.
 2. **Manual → automated via roles.** Early game you direct the colony by hand (what to
    build, who hauls what, where the stockpiles go). As the colony grows you unlock and
    assign **leadership roles / officers**, each of which *automates a whole category of

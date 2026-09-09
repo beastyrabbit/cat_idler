@@ -19,8 +19,9 @@ namespace IdleCatForest.Simulation
         [NonSerialized] private long pathSearchCount;
         public static World Create(int seed, long nowUnixMs = 0)
         {
-            var w = new World { Seed = unchecked((uint)seed), RandomState = unchecked((uint)seed), EpochUnixMs = nowUnixMs };
+            var w = new World { Seed = unchecked((uint)seed), RandomState = unchecked((uint)seed), EpochUnixMs = nowUnixMs, GenerationVersion = 1 };
             w.Villages.Add(w.Found("communal", "Grand Commons", "", new Int2(0, 0), true));
+            w.EnsureVillageDungeon(w.Villages[0]);
             return w;
         }
         public string Id(string prefix) => prefix + "-" + (NextId++).ToString(System.Globalization.CultureInfo.InvariantCulture);
@@ -41,7 +42,7 @@ namespace IdleCatForest.Simulation
         public Cat Cat(string id) => Villages.SelectMany(v => v.Cats).FirstOrDefault(c => c.Id == id);
         private bool CanModifyTerrain(string villageId, Int2 p, int width = 1, int depth = 1)
         {
-            bool Overlaps(Int2 at, int w, int d) => at.X < (long)p.X + width && (long)at.X + w > p.X && at.Z < (long)p.Z + depth && (long)at.Z + d > p.Z;
+            bool Overlaps(Int2 at, int w, int d) => at.Level == p.Level && at.X < (long)p.X + width && (long)at.X + w > p.X && at.Z < (long)p.Z + depth && (long)at.Z + d > p.Z;
             if (width < 1 || depth < 1)
                 return false;
             // Ownership is checked every actor quantum. Read small footprints through the
@@ -62,43 +63,30 @@ namespace IdleCatForest.Simulation
         private bool CanFoundAt(string villageId, Int2 center, bool communal)
         {
             int radius = communal ? 9 : 6;
+            if (!CanPrepareFoundingTerrain(villageId, center, radius))
+                return false;
             if (!CanModifyTerrain(villageId, new Int2(center.X - radius - 1, center.Z - radius - 1), radius * 2 + 3, radius * 2 + 3) || !CanModifyTerrain(villageId, new Int2(center.X + 2, center.Z + radius + 2)))
                 return false;
             return new[] { new Int2(-radius - 2, 4), new Int2(-radius - 2, -4), new Int2(radius + 2, 3), new Int2(radius + 2, -4), new Int2(-radius - 4, -4), new Int2(radius + 4, -4), new Int2(radius + 4, 4), new Int2(-radius - 6, -4) }.All(offset => Enumerable.Range(radius + 1, Math.Abs(offset.X) - radius).All(x => CanModifyTerrain(villageId, new Int2(center.X + Math.Sign(offset.X) * x, center.Z + offset.Z))));
         }
-        public Tile GetTile(Int2 p) => Tiles.Find(t => t.Position.Equals(p));
+        public Tile GetTile(Int2 p)
+        {
+            if (tileIndex == null || tileIndex.Count != Tiles.Count)
+                tileIndex = Tiles.ToDictionary(t => t.Position);
+            return tileIndex.TryGetValue(p, out var tile) ? tile : null;
+        }
         public Tile TileAt(Int2 p)
         {
             if (tileIndex == null || tileIndex.Count != Tiles.Count)
                 tileIndex = Tiles.ToDictionary(t => t.Position);
             if (tileIndex.TryGetValue(p, out var old))
                 return old;
-            uint h = Hash(Seed + ":" + (p.X / 5) + ":" + (p.Z / 5));
-            var t = new Tile { Position = p };
-            int biome = (int)(h % 26);
-            string[] biomes = { "forest", "meadow", "rainforest", "birch_forest", "taiga", "snow_forest", "flower_forest", "mushroom_forest", "desert", "badlands", "beach", "marsh", "swamp", "lake", "ocean", "river", "hills", "mountains", "snow_mountains", "grassland", "savanna", "jungle", "tundra", "highland", "cave", "woodland" };
-            t.Biome = biomes[biome];
-            t.Water = biome >= 13 && biome <= 15;
-            t.Mountain = biome == 18 || biome == 24;
-            uint spot = Hash(Seed + ":" + p.X + ":" + p.Z);
-            if (t.Water)
-            {
-                t.Resource = "fish";
-                t.Amount = t.FishCapacity = 24;
-            }
-            else if (!t.Mountain && spot % 4 == 0)
-            {
-                t.Resource = biome == 17 ? "gem" : biome == 11 || biome == 12 || biome == 9 ? "clay" : biome == 8 || biome == 10 ? "sand" : biome == 16 ? "ore" : spot % 7 == 0 ? "stone" : "logs";
-                t.Amount = 20 + spot % 40;
-            }
-            else if (!t.Mountain && spot % 11 == 0)
-            {
-                t.Resource = "food";
-                t.Amount = 20;
-            }
+            var t = p.Level == 0 ? GenerateSurfaceTile(p) : DungeonTileAt(p);
             foreach (var v in Villages)
-                if (Math.Abs(p.X - v.Center.X) <= v.Radius && Math.Abs(p.Z - v.Center.Z) <= v.Radius)
+                if (p.Level == 0 && Math.Abs(p.X - v.Center.X) <= v.Radius && Math.Abs(p.Z - v.Center.Z) <= v.Radius)
                 {
+                    if (GenerationVersion > 0)
+                        ClearSurface(t, 0);
                     t.Biome = "meadow";
                     t.Water = t.Mountain = false;
                     t.Resource = "";
@@ -114,6 +102,7 @@ namespace IdleCatForest.Simulation
             if (!CanFoundAt(id, center, communal))
                 throw new InvalidOperationException("Founding site overlaps foreign territory");
             var v = new Village { Id = id, Name = name, OwnerId = owner, Communal = communal, Center = center, Radius = communal ? 9 : 6, LayoutVersion = 1, FoundedAt = TimeSeconds, NextElection = TimeSeconds + 86400, LastMigration = TimeSeconds };
+            PrepareFoundingTerrain(v);
             int radius = v.Radius;
             for (int z = -radius - 2; z <= radius + 2; z++)
                 for (int x = -radius - 2; x <= radius + 2; x++)
@@ -123,6 +112,8 @@ namespace IdleCatForest.Simulation
                     v.Known.Add(p);
                     if (Math.Abs(x) <= radius && Math.Abs(z) <= radius)
                     {
+                        if (GenerationVersion > 0)
+                            ClearSurface(t, 0);
                         v.ClaimedTiles.Add(p);
                         t.Water = t.Mountain = false;
                         t.Resource = "";
@@ -141,6 +132,8 @@ namespace IdleCatForest.Simulation
                     if (Math.Max(Math.Abs(x), Math.Abs(z)) != radius + 1)
                         continue;
                     var t = TileAt(new Int2(center.X + x, center.Z + z));
+                    if (GenerationVersion > 0)
+                        ClearSurface(t, 0);
                     t.Water = t.Mountain = t.Wall = false;
                     t.Resource = "";
                     t.Amount = t.FishCapacity = 0;
@@ -150,6 +143,8 @@ namespace IdleCatForest.Simulation
                     t.Road = x == 0 || z == 0;
                 }
             var water = TileAt(new Int2(center.X + 2, center.Z + radius + 2));
+            if (GenerationVersion > 0)
+                SetWaterSurface(water, 0, .8);
             water.Water = true;
             water.Mountain = false;
             water.Resource = "fish";
@@ -160,6 +155,8 @@ namespace IdleCatForest.Simulation
                 for (int x = radius + 2; x <= Math.Abs(data.Item2); x++)
                 {
                     var approach = TileAt(new Int2(center.X + Math.Sign(data.Item2) * x, center.Z + data.Item3));
+                    if (GenerationVersion > 0)
+                        ClearSurface(approach, 0);
                     approach.Water = approach.Mountain = approach.Wall = false;
                     approach.Resource = "";
                     approach.Amount = approach.FishCapacity = 0;
@@ -171,6 +168,8 @@ namespace IdleCatForest.Simulation
             foreach (var data in deposits)
             {
                 var t = TileAt(new Int2(center.X + data.Item2, center.Z + data.Item3));
+                if (GenerationVersion > 0)
+                    ClearSurface(t, 0);
                 t.Water = t.Mountain = false;
                 t.Resource = data.Item1;
                 t.Amount = 200;
@@ -381,19 +380,22 @@ namespace IdleCatForest.Simulation
         public bool Walkable(Int2 p)
         {
             var t = TileAt(p);
-            return !t.Wall && !t.Mountain && (!t.Water || t.Bridge);
+            return !t.Wall && !t.Mountain && (!t.Water || t.Bridge || GenerationVersion > 0 && t.WaterDepth > 0 && t.WaterDepth <= .45);
         }
         public List<Int2> Path(Int2 start, Int2 end) => Path(start, end, null);
         public bool Walkable(Village village, Int2 p)
         {
             var t = TileAt(p);
-            if (t.Wall || t.Water && !t.Bridge || t.Mountain && !Catalog.Owns(village, "unlock_capability", "mountain_travel"))
+            if (t.Landform == "dungeon_opening")
+                return false;
+            if (t.Wall || t.Water && !t.Bridge && !(GenerationVersion > 0 && t.WaterDepth > 0 && t.WaterDepth <= .45) || t.Mountain && (p.Level != 0 || !Catalog.Owns(village, "unlock_capability", "mountain_travel")))
                 return false;
             return !village.Stockpiles.Any(s => s.Kind == "zone_avoid" && Contains(s.Position, s.Width, s.Depth, p));
         }
         public List<Int2> Path(Int2 start, Int2 end, Village village)
         {
             pathSearchCount++;
+            TileAt(start);
             bool Passable(Int2 p) => village == null ? Walkable(p) : Walkable(village, p);
             if (start.Equals(end))
                 return new List<Int2>();
@@ -404,17 +406,16 @@ namespace IdleCatForest.Simulation
             int sequence = 0;
             var frontier = new SortedSet<(int F, int H, int Order, Int2 Position)>(Comparer<(int F, int H, int Order, Int2 Position)>.Create((a, b) => { int f = a.F.CompareTo(b.F); if (f != 0) return f; int h = a.H.CompareTo(b.H); return h != 0 ? h : a.Order.CompareTo(b.Order); }));
             frontier.Add((Int2.Distance(start, end), Int2.Distance(start, end), sequence++, start));
-            var directions = new[] { new Int2(0, 1), new Int2(1, 0), new Int2(0, -1), new Int2(-1, 0) };
             int allowance = Int2.Distance(start, end) + Math.Max(64, (village?.Radius ?? Villages.Select(v => v.Radius).DefaultIfEmpty(6).Max()) * 4 + 16);
             while (frontier.Count > 0 && seen.Count < 20000)
             {
                 var current = frontier.Min;
                 frontier.Remove(current);
                 var at = current.Position;
-                foreach (var d in directions)
+                foreach (var n0 in Neighbors(at).Concat(start.Level != 0 || end.Level != 0 ? DungeonNeighbors(at) : Enumerable.Empty<Int2>()))
                 {
-                    var n = new Int2(at.X + d.X, at.Z + d.Z);
-                    int cost = costs[at] + 1;
+                    var n = n0;
+                    int cost = costs[at] + Int2.Distance(at, n);
                     if (costs.TryGetValue(n, out var previous) && previous <= cost || Int2.Distance(start, n) > allowance || !Passable(n) || !Crossable(at, n))
                         continue;
                     seen[n] = at;
@@ -439,6 +440,8 @@ namespace IdleCatForest.Simulation
         private static double CatMovementSpeed(Village village, Tile tile)
         {
             double terrain = tile.Road ? 1.75 : tile.Dirt ? 1.05 : tile.Mountain ? 0.4 : tile.Biome.Contains("forest") ? 0.85 : 1;
+            if (tile.Water && !tile.Bridge)
+                terrain *= .55;
             return 1.6 * (village == null ? 1 : Catalog.Effect(village, "movementSpeed", 1) * Catalog.Effect(village, "moveSpeedMult", 1)) * terrain;
         }
         private static void ClearPathFailure(Cat c)
@@ -450,10 +453,16 @@ namespace IdleCatForest.Simulation
         private bool Move(Cat c, Int2 destination, double dt)
         {
             var village = Village(c.VillageId);
+            if (!c.HasHeight)
+            {
+                c.Y = WalkHeight(c.Position);
+                c.HasHeight = true;
+            }
             if (c.Position.Equals(destination) && Math.Abs(c.X - destination.X) + Math.Abs(c.Z - destination.Z) < 1e-9)
             {
                 c.X = destination.X;
                 c.Z = destination.Z;
+                c.Y = WalkHeight(destination);
                 c.Path.Clear();
                 c.BlockedReason = "";
                 ClearPathFailure(c);
@@ -472,18 +481,20 @@ namespace IdleCatForest.Simulation
             if (changed && Math.Abs(c.X - c.Position.X) + Math.Abs(c.Z - c.Position.Z) > 1e-9)
             {
                 // A changed destination must first retrace the unfinished edge physically.
-                double dx = c.Position.X - c.X, dz = c.Position.Z - c.Z, distance = Math.Sqrt(dx * dx + dz * dz);
-                var segmentEnd = new Int2(c.Position.X + Math.Sign(c.X - c.Position.X), c.Position.Z + Math.Sign(c.Z - c.Position.Z));
+                double dx = c.Position.X - c.X, dz = c.Position.Z - c.Z, dy = WalkHeight(c.Position) - c.Y, distance = Math.Sqrt(dx * dx + dz * dz + dy * dy);
+                var segmentEnd = new Int2(c.Position.X + Math.Sign(c.X - c.Position.X), c.Position.Z + Math.Sign(c.Z - c.Position.Z), c.Position.Level);
                 double speed = CatMovementSpeed(village, TileAt(segmentEnd));
                 double used = Math.Min(dt, distance / speed);
                 c.X += dx / distance * used * speed;
                 c.Z += dz / distance * used * speed;
+                c.Y += dy / distance * used * speed;
                 UseActorTime(c, used);
                 dt -= used;
                 if (used * speed + 1e-9 < distance)
                     return false;
                 c.X = c.Position.X;
                 c.Z = c.Position.Z;
+                c.Y = WalkHeight(c.Position);
                 c.Path.Clear();
                 if (c.Position.Equals(destination))
                 {
@@ -520,7 +531,7 @@ namespace IdleCatForest.Simulation
                     c.BlockedReason = "blocked_route";
                     return false;
                 }
-                double dx = next.X - c.X, dz = next.Z - c.Z, dist = Math.Sqrt(dx * dx + dz * dz);
+                double dx = next.X - c.X, dz = next.Z - c.Z, dy = WalkHeight(next) - c.Y, dist = Math.Sqrt(dx * dx + dz * dz + dy * dy);
                 var tile = TileAt(next);
                 double speed = CatMovementSpeed(village, tile);
                 double step = Math.Min(dist, remainingSeconds * speed);
@@ -528,12 +539,14 @@ namespace IdleCatForest.Simulation
                 {
                     c.X += dx / dist * step;
                     c.Z += dz / dist * step;
+                    c.Y += dy / dist * step;
                 }
                 remainingSeconds -= step / speed;
                 UseActorTime(c, step / speed);
                 if (step + 1e-9 >= dist)
                 {
                     c.Position = next;
+                    c.Y = WalkHeight(next);
                     c.Path.RemoveAt(0);
                     if (!tile.Water && !tile.Mountain && !tile.Road)
                     {
@@ -550,6 +563,10 @@ namespace IdleCatForest.Simulation
         public bool Crossable(Int2 a, Int2 b) => Crossable(a, b, null, 0);
         private bool Crossable(Int2 a, Int2 b, Village expanding, int expansionRadius)
         {
+            if (a.Level != b.Level)
+                return DungeonEdge(a, b);
+            if (GenerationVersion > 0 && Math.Abs(WalkHeight(a) - WalkHeight(b)) > .65)
+                return false;
             foreach (var v in Villages)
             {
                 if (ReferenceEquals(v, expanding) ? ExpansionFarmBoundary(v, expansionRadius, a, b) : v.BoundaryEdges.Any(edge => edge.From.Equals(a) && edge.To.Equals(b) || edge.From.Equals(b) && edge.To.Equals(a)))
@@ -598,6 +615,7 @@ namespace IdleCatForest.Simulation
                         if (c.Alive)
                             actorTime[c] = delta;
                 TickControls(delta);
+                TickDungeons(delta, planning);
                 if (planning)
                     Ecology();
                 foreach (var v in Villages.ToArray())
@@ -624,6 +642,8 @@ namespace IdleCatForest.Simulation
         public List<string> Validate()
         {
             var errors = new List<string>();
+            if (GenerationVersion < 0 || GenerationVersion > 1)
+                errors.Add("Unsupported world generation version");
             if (!Finite(TimeSeconds) || TimeSeconds < 0)
                 errors.Add("Invalid clock");
             if (ContinuousClockInitialized && (!Finite(SimulationTimeSeconds) || SimulationTimeSeconds < 0 || SimulationTimeSeconds > TimeSeconds + 1e-9 || TimeSeconds - SimulationTimeSeconds >= SimulationStepSeconds + 1e-8))

@@ -119,7 +119,7 @@ namespace IdleCatForest.Tests
         {
             game.View.enabled = false;
             var world = game.CurrentWorld;
-            world.Tiles.Clear(); game.Selected.Known.Clear();
+            world.Tiles.Clear(); world.Dungeons.Clear(); world.Creatures.Clear(); game.Selected.Known.Clear();
             for (int z = -27; z <= 27; z++) for (int x = -27; x <= 27; x++)
             {
                 var point = new Int2(x, z);
@@ -211,7 +211,7 @@ namespace IdleCatForest.Tests
             Assert.That(GameObject.Find(name).transform.Find("tree_oak"), Is.Not.Null);
             tile.Road = true;
             yield return new WaitForSecondsRealtime(.25f);
-            Assert.That(GameObject.Find(name).transform.Find("road"), Is.Not.Null, "A tile keeps its identity when its visible asset changes.");
+            Assert.That(GameObject.Find(name).GetComponentsInChildren<Transform>().Any(t => t.name.StartsWith("world_road_", StringComparison.Ordinal)), Is.True, "A tile keeps its identity when its visible asset changes.");
         }
 
         [UnityTest]

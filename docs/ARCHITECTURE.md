@@ -23,6 +23,21 @@ The .NET projects compile the simulation and authority source from Unity's Asset
 directory. There is one implementation of game rules. Unity assembly definitions
 keep simulation independent of the engine, rendering, network I/O and clocks.
 
+## Terrain and dungeon levels
+
+New worlds save generation version 1. Coordinate-seeded climate and elevation
+produce connected biomes, rivers with shallow fords, and lakes with deeper shelves.
+Saved founding profiles protect usable settlement approaches. Version 0 saves
+retain their original generator and explored layout.
+
+Each grid position includes a level. Dungeon floors overlap in horizontal space
+and connect through explicit stairs; movement consumes their full 3D distance.
+Creature health, finite chest goods, explorer risk decisions and return cargo
+belong to the same authority as ordinary work. Client projections reveal only
+discovered floors and occupants. Unity reads these heights and shows the selected
+level without generating tiles or changing path validity. See
+[world generation](unity/WORLD_GENERATION.md) and [dungeons](unity/DUNGEONS.md).
+
 ## Time and decisions
 
 `World.Step(seconds)` receives explicit time. Seeded random state, stable IDs,

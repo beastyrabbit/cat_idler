@@ -11,7 +11,7 @@ namespace IdleCatForest.Presentation
     /// <summary>Management controls issue the same commands as connected players.</summary>
     public sealed class ForestUI : MonoBehaviour
     {
-        public static readonly string[] Sections = { "Village", "Cats", "Build", "Work", "Stores", "Research", "Officers", "Shrine", "Defense", "Trade", "Routes", "Events" };
+        public static readonly string[] Sections = { "Village", "Cats", "Build", "Work", "Stores", "Research", "Officers", "Shrine", "World", "Defense", "Trade", "Routes", "Events" };
         public bool HasPlacement => placement != null;
         /// <summary>The occupied left edge in panel coordinates, for centering the camera in visible forest.</summary>
         public float WorldLeftFraction
@@ -196,6 +196,7 @@ namespace IdleCatForest.Presentation
                 case "Officers": OfficersPanel(); break;
                 case "Shrine": ShrinePanel(); break;
                 case "Defense": DefensePanel(); break;
+                case "World": WorldPanel(); break;
                 case "Trade": TradePanel(); break;
                 case "Routes": RoutesPanel(); break;
                 case "Events": foreach (var e in Village.Events.AsEnumerable().Reverse().Take(100)) Label(content, (e.Time / 3600).ToString("0.0") + "h  " + e.Text, "body"); break;
@@ -261,6 +262,7 @@ namespace IdleCatForest.Presentation
                 if (c.ControlledBy == Game.PlayerId && c.ControlledBy != "")
                 {
                     Button(content, "Return to management", Game.View.LeaveCat).AddToClassList("primary");
+                    if (c.Position.Level < 0) Button(content, "Collect reached dungeon chest · E", () => Act(new GameAction { Kind = "InteractCat", CatId = c.Id }));
                     ResourceChoice(content); Number(content, "Amount", amount, x => amount = x);
                     foreach (var p in Village.Stockpiles.Where(p => Int2.Distance(p.Position, c.Position) <= 2)) { string id = p.Id; Button(content, (c.Cargo.Count > 0 ? "Deposit at " : "Take from ") + id, () => Act(new GameAction { Kind = "InteractCat", CatId = c.Id, TargetId = id, Resource = selectedResource, Amount = amount })); }
                     Button(content, "Interact with shrine", () => Act(new GameAction { Kind = "InteractCat", CatId = c.Id }));
@@ -492,6 +494,37 @@ namespace IdleCatForest.Presentation
             }
             foreach (var n in Catalog.Research.Take(24).Where(n => !Village.Research.Contains(n.Id))) { string id = n.Id; Button(content, "Blessing: " + n.Name + " · " + n.Cost.ToString("0"), () => Act(new GameAction { Kind = "UnlockNode", NodeId = id })); }
         }
+        private void WorldPanel()
+        {
+            var world = Game.CurrentWorld;
+            Text(world.GenerationVersion > 0 ? "Explore the forest, follow rivers and descend into the ruins. Cats carry recovered goods home." : "This saved forest keeps its original terrain. The new landscape generator is used for new worlds.");
+            var levels = Element(content, "row");
+            Button(levels, "Surface", () => { Game.View.ViewLevel(0); RenderPanel(); });
+            foreach (int depth in Village.Known.Select(p => p.Level).Where(l => l < 0).Distinct().OrderByDescending(l => l))
+            { int level = depth; Button(levels, "Depth " + -level, () => { Game.View.ViewLevel(level); RenderPanel(); }); }
+            Text("Viewing " + (Game.View.RenderedLevel == 0 ? "surface" : "depth " + -Game.View.RenderedLevel) + " · Page Up / Page Down changes discovered levels");
+            var terrain = Label(content, "", "body");
+            liveUpdates.Add(() => { var tile = world.GetTile(Game.View.CursorTile); terrain.text = tile == null || !Village.Known.Contains(tile.Position) ? "Unexplored terrain" : Pretty(tile.Biome) + " · elevation " + tile.Elevation.ToString("0.0") + " m" + (tile.Water ? " · water depth " + tile.WaterDepth.ToString("0.0") + " m" : ""); });
+            CatChoice(content);
+            foreach (var site in world.Dungeons.Where(d => d.RumoredBy.Contains(Village.Id)))
+            {
+                var dungeon = site; var card = Card(site.Name);
+                Label(card, site.Depth + " levels · entrance danger " + site.Threat.ToString("0.0"), "body");
+                var readiness = Label(card, "", "body");
+                liveUpdates.Add(() => { var cat = Village.Cats.Find(c => c.Id == selectedCat); double strength = world.DungeonReadiness(Village, cat); readiness.text = cat == null ? "Choose an explorer" : cat.Name + " · readiness " + strength.ToString("0.0") + (strength < dungeon.Threat ? " · train or equip this cat first" : " · ready for the entrance"); });
+                Button(card, "Show entrance", () => Game.View.FocusDungeon(dungeon.Id));
+                Button(card, "Explore with selected cat", () => Act(new GameAction { Kind = "ExploreDungeon", CatId = selectedCat, TargetId = dungeon.Id }));
+            }
+            foreach (var cat in Village.Cats.Where(c => c.Alive && world.IsDungeonExplorer(c)))
+            {
+                string id = cat.Id; var card = Card(cat.Name + " · " + Pretty(cat.DungeonPhase));
+                Label(card, (cat.Position.Level == 0 ? "Surface" : "Depth " + -cat.Position.Level) + " · " + Goods(cat.Cargo), "body");
+                if (cat.BlockedReason != "") Label(card, HumanReason(cat.BlockedReason), "warning");
+                Button(card, "Follow explorer", () => { Game.View.InspectCat(id); OpenPanel("Inspect"); });
+                Button(card, "Recall to village", () => Act(new GameAction { Kind = "RecallExplorer", CatId = id }));
+            }
+            Text("Depth increases danger. Explorers compare it with their skills, equipment, health and needs and return before taking on a stronger floor. In direct control, walk along stairs to change level and press E beside an enemy to fight.");
+        }
         private void DefensePanel()
         {
             Text("Train warriors and appoint a Captain to organize defense."); CatChoice(content); Button(content, "Train selected cat", () => Act(new GameAction { Kind = "TrainWarrior", CatId = selectedCat }));
@@ -621,6 +654,7 @@ namespace IdleCatForest.Presentation
                 case "Research": return "New craft, buildings and ways to thrive";
                 case "Officers": return "Give a specialist responsibility";
                 case "Shrine": return "Offerings, blessings and rituals";
+                case "World": return "Terrain, exploration and dungeon levels";
                 case "Defense": return "Train and protect your village";
                 case "Trade": return "Exchange goods with passing visitors";
                 case "Routes": return "Move cargo by rail and water";

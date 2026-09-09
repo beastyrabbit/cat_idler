@@ -1,5 +1,75 @@
 # Unity migration acceptance
 
+## September 9 world-generation revision
+
+New saves use coherent seeded biomes, real elevations, rivers with fords and
+deep lakes with shelves. Saved plateau profiles keep founding gates and supplies
+reachable. The surface and stacked dungeon floors use distinct coordinates.
+Two-floor Root Hollow and optional three-floor Deepstone Vault sites contain
+physical stairs, finite guardians and chests. Explorers assess danger, fight,
+collect goods and return through the same route to accepting storage. Manual
+control uses the same cat, combat and chest goods.
+
+Version-0 saves keep their generator and played layout. Generation versions that
+the game does not support fail validation. Grading protects existing dungeon
+entrances. Saved authority state retains heights, stairs, enemies, loot and
+fractional combat; client projections hide undiscovered rooms and occupants.
+
+The new Blender kit adds 16 exports with 10,145 triangles and editable source.
+Road modules join by their connected edges. Terrain uses grouped meshes and
+few picking colliders; an included water shader shows depth and transparency.
+Management selects a discovered level. Direct control cuts down foreground
+walls so the camera can see its cat. Explicitly choosing Surface stops following
+an inspected underground explorer; selection outlines follow actual height.
+
+Verification for this revision:
+
+- The full noncampaign simulation run passed 721 cases in 128.229 seconds.
+  The final entrance-clearing addition passed separately; all 20 dungeon cases
+  passed together in 0.217 seconds and all 13 terrain/coordinate cases passed.
+- All nine campaign twins passed: fresh 48-hour, established 72-hour and
+  shared/personal 48-hour worlds, each at seeds 7, 41 and 127. Every founding cat
+  survived without extinction reset; complete public state matched at every
+  hourly comparison despite different elapsed-time partitions. Runs were paused
+  during native measurements, so their wall times are not performance claims.
+- The full authority/import suite passed all 60 tests. Four new real-save and
+  authorization cases passed again after the entrance revision. Existing trade
+  and farm test fixtures now flatten their authored corridors explicitly; the
+  trade fixture also moves building entrances with their buildings.
+- Unity passed 33 focused EditMode cases and a full 40-case PlayMode run in
+  16.174 seconds. The latter includes native water-shader inclusion, depth tints,
+  real water-bed separation, level controls and foreground-wall cutaways.
+  A reproduced stair-pose regression now keeps cats upright while their height
+  follows the slope.
+- Warnings-as-errors .NET compilation, whitespace verification and an ARM64
+  IL2CPP build passed. The app and test saves use separate paths from the played
+  game. Previous clean-checkout verification below retains its stated revision.
+
+The native UI trained Hazel in the Barracks, then dispatched her through World.
+She descended, defeated the first guardian, carried three ore and two herbs,
+and began her physical return with health 97.54. A separate controlled-cat test
+walked the surface stair and reached level -1 at Y=-4 with an upright pose.
+Releasing control returned cat-25 to the surface village center, and its
+checksum-verified save retained the same identity with no control or expedition
+owner. Page Down showed the discovered chamber without surface buildings.
+A surveyed test-only lake
+had a saved depth of 3.041 metres. These saves are isolated fixtures, not player
+progress. The native lake shader showed its light shallows and darker basin in
+both cameras. Final native images and workload measurements are linked in the PR and
+[performance report](PERFORMANCE.md).
+
+Rendering originally repeated a full controlled-cat search for each terrain
+cell. The 150-cat native workload exposed approximately 100 ms p95 frames.
+Each rendering pass now resolves its level once and uses one stair-opening set;
+the same workload returned to roughly 17 ms p95 frames. This is a measured fix,
+not a claim that 3D geometry is automatically cheaper.
+
+There is no fluid simulation, swimming, arbitrary excavation or endless
+regenerating dungeon loot. The sites use seeded rooms and corridors across two
+or three levels. The Catford Examiner remains outside this migration.
+
+## Earlier migration evidence
+
 The September 6 playtest exposed layout and presentation problems after the
 initial technical acceptance below. The corrective revision adds a centered 3×3
 shrine, surrounding roads, connected entrances, four gates, joined fence corners,

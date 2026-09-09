@@ -6,17 +6,18 @@ namespace IdleCatForest.Simulation
     [Serializable]
     public struct Int2 : IEquatable<Int2>
     {
-        public int X, Z;
-        public Int2(int x, int z)
+        public int X, Z, Level;
+        public Int2(int x, int z, int level = 0)
         {
             X = x;
             Z = z;
+            Level = level;
         }
-        public bool Equals(Int2 p) => X == p.X && Z == p.Z;
+        public bool Equals(Int2 p) => X == p.X && Z == p.Z && Level == p.Level;
         public override bool Equals(object o) => o is Int2 p && Equals(p);
-        public override int GetHashCode() => unchecked(X * 397 ^ Z);
-        public static int Distance(Int2 a, Int2 b) => Math.Abs(a.X - b.X) + Math.Abs(a.Z - b.Z);
-        public override string ToString() => X + "," + Z;
+        public override int GetHashCode() => unchecked(X * 397 ^ Z ^ Level * 7919);
+        public static int Distance(Int2 a, Int2 b) => Math.Abs(a.X - b.X) + Math.Abs(a.Z - b.Z) + Math.Abs(a.Level - b.Level) * 4;
+        public override string ToString() => X + "," + Z + (Level == 0 ? "" : "," + Level);
     }
     [Serializable]
     public partial class PlayerContext
@@ -100,6 +101,7 @@ namespace IdleCatForest.Simulation
     [Serializable]
     public partial class Cat
     {
+        public double Y; public bool HasHeight;
         public string NeedSourceId = ""; public double NextNeedAttemptAt;
         public bool HasFailedPath; public Int2 FailedPathStart, FailedPathDestination; public double NextPathAttemptAt;
         public string Id = "", Name = "", VillageId = "", JobId = "", BuildingId = "", OfficerRole = "", Goal = "idle", BlockedReason = "", ControlledBy = "", BedId = "", Migration = "resident";

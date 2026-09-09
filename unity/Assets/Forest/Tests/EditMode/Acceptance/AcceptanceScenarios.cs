@@ -15,6 +15,9 @@ namespace IdleCatForest.Acceptance
     {
         public static IEnumerable<Scenario> Cases()
         {
+            foreach (var scenario in DungeonScenarios.Cases()) yield return scenario;
+            foreach (var scenario in SpatialScenarios.Cases()) yield return scenario;
+            foreach (var scenario in WorldGenerationScenarios.Cases()) yield return scenario;
             yield return new Scenario("regression.continuous_storage_input_retry", () => ContinuousInputStorage(false));
             yield return new Scenario("regression.continuous_storage_input_immediate_alternate", () => ContinuousInputStorage(true));
             yield return new Scenario("regression.continuous_storage_removed_scalar_destination", () => ContinuousRemovedStorage(false));
@@ -1076,7 +1079,7 @@ namespace IdleCatForest.Acceptance
             var at = new Int2(v.Center.X, v.Center.Z + v.Radius + 1);
             while (true)
             {
-                var tile = w.TileAt(at); tile.Road = true; tile.Water = tile.Mountain = tile.Wall = false; tile.Resource = ""; tile.Amount = 0;
+                var tile = w.TileAt(at); World.ClearSurface(tile, 0); tile.Road = true; tile.Water = tile.Mountain = tile.Wall = false; tile.Resource = ""; tile.Amount = 0;
                 if (!v.Known.Contains(at)) v.Known.Add(at);
                 if (at.Equals(destination)) break;
                 if (at.Z != destination.Z) at.Z += Math.Sign(destination.Z - at.Z); else at.X += Math.Sign(destination.X - at.X);

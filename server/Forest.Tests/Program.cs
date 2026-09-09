@@ -375,12 +375,12 @@ await AsyncTest("signed physical trade resumes escrow after restart and transfer
                 Int2 Move(Int2 p) => new(p.X + delta.X, p.Z + delta.Z);
                 village.Center = center; village.Known = village.Known.Select(Move).ToList();
                 foreach (var cat in village.Cats) { cat.Position = Move(cat.Position); cat.X += delta.X; cat.Z += delta.Z; }
-                foreach (var building in village.Buildings) building.Position = Move(building.Position);
+                foreach (var building in village.Buildings) { building.Position = Move(building.Position); if (building.HasEntrance) building.Entrance = Move(building.Entrance); }
                 foreach (var pile in village.Stockpiles) pile.Position = Move(pile.Position);
-                foreach (var p in village.Known) { var tile = runtime.World.TileAt(p); tile.Water = tile.Mountain = false; tile.Wall = false; }
+                foreach (var p in village.Known) { var tile = runtime.World.TileAt(p); World.ClearSurface(tile, 0); tile.Water = tile.Mountain = false; tile.Wall = false; }
             }
             Rebase(first, new Int2(30, 0)); Rebase(second, new Int2(45, 0));
-            for (int x = 30; x <= 45; x++) { var tile = runtime.World.TileAt(new Int2(x, 0)); tile.Water = tile.Mountain = tile.Wall = false; }
+            for (int x = 30; x <= 45; x++) { var tile = runtime.World.TileAt(new Int2(x, 0)); World.ClearSurface(tile, 0); tile.Water = tile.Mountain = tile.Wall = false; }
             first.Contacts.Add(second.Id); second.Contacts.Add(first.Id);
             first.Items.Add(new Item { Id = "exact-trade-tool", Kind = "tool", Material = "wood", Quality = 3, Condition = 17, MaxCondition = 42, Weight = 2.5, VillageId = first.Id, LocationId = first.Stockpiles[0].Id });
             second.Stockpiles[0].Goods.Add(new IdleCatForest.Simulation.Stack("gem", 5));
@@ -678,6 +678,7 @@ Test("exact crafted haul survives claimed pickup and full-storage restarts", () 
     finally { Directory.Delete(directory, true); }
 });
 ImportScenarios.Run(Test, Check);
+WorldGenerationTests.Run(Test, Check);
 if (Environment.GetEnvironmentVariable("FOREST_IMPORTED_WORLD") is string importedWorld)
     Test("external synthetic SQLite world resumes deterministically", () =>
     {

@@ -7,7 +7,7 @@ namespace IdleCatForest.Simulation
     public partial class World
     {
         private static string JobLabor(string kind) => kind == "water" ? "fetch_water" : kind == "logs" || kind == "replant" ? "woodcut" : kind == "fibre" ? "forage" : kind == "fish" ? "fishing" : kind == "offering" ? "ritual" : kind == "expand" || kind == "road" || kind == "rail" || kind == "bridge" || kind == "dock" ? "build" : kind;
-        private bool FreeWorker(Village v, Cat c) => c != null && c.JobId == "" && c.BuildingId == "" && c.ControlledBy == "" && !v.Routes.Any(r => r.CatId == c.Id);
+        private bool FreeWorker(Village v, Cat c) => c != null && !IsDungeonExplorer(c) && c.Position.Level == 0 && c.JobId == "" && c.BuildingId == "" && c.ControlledBy == "" && !v.Routes.Any(r => r.CatId == c.Id);
         private Cat AvailableCat(Village v, string labor) => v.Cats.Where(c => c.Alive && c.AgeHours >= 12 && FreeWorker(v, c) && c.Migration != "arriving" && c.Migration != "departing")
             .OrderByDescending(c => (c.Preferences.Contains(labor) ? 100 : 0) + (c.Boosted ? 20 : 0) + Amount(c.Skills, labor)).ThenBy(c => c.Id, StringComparer.Ordinal).FirstOrDefault();
         private void StartJob(Village v, Cat c, Job j)
@@ -195,10 +195,10 @@ namespace IdleCatForest.Simulation
         }
         private IEnumerable<Int2> Neighbors(Int2 p)
         {
-            yield return new Int2(p.X, p.Z + 1);
-            yield return new Int2(p.X + 1, p.Z);
-            yield return new Int2(p.X, p.Z - 1);
-            yield return new Int2(p.X - 1, p.Z);
+            yield return new Int2(p.X, p.Z + 1, p.Level);
+            yield return new Int2(p.X + 1, p.Z, p.Level);
+            yield return new Int2(p.X, p.Z - 1, p.Level);
+            yield return new Int2(p.X - 1, p.Z, p.Level);
         }
         private ActionResult StartHaul(Village v, Cat c, Stockpile source)
         {
@@ -250,6 +250,7 @@ namespace IdleCatForest.Simulation
         }
         private void CancelWork(Village v, Cat c, bool preserveUnassignedCargo = false)
         {
+            CancelDungeon(c);
             if (v.Accounting?.WorkerId == c.Id)
                 v.Accounting = null;
             foreach (var route in v.Routes.Where(r => r.CatId == c.Id).ToArray())
