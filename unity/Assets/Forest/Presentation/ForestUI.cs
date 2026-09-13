@@ -89,6 +89,7 @@ namespace IdleCatForest.Presentation
             {
                 root.EnableInClassList("compact", e.newRect.width < 1040);
                 root.EnableInClassList("narrow", e.newRect.width <= 650);
+                root.EnableInClassList("micro", e.newRect.width <= 560);
                 root.EnableInClassList("short", e.newRect.height < 620);
             });
             var top = Element(root, "top interactive");

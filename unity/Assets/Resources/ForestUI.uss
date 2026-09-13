@@ -124,7 +124,8 @@ Button.quiet { background-color: rgba(0,0,0,0); border-color: rgba(177,206,177,0
 .narrow .resource { flex-basis: 0px; flex-grow: 1; min-width: 0px; margin: 0px; padding: 0px 8px; }
 .narrow .resource-value { font-size: 18px; height: 22px; min-height: 22px; max-height: 22px; margin: 0px; padding: 0px; white-space: nowrap; -unity-text-align: middle-center; }
 .narrow .resource-name { font-size: 11px; height: 14px; min-height: 14px; max-height: 14px; margin: 0px; padding: 0px; -unity-text-align: middle-center; }
-.narrow .navigation, .narrow .drawer { top: 126px; }
+.narrow .navigation, .narrow .drawer { top: 126px; bottom: 74px; }
+.micro .navigation, .micro .drawer { bottom: 74px; }
 .narrow .drawer { width: auto; right: 14px; padding: 6px 10px; }
 .narrow .drawer-heading { flex-wrap: nowrap; height: 31px; min-height: 31px; max-height: 31px; padding-bottom: 4px; }
 .narrow .drawer-title-group { min-width: 0px; }
@@ -132,9 +133,13 @@ Button.quiet { background-color: rgba(0,0,0,0); border-color: rgba(177,206,177,0
 .narrow .title { font-size: 20px; height: 24px; min-height: 24px; max-height: 24px; margin: 0px; padding: 0px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .narrow .drawer-heading Button { min-height: 26px; margin-top: 0px; margin-bottom: 0px; padding: 3px 6px; }
 .narrow .drawer-scroll { margin-top: 5px; }
+.micro .drawer { padding: 3px 8px 4px; }
+.micro .drawer-heading { height: 26px; min-height: 26px; max-height: 26px; }
+.micro .drawer-scroll { margin-top: 3px; }
 .narrow.has-feedback .hint { display: none; }
 .narrow.has-feedback .feedback { font-size: 12px; }
-.narrow.has-feedback .navigation, .narrow.has-feedback .drawer { bottom: 92px; }
+.narrow.has-feedback .navigation, .narrow.has-feedback .drawer { bottom: 74px; }
+.micro.has-feedback .navigation, .micro.has-feedback .drawer { bottom: 74px; }
 
 /* Direct-control mode gives the cat the foreground and reduces management chrome. */
 .direct-control .top, .direct-control .navigation, .direct-control .drawer, .direct-control .tethered-inspector { display: none; }
