@@ -21,7 +21,7 @@ impl RateLimiter {
 
     pub fn check(&mut self, key: &str, now_ms: i64) -> bool {
         let recent = self.hits.entry(key.to_owned()).or_default();
-        recent.retain(|hit_ms| now_ms - *hit_ms < self.window_ms);
+        recent.retain(|hit_ms| now_ms.saturating_sub(*hit_ms) < self.window_ms);
         if recent.len() >= self.max {
             return false;
         }
@@ -31,7 +31,7 @@ impl RateLimiter {
 
     pub fn prune(&mut self, now_ms: i64) {
         self.hits.retain(|_, hits| {
-            hits.retain(|hit_ms| now_ms - *hit_ms < self.window_ms);
+            hits.retain(|hit_ms| now_ms.saturating_sub(*hit_ms) < self.window_ms);
             !hits.is_empty()
         });
     }
@@ -53,5 +53,17 @@ mod tests {
         }
         assert!(!limiter.check("s:session-1", 2_000));
         assert!(limiter.check("s:session-1", 11_000));
+    }
+
+    #[test]
+    fn extreme_clock_values_do_not_overflow_timestamp_arithmetic() {
+        let mut limiter = RateLimiter::new(2, 10_000);
+
+        assert!(limiter.check("session", i64::MAX));
+        assert!(limiter.check("session", i64::MIN));
+        assert!(!limiter.check("session", i64::MIN + 1));
+
+        limiter.prune(i64::MIN);
+        assert!(limiter.check("session", i64::MIN + 10_000));
     }
 }
