@@ -1077,7 +1077,6 @@ async fn handle_client_text(
     let peer_limiter_key = connection.peer_limiter_key();
     {
         let mut limiter = state.ip_rate_limiter.lock().await;
-        limiter.prune(now);
         if !limiter.check(&peer_limiter_key, now) {
             return ServerActionResult::fail("Too many actions from this address — slow down.");
         }
@@ -1085,7 +1084,6 @@ async fn handle_client_text(
     let limiter_key = connection.limiter_key();
     {
         let mut limiter = state.rate_limiter.lock().await;
-        limiter.prune(now);
         if !limiter.check(&limiter_key, now) {
             return ServerActionResult::fail("Too many actions — slow down.");
         }
@@ -1122,7 +1120,6 @@ async fn handle_client_text(
             signed
         } else {
             let mut guard = state.abuse_guard.lock().await;
-            guard.session_issuance.prune(now);
             if !guard.session_issuance.check(&peer_limiter_key, now) {
                 return ServerActionResult::fail(
                     "Too many new sessions from this address. Reuse the session already issued to this browser.",
