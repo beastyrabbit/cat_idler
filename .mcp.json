@@ -1,9 +1,0 @@
-{
-  "mcpServers": {
-    "bevy": {
-      "command": "/home/beasty/.cargo/bin/bevy_brp_mcp",
-      "args": [],
-      "env": {}
-    }
-  }
-}

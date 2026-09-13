@@ -1,0 +1,146 @@
+#forest-ui { flex-grow: 1; color: rgb(238,243,234); font-size: 15px; }
+
+/* Glass Clearing palette: the forest stays visible under the management chrome. */
+.top { position: absolute; top: 14px; left: 18px; right: 18px; height: 92px; flex-direction: row; align-items: center; justify-content: space-between; padding: 12px 18px; background-color: rgba(12,22,16,0.78); border-width: 1px; border-color: rgba(177,206,177,0.32); border-radius: 16px; }
+.brand { flex-shrink: 1; min-width: 130px; max-width: 290px; margin-right: 18px; }
+.eyebrow { font-size: 10px; letter-spacing: 1.5px; color: rgb(255,209,102); margin-bottom: 4px; }
+.headline { font-size: 22px; -unity-font-style: bold; color: rgb(238,243,234); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.village-summary { color: rgb(169,184,168); font-size: 12px; margin-top: 5px; white-space: nowrap; }
+.resources { flex-direction: row; justify-content: center; flex-grow: 1; }
+.resource { padding: 0px 17px; border-left-width: 1px; border-left-color: rgba(177,206,177,0.22); }
+.resource-value { font-size: 23px; -unity-font-style: bold; color: rgb(238,243,234); }
+.resource-name { color: rgb(169,184,168); font-size: 12px; margin-top: 2px; }
+.clock { align-items: flex-end; margin-left: 16px; }
+.clock-label { font-size: 12px; color: rgb(169,184,168); margin-bottom: 4px; }
+.clock .row > Button { min-width: 34px; min-height: 30px; padding: 4px 6px; }
+.attention-seal { min-width: 52px; min-height: 48px; margin-left: 10px; padding: 8px 13px; font-size: 17px; color: rgb(238,243,234); background-color: rgba(10,19,14,0.90); border-width: 1px; border-color: rgba(177,206,177,0.34); border-radius: 16px; }
+.attention-seal.has-attention { color: rgb(255,107,87); border-color: rgb(255,107,87); }
+
+.navigation { position: absolute; left: 14px; top: 120px; bottom: 82px; width: 116px; padding: 9px 7px; border-radius: 16px; background-color: rgba(10,19,14,0.84); border-width: 1px; border-color: rgba(177,206,177,0.30); }
+.navigation .unity-scroll-view__content-viewport { overflow: hidden; }
+#forest-ui .unity-scroller { margin: 0px; padding: 0px; border-width: 0px; background-color: rgba(0,0,0,0); }
+#forest-ui .unity-scroller--vertical { width: 7px; min-width: 7px; max-width: 7px; margin-left: 5px; }
+#forest-ui .unity-scroller .unity-scroller__low-button, #forest-ui .unity-scroller .unity-scroller__high-button, #forest-ui .unity-scroller RepeatButton { display: none; }
+#forest-ui .unity-scroller .unity-scroller__slider { flex-grow: 1; margin: 0px; padding: 0px; border-width: 0px; min-width: 0px; min-height: 0px; background-color: rgba(0,0,0,0); }
+#forest-ui .unity-scroller .unity-base-slider__drag-container { margin: 0px; padding: 0px; border-width: 0px; background-color: rgb(21,36,27); border-radius: 4px; }
+#forest-ui .unity-scroller .unity-base-slider__tracker { border-width: 0px; background-color: rgba(0,0,0,0); background-image: none; }
+#forest-ui .unity-scroller .unity-base-slider__dragger { margin: 0px; border-width: 0px; border-radius: 4px; background-color: rgb(96,119,75); background-image: none; }
+.nav-group { color: rgb(255,209,102); font-size: 10px; letter-spacing: 1px; margin: 9px 8px 4px 8px; }
+.navigation-button { padding: 7px 4px 7px 10px; margin: 1px 0px; min-height: 33px; font-size: 14px; border-width: 0px; border-left-width: 3px; border-left-color: rgba(0,0,0,0); background-color: rgba(22,39,27,0.62); -unity-text-align: middle-left; border-radius: 10px; white-space: nowrap; }
+.navigation-button.active { color: rgb(238,243,234); background-color: rgba(63,86,58,0.86); border-left-color: rgb(255,209,102); -unity-font-style: bold; }
+
+Button { flex-shrink: 0; min-height: 35px; padding: 7px 12px; margin: 4px 0px; color: rgb(238,243,234); background-color: rgba(35,58,39,0.90); border-width: 1px; border-color: rgba(177,206,177,0.28); border-radius: 10px; font-size: 14px; white-space: normal; }
+Button:hover { background-color: rgba(63,86,58,0.95); border-color: rgb(255,209,102); }
+Button:active, Button.active { background-color: rgba(255,209,102,0.34); border-color: rgb(255,209,102); color: rgb(238,243,234); }
+Button:focus { border-color: rgb(255,209,102); }
+Button:disabled { opacity: 0.5; }
+Button.primary { background-color: rgba(92,79,39,0.92); border-color: rgb(255,209,102); color: rgb(255,244,207); -unity-font-style: bold; }
+Button.quiet { background-color: rgba(0,0,0,0); border-color: rgba(177,206,177,0.28); }
+.row { flex-direction: row; flex-wrap: wrap; align-items: center; }
+.row > Button { margin-right: 6px; }
+
+.drawer { position: absolute; top: 120px; left: 140px; bottom: 82px; width: 420px; padding: 15px 17px 10px 17px; border-radius: 16px; background-color: rgba(12,22,16,0.90); border-width: 1px; border-color: rgba(177,206,177,0.32); }
+.drawer.wide { width: auto; right: 14px; }
+.drawer-heading { flex-shrink: 0; justify-content: space-between; padding-bottom: 11px; border-bottom-width: 1px; border-bottom-color: rgba(177,206,177,0.20); }
+.drawer-title-group { flex-grow: 1; flex-shrink: 1; }
+.title { font-size: 24px; -unity-font-style: bold; color: rgb(238,243,234); white-space: normal; }
+.drawer-subtitle { color: rgb(169,184,168); font-size: 12px; white-space: normal; margin-top: 4px; }
+.drawer-heading Button { min-height: 30px; font-size: 12px; padding: 5px 8px; }
+.drawer-scroll { flex-grow: 1; margin-top: 8px; }
+.drawer-scroll > .unity-scroll-view__content-viewport { padding-right: 10px; }
+.body { white-space: normal; margin-top: 6px; margin-bottom: 8px; color: rgb(238,243,234); }
+.subtitle { font-size: 17px; -unity-font-style: bold; white-space: normal; margin-top: 10px; margin-bottom: 7px; color: rgb(255,209,102); }
+.muted { color: rgb(169,184,168); white-space: normal; font-size: 13px; margin: 4px 0px; }
+.warning { color: rgb(255,107,87); white-space: normal; margin: 7px 0px; padding-left: 9px; border-left-width: 2px; border-left-color: rgb(255,107,87); }
+.card { padding: 9px 10px 13px 10px; margin-bottom: 7px; border-width: 1px; border-color: rgba(177,206,177,0.23); border-radius: 12px; background-color: rgba(22,39,27,0.74); }
+.card > .subtitle { margin-top: 2px; }
+.card-heading { justify-content: space-between; }
+.card-heading > .subtitle { flex-grow: 1; flex-shrink: 1; }
+.card-heading > Button { margin-left: 8px; }
+.research-cards { flex-direction: row; flex-wrap: wrap; }
+.research-card { width: 290px; min-height: 245px; padding: 15px; margin: 7px; border-radius: 12px; border-width: 1px; border-color: rgba(177,206,177,0.28); background-color: rgba(22,39,27,0.82); }
+.research-card.complete { border-color: rgb(126,211,122); background-color: rgba(31,58,36,0.84); }
+.research-card.locked { background-color: rgba(10,19,14,0.80); }
+.research-card > Button { margin-top: 8px; }
+.separator { height: 1px; background-color: rgba(177,206,177,0.20); margin: 17px 0px 11px 0px; }
+.stock-row { padding: 7px 1px; border-bottom-width: 1px; border-bottom-color: rgba(177,206,177,0.16); }
+.work-position { padding: 10px 12px; margin: 9px 0px; border-radius: 12px; background-color: rgba(22,39,27,0.74); border-left-width: 3px; border-left-color: rgb(126,211,122); }
+.queue-entry { padding: 9px 0px; border-top-width: 1px; border-top-color: rgba(177,206,177,0.18); }
+.queue-entry > .subtitle { font-size: 15px; margin-top: 2px; }
+.queue-entry .row > Button { min-height: 31px; padding: 5px 9px; font-size: 12px; }
+.need-grid { flex-direction: row; flex-wrap: wrap; margin: 6px -3px; }
+.need-grid > .unity-progress-bar { width: 47%; margin: 4px; }
+.labor-grid { flex-direction: row; flex-wrap: wrap; }
+.labor-grid > Toggle { width: 47%; }
+
+.tethered-inspector { position: absolute; width: 292px; min-height: 112px; padding: 13px; background-color: rgba(10,19,14,0.92); border-width: 1px; border-color: rgb(255,209,102); border-radius: 14px; }
+.tethered-inspector > Button { align-self: flex-start; }
+.bottom { position: absolute; bottom: 14px; left: 14px; right: 14px; min-height: 52px; padding: 9px 13px; border-radius: 14px; background-color: rgba(10,19,14,0.88); border-width: 1px; border-color: rgba(177,206,177,0.28); flex-direction: row; align-items: center; }
+.bottom-copy { flex-grow: 1; flex-shrink: 1; }
+.hint { color: rgb(238,243,234); font-size: 12px; white-space: normal; }
+.feedback { color: rgb(255,209,102); font-size: 14px; white-space: normal; margin-top: 4px; -unity-font-style: bold; }
+.feedback.failure { color: rgb(255,107,87); }
+.status { color: rgb(169,184,168); font-size: 11px; margin-top: 4px; white-space: normal; }
+.view-controls { flex-direction: row; flex-shrink: 0; margin-left: 12px; }
+.view-controls > Button { min-width: 33px; min-height: 33px; padding: 4px 8px; margin-left: 5px; font-size: 14px; }
+.unity-base-field { margin: 8px 0px; min-height: 32px; color: rgb(238,243,234); }
+.unity-base-field__label { min-width: 100px; max-width: 135px; white-space: normal; color: rgb(169,184,168); }
+.unity-base-field__input { background-color: rgba(10,19,14,0.90); color: rgb(238,243,234); border-width: 1px; border-color: rgba(177,206,177,0.28); padding: 6px; border-radius: 8px; font-size: 14px; }
+.unity-toggle__input { border-width: 0px; background-color: rgba(0,0,0,0); }
+.unity-progress-bar { margin: 6px 0px; height: 27px; }
+.unity-progress-bar__background { background-color: rgba(10,19,14,0.90); border-radius: 8px; }
+.unity-progress-bar__progress { background-color: rgb(126,211,122); border-radius: 8px; }
+.unity-progress-bar__title { color: rgb(238,243,234); font-size: 12px; -unity-font-style: bold; }
+
+.compact .top { padding: 10px 12px; height: 84px; }
+.compact .brand { margin-right: 6px; max-width: 205px; }
+.compact .headline { font-size: 19px; }
+.compact .resource { padding: 0px 9px; }
+.compact .resource-value { font-size: 20px; }
+.compact .clock { margin-left: 7px; }
+.compact .navigation { top: 108px; width: 103px; }
+.compact .navigation-button { font-size: 13px; padding-left: 7px; }
+.compact .drawer { top: 108px; left: 127px; width: 390px; }
+.compact .drawer.wide { width: auto; }
+.compact .bottom { padding: 8px 10px; }
+.compact .hint { font-size: 11px; }
+.compact .status { display: none; }
+.compact .view-controls > Button { font-size: 12px; }
+.compact.has-feedback .drawer, .compact.has-feedback .navigation { bottom: 108px; }
+.short .top { height: 75px; }
+.short .eyebrow { display: none; }
+.short .navigation, .short .drawer { top: 99px; bottom: 77px; }
+.short .navigation-button { min-height: 29px; padding-top: 5px; padding-bottom: 5px; }
+.short .nav-group { margin-top: 6px; }
+.short .bottom { min-height: 45px; }
+.narrow .top { height: 102px; }
+.narrow .brand { position: absolute; left: 12px; right: 190px; top: 12px; min-width: 0px; max-width: none; margin: 0px; }
+.narrow .eyebrow, .narrow .village-summary { display: none; }
+.narrow .clock { position: absolute; right: 10px; top: 4px; width: 164px; margin: 0px; }
+.narrow .clock-label { font-size: 11px; height: 14px; min-height: 14px; max-height: 14px; padding: 0px; margin: 0px; white-space: nowrap; }
+.narrow .clock .row { flex-wrap: nowrap; }
+.narrow .clock .row > Button { min-width: 33px; min-height: 30px; margin: 2px 4px 2px 0px; padding: 4px 5px; }
+.narrow .resources { position: absolute; left: 10px; right: 10px; bottom: 6px; height: 36px; flex-grow: 0; }
+.narrow .resource { flex-basis: 0px; flex-grow: 1; min-width: 0px; margin: 0px; padding: 0px 8px; }
+.narrow .resource-value { font-size: 18px; height: 22px; min-height: 22px; max-height: 22px; margin: 0px; padding: 0px; white-space: nowrap; -unity-text-align: middle-center; }
+.narrow .resource-name { font-size: 11px; height: 14px; min-height: 14px; max-height: 14px; margin: 0px; padding: 0px; -unity-text-align: middle-center; }
+.narrow .navigation, .narrow .drawer { top: 126px; bottom: 74px; }
+.micro .navigation, .micro .drawer { bottom: 74px; }
+.narrow .drawer { width: auto; right: 14px; padding: 6px 10px; }
+.narrow .drawer-heading { flex-wrap: nowrap; height: 31px; min-height: 31px; max-height: 31px; padding-bottom: 4px; }
+.narrow .drawer-title-group { min-width: 0px; }
+.narrow .drawer-subtitle { display: none; }
+.narrow .title { font-size: 20px; height: 24px; min-height: 24px; max-height: 24px; margin: 0px; padding: 0px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.narrow .drawer-heading Button { min-height: 26px; margin-top: 0px; margin-bottom: 0px; padding: 3px 6px; }
+.narrow .drawer-scroll { margin-top: 5px; }
+.micro .drawer { padding: 3px 8px 4px; }
+.micro .drawer-heading { height: 26px; min-height: 26px; max-height: 26px; }
+.micro .drawer-scroll { margin-top: 3px; }
+.narrow.has-feedback .hint { display: none; }
+.narrow.has-feedback .feedback { font-size: 12px; }
+.narrow.has-feedback .navigation, .narrow.has-feedback .drawer { bottom: 74px; }
+.micro.has-feedback .navigation, .micro.has-feedback .drawer { bottom: 74px; }
+
+/* Direct-control mode gives the cat the foreground and reduces management chrome. */
+.direct-control .top, .direct-control .navigation, .direct-control .drawer, .direct-control .tethered-inspector { display: none; }
+.direct-control .bottom { left: 25%; right: 25%; background-color: rgba(10,19,14,0.94); border-color: rgb(255,209,102); }

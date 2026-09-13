@@ -1,6 +1,10 @@
 # Leader AI Design — a colony director that plays like a player
 
-> **SUPERSEDED (design history).** Written for and implemented in the TypeScript
+> **Historical design rationale.** Current C# execution and acceptance are documented
+> in [ARCHITECTURE.md](ARCHITECTURE.md) and
+> [unity/GAMEPLAY_ACCEPTANCE.md](unity/GAMEPLAY_ACCEPTANCE.md). The technology choices,
+> implementation status and unmeasured scalability targets below are historical.
+> Written for and implemented in the TypeScript
 > `lib/game/leaderDirector.ts` (frozen on branch `archive/web-game`). The utility-AI design
 > described here was ported behaviorally into Rust as `crates/cat-sim/src/leader_director.rs`
 > — see `docs/migration/specs/leader_director.md` for the Rust port's spec and

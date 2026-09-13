@@ -1,0 +1,9 @@
+{
+  "name": "IdleCatForest.Authority",
+  "rootNamespace": "IdleCatForest.Authority",
+  "references": ["IdleCatForest.Simulation"],
+  "autoReferenced": true,
+  "overrideReferences": true,
+  "precompiledReferences": ["Newtonsoft.Json.dll"],
+  "noEngineReferences": true
+}

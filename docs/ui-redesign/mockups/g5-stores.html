@@ -1,0 +1,25 @@
+<!doctype html><html><head><meta charset="utf-8"><link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=Instrument+Serif:ital@1&display=swap" rel="stylesheet"><link rel="stylesheet" href="glass.css"><title>Glass — Stores</title>
+<style>.round{display:flex;gap:12px;align-items:center;border:1px solid var(--edge);border-radius:12px;padding:8px 12px;margin-top:10px;font-size:12px;font-weight:600;color:var(--dim)}.round b{color:var(--ink);font-weight:800}.round .p{display:inline-flex;gap:4px}.round .p i{width:12px;height:12px;border:1.5px solid var(--dim);border-radius:50%}.round .p i.d{background:var(--ok);border-color:var(--ok)}.round .p i.n{border-color:var(--sun);border-width:2px}</style></head><body>
+<canvas id="w" width="1920" height="1080"></canvas>
+<script src="icons.js"></script><script src="world.js"></script><script src="glass.js"></script>
+<script>
+const sheet='<div class="hd"><h2>Stores</h2><p>8 piles · 6 counted this round · 1 estimate · 1 empty</p><span class="x">ESC</span></div>'
++'<div class="round"><b>Pip\'s round</b> 4 · pile 6 of 8 <span class="p"><i class="d"></i><i class="d"></i><i class="d"></i><i class="d"></i><i class="d"></i><i class="d"></i><i class="n"></i><i></i></span> next: Stone pile in 20 min <span class="act" style="margin-left:auto;padding:5px 9px">Count Stone pile now</span></div>'
++'<div class="chips"><span class="fchip on">All</span><span class="fchip hot">Estimates</span><span class="fchip">Empty</span><span class="fchip">Food · water</span><span class="fchip">Materials</span><span class="fchip search">search goods…</span></div>'
++'<table class="tbl"><thead><tr><th>Stockpile</th><th>Holds</th><th>Report</th><th>Flow · next</th></tr></thead><tbody>'
++'<tr><td><b>Log pile</b> · NE</td><td class="num">96 logs</td><td><span class="stamp">counted</span> 12:50 Pip</td><td class="dim">−3 Mallow · −4 jobs 42, 43 · +5 Sage</td></tr>'
++'<tr class="sel"><td><b>Stone pile</b> · NE</td><td class="num" style="color:var(--dim)">≈44 stone</td><td><span class="stamp est">est. · 6 h</span> 07:20</td><td class="bad">Den plan needs 8 · Pip counts in 20 min</td></tr>'
++'<tr><td><b>Sacks</b> · NE</td><td class="num">30 grain · 12 flour</td><td><span class="stamp">counted</span> 12:50 Pip</td><td class="dim">+6 grain Rook · Mill idle</td></tr>'
++'<tr><td><b>Barrels</b> · NE</td><td class="num">72 water</td><td><span class="stamp">counted</span> 12:52 Pip</td><td class="dim">+4 Sorrel · ≈ 5 h left</td></tr>'
++'<tr><td><b>Crates</b> · NE</td><td class="num">8 goods · 3 tools</td><td><span class="stamp">counted</span> 12:53 Pip</td><td class="dim">Smithy adds 3 tools at 14:00</td></tr>'
++'<tr><td><b>Storehouse</b></td><td class="num">40 planks · 2 lumber<br>184 food</td><td><span class="stamp">counted</span> 12:55 Pip</td><td class="dim">+12 planks Bramble · food ≈ 9 h</td></tr>'
++'<tr><td><b>Ore pile</b> · Smithy</td><td class="num">6 ore</td><td><span class="stamp">counted</span> 12:58 Pip</td><td class="dim">+2 Moss</td></tr>'
++'<tr><td><b>Log pile</b> · Sawmill</td><td class="num bad">0 logs</td><td><span class="stamp">counted</span> 13:10 Bramble</td><td class="bad">Sawmill blocked until job 42 lands</td></tr>'
++'</tbody></table>';
+const card='<div class="hd"><div class="portrait bld"><img src="../../../public/images/game/props/stone_pile.png"></div><div><b>Stone pile</b><small>NE stockpile · 2 tiles · cap 80</small></div></div>'
++'<div class="now">Nobody has counted this pile since <u>07:20</u><br><span class="why">≈44 is a guess from deliveries and use; the Den plan waits on it</span></div>'
++'<div class="kv"><em>Counted</em><b>52 · 07:20</b><em>Since</em><b>+6 Sage · −14 road</b><em>Next</em><b>Pip · in 20 min</b></div>'
++'<div class="acts"><span class="act hot">Count it now</span><span class="act">Stone only</span><span class="act q">Remove</span></div>';
+glassChrome({tab:'Stores',sheet,card:{html:card,x:1320,y:180,ax:1190,ay:322}});
+renderWorld(document.getElementById('w'),{scale:3,ox:-230,oy:-20,annotate:false});
+</script></body></html>

@@ -1,0 +1,115 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Direction 1 — Hearthwood</title>
+<link href="https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@400;600;700&family=Nunito:wght@500;700;800&display=swap" rel="stylesheet">
+<style>
+:root{--bark:#4a2f1d;--bark2:#33200f;--plank:#9a6a3d;--plank2:#c48d57;--parch:#f5e9cd;--parch2:#e6d5ad;--ink:#3b2a1c;--ink2:#7d6249;--moss:#5f8f45;--ember:#d5623b;--gold:#e9c25c;--sky:#8fc1d6}
+*{box-sizing:border-box}body{margin:0;width:1920px;height:1080px;overflow:hidden;font:15px/1.35 Nunito,sans-serif;color:var(--ink);position:relative;background:#0a120d}
+canvas{position:absolute;left:0;top:0}.px{image-rendering:pixelated}
+.ic{width:1em;height:1em;display:inline-block;vertical-align:-2px}
+.wood{background:linear-gradient(#a8743f,#8b5b31);background-image:repeating-linear-gradient(90deg,rgba(0,0,0,.07) 0 2px,transparent 2px 11px),linear-gradient(#a8743f,#8b5b31)}
+.topbar{position:absolute;top:0;left:0;right:0;height:70px;border-bottom:6px solid var(--bark2);box-shadow:0 8px 0 rgba(0,0,0,.25);display:flex;align-items:center;padding:0 18px 0 96px;gap:26px;z-index:5}
+.crest{display:flex;align-items:center;gap:12px;min-width:270px}
+.crest .shield{width:46px;height:52px;background:var(--parch);border:4px solid var(--bark2);border-radius:6px 6px 22px 22px;display:grid;place-items:center;color:var(--bark)}
+.crest .shield .ic{width:26px;height:26px}
+.crest b{display:block;font:700 26px/1 'Pixelify Sans';color:#fff3d6;text-shadow:2px 2px 0 var(--bark2)}
+.crest small{color:#f3e2bf;font-weight:700;font-size:12px}
+.plaques{display:flex;gap:10px;flex:1;justify-content:center}
+.plaque{background:var(--parch);border:3px solid var(--bark2);border-radius:6px;box-shadow:inset 0 -3px 0 var(--parch2),0 3px 0 var(--bark2);padding:5px 12px 4px;display:flex;align-items:center;gap:9px;min-width:132px}
+.plaque img{width:24px;height:24px;filter:invert(.78) sepia(.5) saturate(1.4) hue-rotate(-20deg)}
+.plaque b{font:700 22px/1 'Pixelify Sans';color:var(--ink)}.plaque span{display:block;font-size:10px;color:var(--ink2);font-weight:800;text-transform:uppercase;letter-spacing:.06em}
+.fresh{width:9px;height:9px;border-radius:50%;background:var(--moss);margin-left:auto;box-shadow:0 0 0 2px var(--parch),0 0 0 3px var(--moss)}
+.fresh.stale{background:var(--gold);box-shadow:0 0 0 2px var(--parch),0 0 0 3px var(--gold)}
+.clock{text-align:right;color:#fff3d6;min-width:240px}.clock b{font:700 17px 'Pixelify Sans';text-shadow:1px 1px 0 var(--bark2)}.clock small{display:block;font-size:11px;color:#f3e2bf;font-weight:700}
+.pegs{display:inline-flex;gap:5px;margin-left:12px;vertical-align:middle}
+.peg{width:38px;height:30px;border:3px solid var(--bark2);border-radius:5px;background:var(--plank2);color:var(--ink);font:700 14px 'Pixelify Sans';display:grid;place-items:center;box-shadow:0 3px 0 var(--bark2)}
+.peg.on{background:var(--gold);box-shadow:0 1px 0 var(--bark2);transform:translateY(2px)}
+.rail{position:absolute;left:0;top:0;bottom:34px;width:82px;border-right:6px solid var(--bark2);z-index:6;padding-top:78px;display:flex;flex-direction:column;gap:2px}
+.tab{height:62px;margin:0 0 0 8px;color:#f6e6c6;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;font:800 10px Nunito;text-transform:uppercase;letter-spacing:.04em;border-radius:8px 0 0 8px;position:relative}
+.tab .ic{width:22px;height:22px}
+.tab.on{background:var(--parch);color:var(--ink);margin-right:-6px;box-shadow:inset 0 0 0 3px var(--bark2)}
+.tab.on:after{content:"";position:absolute;right:-6px;top:0;bottom:0;width:6px;background:var(--parch)}
+.badge{position:absolute;top:6px;right:8px;background:var(--ember);color:#fff;border:2px solid var(--bark2);border-radius:10px;font-size:10px;padding:0 5px;line-height:15px}
+.panel{position:absolute;right:16px;top:90px;width:384px;bottom:60px;z-index:6;border:28px solid transparent;border-image:url(../../../public/images/game/ui/panel-ornate.png) 28 fill stretch;image-rendering:pixelated;padding:0 4px}
+.panel .in{image-rendering:auto;margin:-10px -6px;padding:0 4px}
+.head{display:flex;gap:12px;align-items:center;border-bottom:3px dashed var(--parch2);padding-bottom:10px;margin-bottom:10px}
+.portrait{width:78px;height:78px;border:4px solid var(--bark2);border-radius:8px;background:#e9f0d8 url(../../../public/images/cats/cat-sheet.png) 0 0/2048px 128px no-repeat;image-rendering:pixelated;background-position:-12px 6px}
+.head h2{margin:0;font:700 28px/1 'Pixelify Sans';color:var(--ink)}.head p{margin:3px 0 0;font-size:12px;color:var(--ink2);font-weight:700}
+.sec{font:700 15px 'Pixelify Sans';color:var(--bark);margin:12px 0 6px;letter-spacing:.02em}
+.chain{list-style:none;margin:0;padding:0}.chain li{display:grid;grid-template-columns:26px 1fr;gap:8px;align-items:start;padding:5px 0;border-bottom:1px solid var(--parch2);font-size:13.5px;font-weight:600}
+.chain li em{font-style:normal;color:var(--ink2);font-size:11px;display:block;font-weight:800;text-transform:uppercase;letter-spacing:.05em}
+.chain .ic{width:22px;height:22px;color:var(--bark)}.chain li.bad{color:#9a3a1f}.chain li.bad .ic{color:var(--ember)}
+.needs{display:grid;grid-template-columns:1fr 1fr;gap:6px 14px}.need small{font-weight:800;font-size:11px;color:var(--ink2);display:flex;justify-content:space-between}
+.bar{height:12px;border:2px solid var(--bark2);background:#d9c8a2;border-radius:4px;overflow:hidden;margin-top:2px}.bar i{display:block;height:100%;background:var(--moss)}.bar.low i{background:var(--ember)}.bar.mid i{background:var(--gold)}
+.ev li{grid-template-columns:44px 1fr;font-size:12.5px}.ev li b{color:var(--ink2);font-size:11px}
+.chips span{display:inline-block;background:var(--parch2);border:2px solid var(--bark2);border-radius:12px;padding:1px 9px;font-size:11.5px;font-weight:800;margin:2px 2px 0 0}
+.btns{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+.btn{font:700 13px Nunito;color:#fff5dc;text-shadow:1px 1px 0 var(--bark2);padding:9px 14px;border:3px solid var(--bark2);border-radius:6px;background:var(--plank);box-shadow:0 3px 0 var(--bark2)}
+.btn.hot{background:var(--ember)}.btn.ghost{background:var(--parch);color:var(--ink);text-shadow:none}
+.mini{position:absolute;left:100px;bottom:50px;width:210px;height:210px;z-index:6}
+.mini canvas{position:absolute;left:14px;top:14px;width:182px;height:182px;border-radius:50%;}
+.mini img{position:absolute;inset:0;width:210px;height:210px;image-rendering:pixelated}
+.signs{position:absolute;left:330px;bottom:48px;display:flex;gap:14px;z-index:6}
+.sign{background:var(--parch);border:3px solid var(--bark2);border-radius:6px;padding:8px 12px 8px 12px;min-width:250px;box-shadow:0 4px 0 var(--bark2);position:relative;font-weight:700;font-size:13px}
+.sign:before{content:"";position:absolute;left:18px;bottom:-16px;width:8px;height:14px;background:var(--plank);border:2px solid var(--bark2)}
+.sign .wax{position:absolute;left:-12px;top:-12px;width:26px;height:26px;border-radius:50%;background:var(--ember);border:3px solid var(--bark2);display:grid;place-items:center;color:#fff}
+.sign .wax.info{background:var(--gold);color:var(--ink)}.sign .wax .ic{width:14px;height:14px}
+.sign a{display:block;color:#8a3d1f;text-decoration:underline;font-size:12px;margin-top:2px}
+.bottom{position:absolute;left:0;right:0;bottom:0;height:34px;background:var(--bark2);color:#e8d4ae;font-weight:700;font-size:12px;display:flex;align-items:center;padding:0 16px 0 100px;z-index:7;gap:26px}
+.bottom .r{margin-left:auto}.bottom .k{background:#5a3c25;padding:1px 6px;border-radius:4px;color:#fff3d6}
+</style></head><body>
+<canvas id="w" width="1920" height="1080"></canvas>
+<div class="topbar wood">
+  <div class="crest"><div class="shield" id="crest"></div><div><b>The Commons</b><small>31 cats · 12 at work · 8 studies</small></div></div>
+  <div class="plaques">
+    <div class="plaque"><img class="px" src="../../../public/images/game/icons/food.png"><div><b>184</b><span>Food</span></div><i class="fresh" title="counted"></i></div>
+    <div class="plaque"><img class="px" src="../../../public/images/game/icons/water.png"><div><b>72</b><span>Water</span></div><i class="fresh"></i></div>
+    <div class="plaque"><img class="px" src="../../../public/images/game/icons/logs.png"><div><b>96</b><span>Logs</span></div><i class="fresh"></i></div>
+    <div class="plaque"><img class="px" src="../../../public/images/game/icons/stone.png"><div><b>44</b><span>Stone · 6h old</span></div><i class="fresh stale"></i></div>
+    <div class="plaque"><img class="px" src="../../../public/images/game/icons/refined.png"><div><b>320</b><span>Research</span></div></div>
+    <div class="plaque"><img class="px" src="../../../public/images/game/icons/blessings.png"><div><b>18</b><span>Blessings</span></div></div>
+  </div>
+  <div class="clock"><b>Day 2 · 13:30</b><small>hour 37.5 · running</small>
+    <span class="pegs"><span class="peg">II</span><span class="peg on">1×</span><span class="peg">4×</span><span class="peg">8×</span></span></div>
+</div>
+<nav class="rail wood" id="rail"></nav>
+<aside class="panel"><div class="in">
+  <div class="head"><div class="portrait"></div><div><h2>Mallow</h2><p>Hauler · adult, 31 h old · sleeps in Den 2</p><p>Skills: Hauling 3 · Forestry 1</p></div></div>
+  <div class="sec">Right now</div>
+  <ul class="chain" id="chain"></ul>
+  <div class="sec">Needs</div>
+  <div class="needs">
+    <div class="need"><small>Hunger <b>58%</b></small><div class="bar mid"><i style="width:58%"></i></div></div>
+    <div class="need"><small>Thirst <b>24%</b></small><div class="bar low"><i style="width:24%"></i></div></div>
+    <div class="need"><small>Rest <b>71%</b></small><div class="bar"><i style="width:71%"></i></div></div>
+    <div class="need"><small>Health <b>92%</b></small><div class="bar"><i style="width:92%"></i></div></div>
+  </div>
+  <div class="sec">Work preferences</div>
+  <div class="chips"><span>Haul ✓</span><span>Forestry ✓</span><span>Farm</span><span>Fight ✗</span><span>Study</span></div>
+  <div class="btns"><span class="btn hot">Send for water first</span><span class="btn">Boost Mallow</span><span class="btn ghost">Take control (Tab)</span></div>
+  <div class="sec">Mallow's day</div>
+  <ul class="chain ev">
+    <li><b>13:12</b><div>Picked up 3 logs at the Log pile</div></li>
+    <li><b>12:40</b><div>Delivered 4 logs to the Sawmill</div></li>
+    <li><b>11:55</b><div>Drank at the river (last water)</div></li>
+    <li><b>10:30</b><div>Woke in Den 2</div></li>
+  </ul>
+</div></aside>
+<div class="mini"><canvas id="mini" width="182" height="182"></canvas><img src="../../../public/images/game/ui/minimap-ring.png"></div>
+<div class="signs">
+  <div class="sign"><span class="wax" id="wax1"></span>Mallow and Hazel are thirsty — no reachable water<a>Designate a well · Send a water run</a></div>
+  <div class="sign"><span class="wax" id="wax2"></span>Sawmill is blocked — no logs delivered<a>Open Work · Assign a hauler</a></div>
+  <div class="sign"><span class="wax info" id="wax3"></span>2 cats have no bed<a>Plan a Den — 24 logs, 8 stone</a></div>
+  <div class="sign"><span class="wax info" id="wax4"></span>Fox at the north gate · Captain vacant<a>Rally Wren</a></div>
+</div>
+<div class="bottom">WASD / right drag pan · wheel zoom · click to inspect · <span class="k">Tab</span> control cat <span class="r">saved 12 s ago · connected</span></div>
+<script src="icons.js"></script><script src="world.js"></script>
+<script>
+document.getElementById('crest').innerHTML=icon('cats');
+document.getElementById('rail').innerHTML=NAV.map((n,i)=>`<div class="tab ${i==0?'on':''}">${icon(n.toLowerCase())}${n}${n=='Cats'?'<span class="badge">3</span>':n=='Work'?'<span class="badge">1</span>':''}</div>`).join('');
+document.getElementById('chain').innerHTML=[
+ ['stores','Carrying','3 logs'],['pin','From','Log pile, north-east stockpile · counted ¼ h ago'],['arrow','To','Sawmill entrance · 31 tiles · 52 s'],['officers','Because','Steward Hazel ordered a haul (automatic)'],['drop','Then','Rest — thirsty, but no reachable water','bad']
+].map(([i,k,v,c])=>`<li class="${c||''}">${icon(i)}<div><em>${k}</em>${v}</div></li>`).join('');
+['wax1','wax2'].forEach(id=>document.getElementById(id).innerHTML=icon('alert'));
+['wax3','wax4'].forEach(id=>document.getElementById(id).innerHTML=icon('pin'));
+renderWorld(document.getElementById('w'),{scale:3,ox:-30,oy:-20,pathColor:'#ffe08a',selColor:'#ffe08a',destColor:'#ffe08a',needColor:'#e0533a'});
+renderWorld(document.getElementById('mini'),{scale:0.28,ox:0,oy:24,cols:41,rows:24,annotate:false,fog:true});
+</script></body></html>

@@ -1,0 +1,8 @@
+<!doctype html><html><head><meta charset="utf-8"><link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=Instrument+Serif:ital@1&display=swap" rel="stylesheet"><link rel="stylesheet" href="glass.css"><title>Glass — overview, attention popup open</title></head><body>
+<canvas id="w" width="1920" height="1080"></canvas><canvas id="over" width="1920" height="1080"></canvas>
+<div class="tag g" style="left:668px;top:790px">Sawmill · <i>blocked: no logs</i></div>
+<script src="icons.js"></script><script src="world.js"></script><script src="glass.js"></script>
+<script>
+glassChrome({tab:'Overview',sealOpen:true,card:{html:mallowCard,x:1440,y:230,ax:1322,ay:428}});
+renderWorld(document.getElementById('w'),{scale:3,ox:-30,oy:-20,pathColor:'#ffd166',selColor:'#ffd166',destColor:'#ffd166',needColor:null}).then(({px,py,scene})=>needRings(document.getElementById('over').getContext('2d'),px,py,scene,[['Mallow',0.24,'#ff6b57'],['Hazel',0.31,'#ff6b57']]));
+</script></body></html>

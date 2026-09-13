@@ -1,0 +1,51 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Atlas — Research ledger</title>
+<link href="https://fonts.googleapis.com/css2?family=Alegreya:ital,wght@0,500;0,700;1,500;1,700&family=Alegreya+Sans:wght@500;700;800&family=Courier+Prime:wght@400;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="atlas.css">
+<style>
+.grid{display:grid;grid-template-columns:118px repeat(7,1fr);gap:4px 4px;margin-top:8px;align-items:stretch}
+.grid .fam{font:700 13.5px Alegreya;padding:8px 6px 0 0;border-top:1px solid var(--vel3)}.grid .fam small{display:block;font:italic 11px Alegreya;color:var(--ink2)}
+.grid .stg{font:800 9.5px 'Alegreya Sans';letter-spacing:.14em;text-transform:uppercase;color:var(--ink2);text-align:center;padding-bottom:4px;border-bottom:1px solid var(--ink)}
+.cell{min-height:44px;border:1.5px dotted var(--vel3);padding:4px 6px;font-size:11px;line-height:1.2;color:var(--ink2);position:relative;background:transparent}
+.cell b{display:block;font:700 12px 'Alegreya Sans';color:var(--ink)}.cell .c{font-family:'Courier Prime';font-weight:700;font-size:10.5px}
+.cell.done{border:1.5px solid var(--moss);background:#e4e9d4;color:var(--moss)}.cell.done:after{content:"✓";position:absolute;right:6px;top:4px;font-weight:800;color:var(--moss)}
+.cell.aff{border:1.5px solid var(--madder);background:var(--vel4);color:var(--ink)}.cell.aff .c{color:var(--madder)}
+.cell.sel{background:var(--madder);color:var(--vel);border-color:var(--madder)}.cell.sel b,.cell.sel .c{color:var(--vel)}
+.cell.now{border:1.5px solid var(--brass);background:#efe3c0}.cell.now .bar{height:4px;background:var(--vel3);margin-top:4px}.cell.now .bar i{display:block;height:100%;background:var(--brass)}
+.cell.lock b{color:var(--ink2)}
+.effect{background:var(--vel4);border:1px solid var(--vel3);padding:8px 10px;font-size:13px;margin-top:4px}
+</style></head><body>
+<div class="frame"><canvas class="world" id="w" width="1516" height="868"></canvas></div>
+<script src="icons.js"></script><script src="world.js"></script><script src="atlas.js"></script>
+<script>
+const stages=['Foundations','Stores','Workflow','Timing','Crews','Reinforcement','Mastery'];
+const fams=[
+ ['Water Bowl','Water Stewardship',[['sel','Water Bowl','60'],['lock','Bowl Stores','needs I'],['lock','Refill Rounds',''],['lock','Dawn Fill',''],['lock','Bowl Crews','+1 slot'],['lock','Stone Rim',''],['lock','Spring Keeping','']]],
+ ['Den','Household Stewardship',[['done','Den',''],['done','Den Stores',''],['aff','Shared Chores','90'],['lock','Night Watch',''],['lock','Den Crews','+1 slot'],['lock','Stone Hearth',''],['lock','Warm Nests','']]],
+ ['Herb Garden','Herbal Care',[['done','Herb Garden',''],['aff','Drying Racks','80'],['lock','Cutting Rounds',''],['lock','Season Sowing',''],['lock','Garden Crews','+1 slot'],['lock','Raised Beds',''],['lock','Physic Lore','']]],
+ ['Mouse Farm','Mouse Husbandry',[['done','Mouse Farm',''],['done','Grain Bins',''],['done','Feeding Rounds',''],['aff','Dusk Harvest','120'],['lock','Farm Crews','+1 slot'],['lock','Wire Runs',''],['lock','Breeding Lore','']]],
+ ['Colony Walls','Wall Stewardship',[['done','Palisade',''],['done','Gate Stores',''],['done','Patrol Routes',''],['done','Gate Hours',''],['lock','Wall Crews','+1 slot'],['now','Stone Dressing II','40 %'],['lock','Bastions','']]],
+ ['Food Store','Storekeeping',[['done','Food Store',''],['aff','Cold Cellar','110'],['lock','Stock Rounds',''],['lock','Ration Days',''],['lock','Store Crews','+1 slot'],['lock','Stone Floor',''],['lock','Provisioning','']]],
+ ['Shrine','Ritual Stewardship',[['done','Shrine',''],['done','Offering Chest',''],['aff','Ritual Rounds','140'],['lock','Moon Rites',''],['lock','Shrine Crews','+1 slot'],['lock','Carved Altar',''],['lock','Deep Lore','']]],
+ ['Nursery','Kitten Care',[['aff','Nursery','110'],['lock','Milk Stores',''],['lock','Play Rounds',''],['lock','Nap Hours',''],['lock','Nursery Crews','+1 slot'],['lock','Soft Walls',''],['lock','Rearing Lore','']]],
+ ['Nest Hall','Restful Nests',[['lock','Nest Hall','needs Den III'],['lock','Bedding Stores',''],['lock','Turning Rounds',''],['lock','Quiet Hours',''],['lock','Hall Crews','+1 slot'],['lock','Timber Frame',''],['lock','Deep Sleep','']]],
+ ['Elders\' Corner','Elder Care',[['lock','Elders\' Corner','needs Nest Hall'],['lock','Story Stores',''],['lock','Visiting Rounds',''],['lock','Sunning Hours',''],['lock','Corner Crews','+1 slot'],['lock','Stone Bench',''],['lock','Long Memory','']]],
+];
+const spread=`<div class="hd"><h2>Research</h2><p>487 studies · 41 studied · 6 affordable now · 1 in progress · 320 research on hand</p><span class="x">Esc · close</span></div>
+<div class="chips"><span class="chip on">Buildings · 25 families</span><span class="chip">Recipes · 108</span><span class="chip">Upgrades</span><span class="chip" style="border-color:var(--madder);color:var(--madder)">Affordable now · 6</span><span class="chip">Crews · 12</span><span class="chip">Unlocks a building</span><span class="chip search">search studies…</span></div>
+<div class="grid"><div></div>${stages.map(s=>`<div class="stg">${s}</div>`).join('')}
+${fams.map(([n,svc,cells])=>`<div class="fam">${n}<small>${svc}</small></div>${cells.map(([st,t,c])=>`<div class="cell ${st}"><b>${t}</b>${st=='now'?`<div class="bar"><i style="width:40%"></i></div><span class="c">${c} · Poppy, Yarrow</span>`:c?`<span class="c">${c}</span>`:''}</div>`).join('')}`).join('')}
+</div>
+<p style="margin:8px 0 0;font:italic 12px Alegreya;color:var(--ink2)">15 more building families below · Recipes and Upgrades open as their own tracks</p>`;
+const ledger=`<div class="eyebrow">Ledger · study</div>
+  <div class="subject"><div class="portrait bld"><img src="../../../public/images/game/props/well.png"></div><div><h2>Water Bowl</h2><p>Water Stewardship · Foundations · unlocks a building</p></div></div>
+  <p class="line">Unlocks the <u>Water Bowl</u>: a filled bowl inside the walls that haulers top up from the river. It would settle <span class="bad">the thirst alert</span> for good.</p>
+  <div class="h">Cost and time</div>
+  <div class="rows"><div><span>Research</span><span>60 of 320</span></div><div><span>Requires</span><span>nothing</span></div><div><span>Studied at</span><span>Research Hut</span></div><div><span>Scholars</span><span>Poppy, Yarrow</span></div><div><span>Takes</span><span>≈ 1.5 h at 1×</span></div><div><span>Queue</span><span>after Stone Dressing II</span></div></div>
+  <div class="h">Effect</div>
+  <div class="effect">Adds the <b>Water Bowl</b> to Build. 1 × 1 tile, 6 stone, 2 planks. Holds 40 water. Cats drink here instead of walking to the river.</div>
+  <div class="h">Leads to</div>
+  <div class="rows"><div><span>Bowl Stores</span><span>+20 capacity</span></div><div><span>Refill Rounds</span><span>Steward refills</span></div><div><span>Bowl Crews</span><span>+1 station slot</span></div></div>
+  <div class="acts"><span class="act hot">Study now<small>60 research · pauses Stone Dressing II</small></span><span class="act">Queue next<small>after 1 h</small></span><span class="act">Show in tree</span></div>`;
+atlasChrome({tab:'Research',ledger,spread});
+renderWorld(document.getElementById('w'),{scale:3,ox:-270,oy:-110,annotate:false});
+</script></body></html>

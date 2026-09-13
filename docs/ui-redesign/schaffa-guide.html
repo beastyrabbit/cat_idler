@@ -1,0 +1,453 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Idle Cat Forest — Glass Clearing UI: implementation guide</title>
+<style>/* Glass Clearing — shared chrome for the chosen direction */
+:root{--glass:rgba(12,22,16,.70);--glass2:rgba(10,19,14,.90);--edge:rgba(255,255,255,.14);--ink:#eef3ea;--dim:#a9b8a8;--sun:#ffd166;--bad:#ff6b57;--ok:#7ed37a;--info:#7cc6e6;--line:rgba(255,255,255,.09);--fill:rgba(255,255,255,.08)}
+*{box-sizing:border-box}
+.ic{width:1em;height:1em;display:inline-block;vertical-align:-2px}
+.g{background:var(--glass);backdrop-filter:blur(14px) saturate(1.2);border:1px solid var(--edge);border-radius:16px;box-shadow:0 10px 30px rgba(0,0,0,.35)}
+.g2{background:var(--glass2);backdrop-filter:blur(18px) saturate(1.2);border:1px solid var(--edge);border-radius:16px;box-shadow:0 14px 40px rgba(0,0,0,.45)}
+/* top-left cluster */
+.tl{position:absolute;left:20px;top:18px;display:flex;gap:8px;align-items:stretch;z-index:6}
+.chip{padding:10px 16px 10px 14px;display:flex;align-items:center;gap:14px}
+.chip h1{margin:0;font:italic 400 26px/1 'Instrument Serif',serif}.chip small{display:block;color:var(--dim);font-weight:600;font-size:11.5px;margin-top:2px}
+.seg{display:flex;background:rgba(0,0,0,.35);border-radius:10px;padding:3px;gap:2px}
+.seg span{padding:5px 10px;border-radius:8px;font-weight:800;font-size:12px;color:var(--dim)}.seg span.on{background:var(--sun);color:#1a1608}
+.seal{padding:8px 13px 8px 11px;display:flex;align-items:center;gap:8px;border-radius:999px;font-weight:800;font-size:15px;color:var(--ink)}
+.seal .b{position:relative;display:grid;place-items:center;color:var(--dim)}.seal .b .ic{width:20px;height:20px}
+.seal .b i{position:absolute;top:-3px;right:-4px;width:9px;height:9px;border-radius:50%;background:var(--bad);border:2px solid #101814}
+.seal.open{background:rgba(255,209,102,.18);box-shadow:inset 0 0 0 1px var(--sun),0 10px 30px rgba(0,0,0,.35)}.seal.open,.seal.open .b{color:var(--sun)}
+/* attention popover */
+.pop{position:absolute;left:20px;top:82px;width:470px;z-index:7;padding:14px}
+.pop:before{content:"";position:absolute;left:396px;top:-7px;width:12px;height:12px;background:var(--glass);border-left:1px solid var(--edge);border-top:1px solid var(--edge);transform:rotate(45deg)}
+.pop .hd{display:flex;align-items:baseline;gap:8px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+.pop .hd b{font-size:15px;font-weight:800}.pop .hd span{color:var(--dim);font-weight:600;font-size:11.5px}.pop .hd .x{margin-left:auto;color:var(--dim);font-weight:700;font-size:11px}
+.pop .row{display:grid;grid-template-columns:10px 1fr auto;gap:10px;align-items:center;padding:10px 0;border-bottom:1px solid var(--line)}
+.pop .row:last-child{border-bottom:0;padding-bottom:2px}
+.pop .dot{width:8px;height:8px;border-radius:50%;background:var(--bad)}.pop .dot.w{background:var(--sun)}.pop .dot.i{background:var(--info)}
+.pop .t{font-weight:800;font-size:13px}.pop .why{color:var(--dim);font-weight:600;font-size:11.5px;margin-top:1px}
+.pop .acts{display:flex;gap:5px;align-items:center}.pop .acts .act{padding:6px 10px;font-size:11.5px}
+.pop .pin{width:30px;height:30px;border-radius:9px;display:grid;place-items:center;color:var(--dim);border:1px solid var(--edge)}.pop .pin .ic{width:15px;height:15px}
+.act{border:1px solid var(--edge);background:var(--fill);border-radius:10px;padding:7px 11px;font-weight:800;font-size:12px;color:var(--ink);white-space:nowrap}
+.act.hot{background:var(--sun);color:#1a1608;border-color:transparent}.act.dis{opacity:.45}.act.q{background:transparent}
+.act small{display:block;font-weight:700;font-size:10.5px;opacity:.75}
+/* resources */
+.res{position:absolute;right:20px;top:18px;display:flex;gap:8px;z-index:6}
+.pill{padding:8px 12px 8px 10px;display:flex;align-items:center;gap:8px;border-radius:999px}
+.pill img{width:18px;height:18px;image-rendering:pixelated}.pill b{font-weight:800;font-size:15px}.pill span{color:var(--dim);font-size:11px;font-weight:700}
+.pill i{font-style:normal;color:var(--ok);font-size:11px;font-weight:800}.pill i.stale{color:var(--sun)}.pill.stale b{color:var(--dim)}
+/* dock */
+.dock{position:absolute;left:50%;bottom:20px;transform:translateX(-50%);padding:8px;display:flex;gap:4px;z-index:6;border-radius:22px;align-items:center}
+.dk{width:52px;height:52px;border-radius:14px;display:grid;place-items:center;color:var(--dim);position:relative}
+.dk .ic{width:22px;height:22px}.dk.on{background:rgba(255,209,102,.18);color:var(--sun);box-shadow:inset 0 0 0 1px var(--sun)}
+.dk.on:after,.dk.hov:after{content:attr(data-l);position:absolute;left:50%;top:-30px;transform:translateX(-50%);background:var(--glass2);border:1px solid var(--edge);border-radius:8px;padding:3px 8px;font:800 10.5px Manrope;letter-spacing:.04em;text-transform:uppercase;color:var(--ink);white-space:nowrap}
+.dk em{position:absolute;top:4px;right:5px;width:16px;height:16px;border-radius:50%;background:var(--bad);color:#fff;font:800 10px/16px Manrope;text-align:center;font-style:normal}
+.dock .sep{width:1px;height:30px;background:var(--line);margin:0 4px}
+/* tethered card */
+.card{position:absolute;width:340px;padding:14px;z-index:6}
+.card .hd{display:flex;gap:10px;align-items:center}
+.portrait{width:52px;height:52px;border-radius:14px;background:rgba(255,255,255,.08) url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAByElEQVR4nOyasUoDQRCG/4RonsDCToKIlcEU2llY5gVSiIXPISoKPoeIWNgoWFj6CJFYiUiws/AJNIFTNg54yy253E32ivm/ZthkJ4SZ/+Z2hq3DOHUYhwGAcRgAGIcBgHEYABiHAYBxGAAYhwGAcRgAGKcBJTZa7eT/+nk4qM3TTwvzCigdbcng082pWydLLWc7u/u5/PuPV5M/8jl0drN34mwsJbAGQImvh4Gzze5kLZkdNxYz9zfG385K5sU/NlQAlPGVgOX1zH1VZ16gAqBEs9vO/Hzh42U2v8tbxIQKwJyQ97mcD2b9PhZUAJQ4u3519nhvDUUQ/9hQAVBCMi+Z9J9t/5kX6yvn7h5RoQKghGTyaDt99vcz769lP2tARaj13P5kp39+kMuvc3iRWnMiFBn1k6Bk3s+s1n5tWANQEn8mKCRv77n8a6srqTVngpEpHOVQ5kOM/iZD0+YDQiwl8C0AJUL9/cibCYaUUNV8gApASfJW+6p+bxpUAAoi1fn3BJdAETkR8hwQidI1QDLld4PC1k4v0y9U7dkNRka9GwxVcV8psat9CPYCUCbvnZ+q7wYJVACMw4uSMA4DAOMwADCO+QD8AAAA//9S9bSvAAAABklEQVQDAJGXpiMR+CnHAAAAAElFTkSuQmCC) 0 0/52px 52px no-repeat;image-rendering:pixelated;border:1px solid var(--edge);flex:none}
+.portrait.bld{display:grid;place-items:center;background:rgba(255,255,255,.08)}.portrait.bld img{width:40px;height:40px;image-rendering:pixelated}
+.card .hd b{font-size:19px;font-weight:800;display:block}.card .hd small{color:var(--dim);font-weight:600}
+.card .now{margin:12px 0 10px;font-size:14px;font-weight:700;line-height:1.5}
+.card .now u{text-decoration:none;color:var(--sun)}.card .why{color:var(--dim);font-weight:600;font-size:12px}.card .now .bad{color:var(--bad)}
+.rings{display:flex;gap:10px;margin:10px 0}
+.ring{width:64px;text-align:center;font-size:10px;font-weight:800;color:var(--dim);text-transform:uppercase}
+.ring div{width:50px;height:50px;border-radius:50%;margin:0 auto 4px;display:grid;place-items:center;font:800 13px Manrope;color:#fff;position:relative}
+.ring div:after{content:"";position:absolute;inset:6px;border-radius:50%;background:#15221a}.ring div span{position:relative;z-index:1}
+.card .acts{display:flex;gap:6px;flex-wrap:wrap}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:3px 12px;font-size:12.5px;margin:8px 0}
+.kv em{font-style:normal;color:var(--dim);font-weight:700;font-size:11px;text-transform:uppercase;letter-spacing:.06em;padding-top:2px}.kv b{font-weight:700}.kv .bad{color:var(--bad)}
+svg.lead{position:absolute;left:0;top:0;z-index:5;pointer-events:none}
+/* section sheet */
+.sheet{position:absolute;left:20px;top:82px;bottom:96px;width:660px;z-index:6;padding:16px 18px;display:flex;flex-direction:column;overflow:hidden}
+.sheet.wide{width:1220px}
+.sheet .hd{display:flex;align-items:baseline;gap:12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+.sheet .hd h2{margin:0;font:800 20px/1 Manrope}.sheet .hd p{margin:0;color:var(--dim);font-weight:600;font-size:12px}
+.sheet .hd .x{margin-left:auto;color:var(--dim);font-weight:800;font-size:11px;letter-spacing:.06em}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin:10px 0 6px}
+.fchip{border:1px solid var(--edge);border-radius:999px;padding:4px 11px;font-weight:800;font-size:11.5px;color:var(--dim)}
+.fchip.on{background:var(--ink);color:#101814;border-color:transparent}.fchip.hot{color:var(--sun);border-color:var(--sun)}
+.fchip.search{color:var(--dim);font-weight:600;flex:1;max-width:220px;border-style:dashed}
+.tbl{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:4px}
+.tbl th{text-align:left;font:800 10px Manrope;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);padding:6px 8px;border-bottom:1px solid var(--edge)}
+.tbl td{padding:8px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+.tbl tr.sel td{background:rgba(255,209,102,.08);box-shadow:inset 3px 0 0 var(--sun)}
+.tbl td b{font-weight:800;font-size:13.5px}.tbl .dim{color:var(--dim);font-weight:600}.tbl .bad{color:var(--bad);font-weight:800}.tbl .ok{color:var(--ok);font-weight:800}
+.tbl .num{font-weight:800;text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+.role{display:inline-block;font:800 9px Manrope;letter-spacing:.1em;text-transform:uppercase;color:#101814;background:var(--sun);padding:1px 5px;border-radius:5px;margin-left:6px;vertical-align:2px}.role.w{background:var(--dim)}
+.spark{display:inline-flex;gap:3px;vertical-align:middle}.spark i{display:inline-block;width:22px;height:5px;background:rgba(255,255,255,.12);border-radius:2px;position:relative;overflow:hidden}.spark i:after{content:"";position:absolute;left:0;top:0;bottom:0;width:var(--w);background:var(--ok)}.spark i.low:after{background:var(--bad)}.spark i.mid:after{background:var(--sun)}
+.state{display:inline-block;border-radius:6px;padding:1px 7px;font:800 10px/16px Manrope;letter-spacing:.08em;text-transform:uppercase;background:var(--fill)}
+.state.auto{color:var(--ok)}.state.manual{color:var(--dim)}.state.blocked{color:#fff;background:var(--bad)}.state.waiting{color:var(--sun)}
+.whybox{background:rgba(255,107,87,.10);border:1px solid rgba(255,107,87,.35);border-radius:12px;padding:10px 12px;font-size:12.5px}
+.whybox b{display:block;font-size:13.5px;margin-bottom:4px}.whybox ol{margin:2px 0 8px 16px;padding:0}.whybox li{margin:2px 0;color:var(--ink)}.whybox .acts{display:flex;gap:6px;flex-wrap:wrap}
+.stamp{display:inline-block;border-radius:5px;padding:0 6px;font:800 9.5px/16px Manrope;letter-spacing:.1em;text-transform:uppercase;background:rgba(126,211,122,.15);color:var(--ok)}.stamp.est{background:rgba(255,209,102,.15);color:var(--sun)}
+/* map tags, minimap, hint, mode */
+.tag{position:absolute;z-index:5;padding:5px 9px;border-radius:9px;font-weight:800;font-size:12px}
+.tag i{font-style:normal;color:var(--bad)}
+.mini{position:absolute;right:20px;bottom:20px;width:230px;height:150px;overflow:hidden;z-index:6}
+.mini canvas{position:absolute;left:0;top:0}.mini .vp{position:absolute;border:1.5px solid var(--sun);left:60px;top:38px;width:120px;height:70px;border-radius:4px}
+.hint{position:absolute;left:20px;bottom:24px;color:rgba(255,255,255,.55);font-weight:700;font-size:11.5px;z-index:5}
+.mode{position:absolute;left:50%;top:18px;transform:translateX(-50%);padding:8px 14px;z-index:6;display:flex;align-items:center;gap:12px;font-weight:800}
+.mode small{color:var(--dim);font-weight:700}
+
+html{color-scheme:dark}body{margin:0;background:#0f1713;color:var(--ink);font:15px/1.55 Manrope,"Segoe UI",system-ui,-apple-system,sans-serif;padding:0 0 80px}
+main{max-width:1180px;margin:0 auto;padding:0 18px}
+header.h{max-width:1180px;margin:0 auto;padding:36px 18px 18px;border-bottom:1px solid var(--line)}
+header.h h1{margin:0;font:italic 400 44px/1.05 "Instrument Serif",Georgia,serif}
+header.h p.lede{max-width:80ch;font-size:16px;color:var(--dim);margin:10px 0 0}
+.meta{display:flex;flex-wrap:wrap;gap:6px;margin:14px 0 0}.meta span{border:1px solid var(--edge);border-radius:999px;padding:3px 10px;font-size:12px;font-weight:700;color:var(--dim)}
+nav.toc{border-bottom:1px solid var(--line)}nav.toc div{max-width:1180px;margin:0 auto;padding:10px 18px;display:flex;flex-wrap:wrap;gap:4px 12px;font-size:12px;font-weight:700}nav.toc a{color:var(--dim);text-decoration:none}
+h2{font:800 26px/1.15 Manrope,sans-serif;margin:56px 0 10px}h2 small{display:block;font:700 11px Manrope,sans-serif;letter-spacing:.16em;text-transform:uppercase;color:var(--sun);margin-bottom:6px}
+h3{font:800 18px/1.2 Manrope,sans-serif;margin:32px 0 8px}h4{font:800 12px Manrope,sans-serif;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);margin:20px 0 6px}
+p{max-width:86ch;margin:8px 0}p.note{border-left:3px solid var(--sun);padding:8px 14px;background:rgba(255,209,102,.07);border-radius:0 10px 10px 0;max-width:none}
+ul,ol{max-width:86ch;padding-left:22px}li{margin:4px 0}
+code{font:600 12.5px/1.4 ui-monospace,Menlo,monospace;background:rgba(255,255,255,.07);padding:1px 6px;border-radius:5px;color:#ffe9a6}
+pre{background:#0a110d;border:1px solid var(--line);border-radius:12px;padding:14px 16px;overflow:auto;font:500 12.5px/1.5 ui-monospace,Menlo,monospace;color:#d9e2d5}
+.tw{overflow-x:auto;margin:10px 0 18px}table.spec{width:100%;min-width:640px;border-collapse:collapse;font-size:13px}
+table.spec th{text-align:left;font:800 10.5px Manrope,sans-serif;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);padding:8px 10px;border-bottom:1px solid var(--edge)}
+table.spec td{padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}table.spec td:first-child{font-weight:800;white-space:nowrap}
+.sw{display:inline-block;width:18px;height:18px;border-radius:5px;vertical-align:-4px;margin-right:8px;border:1px solid rgba(255,255,255,.15)}
+.sw-wrap{overflow-x:auto;margin:14px 0 8px}.stage{position:relative;width:1140px;height:300px;border-radius:14px;overflow:hidden;background:#4f7f3a;border:1px solid var(--line)}
+.stage>img.bg{position:absolute;left:-120px;top:-60px;width:1920px;height:auto;max-width:none}
+.stage.tall{height:640px}.stage.mid{height:420px}.stage.short{height:200px}
+.cap{font-size:12.5px;color:var(--dim);margin:0 0 18px}.cap b{color:var(--ink)}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:22px}@media(max-width:800px){.two{grid-template-columns:1fr}}
+figure{margin:14px 0 26px}figure img{width:100%;height:auto;display:block;border-radius:12px;border:1px solid var(--line)}figcaption{font-size:12.5px;color:var(--dim);margin-top:8px}
+.anat{position:relative}.anat img{width:100%;height:auto;display:block;border-radius:12px;border:1px solid var(--line)}
+.anat .mk{position:absolute;width:24px;height:24px;border-radius:50%;background:var(--sun);color:#1a1608;font:800 12px/24px Manrope,sans-serif;text-align:center;box-shadow:0 0 0 3px rgba(0,0,0,.5);transform:translate(-50%,-50%)}
+.legend{display:grid;grid-template-columns:repeat(2,1fr);gap:4px 24px;font-size:13px;margin:12px 0 0}@media(max-width:700px){.legend{grid-template-columns:1fr}}.legend b{display:inline-block;width:22px;height:22px;border-radius:50%;background:var(--sun);color:#1a1608;font:800 12px/22px Manrope,sans-serif;text-align:center;margin-right:8px}
+.type-row{display:grid;grid-template-columns:220px 1fr 200px;gap:16px;align-items:baseline;padding:10px 0;border-bottom:1px solid var(--line);font-size:13px}.type-row .s{color:var(--dim)}@media(max-width:700px){.type-row{grid-template-columns:1fr}}
+.kbd{display:inline-block;border:1px solid var(--edge);border-radius:6px;padding:0 7px;font:700 11.5px Manrope,sans-serif;background:var(--fill);margin:0 2px}
+.do-dont{display:grid;grid-template-columns:1fr 1fr;gap:18px}@media(max-width:800px){.do-dont{grid-template-columns:1fr}}.do-dont div{border:1px solid var(--line);border-radius:12px;padding:12px 16px;font-size:13.5px}.do-dont .do{border-color:rgba(126,211,122,.4)}.do-dont .dont{border-color:rgba(255,107,87,.4)}.do-dont h5{margin:0 0 6px;font:800 11px Manrope,sans-serif;letter-spacing:.12em;text-transform:uppercase}.do h5{color:var(--ok)}.dont h5{color:var(--bad)}
+.gallery{display:grid;grid-template-columns:1fr 1fr;gap:18px}@media(max-width:800px){.gallery{grid-template-columns:1fr}}
+.chk li{list-style:none;position:relative;padding-left:26px}.chk li:before{content:"";position:absolute;left:0;top:6px;width:14px;height:14px;border:1.5px solid var(--dim);border-radius:4px}
+footer{max-width:1180px;margin:60px auto 0;padding:20px 18px;border-top:1px solid var(--line);color:var(--dim);font-size:12.5px}
+.dock{transform:none;left:auto;right:auto;position:relative;display:inline-flex;margin:120px 0 0 300px}
+.card .portrait{background-size:52px 52px}
+</style></head><body>
+<header class="h">
+  <p style="margin:0;font:800 11px Manrope,sans-serif;letter-spacing:.18em;text-transform:uppercase;color:var(--sun)">Idle Cat Forest · UI handoff · 13 September 2026</p>
+  <h1>Glass Clearing</h1>
+  <p class="lede">The management HUD rebuilt as a bare world with a few pieces of translucent glass on it. This page has what a team needs to build it: how the direction was chosen, tokens, layout, every component with a rendered example and its states, behaviour rules, the data each component needs from the simulation, engine notes for Unity UI Toolkit and Bevy, an accessibility floor, and a migration checklist from the current interface.</p>
+  <div class="meta"><span>Direction 4 of 5 · chosen</span><span>replaces top bar + drawer + scrolling nav</span><span>same world renderer, new chrome only</span><span>sources: docs/ui-redesign in the repo</span></div>
+</header>
+<nav class="toc"><div>
+<a href="#s0">0 How we got here</a><a href="#s1">1 Summary</a><a href="#s2">2 Anatomy</a><a href="#s3">3 Tokens</a><a href="#s4">4 Layout</a><a href="#s5">5 Components</a><a href="#s6">6 Behaviour</a><a href="#s7">7 Copy</a><a href="#s8">8 Data</a><a href="#s9">9 Screens</a><a href="#s10">10 Engine notes</a><a href="#s11">11 Accessibility</a><a href="#s12">12 Migration</a><a href="#s13">13 Open choices</a><a href="#s14">14 Files</a>
+</div></nav>
+<main>
+
+<h2 id="s0"><small>0</small>How we got here</h2>
+<p>Five directions were mocked on the same colony moment (The Commons, day 2, Mallow selected while hauling logs to a blocked Sawmill, four things needing attention). Only the chrome differed.</p>
+<figure><img src="https://schaffa.dev/f/Yve1HfiMolVUQ4yQReC1Qw.webp" alt=""><figcaption>Five directions side by side. Hearthwood (wood-frame), Overseer's Ledger (dense, keyboard-first), Field Atlas (vellum margins), Glass Clearing (minimal glass), Command Deck (RTS console).</figcaption></figure>
+<div class="gallery">
+<figure><img src="https://schaffa.dev/f/9-4jcBN1hViIdEpsgWbvbQ.webp" alt=""><figcaption>A · Hearthwood: carved wood rail and parchment panels from the tracked UI pack.</figcaption></figure>
+<figure><img src="https://schaffa.dev/f/Rb_efEF2Kcqi6zdZGvMkhw.webp" alt=""><figcaption>B · Overseer's Ledger: dense, every action has a key, causal DOING / FROM / TO / BECAUSE / THEN block.</figcaption></figure>
+<figure><img src="https://schaffa.dev/f/CaiWs3f9lMwZ1ElDRV8Ttw.webp" alt=""><figcaption>C · Field Atlas: vellum margins, thumb index, one-sentence ledger line. Rejected as too busy.</figcaption></figure>
+<figure><img src="https://schaffa.dev/f/DBjrldcRbOb3RbuPHvM3Ag.webp" alt=""><figcaption>D · Glass Clearing: almost no chrome, inspector card tethered to the cat. Chosen.</figcaption></figure>
+<figure><img src="https://schaffa.dev/f/HaCa95s23cnafzeHXj1F6A.webp" alt=""><figcaption>E · Command Deck: minimap, subject cells, 4 × 3 hotkey command grid.</figcaption></figure>
+</div>
+<p class="note">Chosen: <b>D, Glass Clearing</b>. Field Atlas was judged too cluttered. Attention became a single sealed counter that opens a popup, restyled afterwards to match the rest of the chrome (§5.2).</p>
+
+<h2 id="s1"><small>1</small>Summary and decisions</h2>
+<p>The current interface stacks a resource bar, a left drawer, a column of alert buttons and a horizontally scrolling 14-item navigation around a flat map. The redesign keeps the map full-bleed and puts five small objects on it: a village chip, an attention seal, resource pills, a dock, and a minimap. Everything else appears only on demand: a card tethered to whatever you click, a drawer for list-heavy sections, and a popover for the attention queue.</p>
+<div class="do-dont">
+ <div class="do"><h5>Decided</h5><ul style="margin:0;padding-left:18px"><li>Direction: <b>Glass Clearing</b>.</li><li>Attention: <b>one sealed counter</b> that opens a popup. Inline alert buttons and top-center toasts are removed.</li><li>Inspection: a <b>card tethered to the subject</b> with a leader line, one at a time.</li><li>Sections: a <b>left glass drawer</b>; Research uses a wide variant and dims the map.</li><li>Navigation: a <b>single grouped dock</b> of icons, label only on the active or hovered icon.</li></ul></div>
+ <div class="dont"><h5>Not part of this change</h5><ul style="margin:0;padding-left:18px"><li>The world renderer, sprites, camera and input model stay as they are. Only the map <i>annotation</i> layer gains four marks (§5.8).</li><li>No simulation rule changes. Every button maps to an existing <code>ClientAction</code>; new data is read-only (§8).</li><li>No new art. Icons are 24 px line glyphs (in the repo); fonts are two open-licence families.</li></ul></div>
+</div>
+<p class="note">Principle for every later decision: <b>the world is the interface.</b> If a piece of chrome can be a mark on the map or a line inside an existing card, do that before adding a new panel.</p>
+
+<h2 id="s2"><small>2</small>Screen anatomy</h2>
+<div class="anat"><img src="https://schaffa.dev/f/_wA017HGJs-6dFIx90Z5Rw.webp" alt="Annotated overview">
+ <span class="mk" style="left:1.6%;top:8.2%">1</span><span class="mk" style="left:21.5%;top:4.6%">2</span><span class="mk" style="left:83.3%;top:3.5%">3</span><span class="mk" style="left:83.9%;top:21.3%">4</span><span class="mk" style="left:69.8%;top:39%">5</span><span class="mk" style="left:47.1%;top:29.2%">6</span><span class="mk" style="left:39%;top:74.5%">7</span><span class="mk" style="left:50%;top:95%">8</span><span class="mk" style="left:93%;top:91.7%">9</span><span class="mk" style="left:10.4%;top:97%">10</span>
+</div>
+<div class="legend">
+ <div><b>1</b>Village chip: name, day and time, census line, speed control</div><div><b>2</b>Attention seal: bell, red dot, count; opens the popover (§5.2)</div>
+ <div><b>3</b>Resource pills with report freshness (§5.3)</div><div><b>4</b>Tethered card for the selected subject (§5.5)</div>
+ <div><b>5</b>Selection ellipse, route, destination ring on the map (§5.8)</div><div><b>6</b>Need ring: only when a need is below 30 %</div>
+ <div><b>7</b>Map tag on a blocked workplace</div><div><b>8</b>Dock: 14 sections in 5 groups, label on the active one (§5.4)</div>
+ <div><b>9</b>Minimap with viewport rectangle</div><div><b>10</b>Hint line: controls and save/connection state</div>
+</div>
+<p>Z-order, back to front: world tiles → roads, structures, props → cats and cargo badges → map annotations (route, rings, ghost tiles, tags) → screen chrome (chip, pills, dock, minimap, hint) → drawer → card and leader line → popover → mode chip.</p>
+
+<h2 id="s3"><small>3</small>Tokens</h2>
+<h3>Colour</h3>
+<div class="tw"><table class="spec"><thead><tr><th>Token</th><th>Value</th><th>Use</th></tr></thead><tbody>
+<tr><td><span class="sw" style="background:rgba(12,22,16,.70)"></span>--glass</td><td>rgba(12,22,16,.70) + blur 14 px, saturate 1.2</td><td>Every pill, chip, card, popover, dock, minimap frame</td></tr>
+<tr><td><span class="sw" style="background:rgba(10,19,14,.90)"></span>--glass2</td><td>rgba(10,19,14,.90) + blur 18 px</td><td>Drawer, reins bar (large text areas need more opacity)</td></tr>
+<tr><td><span class="sw" style="background:rgba(12,22,16,.86)"></span>glass fallback</td><td>rgba(12,22,16,.86), no blur</td><td>Engines without backdrop blur (§10). Drawer fallback: rgba(10,19,14,.95)</td></tr>
+<tr><td><span class="sw" style="background:rgba(255,255,255,.14)"></span>--edge</td><td>rgba(255,255,255,.14)</td><td>1 px border on all glass</td></tr>
+<tr><td><span class="sw" style="background:rgba(255,255,255,.09)"></span>--line</td><td>rgba(255,255,255,.09)</td><td>Row dividers, dock separators</td></tr>
+<tr><td><span class="sw" style="background:rgba(255,255,255,.08)"></span>--fill</td><td>rgba(255,255,255,.08)</td><td>Secondary buttons, key caps, state chips</td></tr>
+<tr><td><span class="sw" style="background:#eef3ea"></span>--ink</td><td>#eef3ea</td><td>Primary text</td></tr>
+<tr><td><span class="sw" style="background:#a9b8a8"></span>--dim</td><td>#a9b8a8</td><td>Secondary text, inactive icons, table headers</td></tr>
+<tr><td><span class="sw" style="background:#ffd166"></span>--sun</td><td>#ffd166 · text on it #1a1608</td><td>The one accent: active dock icon, primary button, selection, route, warning severity, "estimate" freshness</td></tr>
+<tr><td><span class="sw" style="background:#ff6b57"></span>--bad</td><td>#ff6b57</td><td>Danger severity, need below 30 %, blocked state, illegal tile, "no bed"</td></tr>
+<tr><td><span class="sw" style="background:#7ed37a"></span>--ok</td><td>#7ed37a</td><td>Counted reports, automated state, healthy need</td></tr>
+<tr><td><span class="sw" style="background:#7cc6e6"></span>--info</td><td>#7cc6e6</td><td>Info severity, study in progress</td></tr>
+<tr><td><span class="sw" style="background:#15221a"></span>ring hole</td><td>#15221a</td><td>Centre of the need rings in cards</td></tr>
+</tbody></table></div>
+<p>Rule: sun is the only colour that says "this is active or the thing to do". Never use it for decoration. Red, green and blue are status only and always appear with a word or a number beside them.</p>
+<h3>Type</h3>
+<p>Faces: <b>Manrope</b> (500–800) for everything, <b>Instrument Serif</b> italic for the village name only. Both are SIL Open Font Licence; ship the font files with the client. (This page falls back to system fonts if they are not installed.)</p>
+<div class="type-row"><span style="font:italic 400 26px/1 'Instrument Serif',Georgia,serif">The Commons</span><span>Instrument Serif italic 400 · 26 px · village name only</span><span class="s">chip</span></div>
+<div class="type-row"><span style="font:800 20px Manrope,sans-serif">Drawer title</span><span>Manrope 800 · 20 px</span><span class="s">drawer header</span></div>
+<div class="type-row"><span style="font:800 19px Manrope,sans-serif">Subject name</span><span>Manrope 800 · 19 px</span><span class="s">card header</span></div>
+<div class="type-row"><span style="font:800 15px Manrope,sans-serif">184</span><span>Manrope 800 · 15 px · tabular numbers</span><span class="s">pill counts, seal count</span></div>
+<div class="type-row"><span style="font:700 14px Manrope,sans-serif">Carrying <u style="text-decoration:none;color:var(--sun)">3 logs</u> to the Sawmill</span><span>Manrope 700 · 14 px · the "now" line; clickable nouns in sun</span><span class="s">card</span></div>
+<div class="type-row"><span style="font:700 13px Manrope,sans-serif">Row title · body</span><span>Manrope 700 · 13 px (600 for running text)</span><span class="s">tables, popover</span></div>
+<div class="type-row"><span style="font:800 12px Manrope,sans-serif">Button</span><span>Manrope 800 · 12 px · sentence case, verb first</span><span class="s">.act</span></div>
+<div class="type-row"><span style="font:600 11.5px Manrope,sans-serif;color:var(--dim)">Cause line, captions</span><span>Manrope 600 · 11.5 px · dim</span><span class="s">.why, small</span></div>
+<div class="type-row"><span style="font:800 10px Manrope,sans-serif;letter-spacing:.12em;text-transform:uppercase;color:var(--dim)">Column header</span><span>Manrope 800 · 10 px · uppercase · 0.12 em tracking</span><span class="s">th, tags, dock label</span></div>
+<p>Minimum size anywhere is 10 px uppercase or 11.5 px sentence case.</p>
+<h3>Shape, depth, spacing</h3>
+<div class="tw"><table class="spec"><tbody>
+<tr><td>Radius</td><td>pills and chips 999 px · cards, popover, drawer 16 px (dock 22 px) · buttons 10 px · dock icon cell 14 px · portrait 14 px · inline boxes 12 px</td></tr>
+<tr><td>Shadow</td><td>glass: 0 10px 30px rgba(0,0,0,.35) · drawer: 0 14px 40px rgba(0,0,0,.45)</td></tr>
+<tr><td>Screen margin</td><td>20 px from every edge at 1920 × 1080 (12 px at 1280 × 720)</td></tr>
+<tr><td>Gaps</td><td>between pills 8 px · dock icons 4 px · buttons 6 px · card sections 10–12 px</td></tr>
+<tr><td>Padding</td><td>pill 8 / 12 · chip 10 / 16 · card 14 · popover 14 · drawer 16 / 18 · button 7 / 11 (popover 6 / 10)</td></tr>
+<tr><td>Icons</td><td>24 px viewBox line glyphs, stroke 1.8, round caps and joins, currentColor · dock 22 px · seal 20 px · inline 14–16 px</td></tr>
+</tbody></table></div>
+<pre>:root{
+  --glass:rgba(12,22,16,.70); --glass2:rgba(10,19,14,.90); --edge:rgba(255,255,255,.14);
+  --line:rgba(255,255,255,.09); --fill:rgba(255,255,255,.08);
+  --ink:#eef3ea; --dim:#a9b8a8; --sun:#ffd166; --bad:#ff6b57; --ok:#7ed37a; --info:#7cc6e6;
+}
+.g { background:var(--glass); backdrop-filter:blur(14px) saturate(1.2); border:1px solid var(--edge);
+     border-radius:16px; box-shadow:0 10px 30px rgba(0,0,0,.35); }</pre>
+
+<h2 id="s4"><small>4</small>Layout and responsive rules</h2>
+<div class="tw"><table class="spec"><thead><tr><th>Object</th><th>1920 × 1080 (reference)</th><th>1280 × 720</th><th>below 1100 wide</th></tr></thead><tbody>
+<tr><td>Village chip + seal</td><td>left 20, top 18; chip name 26 px; seal after an 8 px gap</td><td>left 12, top 12; name 20 px; speed 11 px</td><td>census line hidden; speed collapses to pause + current speed</td></tr>
+<tr><td>Resource pills</td><td>right 20, top 18; six pills, 8 px gap</td><td>right 12; padding 5 / 9; count 13 px</td><td>icon + number only; research and blessings move into the Overview drawer</td></tr>
+<tr><td>Dock</td><td>centred, bottom 20; 52 px cells, 22 px icons, 5 groups</td><td>bottom 12; 42 px cells, 19 px icons</td><td>36 px cells; groups keep dividers</td></tr>
+<tr><td>Tethered card</td><td>340 px wide; anchored to the subject (§5.5)</td><td>300 px; rings 44 px</td><td>becomes a bottom sheet, full width, no leader line</td></tr>
+<tr><td>Drawer</td><td>left 20, top 82, bottom 96, width 660 (Research 1220)</td><td>width 560 (Research: full width minus 24)</td><td>full width minus 24; card hidden while open</td></tr>
+<tr><td>Popover</td><td>left 20, top 82, width 470, caret under the seal</td><td>top 64, width 480</td><td>full width minus 24</td></tr>
+<tr><td>Minimap</td><td>right 20, bottom 20, 230 × 150</td><td>hidden; M toggles</td><td>hidden</td></tr>
+<tr><td>Hint line</td><td>left 20, bottom 24, 11.5 px</td><td>hidden except connection state</td><td>hidden except connection state</td></tr>
+<tr><td>Mode chip (build, control)</td><td>top 18, centred</td><td>same</td><td>same, text shortened</td></tr>
+</tbody></table></div>
+<p>Never scale the whole UI. Reflow per the table so text stays at physical size. The dock never scrolls.</p>
+<figure><img src="https://schaffa.dev/f/frbkupUiQgAjNa6hhsgGdA.webp" alt=""><figcaption>The same chrome at 1280 × 720: smaller pills, dock and card; minimap hidden.</figcaption></figure>
+
+<h2 id="s5"><small>5</small>Components</h2>
+<p>The examples below are rendered from the same stylesheet as the mockups (inlined in this page). Class names are the naming contract for USS or Bevy styles. Wide examples scroll sideways on small screens.</p>
+
+<h3>5.1 Village chip and speed control</h3>
+<div class="sw-wrap"><div class="stage short"><img class="bg" src="https://schaffa.dev/f/DHhU2_dGlKOcDwY15oas0g.webp" alt=""><div class="tl"><div class="chip g"><div><h1>The Commons</h1><small>Day 2 · 13:30 · 31 cats, 12 at work</small></div><div class="seg"><span>‖</span><span class="on">1×</span><span>4×</span><span>8×</span></div></div></div></div></div>
+<p class="cap"><b>.chip</b> — name in Instrument Serif italic; second line: day, clock, alive count, working count. <b>.seg</b> — segmented control on a darker well; the active segment is sun. Paused: the ‖ segment is sun and the second line ends with "· paused". Keys <span class="kbd">Space</span> pause, <span class="kbd">1</span> <span class="kbd">4</span> <span class="kbd">8</span> speed.</p>
+
+<h3>5.2 Attention seal and popover</h3>
+<div class="sw-wrap"><div class="stage mid"><img class="bg" src="https://schaffa.dev/f/DHhU2_dGlKOcDwY15oas0g.webp" alt=""><div class="tl"><div class="chip g"><div><h1>The Commons</h1><small>Day 2 · 13:30 · 31 cats, 12 at work</small></div><div class="seg"><span>‖</span><span class="on">1×</span><span>4×</span><span>8×</span></div></div><div class="seal g open" ><span class="b"><svg class="ic " viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 16V11a6 6 0 0112 0v5l2 2H4z"/><path d="M10 20a2 2 0 004 0"/></svg><i></i></span>4</div></div><div class="pop g" style="top:76px">
+ <div class="hd"><b>Needs attention</b><span>4 · most urgent first</span><span class="x">Esc</span></div>
+ <div class="row"><span class="dot"></span><div><div class="t">Mallow and Hazel are thirsty</div><div class="why">No water reachable inside the walls · river is 9 tiles past the east gate</div></div><div class="acts"><span class="act hot">Send a water run</span><span class="pin"><svg class="ic " viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 21s-6-6.5-6-11a6 6 0 0112 0c0 4.5-6 11-6 11z"/><circle cx="12" cy="10" r="2"/></svg></span></div></div>
+ <div class="row"><span class="dot w"></span><div><div class="t">Sawmill blocked · no logs delivered</div><div class="why">2 haul jobs waiting · no free hauler · Thistle is idle</div></div><div class="acts"><span class="act">Let Thistle haul</span><span class="pin"><svg class="ic " viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 21s-6-6.5-6-11a6 6 0 0112 0c0 4.5-6 11-6 11z"/><circle cx="12" cy="10" r="2"/></svg></span></div></div>
+ <div class="row"><span class="dot i"></span><div><div class="t">Fox at the north gate</div><div class="why">Captain vacant, so defense is yours · Wren is ready</div></div><div class="acts"><span class="act">Rally Wren</span><span class="pin"><svg class="ic " viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 21s-6-6.5-6-11a6 6 0 0112 0c0 4.5-6 11-6 11z"/><circle cx="12" cy="10" r="2"/></svg></span></div></div></div>
+<div style="position:absolute;right:20px;top:18px;display:flex;gap:10px;align-items:center"><div class="seal g " ><span class="b"><svg class="ic " viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 16V11a6 6 0 0112 0v5l2 2H4z"/><path d="M10 20a2 2 0 004 0"/></svg><i></i></span>4</div><div class="seal g " style=color:var(--dim)><span class="b"><svg class="ic " viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 16V11a6 6 0 0112 0v5l2 2H4z"/><path d="M10 20a2 2 0 004 0"/></svg></span>0</div><div class="seal g open" ><span class="b"><svg class="ic " viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 16V11a6 6 0 0112 0v5l2 2H4z"/><path d="M10 20a2 2 0 004 0"/></svg><i></i></span>4</div></div></div></div>
+<p class="cap"><b>Seal states</b> at the top right, left to right: default (bell in dim, 9 px red dot with a 2 px dark border, count in ink) · empty (no dot, count in dim) · open (sun tint + inset 1 px sun ring, the same look as an active dock icon).</p>
+<div class="tw"><table class="spec"><tbody>
+<tr><td>Seal</td><td><code>.seal</code> pill: padding 8 / 13 / 8 / 11, gap 8, bell 20 px, count 15 px 800. The dot appears when any item has danger or warning severity. Hover shows the label "Attention" above it like a dock label.</td></tr>
+<tr><td>Popover</td><td><code>.pop</code>: 470 px wide, padding 14, top 82 (chip bottom + 8), caret 12 px rotated square centred under the seal. Header: "Needs attention" + count + "Esc". Rows: 10 px dot column · title 13 px 800 + cause 11.5 px dim · actions.</td></tr>
+<tr><td>Severity</td><td>danger = red · warning = sun · info = blue. Order rows danger → warning → info, then oldest first. Never more than one primary (sun) button: only the first row.</td></tr>
+<tr><td>Actions</td><td>Exactly one action per row plus the pin. The action is the single most useful <code>ClientAction</code> for that item. The pin pans the camera to the item's anchor, closes the popover, and opens the subject's card.</td></tr>
+<tr><td>Lifecycle</td><td>Items are computed server-side (§8). When a condition clears, the row fades out over 150 ms; the count updates immediately. A new danger item pulses the dot once (skipped under reduced motion).</td></tr>
+<tr><td>Limits</td><td>Show at most 6 rows; a 7th row reads "N more · open Events". Empty state: "Nothing needs you. Last solved: Sawmill unblocked at 13:40."</td></tr>
+</tbody></table></div>
+<figure><img src="https://schaffa.dev/f/OOPihQWwn2kxgXqx5o58uQ.webp" alt=""><figcaption>The popover in context on the overview.</figcaption></figure>
+<figure><img src="https://schaffa.dev/f/UwNv0IakMVkbL5Q2Trah7w.webp" alt=""><figcaption>Five ways the seal could expand; the anchored popover is the default. Alternatives: centred modal, right drawer, bottom sheet, spotlight that pans to each item.</figcaption></figure>
+
+<h3>5.3 Resource pills</h3>
+<div class="sw-wrap"><div class="stage short"><img class="bg" src="https://schaffa.dev/f/DHhU2_dGlKOcDwY15oas0g.webp" alt=""><div class="res"><div class="pill g"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAMAAAD04JH5AAAABGdBTUEAALGPC/xhBQAAADNQTFRF////////////////////////////////////////////////////////////AAAA////FbWC9gAAABB0Uk5Tb1/fL4+vP59PH88Pv+9/AKW+vXsAAANLSURBVHja7ZrtkqsgDIZB+UYo93+1e7Z23QoIQSXdM0N+1k7zNCQhwkseHzYyAAbAABgAA2AA/K8AQk7hzaZF4QKokJhCBWApAEMFmFKACRUg9R8kKoAr+Z+F0L0Bltj/8npgKX/CGYEL4F5/mf6GhtmeADIC8JmPnegI4KMA2CyWRANYA0CTzDS2FwDZO3r6sWlpBDd3AhA7NzwXFSDBLQD0oDdACE4C6J0TnTKlFXrzdrzzcbwCz0y8DKCV58vLPJlbAX6axEkAJeO1dUxEC/78Ij8ECPo0gPVTfl29aYjAtlG0AljiAshqAKVpqQAgpgA0WqqCyrBCoN22ZLzQB1YTzQB2gfsPrkrsWwFmE1psXWNzH8Dsmvy/0tyauwBso/+fNT6q2lIZ5ACsafX/W+n5RFgHFgsF4KHdtuHHskz41vbNJAyAhDNG3/pXtBBufaZdIBCAOZyz9783s7cqlnqbWDPDQQpgTgIEs8804Z8mdjOMqQOQcN5MYfp5ZbavAbRXYCkK6auMsxUAHy7aQm2xs/oKwBQum5NxGGYW7xuHACrcYo5vyWcFMQf1mgPgobvxIsDUH2AqAeiAYLoAoDAAVAHAYwD4AgDDAGAFgAUDYBkAA2AA/GUAjgHA/3IrJhgApAAgMADEX54HHhgAxZFswa7CGABhIGAYYzl8IosBNHYO9ngzaprKEwCGnAIJgEJOgfR8ALcLZAA6b4i8CkD7AtAqgO0LYOuHVBx1BTIACrMGsgeVrp9/BzopZXhdKA/QcT/QsMNq08u/AZ6WU7QmcHRh4dBS8ACg0+uB73hlAwoA+MakUwh8w61ZjxDkA3B0b9jhHY203ZwajB5QAtAITbB8ee0xMrB4e24wFqAEoG+shIKShjTpRu+bQ0ASDt89AWoiFnmPf3lexnPLccFyQchkbyiFiqSvImSyl4d0bi+K2WTH9YdpyUiHHahNzKZOdyQH0JuD1HQnU9FA5M0gPaE91ZI8SFgMFDSK5rOjCSitBisqfSYTJvYt0mAZOOfv15bruCD5JtiY424h+4jb93784b7F54YfbRO16k2lFOtVNo2GY7rpJ5tVtVT+k7ZKlROffj+gzRrtx4dtAAyAATAABsDHAb4AZuvR73Tj0UwAAAAASUVORK5CYII=" alt=""><b>184</b><i>✓</i></div><div class="pill g"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAMAAAD04JH5AAAABGdBTUEAALGPC/xhBQAAADNQTFRF////////////////////////////////////////////////////////////AAAA////FbWC9gAAABB0Uk5Tj59fr2/PH0/fL+8PP79/ACXWxxwAAAQXSURBVHja7Zrr0qMgDIajYCkHkfu/2t2ZfgeBgAnGdnbH/Ox09BF4w5sAbB8OuAH+JQAbgo6HoUOwVwAYlRihjDCAXxMzVi8JYF1ih7NyAH5JA7F4MQCVhkJJAZg0GEYI4DkK8JQBGB4A0hAQAOI4QBQBWMcB1v8PYDreC6ZLAWbemr1gBAhPFAcAnrL3WQNEAObEmYOQeDNGALCs5JZpxl6QijUjbQql4jwVukd343bMREgCeNCTS560HlJ+IH9sZxI0Nw8SAQJxjyv2zSDnCafca7X+lju3aZMDyFdBa25p/xqz5ZEytoHrBTiFycIFWIQrI8sFsMIAmRQJAOt2A9wAN8ANcAPcADfADfAOAAvr3wD7FoBnDWAL+xWYZSELAGpP+FsHOl97QpAFCIgtj6UFD/y6iAqQF73p9cG739zrX3m33AsCrFjRWSOt/NqUBpAXvV8dAqQX83CJ0cugA9i85puRZTkh7SRacUIAKI4rFLosvipRxT6yIADktfnToy3sryHwT26FfgyAdx1C2RYOvF4GHaBYWBGdgJ3qYqK3tEgAK9ocUe3O+MLT4hEA/kEa683r3pCNAuAKbBwj2hEt9gGKRa3QUa5Up1DZDAHgj4LWAcnUxR4AmGkKrFQX0InjA1AVWC9ShhaB2hnrKfBIi8sYAEOB1TDRtQjUBvGM6rKO0Fs+HIBiqhW6M2LnxagW2/YIhBRYoxK1CCQT9D2EpHPsGZ1CzQOwbAXWdzci6UYHUEzQgu6M7bsbuBY9AwBGFFgVJYUWgQ5gxhRYpeSZYI9AUIG16ghahEMTxFBglZILLa40AI0aCuZNEo1Om6YA2DSuwJo7HtkjODBBK0+B9cytB/YI+mUIW4GVPSq0OB0BGFQ5Ng2E6T2xBYDzjl1m+x69qWuPgKLAaewSz0LRInRM0KACKwXZ3vUq6Jgg3F5xIqDfFVoAUgpkaRGaJgi32GN3Gh+uaY+gWYacUWCVfE2zVIGWCcLLrOGrrVPLHkGjDDmpwCMtLjUAyCqwMkI24fYI8BR8XoHVYop4SgakGd4q8UaXAa7FHACvA+ckEt3eDWB2w1AKYf7FToMNDCCfOm3ncyC6/UxIMoD6U38zpTRArkW1A2j4tigDEBt+8xcgNJyriAqzK1W62hWh/Nl1ulSnMtFWHrO8PhXKoc5dozmdCZxuet6IAhTtHD/HU6F9u/FEApCOYwB1LYBCAQz/tG0wspRrfgAs/yKkwAy8Eg5U4kj6sjHws6sED5gdhXhNYNYUJPddXuw3o7PW80TNAKLbzsAWBduHhuCn9bQdHoNcE6G05fEjE7AvTKZ3vl9htaF2b3v/LtdBu0V+WTjT7JC8YxBc9J0ekdfrta9fyp2m7pQ+TLwszGP8JtVVcQN8HOAP/OfHfA3Y7boAAAAASUVORK5CYII=" alt=""><b>72</b><i>✓</i></div><div class="pill g"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAMAAAD04JH5AAAABGdBTUEAALGPC/xhBQAAADNQTFRF////////////////////////////////////////////////////////////AAAA////FbWC9gAAABB0Uk5Tr9/PH2+PD0+/P38v71+fAPF820oAAAMYSURBVHjaxdtrj6MwDIXh0yuQAub//9pFo9VoF3KxfVySz9W8j6pCM8SFdF4wvHZ6pn09pz6Ad5q3v2tO7+sB02/+hzBdDRi2wxquBXzmI2D+XAk49+MEcPbDBPD2owRw94ME8PdjBCD6IQIw/QgBqH6AAFyfF4Ds0wKwfVYAuk8KwPc5AQL6lAARfUYAxf7nq4IsYNnsyytAUN8tgL9/CxHA3V9ljRDA35cQAYh+iABMPyN4cABr/ywYKYC9fxYsBMDTPwnufoCvfxI8vABv/yhYnAB//yBIPgDT/19wG9fhbQZwfZmOt4PX2wYg+yfAThgsALafAWzbUw+g+1mA8nLYAY+Z7ecBOsEOAN0vvYeLCvDh+5I2twDy4vtFgEIAGfl+GdAWQAL6FUBToAK0+jVAS6ABrKZvl9UmUABsfaug/SG09o2C5mVo79sEKNxGmb5JsN+K7+F9iwBSewu8fYMAtavY39cLkH0x38/80aGyJVvj+9r/XCElAdtXClB6w0aRSwRw3sLDBJDOAkhnAaSzANJZAOksgHQWQDoLIJ0FkM4CSGcBpLMA0lkA6SyAdBZAegrelYPLSwRr7ej2EsGjdnh9hSBVj+8vEIz1AYYLBI0Rju8LWkMs3xAsFsAXBMtmAoQLFsuH8AuCw0Pdl2aYLVJwfKg8qcb54gTH/l050BglOD1Un7QjnTGCUz+Jeqg1QrBkn0BArhLk+/rBZlZQ6BtGu0+CV/pdi7tvmS1fy88TR3ffNNy+ugHlvglQFozuvg1QFIzuvhFQEozuvhVQECR33wzIC5K7bwdkBcnddwByB8XJ3fcAZLppAe2+CyDv5+24s/L2fYB9PaZn85tJ03cD5HDsvzj7BEAa3866PgNAVaDsM4CltkPR9hmAzGWBuk8BhuIuTd+nAMV9oqHPAQoCS58EZAWmPgvICGx9GlDbK6tOYGlAS9A6AeYBdUHzBDoAUBO0T8AjAGWB4gQ+BMBMQMQAiAmIIIB/AiIKcBYoJzDCAMc7sPb5RRxAhn8mou7qH0YHAnYCfvYoMwy/yw4FeNYfDlvLNjiHc1oAAAAASUVORK5CYII=" alt=""><b>96</b><i>✓</i></div><div class="pill g stale"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAMAAAD04JH5AAAABGdBTUEAALGPC/xhBQAAAThQTFRFssPEvszMtMbGsMLDvsrKwdDQxdTUq8LCxtfXxdXVvcvLrMHBxtPTxNTUrMDAw9TUxNPTu8vLxdTUxdbWvMrKvMrKxdXVq8HBxNTUxNTUxdPTxdTUzN3drMHBrMDAq8DArsPDvc7OrcXFrMDArMDAu8vLvMvLrcHBrsLCrMDAvMvLu8rKvs7OqszMvMrKvMzMu8zMvMvLAAAAssTEs8XFt8jIvc3OwNDQtsbHtsjJqLu8pbi5r8LDwM/PvczMo7e4pLe4orW2s8TFrsHCv87OscPEqb2+t8fHwtHRtcbGsMPEvs/PwdHRtcfIobS1qr6/uMjIwdDQu8zMvs3NssXFprm6u8rKsMLDucjJuMrKr8LCusnJp7u8rcHCq7/Ao7a3rcDBw9LSqby9tMXGoLO0xdTUvMvLrMDBN2RM+AAAADN0Uk5Tv7+P7z/fz08/f39vb7+/L++P3x9v30+PX4+vnw9fn88vHx/fr0+/fz/vr88vD59fD+8AfvVoNAAAA7lJREFUeNrtmHlX2kAUxeneum91XxEEUTbbWq11QdxFQAUU2SHJfP9v0CRgMklmsgdPz3n333mH+8sk7848fDtvLB8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/F8Aa+9Ydnho9M0A4kmuxfKaWJhefAuAIMdx92xPw99G+w2wneQBHllZYwuzi30EEP05jlXq89zXPgEkuv7cFavW2PzspPcAia2uP3fGkjQxN+0tgOTPHbE0zQ9NegcQ4SS1WLo+xYIJTwBisr/ciAQ98utb4x9dB8D9FY1IAuCVnHIXIM4ppAMg1Qy4CaDyJzSiFiCZcA8gqPIv/crQ/FtyVcw1gF4ASsqnESpTOuEKq9t2CUDtf4oE1cgI91jhhjsACaX/8wvqqfZAADjEa+NuAMgBKOoaYfqrRTjDaisfos4BlP6VJ6RU4ZYcAyJrE804B4jg/ntNpJEK4UjJGnYKgAdg6RwRdZchxMB1l3XFIQDuf9lENMkILfWrCjkCwAKwdIp0JPVkNwY68sqm3wEA5v+cRvqqlaUYkBtVUMA+ABbAHWQssScPtbVf7ALIAah8JB2EXfZMW7setQcg+183kVkVSFs1YwtACmBN9ljXqg0AKQAvm479DcPAR/enZQ9B9Sp9bdAyQC+A8+Yfv8gwF9TFzahFgJiJ7FGonWUYpkFfD1gDiFlqPoRyDUbUH3pJ2ApA3HT2vAJ0/ZksvUQ3DHwE/8qLlc+82CMo0ktCpgGCFrNH7IBsF+CAtHhT6Ozl+Vt6ZGrbDIAQgCXL2dMW7BvqNqgV9h9u8XtqMhJfMwAQAtBO9hwzqbbise/KtxnSPZX7HtNA4AADXOmHnbDLYTG0//Cbek/tQYwnaAAb+bTj5L2j31MlRWgAPuSCdlnyPZU2MuAAg7Yc2yfKjy9DHlc5ytSEA0Q3rdvXDximrew8yrhqAmAnhP/QhSkAIYhTqt7nm6BFGFfJo7MyiNbljW0wdTMAVSEECIdxrVAW+uGeCLBGBQi/buwJ/7MnpraAz8FGm7Z487OTr+i+AfVZEMDj3dRLqGarRiVP553LZ9rcrALwS9mqf8bb0AuPkRczWfc4DnWz1fCMt6v0U+e9LoDYijlPtuBVfv0b0ZL8ERTrXviPGN0JR4Qu4O2Pc548P1oyAlgVv+1U2xt7zSWZcC1fRl5q2XgusHMk2B/VSKNZyEP/FVPD6bp3AEumAMLeAUTN/T8Q6NcnSAPwewWgndL+AYXd0a60uYMVAAAAAElFTkSuQmCC" alt=""><b>44</b><i class="stale">6h</i></div><div class="pill g"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAMAAAD04JH5AAAABGdBTUEAALGPC/xhBQAAADNQTFRF////////////////////////////////////////////////////////////AAAA////FbWC9gAAABB0Uk5Tb69Pj1+fP79/L98fz+8PAOcPbA8AAAP0SURBVHja7ZvblqQgDEWjgiIqxf9/bVf3dM8ocskN+2XyXAu3Eg4hh4IXPmZnl++wbgwvlQDk7za3xyS8Wx8DGJeYjd08AgA+FuOA0BtgXmI1/NwXAGIzXOgHEPaIiD30AliPiIpj7QOwIZ//Jth6AOC+v3AWagCE578J9AFsJIXVBjCZt5zM/BVmynwd0AW4JeBhL6m+2luGbqoAqf7ZW5aFdI4WTYAZs9BTmTCKAB61yJKF6vUADFJmkkwxagA7Vmivs+C1AFb8e12/1aoEMJ0HHeojDDI1gmYKHg2VD4doDrIA2/mlptYQk0iMoDmvzSE30TqA1jshdrmd8r1QAGcZdu0xnESOofVKiJp3lpQFWQBiVl2SQB0AM8h/gK4A82/ngKGtAn0AhA6MXQEGmhDpAyD2N9sVoF1jXHKwA4AlzUAHgJYYJ3VpB4CFUJJ1AYgjeg12AsCX5Z0AKt2Hew+jC0D0hW+w3juIfQCQh9OOAKjjeV+Ad2/6ghBcvoGrAlDqDVvzLUqbKTWQvArAEtmhU5YPfIBBBcDxAb7ql23EeyvqAGGeDoq3AgotyotgHERvRTsJyd5K82yoGFlvBS9EGpHxVp4FyOyrDwPcd7WnAW5Nz8cB0ll4HiBpovwCwPWk0QnAo72VHgDHtOG9lQ5SPGwUbwVQtTbl9Q3NW7kDBKcqNC1v5QYwe9HzZ6q3Anq1CM9buQIEYSXA8FZALfuY3gooPp/lrYBiIcTyVkClFBV4K1DIEYRbzrhBkPFWoLBOP3/RUvTcmYTsrUBJ/+/DhcYc8bwVyDWcSwlVv1TD81YgeyI/DLYlJHYWIJeBZUWtXewRATDdcjUAtluuBcB2y7WSkO2WC5bhGUDglvOF6AwgcMtp/amlACBwywXoJwCBW06aA1cCELjlkZ++JwDJYiLk75RLGZB6xXiHbY39AXxlEoLPfi5dAIq3YroAELyVrUMSUryVS1kedZYhyVuxJQCBEP3rTSe/95Wt6wZAVfT8YdqOP97KaOvOyg2AquhG4CvkAaiKzuonJA0KkaKzPkHSollEis7oKeyvGgBV0fF38HNPgMy6oio6sDMwW5IxFJ1o891btatQ0WmtlevrQd6rJSo6JQ2y7XorVfQVrQZLyBkWo1TR0bNgC56RVNGxBLbkmjmhon8SIFYjFH3DcMgU/U+d0BhkXyvGpZMp+s8oB75KSBuVXqTof7fqwsWO6Ev/yoPSjSiaop9SYczo4lC+QwDNUze9LxjG6bS9LVP1BgOwW8XMPzZVADbPV3QVAPSf+zSffzUs+IquBMBXdC0AtqKrAXAVXQ+AqeiaACxF1wVgKLoyAF3R1QGois6PD9VFyKiS8kxDAAAAAElFTkSuQmCC" alt=""><b>320</b><span>res</span></div><div class="pill g"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAMAAAD04JH5AAAABGdBTUEAALGPC/xhBQAAADNQTFRF////////////////////////////////////////////////////////////AAAA////FbWC9gAAABB0Uk5TT49vL9+vz19/H58PP7/vALct5R8AAAUQSURBVHja7VvtsqsgDEQF+aa+/9Oe2p62oFE2Ys+dO2N+dhDWEJLNSsXtH5u4AFwALgAXgP8DgNcuxtj1ARkc+u4+2Gl/GgDr0vRrqT76M9bZcwCY95R307XROhuczBkAzJSbqg1XxXDTDsAVE06yNl6W410rgH5aWG3C5fi+DYBNrQCSbQLgVvPBhwDcBMGcLtYARCZkwXNodUvXQTOdC6CaW+x3Abh6ZnFNAPQii4+8kKYOzrioKHoPwAt9HMg0WI8AIgpeyXCIpBcLAGL1WLmjHVZhOypqslcRWwB87rzRryZzN9DcCrTP9zL5DQClv5cIUn+DrU8765clSmw44JNzvHk87QYOzxkeThiNJ7NT7gJBV3KwloJmljNrEoDjZx3M1rnJkQDGiZ34MVuVhyw35ACm6Tsu8MTEKICnq3yYjReEj0c8HVsMAHMpFW+SFTW2un77XIoVS+QBmIIuON4IkGhRxJLUdkIBjBNgrtJueIfMQgehmqBndxF46C1yci/2uAxphpVyaOtJABZ7ODG6gi2zdDHC3DexKFwtBAoAfbsHEncHCgDYHkRe1q3sQMmI1N8EodqkZBbx4K5IEZA9tNukVNQfl6zmmDKxS8tZAQQ1RjtkhGpMQsJPEGmVs5xCtTPSu6FYLcrDbvhpRmvmAP/VRCKA0QtU7UHXJxGoQ83pqrIlUNUUiVFB9+b0ZV6LMCkbFg/6w+25yakNhxPmRMo0iVTdw51jx+bHtnvsYOraRKpLLb8AWKNm1cgEfhAGMytCyqBBOBD9V1CHe/XsAKuwQFYsJBbtRHKB7jESywcltfl0M9bJxY9irY3EJ6ghHVDINmhBer6wUGudRFAsYhZ2vGwRC5bkVHqCMPZvAKu6pzxRjTkAiHrsFVkjBc1inJnOBTAZR7MrgfczbQC2ZrwACLihajoF2zOKtbp8rCHgtgcvGVegDRVPsoP63PBJxUBD5Xi1AJCKZFYLwskOgFwQ8mpYDRq2cG3AoBa0VM9uCflNoi/5wJCOa3NHFLs0rAjJznh5YH2inuZvNKwpWekDlXB1FFFNkyLfv/xk8xlzl6W9iAU/uQ+dr4bUldL5ssn7kfccPpOw52pPk9InB0zuFZkzebPLZmsPwXvf342c/cj2N/G8i1JyRJCWB6zXy3vJgM2MAdBYTioPsz4PgAbLUn9AzqAAWD13IzGaQKfViGoqv64K5jGd0hYCYIsTSHJWVClWi7KUlK0DWCSwpAn1EuZB4qZTJaWKah116TiA5KpVXTBrCA8AUNXEgUlky9eCMwA4hrLIBwCwM91ARWUVAECozcbFxgFQ+2MVAPjxLnYmRxF6hX0w66sAwI93z0TzcEXoIv6IrWdCN7EsskY7JBVPXzSLFCP9vfU1Vg27b63foXxA/9n7bxGSkM5fPgUWIzJ/4f5dSva8Tp2MHcaGtzbCyGn3kjXECWdurY0xEj3t97EzHT9ZLWe4gtFLwwA863CiXQEOIEhu0PlTARzITaATRNPuj719dXyMk8cG0NMrpO63yfY61lSAJgB0fZbGr7JG7bLCIQC00rL+jroBofn/BeT69Gdcb44gqAEwVH7dTt/cSy91AIl3ny5Ezt0BAMBKQpW1wNbM/2QwAQBH28fvAZDYFYaFE86LAVgwL25QtMVAVgQ4d8vz0jmclAck61rvR1bRzan4ebZ5d9tvr8u19ZII1AJ7J1jc5R8lyhhAqLtuUFwALgA/+A/Au7B7VUwAAAAASUVORK5CYII=" alt=""><b>18</b><span>bless</span></div></div></div></div>
+<p class="cap"><b>.pill</b> — 18 px tracked resource icon (existing PNGs), count 15 px 800, then a freshness mark. Counted within the last hour: green ✓. Older: the age in sun ("6h") and the count in dim. Exact scalars (research, blessings) carry a dim unit instead. Clicking a pill opens Stores (or Research / Shrine) in the drawer. Hover: a tooltip "counted 12:50 by Pip · Log pile, Storehouse".</p>
+
+<h3>5.4 Dock</h3>
+<div class="sw-wrap"><div class="stage short"><img class="bg" src="https://schaffa.dev/f/DHhU2_dGlKOcDwY15oas0g.webp" alt=""><div class="dock g"><div class="dk on " data-l="Overview"><svg class="ic " viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="2.5" fill="currentColor" stroke="none"/><path d="M12 4v3M12 17v3M4 12h3M17 12h3"/></svg></div><div class="dk  " data-l="Cats"><svg class="ic " viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 10l1-6 4 3h4l4-3 1 6c0 5-3 8-7 8s-7-3-7-8z"/><circle cx="9.5" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="14.5" cy="12" r="1" fill="currentColor" stroke="none"/><path d="M10 15.5h4"/></svg><em>3</em></div><div class="dk  " data-l="Village"><svg class="ic " viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 21V4M6 4h11l-2 4 2 4H6"/></svg></div><span class="sep"></span><div class="dk  " data-l="Build"><svg class="ic " viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4l6 6-2 2-6-6z"/><path d="M13 9l-8 8 2 2 8-8"/><path d="M17 6l1-1"/></svg></div><div class="dk  hov" data-l="Work"><svg class="ic " viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3.5"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/></svg></div><div class="dk  " data-l="Stores"><svg class="ic " viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8l8-4 8 4v9l-8 4-8-4z"/><path d="M4 8l8 4 8-4M12 12v9"/></svg></div><span class="sep"></span><div class="dk  " data-l="Research"><svg class="ic " viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 3h6M10 3v6l-5 9a2 2 0 002 3h10a2 2 0 002-3l-5-9V3"/><path d="M8 15h8"/></svg></div><div class="dk  " data-l="Officers"><svg class="ic " viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l2.6 5.3 5.9.8-4.3 4.1 1 5.8L12 16.3 6.8 19l1-5.8L3.5 9.1l5.9-.8z"/></svg></div><div class="dk  " data-l="Shrine"><svg class="ic " viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M6 7v13M18 7v13M5 11h14M9 20v-6h6v6"/><path d="M4 7l2-3h12l2 3"/></svg></div><span class="sep"></span><div class="dk  " data-l="World"><svg class="ic " viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg></div><div class="dk  " data-l="Defense"><svg class="ic " viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/><path d="M9 12l2 2 4-4"/></svg></div><div class="dk  " data-l="Trade"><svg class="ic " viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h13l-3-3M20 16H7l3 3"/></svg></div><div class="dk  " data-l="Routes"><svg class="ic " viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M8 7c6 0 4 10 8 10"/></svg></div><span class="sep"></span><div class="dk  " data-l="Events"><svg class="ic " viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 16V11a6 6 0 0112 0v5l2 2H4z"/><path d="M10 20a2 2 0 004 0"/></svg></div></div></div></div>
+<p class="cap"><b>.dock</b> — 14 sections in 5 groups: Overview · Cats · Village | Build · Work · Stores | Research · Officers · Shrine | World · Defense · Trade · Routes | Events. Groups are separated by a 1 × 30 px line. Cells 52 px, icon 22 px in dim. Active: sun tint 18 % + inset 1 px sun ring, and its label above (uppercase 10.5 px). Hover shows the label after 150 ms (Work in the example). Badge: 16 px red disc with the number of attention items in that section (Cats 3). Click toggles that section's drawer; clicking the active icon closes it.</p>
+<figure><img src="https://schaffa.dev/f/vRNUq_b4bj2Tk1byB4DP5g.webp" alt=""><figcaption>Five ways to label fourteen icons; icons-only with group dividers is the default.</figcaption></figure>
+
+<h3>5.5 Tethered card</h3>
+<div class="sw-wrap"><div class="stage mid"><img class="bg" src="https://schaffa.dev/f/DHhU2_dGlKOcDwY15oas0g.webp" alt="" style="left:-900px;top:-210px">
+ <svg class="lead" width="1140" height="420"><path d="M520 100 C 480 100, 480 232, 440 232" fill="none" stroke="#ffd166" stroke-width="2"/><circle cx="440" cy="232" r="4" fill="#ffd166"/></svg>
+ <div class="card g" style="left:520px;top:40px"><div class="hd"><div class="portrait"></div><div><b>Mallow</b><small>Hauler · adult · Den 2</small></div></div>
+  <div class="now">Carrying <u>3 logs</u> to the <u>Sawmill</u> · 31 tiles, 52 s<br><span class="why">because Steward Hazel ordered a haul · then rest</span></div>
+  <div class="rings"><div class="ring"><div style="background:conic-gradient(#ffd166 58%,rgba(255,255,255,.12) 0)"><span>58</span></div>hunger</div><div class="ring"><div style="background:conic-gradient(#ff6b57 24%,rgba(255,255,255,.12) 0)"><span>24</span></div>thirst</div><div class="ring"><div style="background:conic-gradient(#7ed37a 71%,rgba(255,255,255,.12) 0)"><span>71</span></div>rest</div><div class="ring"><div style="background:conic-gradient(#7ed37a 92%,rgba(255,255,255,.12) 0)"><span>92</span></div>health</div></div>
+  <div class="acts"><span class="act hot">Water first</span><span class="act">Boost</span><span class="act">Control · Tab</span><span class="act q">More…</span></div></div>
+ <div class="card g" style="left:880px;top:40px;width:250px"><div class="hd"><div class="portrait bld"><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAMAAABg3Am1AAAAIGNIUk0AAHomAACAhAAA+gAAAIDoAAB1MAAA6mAAADqYAAAXcJy6UTwAAACBUExURT8mMcDL3IubtFppiOqlbL1sSnY7NnpSMNi4hF89Ir2WXIdYM3B0fObo7LS4wLi8xLa6wquvt5WZoXR4gHJ1fJd4b69vVrtsS6GlrYWJkYZ6eqR0YrdtTnV3famPfdOdcXhRL7eQWEIrNrdpR2pFJtmYY0EnMHU7NbJmReGeZwAAAOPvZ/kAAAABYktHRCpTvtSeAAAAB3RJTUUH6gcKDwEcoNCEAwAAACV0RVh0ZGF0ZTpjcmVhdGUAMjAyNi0wNy0xMFQxNTowMDowNyswMDowMPZyEJEAAAAldEVYdGRhdGU6bW9kaWZ5ADIwMjYtMDctMTBUMTU6MDA6MDcrMDA6MDCHL6gtAAAAKHRFWHRkYXRlOnRpbWVzdGFtcAAyMDI2LTA3LTEwVDE1OjAxOjI4KzAwOjAwi5WVWAAAAWNJREFUSMe9lAlTgzAQhZuYBGPjUa96a8VW+///oDlg2STbBTqOry0zD/KRXdjXxeIfJGYoAnKGInAyQ90Oycj08eoOhM8A77MFlE+AwDsI6X08UD49pb5Akb7Bp0Ptj2t6Qq/gux1CQ2gB44cd+F7BdzsMbYm+1QP+6Dc91i28pwgopfR0RcCUp0BTgDws/oQxpgRUDsB1A8DAUEBYEqWJmqAkuEcAhDDh1wP4llQPAdCaAxQ+TQC4bRqQUmsp+R7gPtMB1MMYEKoB5Y9VlaIA/OJogB+Nvxi+2eONgOa0UsOVZL3OCvHAcmmbUkUeHFYAqpKKPLhzpACMleQuLq9W1zfu9u5+TZdUjLd7eHTu6fkFmq6fUgG8vr2v+/G2H5tNXVKeh0+ch7qeUBKTh9Z+2e1u13538vaHnyW/Yt8PuE+Ety2fhxrY83nAgE/GAQCXZG2LMhfsaB7y/74pecC5qYBfVg8pCOeoj3AAAAAASUVORK5CYII=" alt=""></div><div><b>Sawmill</b><small>Open station · 1 crew slot · built hour 19</small></div></div>
+  <div class="now"><u>Bramble</u> is waiting for logs nobody is free to carry<br><span class="why">queue wants 6 lumber · 2 logs → 1 lumber</span></div>
+  <div class="kv"><em>On site</em><b class="bad">0 of 4 logs</b><em>Output</em><b>Storehouse</b><em>Job 41</em><b>Mallow · 52 s</b><em>Job 42, 43</em><b class="bad">unclaimed</b></div>
+  <div class="acts"><span class="act hot">Let Thistle haul</span><span class="act">Boost</span><span class="act q">Edit queue</span></div></div>
+</div></div>
+<p class="cap">Left: cat variant with the leader line to the subject's feet. Right: building variant with a key–value block instead of rings.</p>
+<div class="tw"><table class="spec"><tbody>
+<tr><td>Anatomy</td><td>Header: portrait 52 px (cat: sprite cell at 2×, pixelated; building or pile: 40 px sprite in a 52 px well) + name 19 px + one dim line of facts. Then the "now line" (§7) with clickable nouns in sun and a dim cause line. Body: rings (cats), key–value block (buildings, piles), floors / cargo / route bar (expeditions). Footer: up to 3 buttons + "More…".</td></tr>
+<tr><td>Rings</td><td>50 px, 6 px track (conic gradient), hole #15221a, number inside 13 px 800, label 10 px uppercase. Colour by value: ≥ 60 ok, 35–59 sun, &lt; 35 bad. Order: hunger, thirst, rest, health.</td></tr>
+<tr><td>Placement</td><td>Width 340. Preferred position: 120 px right of and 180 px above the subject's anchor. If that would leave less than 20 px to the right edge, mirror to the left; if less than 20 px to the top, drop below. Clamp inside the 20 px screen margin and above the dock. Keep the card still while the subject moves; only the leader line updates. Re-place on pan or zoom.</td></tr>
+<tr><td>Leader line</td><td>2 px sun cubic Bézier from the card's near edge at y + 60 to the anchor, 4 px dot at the anchor. Anchor: cat feet centre, building entrance tile centre, pile centre, entrance tile for expeditions. Hidden when the anchor is off-screen; the card then shows a small "off-screen ↗" pin button.</td></tr>
+<tr><td>Actions</td><td>One primary (sun) at most. Buttons act immediately; the label swaps to a confirmation for 2 s ("Sent for water") and then the card re-reads state. Destructive actions ask once inline: the button becomes "Remove? Yes · No".</td></tr>
+<tr><td>Variants</td><td>cat · building / workplace · stockpile · plan (checklist, §5.7) · expedition (floors, cargo slots, route bar, readiness rings) · study (cost, requires, effect, leads to) · raider or animal (threat, distance, target, "Rally")</td></tr>
+</tbody></table></div>
+<figure><img src="https://schaffa.dev/f/kzcqU-iegZrj4U5AvwlPSw.webp" alt=""><figcaption>Stockpile variant: the Stone pile card explains why its number is an estimate and offers "Count it now".</figcaption></figure>
+<figure><img src="https://schaffa.dev/f/8U0zUF7sxN_l-cf_D47__Q.webp" alt=""><figcaption>Expedition variant tethered to the dungeon entrance: floors, cargo, route home, readiness, recall.</figcaption></figure>
+
+<h3>5.6 Drawer</h3>
+<figure><img src="https://schaffa.dev/f/hkVoQ83U-Sc4xiMDHYv34w.webp" alt=""><figcaption>Work drawer with a blocked row expanded into a "why" box, filter chips, state chips; the Sawmill card stays on the map.</figcaption></figure>
+<div class="tw"><table class="spec"><tbody>
+<tr><td>Frame</td><td><code>.sheet</code> left 20, top 82, bottom 96, width 660; <code>.wide</code> 1220 for Research (map dimmed 35 % behind it). One drawer at a time; opening another replaces it. Esc closes. The tethered card stays open beside it.</td></tr>
+<tr><td>Header</td><td>Title 20 px 800 · summary line dim 12 px with counts · "ESC" at the right. Below it filter chips: active (ink fill), a sun-outlined filter that isolates problems, and a dashed search field.</td></tr>
+<tr><td>Tables</td><td>Headers 10 px uppercase dim; cells 8 px padding, 12.5 px; dividers --line; selected row sun tint 8 % + 3 px sun bar on the left. Clicking a row selects its subject on the map (opens the card, pans if off-screen). Sort by attention first by default.</td></tr>
+<tr><td>State chips</td><td>green "Automated" · dim "Manual" / "Vacant" · white on red "Blocked" · sun "Waiting" · "Counting" uses the automated style. Chips are text, never colour alone.</td></tr>
+<tr><td>Why box</td><td>Under a blocked or waiting row: title, numbered causes in the order the simulation evaluated them, then buttons (one primary). Only one why box open at a time.</td></tr>
+<tr><td>Sparks</td><td>Four 22 × 5 bars for hunger, thirst, rest, health; the same thresholds as rings.</td></tr>
+<tr><td>Section content</td><td>Overview: colony summary, officers, events feed · Cats: census · Work · Stores · World · Research · Officers: seven offices with holder, building gate, "Appoint" · Shrine: offerings, tithe, rituals · Defense: warriors, walls, raid state · Trade: offers with escrow · Routes: transport routes and vehicles · Events: full log with filters · Village: found, join, elections, votes.</td></tr>
+</tbody></table></div>
+<figure><img src="https://schaffa.dev/f/PrYXFyDudEjMfxChlaonlQ.webp" alt=""><figcaption>Cats drawer, attention first: one causal line per cat, needs as four sparks, bed column.</figcaption></figure>
+<figure><img src="https://schaffa.dev/f/GuwOab__Cx6rhExZdCXFfQ.webp" alt=""><figcaption>Research opens the wide drawer: families × stages grid, the selected study beside it, map dimmed.</figcaption></figure>
+<figure><img src="https://schaffa.dev/f/UHqSXTd4IscKprpcPb22yg.webp" alt=""><figcaption>Five ways list sections could open; the left glass drawer is the default.</figcaption></figure>
+
+<h3>5.7 Build mode</h3>
+<figure><img src="https://schaffa.dev/f/6MHh-fzgIk6JYgUbSJ2dMQ.webp" alt=""><figcaption>Mode chip at the top centre, catalog tray above the dock, ghost footprint on the map, checklist card tethered to the ghost.</figcaption></figure>
+<div class="tw"><table class="spec"><tbody>
+<tr><td>Mode chip</td><td>Glass pill, top centre: "Build · Den" + dim "click to place · R rotate · Esc cancel". The dock's Build icon is active; the drawer is closed in this mode.</td></tr>
+<tr><td>Catalog tray</td><td>Glass tray above the dock, cards 132 × 86: name 13 px 800, two dim facts, cost, and a 9 px uppercase gate line: "ready" green · "built" dim · "needs Fibre craft" sun on a 50 % faded card. The selected card has the sun tint and ring. Cards come from the building catalog in research-tree order; locked ones stay visible with their gate.</td></tr>
+<tr><td>Ghost footprint</td><td>Per tile: legal = sun 35 % fill + dashed sun outline; illegal = red 55 % fill + dashed red outline; 2 px inset. Entrance = a sun triangle on the road tile it must touch. The footprint follows the pointer snapped to tiles; R rotates the entrance.</td></tr>
+<tr><td>Checklist card</td><td>Tethered to the ghost. Rows: footprint clear (n of 9), entrance touches a road, inside the interior, each material with the counted or estimated stock (estimate shows the clock glyph and sun value), research gate, a free builder. "Place here" is disabled while any row fails; the card's inline box names the failing tile and offers the two nearest fixes.</td></tr>
+</tbody></table></div>
+
+<h3>5.8 Map annotation layer</h3>
+<p>These marks are drawn in world space by the world renderer, above cats and cargo, below screen chrome. Sizes are in tiles so they scale with zoom (at 3× a tile is 48 px).</p>
+<div class="tw"><table class="spec"><thead><tr><th>Mark</th><th>Spec</th><th>When</th></tr></thead><tbody>
+<tr><td>Selection</td><td>Ellipse 0.62 × 0.32 tiles under the feet, 3 px sun</td><td>Selected cat</td></tr>
+<tr><td>Route</td><td>Authoritative path polyline through tile centres: 7 px rgba(0,0,0,.45) under-stroke, 3 px sun dash 10 / 9 on top, round joins</td><td>Selected cat with a target; explorer's surface route</td></tr>
+<tr><td>Destination</td><td>Ring radius 0.55 tiles, 3 px sun, plus a 0.18 tile sun dot</td><td>End of the route</td></tr>
+<tr><td>Need ring</td><td>Circle radius 0.7 tiles around the sprite, 4 px, dark under-stroke, red arc from 12 o'clock proportional to the lowest need</td><td>Any cat whose lowest need is below 30 %; never above</td></tr>
+<tr><td>Cargo badge</td><td>Existing tracked cargo icon at 0.5 tiles on a dark disc, top-right of the sprite</td><td>Cat carrying anything (already shipped)</td></tr>
+<tr><td>Waiting mark</td><td>Sun "!" 0.5 tiles, top-right</td><td>Cat idle at a station that cannot start</td></tr>
+<tr><td>Map tag</td><td>Glass pill 12 px 800 above a building or cat; problem text in red</td><td>Blocked workplaces always; hover on any building or cat</td></tr>
+<tr><td>Ghost tiles</td><td>See §5.7</td><td>Build mode</td></tr>
+<tr><td>Site marker</td><td>Dungeon entrance: dark ellipse + sun ring radius 0.85 × 0.55 tiles</td><td>World drawer open or a site selected</td></tr>
+</tbody></table></div>
+
+<h3>5.9 Direct control (Tab)</h3>
+<figure><img src="https://schaffa.dev/f/VLulXruGbXkiqKNsXoirvw.webp" alt=""><figcaption>Dock, resources and minimap retreat; the chip and seal stay. A reins bar replaces the card; interactables within 10 tiles list their key.</figcaption></figure>
+<p>Reins bar (760 px, bottom centre): portrait, "You hold Mallow's reins", the paused order in dim, key caps <span class="kbd">WASD</span> walk · <span class="kbd">E</span> interact · <span class="kbd">Q</span> drop cargo · <span class="kbd">Tab</span> hand back, and four thin need bars. Above it, one glass chip per nearby interactable ("E · Barrels · drink · 2 tiles"), nearest first, farther ones at 55 % opacity. The nearest also gets an "E" prompt pinned at its tile. A 220 px inset vignette signals the mode. The automation order resumes on <span class="kbd">Tab</span>; the card reopens with what changed.</p>
+
+<h3>5.10 Minimap and hint line</h3>
+<p><b>Minimap</b>: 230 × 150 glass frame, world at 0.36×, sun viewport rectangle; click to pan, drag to scrub. Hidden below 1600 px (<span class="kbd">M</span> toggles). <b>Hint line</b>: 11.5 px at 55 % white: controls, then save age and connection. When disconnected the whole line turns red and reads "reconnecting… last world 14 s ago"; the map keeps the last frame and the chip's second line says "stale".</p>
+
+<h2 id="s6"><small>6</small>Behaviour</h2>
+<h3>Selection and the card</h3>
+<ul><li>Click a cat, building, pile, plan, site entrance, or raider: select it, draw its marks, open its card. One subject at a time. Clicking empty ground or Esc (when no drawer or popover is open) deselects.</li><li>The card never blocks the subject: placement rule in §5.5. Panning does not close it; it re-places. Zooming keeps it.</li><li>"More…" grows the card in place (max height 70 % of the window, internal scroll) with full needs, skills, preferences, equipment, bed, and the cat's last six events.</li><li><span class="kbd">F</span> follows the subject with the camera; the hint line shows "following Mallow · F to stop".</li></ul>
+<h3>Attention</h3>
+<ul><li>The server computes attention items once per tick from the same rules the leader director uses for its safety floor plus: blocked or waiting workplaces, cats without a bed, needs below 30 % with no reachable fix, threats inside the halo, stale reports older than 4 h that a plan depends on, expeditions in danger.</li><li>Seal click toggles the popover. Esc, a click outside, or any row action closes it. The pin pans and opens the card.</li><li>Section badges on the dock show how many items belong to that section (Cats 3, Work 1).</li><li>Optional hotkeys <span class="kbd">1</span>–<span class="kbd">6</span> trigger row actions while the popover is open.</li></ul>
+<h3>Dock and drawer</h3>
+<ul><li>Click opens the section's drawer; click again or Esc closes it. Only one drawer. Research opens wide and dims the map 35 %.</li><li>Rows in a drawer select subjects; the drawer stays open so the list and the card are read together.</li><li>Build and Control are modes, not drawers: they close the drawer, show the mode chip, and restore the previous drawer on exit.</li><li>Esc order: popover → mode → drawer → deselect.</li></ul>
+<h3>Feedback, time, camera</h3>
+<ul><li>Action results appear inside the component that triggered them (button label swap for 2 s). No global toasts. Rejections read the server's reason in the same place: "Not reachable: gate closed".</li><li>Save and connection state live only in the hint line; disconnection also stales the chip and keeps the last frame visible.</li><li>Speed and pause are the chip's segmented control; simulated time stops on pause, the UI stays live.</li><li>Camera: WASD or right-drag pan, wheel zoom around the pointer, Home returns to the shrine, PgUp / PgDn change dungeon floor when the World drawer or an explorer is selected.</li></ul>
+
+<h2 id="s7"><small>7</small>Copy rules</h2>
+<p>Words are part of the design. Sentence case everywhere except the 10 px uppercase labels. Verbs first on buttons. Say what the cat does, not what the system does.</p>
+<h4>The "now line" grammar (card, census, popover)</h4>
+<div class="tw"><table class="spec"><thead><tr><th>Task kind</th><th>Template</th><th>Example</th></tr></thead><tbody>
+<tr><td>haul</td><td>Carrying <i>n kind</i> to the <i>Target</i> · <i>d</i> tiles, <i>t</i> s</td><td>Carrying 3 logs to the Sawmill · 31 tiles, 52 s</td></tr>
+<tr><td>fetch</td><td>Going to the <i>Source</i> for <i>kind</i> · <i>d</i> tiles</td><td>Going to the river for water · 9 tiles</td></tr>
+<tr><td>work</td><td><i>Verb-ing</i> <i>recipe</i> at the <i>Station</i> · <i>k</i> of <i>n</i></td><td>Sawing lumber at the Sawmill · 2 of 6</td></tr>
+<tr><td>wait</td><td>Waiting at the <i>Station</i> — <i>reason</i></td><td>Waiting at the Sawmill — no logs delivered</td></tr>
+<tr><td>farm</td><td>Harvesting <i>crop</i> · <i>Field</i> · ready in <i>t</i></td><td>Harvesting grain · South field · ready in 2 h</td></tr>
+<tr><td>rest / eat / drink</td><td>Sleeping · <i>Den</i> · wakes at <i>hh:mm</i> · Eating at the <i>Place</i></td><td>Sleeping · Den 3 · wakes at 15:00</td></tr>
+<tr><td>idle</td><td>Idle — <i>why no job matched</i></td><td>Idle — no job matches preferences</td></tr>
+<tr><td>guard / fight</td><td>Guarding the <i>place</i> · <i>threat</i> <i>d</i> tiles away</td><td>Guarding the north gate · fox 3 tiles away</td></tr>
+<tr><td>expedition</td><td>Exploring <i>Site</i> · floor <i>k</i> of <i>n</i> · cargo <i>c</i> of <i>m</i></td><td>Exploring Root Hollow · floor 2 of 3 · cargo 2 of 6</td></tr>
+<tr><td>cause line</td><td>because <i>owner</i> ordered <i>what</i> · then <i>next intent</i></td><td>because Steward Hazel ordered a haul · then rest</td></tr>
+</tbody></table></div>
+<h4>Owners</h4><p>Automated work names its officer: "Steward Hazel", "Accountant Pip". Manual work says "you asked" or "no Forester's Lodge yet — you choose". The founding safety floor reads "the Leader's safety floor".</p>
+<h4>Numbers</h4><p>Whole numbers, thin spaces before units ("31 tiles", "52 s", "6 h"). Estimates get ≈. Times of day as hh:mm on a 24-hour clock; relative ages under an hour as "¼ h", above as "6 h". Percentages only inside rings and sparks.</p>
+<h4>Buttons</h4><p>Verb + object: "Send a water run", "Let Thistle haul", "Plan a Den", "Rally Wren", "Count it now", "Recall", "Study now · 60". Never "OK", "Submit", "Apply". A confirmation reuses the verb: "Sent".</p>
+
+<h2 id="s8"><small>8</small>Data the client needs</h2>
+<p>Most of this exists in the colony snapshot. Fields marked <b>new</b> must be added to the protocol (bump the protocol version); everything is read-only and derived server-side so the client never guesses.</p>
+<div class="tw"><table class="spec"><thead><tr><th>Component</th><th>Fields</th></tr></thead><tbody>
+<tr><td>Attention items <b>new</b></td><td><code>attention: [{ id, severity: danger|warning|info, title, cause, section, anchor: { tile | entityId }, action: { label, clientAction }, since }]</code> ordered by the server</td></tr>
+<tr><td>Cat card / census</td><td>name, office, lifeStage, bed { den, index } or none, needs { hunger, thirst, rest, health }, task <b>new-ish</b> { kind, verb, object, targetEntity, tilesRemaining, etaSeconds }, cargo, <b>new</b> reason { ownerKind: leader|officer|player|manual, ownerName, orderId }, <b>new</b> nextIntent, prefs, skills, equipment, recentEvents</td></tr>
+<tr><td>Route marks</td><td>authoritative path as a tile list for the selected cat (stream it only for the selected subject to keep snapshots small)</td></tr>
+<tr><td>Workplace rows</td><td>id, name, kind, state <b>new enum</b> { automated, manual, blocked, waiting, vacant, counting }, ownerOffice, workers, recipe, queue { done, total, repeat }, <b>new</b> blockReason { missingKind, have, need, waitingJobs: [{ id, claimant? }], causes: [text] }, outputTarget, lastOutput</td></tr>
+<tr><td>Stockpile rows</td><td>id, name, tiles, capacity, accepts, holdings, report { countedAt, countedBy, isEstimate }, <b>new</b> flow { deltasSinceCount: [{ who, kind, qty, at }] }, accountant round { index, pileIndex, total, next, eta }</td></tr>
+<tr><td>Build plan</td><td>catalog entries with cost, size, gate study, built count; for a hovered footprint <b>new</b> placement { tiles: [{ x, y, legal, reason }], entranceTile, entranceOnRoad, insideInterior, materials: [{ kind, need, have, isEstimate }], gateOk, builder }</td></tr>
+<tr><td>Expedition card</td><td>explorer, site, floorIndex, floorCount, floorStates, guardianState, cargo { used, slots, items }, routeHomeTiles, readiness needs, safeReturn { stairsOpen, gateOpen, unloadTarget }</td></tr>
+<tr><td>World drawer</td><td>known sites { name, entranceTile, distance, threat, floorsExplored, floorCount, lootLeft, state }, candidate cats with readiness reasons, other villages with trade state</td></tr>
+<tr><td>Research drawer</td><td>families × stages with { id, name, cost, state: studied|affordable|locked|inProgress, requires, effect, leadsTo, progress, scholars, eta, <b>new</b> resolvesAttentionId? }</td></tr>
+<tr><td>Chip, pills, hint</td><td>village name, day, clock, alive, working, speed, paused; resources with { value, countedAt?, isEstimate }; save age; connection state</td></tr>
+</tbody></table></div>
+
+<h2 id="s9"><small>9</small>Screens</h2>
+<div class="gallery">
+<figure><img src="https://schaffa.dev/f/_wA017HGJs-6dFIx90Z5Rw.webp" alt=""><figcaption>g0 Overview. Seal closed, Mallow selected.</figcaption></figure>
+<figure><img src="https://schaffa.dev/f/OOPihQWwn2kxgXqx5o58uQ.webp" alt=""><figcaption>g1 Overview with the attention popover open.</figcaption></figure>
+<figure><img src="https://schaffa.dev/f/PrYXFyDudEjMfxChlaonlQ.webp" alt=""><figcaption>g2 Cats drawer, attention first.</figcaption></figure>
+<figure><img src="https://schaffa.dev/f/hkVoQ83U-Sc4xiMDHYv34w.webp" alt=""><figcaption>g3 Work drawer with the why box; Sawmill card on the map.</figcaption></figure>
+<figure><img src="https://schaffa.dev/f/6MHh-fzgIk6JYgUbSJ2dMQ.webp" alt=""><figcaption>g4 Build mode.</figcaption></figure>
+<figure><img src="https://schaffa.dev/f/kzcqU-iegZrj4U5AvwlPSw.webp" alt=""><figcaption>g5 Stores drawer, Stone pile card (estimate).</figcaption></figure>
+<figure><img src="https://schaffa.dev/f/8U0zUF7sxN_l-cf_D47__Q.webp" alt=""><figcaption>g6 World drawer, expedition card tethered to the entrance.</figcaption></figure>
+<figure><img src="https://schaffa.dev/f/GuwOab__Cx6rhExZdCXFfQ.webp" alt=""><figcaption>g7 Research, wide drawer, map dimmed.</figcaption></figure>
+<figure><img src="https://schaffa.dev/f/frbkupUiQgAjNa6hhsgGdA.webp" alt=""><figcaption>g8 1280 × 720 reflow.</figcaption></figure>
+<figure><img src="https://schaffa.dev/f/VLulXruGbXkiqKNsXoirvw.webp" alt=""><figcaption>g9 Direct control.</figcaption></figure>
+</div>
+
+<h2 id="s10"><small>10</small>Engine notes</h2>
+<div class="two">
+<div><h3>Unity UI Toolkit (current client)</h3><ul>
+<li>Tokens as USS variables; replace the existing top bar, drawer, navigation, alert, feedback and status blocks with chip, seal, popover, pill, dock, card, sheet, minimap, hint and mode elements using the class names above.</li>
+<li>No backdrop blur in UI Toolkit: use the fallback colours from §3. Radius and borders are supported; emulate the shadow with a 9-sliced soft PNG behind each panel or skip it.</li>
+<li>Leader line and rings: a VisualElement with <code>generateVisualContent</code> and Painter2D (BezierCurveTo, Arc). Card placement in a GeometryChangedEvent handler using the subject's world-to-panel position each frame.</li>
+<li>Map annotation layer: world-space sprites and a LineRenderer for the route, sorted above cats. Do not draw route or rings in the UI layer.</li>
+<li>Fonts: add Manrope and Instrument Serif as Font Assets. Icons: import the SVG paths via the Vector Graphics package, or export 24 px PNGs at 2× and 3×.</li>
+<li>Input: one router that handles the Esc order, Tab, F, M and hotkeys; the dock and drawer only raise events.</li>
+<li>Keep pixel-art sprites at point filtering; the portrait in the card is the cat's sheet cell drawn at an integer scale.</li>
+</ul></div>
+<div><h3>Bevy (Rust client)</h3><ul>
+<li>bevy_ui nodes with BackgroundColor (fallback glass), BorderColor, BorderRadius; Text with the two font assets; icons as ImageNode from the exported PNGs.</li>
+<li>Route, rings, ghost tiles: Gizmos in world space or a small mesh per mark; sorted with the existing Z layering (camera at Z≈1000, marks between cats and the UI camera).</li>
+<li>Leader line: a screen-space gizmo from the card node's rect (ComputedNode) to the projected anchor.</li>
+<li>Card placement runs after layout each frame using the projected anchor; clamp inside the window minus margins.</li>
+<li>The drawer and popover are plain node trees toggled by a single UI-state resource that encodes the Esc order.</li>
+</ul></div>
+</div>
+
+<h2 id="s11"><small>11</small>Accessibility and quality floor</h2>
+<ul><li>Text always sits on glass, so contrast is stable: ink on glass ≥ 9:1, dim on glass ≈ 5:1. Never place dim text directly on the map.</li><li>Every status colour is paired with a word or number (state chips, freshness marks, severity rows). Rings carry the number inside.</li><li>Focus ring: 2 px sun outline with 2 px offset on every focusable element; the dock is keyboard-navigable with arrows.</li><li>Minimum hit target 32 px (dock cells 52, pin buttons 30 with 6 px margin).</li><li>Reduced motion: no seal pulse, no label fade, drawer appears without slide.</li><li>Text never scales with window size; layouts reflow (§4).</li><li>Verify with a framebuffer capture at 1920 × 1080 and 1280 × 720 for each screen in §9; "it compiles" has hidden black screens before.</li></ul>
+
+<h2 id="s12"><small>12</small>Migration from the current interface</h2>
+<div class="tw"><table class="spec"><thead><tr><th>Today</th><th>Becomes</th></tr></thead><tbody>
+<tr><td>Top bar: village name, alive/working/studies, resource chips, hour, speed buttons</td><td>Village chip (name, day, clock, alive, working, speed) + resource pills with freshness. Studies count moves to the Research drawer summary.</td></tr>
+<tr><td>Alert buttons under the top bar; feedback and status boxes bottom right</td><td>Attention seal + popover; feedback inline in the originating component; status only in the hint line.</td></tr>
+<tr><td>Left drawer holding both section cards and the inspector</td><td>Split: sections → left glass drawer; inspector → card tethered to the subject.</td></tr>
+<tr><td>Horizontally scrolling 14-item navigation above the bottom bar</td><td>Grouped dock, no scrolling at any width.</td></tr>
+<tr><td>Bottom bar: input hint, zoom buttons, "Return to village"</td><td>Hint line; zoom on wheel only; Home key and a minimap click return to the village.</td></tr>
+<tr><td>World label ("Root Hollow approach · Surface")</td><td>Chip second line while a floor other than the surface is shown; World drawer chips select floors.</td></tr>
+<tr><td>Resource chips open Stores / Research / Shrine</td><td>Unchanged: pills open the matching drawer.</td></tr>
+<tr><td>Narrow-window reflow of the top bar and drawer</td><td>§4 table; no component ever scrolls horizontally.</td></tr>
+</tbody></table></div>
+<h4>Suggested order of work</h4>
+<ol class="chk"><li>Tokens, fonts, icons; glass fallback panel style.</li><li>Chip, pills, dock, hint, minimap on the existing map (no behaviour change yet).</li><li>Tethered card for cats with the now line and rings; selection ellipse, route, destination marks.</li><li>Attention items in the snapshot; seal + popover; dock badges.</li><li>Drawer frame + Cats, Work (with block reasons), Stores (with freshness).</li><li>Build mode: tray, ghost, checklist; placement data in the snapshot.</li><li>World + expedition card; Research wide drawer; remaining sections.</li><li>Direct control reins bar; narrow-window reflow; accessibility pass; framebuffer captures.</li></ol>
+
+<h2 id="s13"><small>13</small>Open choices and their defaults</h2>
+<p>Three details were left open with five options each (§5.2, §5.4, §5.6 figures). Implement the defaults unless told otherwise.</p>
+<div class="tw"><table class="spec"><thead><tr><th>Choice</th><th>Default (implemented in the mockups)</th><th>Alternatives</th></tr></thead><tbody>
+<tr><td>What the seal opens</td><td>Anchored popover under the seal</td><td>centred modal · right drawer · bottom sheet · spotlight that pans to each item</td></tr>
+<tr><td>How sections open</td><td>Left glass drawer; wide for Research</td><td>centred modal sheet · full-screen page · tray from the dock · split view</td></tr>
+<tr><td>Dock labels</td><td>Icons only, grouped, label on the active or hovered icon</td><td>tiny labels always · four named clusters · two rows · vertical dock</td></tr>
+</tbody></table></div>
+
+<h2 id="s14"><small>14</small>Files</h2>
+<div class="tw"><table class="spec"><tbody>
+<tr><td>Repository folder</td><td><code>docs/ui-redesign/</code> on the redesign branch: <code>GUIDE.html</code> (this guide with live, scripted examples), <code>README.md</code>, <code>render.sh</code></td></tr>
+<tr><td>Stylesheet contract</td><td><code>mockups/glass.css</code> — the class names and values referenced above (inlined into this page)</td></tr>
+<tr><td>Chrome helper</td><td><code>mockups/glass.js</code> — builds chip, seal, popover, pills, dock, card, drawer, minimap and hint from data; the popover and now-line markup to copy</td></tr>
+<tr><td>Icons</td><td><code>mockups/icons.js</code> — 24 px SVG paths for the 14 sections and the status glyphs</td></tr>
+<tr><td>World scene</td><td><code>mockups/world.js</code> — the shared canvas scene and the map-mark drawing code (route, rings, ghost tiles) to port</td></tr>
+<tr><td>Screens and strips</td><td><code>mockups/g0–g9</code>, <code>p1–p3</code> → <code>renders/</code>; earlier exploration <code>d1–d5</code>, <code>a1–a8</code>, <code>o1–o5</code></td></tr>
+<tr><td>Regenerate</td><td><code>render.sh mockups/g0-overview.html renders/g0-overview.png</code> (headless Google Chrome; append <code>1280,720</code> for the narrow screen)</td></tr>
+</tbody></table></div>
+</main>
+<footer>Idle Cat Forest · Glass Clearing implementation guide · generated from the mockup sources on 13 September 2026. Sprites are the tracked project assets; fonts are Manrope and Instrument Serif (SIL OFL).</footer>
+</body></html>

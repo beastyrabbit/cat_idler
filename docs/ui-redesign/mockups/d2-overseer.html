@@ -1,0 +1,93 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Direction 2 — Overseer's Ledger</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#15191b;--panel:#1c2225;--panel2:#222a2e;--line:#30393d;--ink:#d9ddd1;--dim:#8b958d;--amber:#e2b657;--ok:#8fbf6a;--warn:#e0895a;--bad:#e0655a;--info:#6fb3c8}
+*{box-sizing:border-box}body{margin:0;width:1920px;height:1080px;overflow:hidden;background:#0a120d;color:var(--ink);font:12.5px/1.4 'IBM Plex Mono',monospace;position:relative}
+canvas{position:absolute;left:0;top:0}
+.ic{width:1em;height:1em;display:inline-block;vertical-align:-2px}
+.sans{font-family:'IBM Plex Sans Condensed',sans-serif}
+.top{position:absolute;top:0;left:0;right:0;height:30px;background:var(--panel);border-bottom:1px solid var(--line);display:flex;align-items:center;padding:0 12px;gap:22px;z-index:5;white-space:nowrap}
+.top .name{font:600 15px 'IBM Plex Sans Condensed';color:#fff;letter-spacing:.02em}
+.top .k{color:var(--dim)}.top .k b{color:var(--amber);font-weight:500}
+.res{display:flex;gap:18px;margin-left:auto;margin-right:auto}.res span{color:var(--dim)}.res b{font-weight:600;color:#fff}.res i{font-style:normal;color:var(--ok);font-size:11px}.res i.stale{color:var(--warn)}
+.top .right{color:var(--dim)}
+.col{position:absolute;left:10px;top:38px;bottom:32px;width:400px;display:flex;flex-direction:column;gap:8px;z-index:6}
+.box{background:rgba(28,34,37,.97);border:1px solid var(--line);display:flex;flex-direction:column;min-height:0}
+.box h3{margin:0;padding:6px 10px;font:700 11px 'IBM Plex Sans Condensed';letter-spacing:.14em;text-transform:uppercase;color:var(--dim);border-bottom:1px solid var(--line);display:flex;justify-content:space-between}
+.box h3 span{color:var(--amber)}
+.attn{padding:4px 0}.attn>div{display:grid;grid-template-columns:18px 1fr auto;gap:8px;padding:5px 10px;align-items:start;border-bottom:1px solid #262e32}
+.attn .s{font-weight:600}.attn .s.b{color:var(--bad)}.attn .s.w{color:var(--warn)}.attn .s.i{color:var(--info)}
+.attn .a{color:var(--amber);white-space:nowrap}.attn .a b{color:var(--ink);font-weight:500;background:#2b343a;padding:0 4px;border-radius:2px;margin-right:3px}
+.attn small{display:block;color:var(--dim);font-size:11px}
+.subj{flex:1;overflow:hidden}
+.subj .hd{display:flex;gap:10px;padding:10px;border-bottom:1px solid var(--line);align-items:center}
+.portrait{width:56px;height:56px;background:#101416 url(../../../public/images/cats/cat-sheet.png) -8px 4px/2048px 128px no-repeat;image-rendering:pixelated;border:1px solid var(--line)}
+.subj .hd b{font:600 18px 'IBM Plex Sans Condensed';color:#fff;display:block}.subj .hd small{color:var(--dim)}
+.kv{display:grid;grid-template-columns:82px 1fr;gap:0;padding:6px 10px}
+.kv div{padding:4px 0;border-bottom:1px solid #262e32}.kv .l{color:var(--dim);font:600 11px 'IBM Plex Sans Condensed';letter-spacing:.1em;text-transform:uppercase;padding-top:6px}
+.kv .v{color:#fff}.kv .v i{font-style:normal;color:var(--dim)}.kv .v.bad{color:var(--bad)}.kv .v u{text-decoration:none;color:var(--amber)}
+.needs{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;padding:8px 10px}
+.need small{display:flex;justify-content:space-between;color:var(--dim);font-size:11px}.need b{color:#fff;font-weight:500}
+.need .t{height:6px;background:#0f1416;border:1px solid var(--line);margin-top:3px}.need .t i{display:block;height:100%;background:var(--ok)}.need.low .t i{background:var(--bad)}.need.mid .t i{background:var(--amber)}
+.acts{padding:8px 10px;display:flex;flex-wrap:wrap;gap:6px}
+.act{border:1px solid var(--line);background:var(--panel2);padding:5px 9px;color:var(--ink)}.act b{color:var(--amber);font-weight:500;margin-right:6px}.act.hot{border-color:var(--amber);color:#fff}
+.mini{height:170px;position:relative}.mini canvas{position:absolute;left:0;top:0}
+.mini .vp{position:absolute;border:1px solid var(--amber);left:22px;top:38px;width:230px;height:126px}
+.tabs{position:absolute;right:10px;top:38px;width:150px;z-index:6;background:rgba(28,34,37,.97);border:1px solid var(--line)}
+.tabs div{display:flex;gap:8px;padding:7px 9px;border-bottom:1px solid #262e32;color:var(--dim);font-family:'IBM Plex Sans Condensed';font-size:13px;border-left:3px solid transparent}
+.tabs div b{font:500 12px 'IBM Plex Mono';color:var(--amber);width:14px}.tabs div.on{color:#fff;border-left-color:var(--amber);background:#232c30}
+.tabs div em{margin-left:auto;font-style:normal;color:var(--bad);font-size:11px}
+.legend{position:absolute;right:10px;bottom:32px;width:150px;z-index:6;background:rgba(28,34,37,.97);border:1px solid var(--line);padding:6px 9px;font-size:11px;color:var(--dim);line-height:1.6}
+.legend i{display:inline-block;width:10px;height:10px;margin-right:6px;vertical-align:-1px}
+.status{position:absolute;left:0;right:0;bottom:0;height:24px;background:#101416;border-top:1px solid var(--line);color:var(--dim);font-size:11px;display:flex;align-items:center;padding:0 12px;gap:18px;z-index:7}
+.status .r{margin-left:auto}
+.hover{position:absolute;left:1190px;top:534px;background:rgba(16,20,22,.95);border:1px solid var(--line);padding:5px 8px;z-index:6;font-size:11.5px;color:var(--ink);white-space:nowrap}
+.hover b{color:#fff}.hover i{font-style:normal;color:var(--warn)}
+</style></head><body>
+<canvas id="w" width="1920" height="1080"></canvas>
+<div class="top">
+  <span class="name">THE COMMONS</span>
+  <span class="k">hour <b>37.5</b> · day 2 13:30</span>
+  <span class="k">▶ <b>1×</b> <span class="sans">[space] pause · [1] [4] [8]</span></span>
+  <div class="res">
+    <span>FOOD <b>184</b> <i>✓ ¼h</i></span><span>WATER <b>72</b> <i>✓ ¼h</i></span><span>LOGS <b>96</b> <i>✓ ¼h</i></span><span>STONE <b>44</b> <i class="stale">~ 6h old</i></span><span>RESEARCH <b>320</b></span><span>BLESSINGS <b>18</b></span>
+  </div>
+  <span class="right">31 cats · 12 working · 3 need care</span>
+</div>
+<div class="col">
+  <div class="box"><h3>Attention <span>4</span></h3><div class="attn">
+    <div><span class="s b">!!</span><div>Mallow, Hazel thirsty — no reachable water<small>nearest well: none · river 9 tiles east, path blocked by gate</small></div><span class="a"><b>1</b>water run</span></div>
+    <div><span class="s w">!</span><div>Sawmill blocked — no logs delivered<small>2 haul jobs queued · Steward has 0 free haulers</small></div><span class="a"><b>2</b>assign</span></div>
+    <div><span class="s w">!</span><div>2 cats without a bed<small>Den 1–3 full · next Den costs 24 logs, 8 stone</small></div><span class="a"><b>3</b>plan den</span></div>
+    <div><span class="s i">·</span><div>Fox sighted at north gate<small>Captain vacant → defense is manual · Wren ready</small></div><span class="a"><b>4</b>rally</span></div>
+  </div></div>
+  <div class="box subj"><h3>Subject <span>cat #17</span></h3>
+    <div class="hd"><div class="portrait"></div><div><b>Mallow</b><small>hauler · adult 31h · bed: Den 2 (3/5) · skills haul 3 · forestry 1</small></div></div>
+    <div class="kv">
+      <div class="l">Doing</div><div class="v">carrying 3 × logs</div>
+      <div class="l">From</div><div class="v"><u>Log pile</u> NE stockpile <i>· counted ¼h ago</i></div>
+      <div class="l">To</div><div class="v"><u>Sawmill</u> entrance S <i>· 31 tiles · 52 s</i></div>
+      <div class="l">Because</div><div class="v">Steward haul order #41 <i>· Hazel, automatic</i></div>
+      <div class="l">Then</div><div class="v bad">rest — thirst 24 % · no reachable water</div>
+      <div class="l">Job state</div><div class="v">AUTOMATED <i>· Steward owns hauling</i></div>
+    </div>
+    <div class="needs">
+      <div class="need mid"><small>hunger <b>58</b></small><div class="t"><i style="width:58%"></i></div></div>
+      <div class="need low"><small>thirst <b>24</b></small><div class="t"><i style="width:24%"></i></div></div>
+      <div class="need"><small>rest <b>71</b></small><div class="t"><i style="width:71%"></i></div></div>
+      <div class="need"><small>health <b>92</b></small><div class="t"><i style="width:92%"></i></div></div>
+    </div>
+    <div class="acts"><span class="act hot"><b>W</b>water run first</span><span class="act"><b>B</b>boost</span><span class="act"><b>P</b>preferences</span><span class="act"><b>R</b>release job</span><span class="act"><b>Tab</b>control</span><span class="act"><b>F</b>follow</span></div>
+  </div>
+  <div class="box mini"><canvas id="mini" width="398" height="170"></canvas><div class="vp"></div></div>
+</div>
+<div class="tabs" id="tabs"></div>
+<div class="legend"><i style="background:#e2b657"></i>selected / route<br><i style="background:#e0655a"></i>need below 30 %<br><i style="background:#ffd36b"></i>waiting on input<br><i style="background:#6fb3c8"></i>carrying cargo<br><i style="background:#c2504b"></i>threat</div>
+<div class="hover"><b>Moss</b> · carrying 2 × ore → Smithy · 6 tiles · <i>hungry 41 %</i></div>
+<div class="status">tick 0.05 s · 50 ms/step · saved 12 s ago · connected 127.0.0.1:8787 <span class="r">[?] keys · WASD pan · wheel zoom · click inspect</span></div>
+<script src="icons.js"></script><script src="world.js"></script>
+<script>
+document.getElementById('tabs').innerHTML=NAV.map((n,i)=>`<div class="${i==0?'on':''}"><b>${NAV_KEYS[i]}</b>${n}${n=='Cats'?'<em>3</em>':n=='Work'?'<em>1</em>':''}</div>`).join('');
+renderWorld(document.getElementById('w'),{scale:3,ox:100,oy:-30,pathColor:'#e2b657',selColor:'#e2b657',destColor:'#e2b657',needColor:'#e0655a'});
+renderWorld(document.getElementById('mini'),{scale:0.6,ox:8,oy:-24,annotate:false});
+</script></body></html>

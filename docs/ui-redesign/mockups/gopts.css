@@ -1,0 +1,15 @@
+@import url('glass.css');
+body{height:auto;min-height:440px;padding:18px 22px;overflow:visible;background:#16241b}
+.strip-hd{display:flex;align-items:baseline;gap:14px;border-bottom:1px solid var(--edge);padding-bottom:8px;margin-bottom:14px}
+.strip-hd h1{margin:0;font:italic 400 26px/1 'Instrument Serif',serif}.strip-hd p{margin:0;color:var(--dim);font-weight:600;font-size:12.5px}
+.opts{display:grid;grid-template-columns:repeat(5,1fr);gap:14px}
+.opt{border:1px solid var(--edge);background:rgba(255,255,255,.04);border-radius:16px;padding:12px 14px;min-height:330px;position:relative}
+.opt.rec{border:1.5px solid var(--sun);background:rgba(255,209,102,.06)}
+.opt .n{font:800 10px Manrope;letter-spacing:.16em;text-transform:uppercase;color:var(--sun)}
+.opt h3{margin:2px 0 8px;font:800 16px/1.15 Manrope}
+.opt .stage{height:180px;border-radius:12px;background:#5f8f45;position:relative;overflow:hidden;margin-bottom:10px;border:1px solid rgba(0,0,0,.3)}
+.opt .stage:before{content:"";position:absolute;inset:0;background:radial-gradient(circle at 30% 40%,#77a264 0 6%,transparent 7%),radial-gradient(circle at 70% 65%,#6b9a5a 0 8%,transparent 9%),radial-gradient(circle at 55% 25%,#77a264 0 4%,transparent 5%)}
+.opt p{margin:4px 0 0;font-size:12px;line-height:1.35;color:var(--ink)}.opt .pro{color:var(--ok)}.opt .con{color:var(--bad)}
+.m{position:absolute;background:var(--glass2);border:1px solid var(--edge);border-radius:8px}
+.m.s{background:var(--sun);border-color:transparent}.m.r{background:var(--bad);border-color:transparent;border-radius:50%}
+.lbl{position:absolute;font:800 8px Manrope;letter-spacing:.06em;text-transform:uppercase;color:var(--dim)}

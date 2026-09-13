@@ -1,0 +1,35 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Atlas — Stores</title>
+<link href="https://fonts.googleapis.com/css2?family=Alegreya:ital,wght@0,500;0,700;1,500;1,700&family=Alegreya+Sans:wght@500;700;800&family=Courier+Prime:wght@400;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="atlas.css">
+<style>.round{display:flex;gap:16px;align-items:center;background:var(--vel4);border:1px solid var(--vel3);padding:8px 12px;margin-top:8px;font-size:13px}
+.round b{font-family:Alegreya;font-size:15px}.round .p{display:inline-flex;gap:4px}.round .p i{width:14px;height:14px;border:1.5px solid var(--ink2);border-radius:50%}.round .p i.d{background:var(--moss);border-color:var(--moss)}.round .p i.n{border-color:var(--madder);border-width:2px}
+.tbl td.item{font-family:'Courier Prime';font-weight:700;font-size:12.5px;line-height:1.5}.tbl td.item .e{color:var(--ink2);font-weight:400}</style>
+</head><body>
+<div class="frame"><canvas class="world" id="w" width="1516" height="868"></canvas>
+  <div class="callout" style="left:230px;top:262px"><b>Stone pile</b> · ≈44 · <i>not counted for 6 h</i></div></div>
+<script src="icons.js"></script><script src="world.js"></script><script src="atlas.js"></script>
+<script>
+const spread=`<div class="hd"><h2>Stores</h2><p>8 stockpiles · 6 counted this round · 1 estimate · 1 empty · reports are physical counts, not totals</p><span class="x">Esc · close</span></div>
+<div class="round"><b>Pip's counting round</b><span>round 4 · pile 6 of 8</span><span class="p"><i class="d"></i><i class="d"></i><i class="d"></i><i class="d"></i><i class="d"></i><i class="d"></i><i class="n"></i><i></i></span><span class="dim">next: Stone pile in 20 min · none unreachable</span><span class="act" style="margin-left:auto;padding:4px 10px;font-size:12px">Send Pip to the Stone pile now</span></div>
+<div class="chips"><span class="chip on">All piles</span><span class="chip">Estimates only</span><span class="chip">Empty</span><span class="chip">Food · water</span><span class="chip">Materials</span><span class="chip">Refined</span><span class="chip search">search goods…</span></div>
+<table class="tbl"><thead><tr><th>Stockpile</th><th>Holds</th><th>Report</th><th>Accepts</th><th>Flow · next</th></tr></thead><tbody>
+<tr><td><b>Log pile</b> · NE<br><span class="dim">3 tiles · 120 cap</span></td><td class="item">96 logs</td><td><span class="stampw">counted</span> 12:50 · Pip</td><td>logs</td><td>−3 Mallow · −4 job 42, 43 · +5 Sage soon</td></tr>
+<tr class="sel"><td><b>Stone pile</b> · NE<br><span class="dim">2 tiles · 80 cap</span></td><td class="item">≈44 stone <span class="e">estimate</span></td><td><span class="stampw est">est.</span> 07:20 · <span class="bad">6 h old</span></td><td>stone, blocks</td><td class="bad">Pip counts it in 20 min. Den plan needs 8.</td></tr>
+<tr><td><b>Sacks</b> · NE</td><td class="item">30 grain · 12 flour</td><td><span class="stampw">counted</span> 12:50 · Pip</td><td>grain, flour, fibre</td><td>+6 grain Rook · Mill idle</td></tr>
+<tr><td><b>Barrels</b> · NE</td><td class="item">72 water</td><td><span class="stampw">counted</span> 12:52 · Pip</td><td>water</td><td>+4 Sorrel · −31 cats drink · ≈ 5 h left</td></tr>
+<tr><td><b>Crates</b> · NE</td><td class="item">8 goods · 3 tools</td><td><span class="stampw">counted</span> 12:53 · Pip</td><td>goods, tools</td><td>Smithy adds 3 tools at 14:00</td></tr>
+<tr><td><b>Storehouse</b><br><span class="dim">roofed · 400 cap</span></td><td class="item">40 planks · 2 lumber<br>184 food · 0 cloth</td><td><span class="stampw">counted</span> 12:55 · Pip</td><td>everything refined</td><td>+12 planks Bramble · food ≈ 9 h</td></tr>
+<tr><td><b>Ore pile</b> · Smithy</td><td class="item">6 ore</td><td><span class="stampw">counted</span> 12:58 · Pip</td><td>ore</td><td>+2 Moss · Smithy uses 2 per tool</td></tr>
+<tr><td><b>Log pile</b> · Sawmill</td><td class="item bad">0 logs</td><td><span class="stampw">counted</span> 13:10 · Bramble</td><td>logs</td><td class="bad">Sawmill blocked until job 42 lands</td></tr>
+</tbody></table>`;
+const ledger=`<div class="eyebrow">Ledger · stockpile</div>
+  <div class="subject"><div class="portrait bld"><img src="../../../public/images/game/props/stone_pile.png"></div><div><h2>Stone pile</h2><p>North-east stockpile · 2 tiles · accepts stone and blocks · cap 80</p></div></div>
+  <p class="line">Nobody has counted this pile since <u>07:20</u>. The <span class="bad">≈44</span> is a guess from deliveries and use; the <u>Den plan</u> is waiting on it.</p>
+  <div class="h">Since the last count</div>
+  <div class="rows"><div><span>Counted</span><span>52 stone</span></div><div><span>Delivered</span><span>+6 (Sage, 09:10)</span></div><div><span>Used</span><span>−14 (road, 11:00)</span></div><div><span>Estimate</span><span>≈44</span></div></div>
+  <div class="h">Who counts</div>
+  <div class="rows"><div><span>Accountant</span><span>Pip · round 4</span></div><div><span>Arrives</span><span>in 20 min</span></div><div><span>Walk</span><span>9 tiles from Sacks</span></div></div>
+  <div class="acts"><span class="act hot">Count it now<small>Pip walks over first</small></span><span class="act">Stone only<small>refuse blocks</small></span><span class="act">Grow pile<small>+1 tile</small></span><span class="act">Remove pile</span></div>`;
+atlasChrome({tab:'Stores',ledger,spread});
+renderWorld(document.getElementById('w'),{scale:3,ox:-1120,oy:-110,annotate:false}).then(({P,px,py})=>{});
+</script></body></html>

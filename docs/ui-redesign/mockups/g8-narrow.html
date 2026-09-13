@@ -1,0 +1,13 @@
+<!doctype html><html><head><meta charset="utf-8"><link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=Instrument+Serif:ital@1&display=swap" rel="stylesheet"><link rel="stylesheet" href="glass.css"><title>Glass — 1280×720</title>
+<style>body{width:1280px;height:720px}.tl{left:12px;top:12px}.chip{padding:7px 12px 7px 10px;gap:10px}.chip h1{font-size:20px}.chip small{font-size:10.5px}.seg span{padding:3px 7px;font-size:11px}
+.seal{padding:6px 10px 6px 8px;font-size:13px}.seal .b .ic{width:17px;height:17px}
+.res{right:12px;top:12px;gap:5px}.pill{padding:5px 9px 5px 7px;gap:5px}.pill b{font-size:13px}.pill img{width:15px;height:15px}
+.dock{bottom:12px;padding:6px;gap:2px}.dk{width:42px;height:42px;border-radius:11px}.dk .ic{width:19px;height:19px}
+.card{width:300px;padding:12px}.card .now{font-size:13px;margin:8px 0}.ring{width:54px}.ring div{width:44px;height:44px;font-size:12px}
+.hint{display:none}.pop{top:64px;width:480px}</style></head><body>
+<canvas id="w" width="1280" height="720"></canvas><canvas id="over" width="1280" height="720"></canvas>
+<script src="icons.js"></script><script src="world.js"></script><script src="glass.js"></script>
+<script>
+glassChrome({tab:'Overview',mini:false,hint:false,card:{html:mallowCard,x:930,y:120,ax:838,ay:300}});
+renderWorld(document.getElementById('w'),{scale:2.5,ox:-40,oy:-100,pathColor:'#ffd166',selColor:'#ffd166',destColor:'#ffd166',needColor:null}).then(({px,py,scene})=>needRings(document.getElementById('over').getContext('2d'),px,py,scene,[['Mallow',0.24,'#ff6b57'],['Hazel',0.31,'#ff6b57']]));
+</script></body></html>

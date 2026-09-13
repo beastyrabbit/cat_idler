@@ -1,0 +1,38 @@
+<!doctype html><html><head><meta charset="utf-8"><link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=Instrument+Serif:ital@1&display=swap" rel="stylesheet"><link rel="stylesheet" href="glass.css"><title>Glass — Research</title>
+<style>.rs{display:grid;grid-template-columns:1fr 330px;gap:16px;flex:1;min-height:0}
+.grid{display:grid;grid-template-columns:104px repeat(7,1fr);gap:4px;margin-top:8px}
+.grid .fam{font-weight:800;font-size:12.5px;padding:8px 6px 0 0;border-top:1px solid var(--line)}.grid .fam small{display:block;color:var(--dim);font-weight:600;font-size:10.5px}
+.grid .stg{font:800 9.5px Manrope;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);text-align:center;padding-bottom:4px;border-bottom:1px solid var(--edge)}
+.cell{min-height:42px;border:1px dashed rgba(255,255,255,.14);border-radius:8px;padding:4px 6px;font-size:10.5px;line-height:1.2;color:var(--dim);position:relative}
+.cell b{display:block;font-weight:800;font-size:11.5px;color:var(--ink)}.cell.done{border:1px solid rgba(126,211,122,.5);background:rgba(126,211,122,.10)}.cell.done:after{content:"✓";position:absolute;right:6px;top:4px;color:var(--ok);font-weight:800}
+.cell.aff{border:1px solid var(--sun);background:rgba(255,209,102,.10)}.cell.aff .c{color:var(--sun);font-weight:800}.cell.sel{background:var(--sun);border-color:var(--sun)}.cell.sel b,.cell.sel .c{color:#1a1608}
+.cell.now{border:1px solid var(--info);background:rgba(124,198,230,.12)}.cell.now .bar{height:3px;background:rgba(255,255,255,.15);margin-top:4px;border-radius:2px}.cell.now .bar i{display:block;height:100%;width:40%;background:var(--info)}.cell.lock b{color:var(--dim)}
+.study{border-left:1px solid var(--line);padding-left:16px}.study h3{margin:6px 0 2px;font:800 22px Manrope}.study .sub{color:var(--dim);font-weight:600;font-size:12px}
+.study .now{font-size:13.5px;font-weight:700;margin:12px 0;line-height:1.5}.study .now u{text-decoration:none;color:var(--sun)}.study .now .bad{color:var(--bad)}
+.study .eff{border:1px solid var(--edge);border-radius:10px;padding:8px 10px;font-size:12px;color:var(--dim);margin:8px 0}.study .eff b{color:var(--ink)}</style></head><body>
+<canvas id="w" width="1920" height="1080"></canvas>
+<script src="icons.js"></script><script src="world.js"></script><script src="glass.js"></script>
+<script>
+const stages=['Foundations','Stores','Workflow','Timing','Crews','Reinforcement','Mastery'];
+const fams=[['Water Bowl','Water Stewardship',[['sel','Water Bowl','60'],['lock','Bowl Stores',''],['lock','Refill Rounds',''],['lock','Dawn Fill',''],['lock','Bowl Crews','+1 slot'],['lock','Stone Rim',''],['lock','Spring Keeping','']]],
+['Den','Household',[['done','Den',''],['done','Den Stores',''],['aff','Shared Chores','90'],['lock','Night Watch',''],['lock','Den Crews','+1 slot'],['lock','Stone Hearth',''],['lock','Warm Nests','']]],
+['Herb Garden','Herbal Care',[['done','Herb Garden',''],['aff','Drying Racks','80'],['lock','Cutting Rounds',''],['lock','Season Sowing',''],['lock','Garden Crews','+1 slot'],['lock','Raised Beds',''],['lock','Physic Lore','']]],
+['Mouse Farm','Husbandry',[['done','Mouse Farm',''],['done','Grain Bins',''],['done','Feeding Rounds',''],['aff','Dusk Harvest','120'],['lock','Farm Crews','+1 slot'],['lock','Wire Runs',''],['lock','Breeding Lore','']]],
+['Colony Walls','Wall Stewardship',[['done','Palisade',''],['done','Gate Stores',''],['done','Patrol Routes',''],['done','Gate Hours',''],['lock','Wall Crews','+1 slot'],['now','Stone Dressing II','40 %'],['lock','Bastions','']]],
+['Food Store','Storekeeping',[['done','Food Store',''],['aff','Cold Cellar','110'],['lock','Stock Rounds',''],['lock','Ration Days',''],['lock','Store Crews','+1 slot'],['lock','Stone Floor',''],['lock','Provisioning','']]],
+['Shrine','Ritual',[['done','Shrine',''],['done','Offering Chest',''],['aff','Ritual Rounds','140'],['lock','Moon Rites',''],['lock','Shrine Crews','+1 slot'],['lock','Carved Altar',''],['lock','Deep Lore','']]],
+['Nursery','Kitten Care',[['aff','Nursery','110'],['lock','Milk Stores',''],['lock','Play Rounds',''],['lock','Nap Hours',''],['lock','Nursery Crews','+1 slot'],['lock','Soft Walls',''],['lock','Rearing Lore','']]],
+['Nest Hall','Restful Nests',[['lock','Nest Hall','needs Den III'],['lock','Bedding Stores',''],['lock','Turning Rounds',''],['lock','Quiet Hours',''],['lock','Hall Crews','+1 slot'],['lock','Timber Frame',''],['lock','Deep Sleep','']]]];
+const grid='<div class="grid"><div></div>'+stages.map(s=>'<div class="stg">'+s+'</div>').join('')+fams.map(([n,s,c])=>'<div class="fam">'+n+'<small>'+s+'</small></div>'+c.map(([st,t,x])=>'<div class="cell '+st+'"><b>'+t+'</b>'+(st=='now'?'<div class="bar"><i></i></div><span class="c">'+x+'</span>':x?'<span class="c">'+x+'</span>':'')+'</div>').join('')).join('')+'</div>';
+const study='<div class="study"><p style="margin:0;font:800 10px Manrope;letter-spacing:.12em;text-transform:uppercase;color:var(--sun)">Selected study</p><h3>Water Bowl</h3><div class="sub">Water Stewardship · Foundations · unlocks a building</div>'
++'<div class="now">A filled bowl inside the walls that haulers top up from the river. <span class="bad">Settles the thirst alert</span> for good.</div>'
++'<div class="kv"><em>Cost</em><b>60 of 320 research</b><em>Requires</em><b>nothing</b><em>Takes</em><b>≈ 1.5 h at 1×</b><em>Scholars</em><b>Poppy, Yarrow</b></div>'
++'<div class="eff"><b>Adds the Water Bowl to Build.</b> 1 × 1 tile · 6 stone, 2 planks · holds 40 water · cats drink here instead of walking to the river.</div>'
++'<div class="kv"><em>Leads to</em><b>Bowl Stores · Refill Rounds · Bowl Crews</b></div>'
++'<div class="acts" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px"><span class="act hot">Study now · 60</span><span class="act">Queue next</span><span class="act q">Show in tree</span></div></div>';
+const sheet='<div class="hd"><h2>Research</h2><p>487 studies · 41 studied · 6 affordable · 1 in progress · 320 on hand</p><span class="x">ESC</span></div>'
++'<div class="chips"><span class="fchip on">Buildings · 25 families</span><span class="fchip">Recipes · 108</span><span class="fchip">Upgrades</span><span class="fchip hot">Affordable now · 6</span><span class="fchip">Crews · 12</span><span class="fchip search">search studies…</span></div>'
++'<div class="rs"><div>'+grid+'<p style="margin:8px 0 0;color:var(--dim);font-weight:600;font-size:11px">16 more families · scroll</p></div>'+study+'</div>';
+glassChrome({tab:'Research',sheet,sheetWide:true,mini:false});
+renderWorld(document.getElementById('w'),{scale:3,ox:-30,oy:-20,annotate:false,dim:0.35});
+</script></body></html>

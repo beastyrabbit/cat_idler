@@ -1,23 +1,15 @@
-# Git hooks for the Rust/Bevy game. The TypeScript web game was retired at the
-# P11 cutover (preserved on branch archive/web-game, tag web-final). Heavy Rust
-# steps (clippy, smoke tests) live on pre-push to keep commits fast while Bevy
-# is a dependency. Forgejo runs the complete suite in four remote shards.
 pre-commit:
   parallel: true
   commands:
     gitleaks:
-      glob: "*.{rs,json,env,yaml,yml,toml,sh,mjs}"
       run: gitleaks protect --staged --no-banner
-    rustfmt:
-      glob: "*.rs"
-      run: cargo fmt --all -- --check
+    csharp-format:
+      glob: "*.cs"
+      run: dotnet format whitespace IdleCatForest.slnx --no-restore --verify-no-changes
 
 pre-push:
-  parallel: true
   commands:
-    rust-clippy:
-      glob: "*.rs"
-      run: cargo clippy --workspace --all-targets -- -D warnings
-    rust-smoke:
-      glob: "*.rs"
-      run: cargo nextest run --workspace --profile smoke
+    csharp-build:
+      run: dotnet build IdleCatForest.slnx --no-restore -warnaserror
+    focused-scenarios:
+      run: dotnet tools/scenarios/bin/Debug/net10.0/Forest.Scenarios.dll --exclude-campaigns
