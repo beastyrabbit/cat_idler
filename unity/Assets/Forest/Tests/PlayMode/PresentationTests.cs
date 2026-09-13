@@ -61,11 +61,65 @@ namespace IdleCatForest.Tests
         }
 
         [UnityTest]
+        public IEnumerator LocalLiveSimulationConsumesOneFiftyMillisecondStep()
+        {
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            typeof(ForestGame).GetField("accumulated", flags).SetValue(game, .05);
+            double before = game.CurrentWorld.TimeSeconds;
+            typeof(ForestGame).GetMethod("Update", flags).Invoke(game, null);
+            Assert.That(game.CurrentWorld.TimeSeconds - before, Is.EqualTo(.05).Within(1e-8), "Autonomous simulation must advance without waiting for a 100ms presentation batch.");
+            yield break;
+        }
+
+        [UnityTest]
+        public IEnumerator LiveInspectorUpdatesWorkWithoutRebuildingThePanel()
+        {
+            var cat = game.Selected.Cats[1];
+            var job = new Job { Id = "live-inspector-job", Kind = "woodcut", Phase = "working", CatId = cat.Id, Position = cat.Position, Progress = 1, RequiredWork = 20 };
+            game.Selected.Jobs.Add(job); cat.JobId = job.Id;
+            game.View.InspectCat(cat.Id); game.UI.OpenPanel("Inspect");
+            var root = game.GetComponent<UIDocument>().rootVisualElement;
+            var progress = root.Q<ProgressBar>("live-work-progress");
+            Assert.That(progress, Is.Not.Null, "Working cats need a live progress meter.");
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            typeof(ForestUI).GetField("nextRefresh", flags).SetValue(game.UI, float.MaxValue);
+            job.Progress = 1.05;
+            typeof(ForestUI).GetMethod("Update", flags).Invoke(game.UI, null);
+            Assert.That(root.Q<ProgressBar>("live-work-progress"), Is.SameAs(progress), "Live progress must not rebuild controls or reset interaction.");
+            Assert.That(progress.value, Is.EqualTo(1.05f).Within(1e-5));
+            yield break;
+        }
+
+        [UnityTest]
+        public IEnumerator LiveMoversFollowSubsecondPositionsBetweenReconciles()
+        {
+            game.View.enabled = false;
+            var point = new Int2(4, 3);
+            var vehicle = new Vehicle { Id = "live-cart", Mode = "rail", Position = point, HasContinuousPosition = true, X = 4, Z = 3 };
+            var raid = new Raid { Id = "live-raider", Position = point, HasContinuousPosition = true, X = 4, Z = 3 };
+            var trade = new TradeOffer { Id = "live-caravan", Status = "outbound", Position = point, HasContinuousPosition = true, X = 4, Z = 3 };
+            trade.Path.Add(new Int2(5, 3)); game.Selected.Vehicles.Add(vehicle); game.Selected.Raids.Add(raid); game.CurrentWorld.TradeOffers.Add(trade);
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            typeof(ForestView).GetMethod("Reconcile", flags).Invoke(game.View, null);
+            var objects = new[] { GameObject.Find("vehicle:" + vehicle.Id), GameObject.Find("raid:" + raid.Id), GameObject.Find("trade:" + trade.Id) };
+            foreach (var entity in objects) Assert.That(entity, Is.Not.Null);
+            vehicle.X = raid.X = trade.X = 4.05;
+            typeof(ForestView).GetMethod("AnimateCats", flags).Invoke(game.View, null);
+            foreach (var entity in objects)
+            {
+                Assert.That(entity.transform.position.x, Is.GreaterThan(4), "Movers must update between the slower scenery reconciliations.");
+                Assert.That(entity.transform.position.x, Is.LessThanOrEqualTo(4.05001f), "Presentation must not predict beyond authoritative progress.");
+                Assert.That(entity.transform.position.z, Is.EqualTo(3).Within(1e-6));
+            }
+            yield break;
+        }
+
+        [UnityTest]
         public IEnumerator GroundRebuildPreservesTerrainAndNeverGeneratesUnknownTiles()
         {
             game.View.enabled = false;
             var world = game.CurrentWorld;
-            world.Tiles.Clear(); game.Selected.Known.Clear();
+            world.Tiles.Clear(); world.Dungeons.Clear(); world.Creatures.Clear(); game.Selected.Known.Clear();
             for (int z = -27; z <= 27; z++) for (int x = -27; x <= 27; x++)
             {
                 var point = new Int2(x, z);
@@ -115,6 +169,40 @@ namespace IdleCatForest.Tests
         }
 
         [UnityTest]
+        public IEnumerator FarmRenderingCoversBothDesignatedCornersAndClearsAllCells()
+        {
+            var world = game.CurrentWorld; var village = game.Selected;
+            var origin = new Int2(village.Center.X + village.Radius + 6, village.Center.Z);
+            for (int x = village.Radius + 1; x <= village.Radius + 10; x++)
+                for (int z = -4; z <= 3; z++)
+                {
+                    var at = new Int2(village.Center.X + x, village.Center.Z + z);
+                    var tile = world.TileAt(at);
+                    tile.Wall = tile.Water = tile.Mountain = tile.Road = tile.Rail = false;
+                    tile.ClaimId = tile.Resource = ""; tile.Amount = 0;
+                    if (!village.Known.Contains(at)) village.Known.Add(at);
+                }
+            village.Buildings.Add(new Building { Id = world.Id("fixture-field"), Kind = "field", Position = new Int2(origin.X, origin.Z - 4), Completed = true });
+            var result = game.Send(new GameAction { Kind = "DesignateFarm", Resource = "grain", Position = origin, End = new Int2(origin.X + 3, origin.Z + 2) }).Result;
+            Assert.That(result.Success, Is.True, result.Error);
+            var farm = village.Farms.Single(f => f.Id == result.EntityId);
+            Assert.That(farm.Width, Is.EqualTo(4)); Assert.That(farm.Depth, Is.EqualTo(3));
+            yield return new WaitForSecondsRealtime(.25f);
+            Transform[] Plots() => UnityEngine.Object.FindObjectsByType<Transform>(FindObjectsSortMode.None).Where(t => t.name.StartsWith("farm:" + farm.Id, StringComparison.Ordinal)).ToArray();
+            var plots = Plots();
+            Assert.That(plots, Is.Not.Empty, "The public farm must have a rendered crop before checking its full extent.");
+            var visible = plots.SelectMany(t => t.GetComponentsInChildren<Renderer>()).Select(r => r.bounds).ToArray();
+            for (int x = 0; x < farm.Width; x++) for (int z = 0; z < farm.Depth; z++)
+            {
+                float px = origin.X + x, pz = origin.Z + z;
+                Assert.That(visible.Any(b => b.min.x <= px && b.max.x >= px && b.min.z <= pz && b.max.z >= pz), Is.True, "The crop footprint must visibly cover designated tile " + px + "," + pz);
+            }
+            Assert.That(game.Send(new GameAction { Kind = "ClearFarm", TargetId = farm.Id }).Result.Success, Is.True);
+            yield return new WaitForSecondsRealtime(.25f);
+            Assert.That(Plots(), Is.Empty, "Clearing a farm must remove its entire visible footprint.");
+        }
+
+        [UnityTest]
         public IEnumerator ExistingResourceViewChangesWhenInfrastructureReplacesIt()
         {
             var tile = game.CurrentWorld.Tiles.First(t => game.Selected.Known.Contains(t.Position) && t.Resource == "logs" && t.Amount > 0 && !t.Wall && !t.Road);
@@ -123,7 +211,7 @@ namespace IdleCatForest.Tests
             Assert.That(GameObject.Find(name).transform.Find("tree_oak"), Is.Not.Null);
             tile.Road = true;
             yield return new WaitForSecondsRealtime(.25f);
-            Assert.That(GameObject.Find(name).transform.Find("road"), Is.Not.Null, "A tile keeps its identity when its visible asset changes.");
+            Assert.That(GameObject.Find(name).GetComponentsInChildren<Transform>().Any(t => t.name.StartsWith("world_road_", StringComparison.Ordinal)), Is.True, "A tile keeps its identity when its visible asset changes.");
         }
 
         [UnityTest]

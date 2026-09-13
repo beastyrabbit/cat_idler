@@ -45,11 +45,34 @@ your personal village or connect to an explicit shared server. Local state lives
 under Unity's application data directory in `unity/world-v1.json`, separate from
 the former game's SQLite data. Corrupt or unsupported saves fail visibly.
 
-Use WASD/arrows to pan and the wheel to zoom. Click a cat or workplace to inspect
-it. Tab enters or leaves the selected cat; WASD walks, right drag turns the close
+Use WASD/arrows or right/middle drag to pan. The wheel zooms around the pointer;
++/− keys and the visible zoom buttons work from the management view. One normalized
+wheel step changes the scale by about 11%, including fractional trackpad input.
+Click a cat or workplace to inspect it. The camera keeps the subject beside the
+open drawer. Tab enters or leaves the selected cat; WASD walks, right drag turns the close
 camera, and E interacts with nearby storage or the shrine. Colony simulation
 continues during direct control. The management categories expose construction,
 manual jobs, queues, staffing, study purchases, stores, officers, defense and trade.
+
+In new worlds, **World** lists known dungeon entrances and the selected cat's
+readiness. Dispatch an equipped or trained adult, follow its expedition, or recall
+it. Page Up / Page Down and the World panel switch discovered levels. Selecting
+an explorer follows its next descent; explicitly choosing Surface stops that
+follow. In direct control, walk toward a staircase to descend or climb. E attacks
+an adjacent guardian or collects a chest at the cat's position. Releasing control
+underground starts a physical return to the village.
+
+The generator creates coherent biomes, surface slopes, shallow river crossings,
+deep lake shelves and two- or three-floor dungeon sites. Existing saves retain
+their older terrain. Use a new save path to test this generation. The system has
+no swimming, fluid simulation or arbitrary excavation. Using 3D geometry does
+not itself guarantee a lower rendering cost; measured workloads are recorded in
+[PERFORMANCE.md](PERFORMANCE.md).
+
+Autonomous movement, work, needs and transport run in 50-millisecond simulation
+steps at 1× speed. Pause stops simulated time; 4× and 8× advance more of the same
+steps. The inspector updates needs and work progress between its slower content
+refreshes. Existing saves acquire the finer clock without resetting their world.
 
 ## Host and test
 
@@ -90,6 +113,20 @@ are ignored. The packaged app accepts `--forest-save <new-or-existing-path>`,
 `--forest-server <ws-or-wss-address>`. Existing saves determine their own seed.
 Other platforms have no build/test claim in this migration.
 
+New saves use the revised founding layout: a centered 3×3 shrine, surrounding
+road, four gates and connected building entrances. Older Unity and imported saves
+keep their existing coordinates, footprints, jobs and inventories. Newly planned
+buildings in those saves still require a road connection to the actual shrine.
+Use a separate unused path to try the new layout without replacing progress:
+
+```sh
+open -n 'artifacts/macos/Idle Cat Forest.app' --args --forest-save "$PWD/artifacts/playtest/world.json" --forest-seed 41
+```
+
+The same path resumes the same world on subsequent launches. On Retina Macs,
+`-screen-width 2400 -screen-height 1500` gives a comfortable management window;
+smaller windows keep the text size and scroll their panels.
+
 Install the native support module with Unity Hub, or with the pinned CLI:
 
 ```sh
@@ -107,10 +144,11 @@ timestamp and do not contain credentials. Capture can briefly slow rendering, so
 record performance before capturing or after its samples leave the rolling window.
 Without this explicit option, the app does not write capture files.
 
-The performance report includes up to 3,600 frames and simulation steps, complete
-one-second economy tick samples, population, active jobs, resolution, machine and
-local/remote mode. These are observations of the current workload. A remote
-client cannot measure the server's simulation cost.
+The performance report includes up to 3,600 frames and 50-millisecond simulation
+steps, plus steps that also cross a whole-second planning boundary. It records
+population, active jobs, resolution, machine and local/remote mode. These are
+observations of the current workload. A remote client cannot measure the server's
+simulation cost.
 
 ## Live agent inspection
 

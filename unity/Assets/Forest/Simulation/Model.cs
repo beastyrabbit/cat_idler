@@ -6,17 +6,18 @@ namespace IdleCatForest.Simulation
     [Serializable]
     public struct Int2 : IEquatable<Int2>
     {
-        public int X, Z;
-        public Int2(int x, int z)
+        public int X, Z, Level;
+        public Int2(int x, int z, int level = 0)
         {
             X = x;
             Z = z;
+            Level = level;
         }
-        public bool Equals(Int2 p) => X == p.X && Z == p.Z;
+        public bool Equals(Int2 p) => X == p.X && Z == p.Z && Level == p.Level;
         public override bool Equals(object o) => o is Int2 p && Equals(p);
-        public override int GetHashCode() => unchecked(X * 397 ^ Z);
-        public static int Distance(Int2 a, Int2 b) => Math.Abs(a.X - b.X) + Math.Abs(a.Z - b.Z);
-        public override string ToString() => X + "," + Z;
+        public override int GetHashCode() => unchecked(X * 397 ^ Z ^ Level * 7919);
+        public static int Distance(Int2 a, Int2 b) => Math.Abs(a.X - b.X) + Math.Abs(a.Z - b.Z) + Math.Abs(a.Level - b.Level) * 4;
+        public override string ToString() => X + "," + Z + (Level == 0 ? "" : "," + Level);
     }
     [Serializable]
     public partial class PlayerContext
@@ -91,7 +92,7 @@ namespace IdleCatForest.Simulation
     public partial class Building
     {
         public string Id = "", Kind = "", WorkerId = "", BlockedReason = "";
-        public Int2 Position; public bool Completed, Paused; public int Width = 2, Depth = 2;
+        public Int2 Position, Entrance; public bool Completed, Paused, HasEntrance; public int Width = 2, Depth = 2;
         public double Progress, RequiredWork = 60;
         public List<Stack> Required = new List<Stack>(), Inputs = new List<Stack>(), Outputs = new List<Stack>();
         public List<QueueEntry> Queue = new List<QueueEntry>(); public List<string> ExtraWorkerIds = new List<string>();
@@ -100,6 +101,9 @@ namespace IdleCatForest.Simulation
     [Serializable]
     public partial class Cat
     {
+        public double Y; public bool HasHeight;
+        public string NeedSourceId = ""; public double NextNeedAttemptAt;
+        public bool HasFailedPath; public Int2 FailedPathStart, FailedPathDestination; public double NextPathAttemptAt;
         public string Id = "", Name = "", VillageId = "", JobId = "", BuildingId = "", OfficerRole = "", Goal = "idle", BlockedReason = "", ControlledBy = "", BedId = "", Migration = "resident";
         public Int2 Position; public double X, Z, Hunger = 100, Thirst = 100, Rest = 100, Health = 100, AgeHours = 24, PregnantUntil = -1, ProbationUntil = -1, ControlLeaseUntil;
         public bool Alive = true, Boosted; public List<Stack> Cargo = new List<Stack>(), Skills = new List<Stack>();
@@ -109,6 +113,8 @@ namespace IdleCatForest.Simulation
     [Serializable]
     public partial class Job
     {
+        public double NextPlanningAt, NextStorageAttemptAt; public string DeliveryPileId = ""; public bool HasObservedPosition; public Int2 ObservedPosition;
+        public bool HasWorkStand; public Int2 WorkStand; public int WorkStandIndex = -1;
         public string Id = "", Kind = "", CatId = "", TargetId = "", Resource = "", Phase = "travel", BlockedReason = "", SourceId = "", RecipeId = "", SuspendedCargoPileId = "", AutomatedBy = "";
         public Int2 Position, Origin; public double Progress, RequiredWork = 10, Amount, StartedAt; public bool Manual, Completed; public int PathIndex;
         public List<Stack> Reserved = new List<Stack>(); public List<Int2> Path = new List<Int2>();
@@ -140,6 +146,7 @@ namespace IdleCatForest.Simulation
     [Serializable]
     public partial class TradeOffer
     {
+        public Int2 Position; public bool HasContinuousPosition;
         public string Id = "", FromVillageId = "", ToVillageId = "", Status = "offered", CarrierId = "";
         public Stack Offered = new Stack(), Requested = new Stack(); public List<Int2> Path = new List<Int2>(); public int PathIndex; public double Progress;
         public List<Item> OfferedItems = new List<Item>(), RequestedItems = new List<Item>();
@@ -153,11 +160,13 @@ namespace IdleCatForest.Simulation
     [Serializable]
     public partial class Vehicle
     {
+        public bool HasContinuousPosition; public double X, Z, Progress;
         public string Id = "", Mode = "", RouteId = ""; public Int2 Position; public List<Stack> Cargo = new List<Stack>(); public List<string> ItemIds = new List<string>();
     }
     [Serializable]
     public partial class Raid
     {
+        public bool HasContinuousPosition; public double X, Z;
         public string Id = "", Phase = "approaching"; public Int2 Position; public double Health = 30, Strength = 30, Progress; public List<Int2> Path = new List<Int2>(); public List<Stack> Loot = new List<Stack>();
     }
     [Serializable]
@@ -173,12 +182,14 @@ namespace IdleCatForest.Simulation
     [Serializable]
     public partial class Trader
     {
+        public bool HasContinuousPosition; public double X, Z;
         public string Phase = "absent"; public Int2 Position; public double NextAt = 3600, Until, Coins = 1000; public List<Stack> Goods = new List<Stack>(); public List<Item> Items = new List<Item>();
         public List<Int2> Path = new List<Int2>(); public int PathIndex; public double Progress; public string BlockedReason = "";
     }
     [Serializable]
     public partial class Village
     {
+        public int LayoutVersion;
         public string Id = "", Name = "", OwnerId = "", LeaderId = ""; public bool Communal; public Int2 Center; public int Radius = 6, Run = 1;
         public double FoundedAt, ResearchPoints, Blessings, Coins, LastLeaderResearch = -86400, LastMigration, NextElection = 86400;
         public long BoostMinute = -1; public int BoostsUsed;

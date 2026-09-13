@@ -80,8 +80,13 @@ public static class HostEntry
                         var response = new ServerMessage { Type = "result", RequestId = request.RequestId };
                         var authenticated = runtime.Authenticate(peer.Identity, request.SessionId, request.Sig, now);
                         var movement = authenticated && request.Action?.Kind?.Replace("_", "").Equals("movecat", StringComparison.OrdinalIgnoreCase) == true;
-                        if (!actionBudget.Allow(peerIp, peer.Id.ToString(), peer.Identity?.Credential.PlayerId ?? "", movement, now)) response.Result = ActionResult.Fail("Too many actions. Wait before retrying.");
-                        else if (request.Type == "presence")
+                        if (!actionBudget.Allow(peerIp, peer.Id.ToString(), peer.Identity?.Credential.PlayerId ?? "", movement, now))
+                        {
+                            response.Result = ActionResult.Fail("Too many actions. Wait before retrying.");
+                            await peer.Send(response, context.RequestAborted);
+                            continue;
+                        }
+                        if (request.Type == "presence")
                         {
                             if (peer.Identity != null) response.Result = ActionResult.Fail("This connection already has an identity.");
                             else if (string.IsNullOrEmpty(request.SessionId) && !identityLimits.Allow(peerIp, now)) response.Result = ActionResult.Fail("Too many new identities from this address.");
@@ -114,9 +119,9 @@ public static class HostEntry
                 var clock = Stopwatch.StartNew();
                 var last = clock.Elapsed.TotalSeconds;
                 var saveAt = last + 5;
-                var snapshotAt = last + 1;
+                var snapshotAt = last + 0.1;
                 Task broadcast = Task.CompletedTask;
-                using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(100));
+                using var timer = new PeriodicTimer(TimeSpan.FromSeconds(World.SimulationStepSeconds));
                 try
                 {
                     while (await timer.WaitForNextTickAsync(app.Lifetime.ApplicationStopping))
@@ -125,8 +130,7 @@ public static class HostEntry
                         runtime.Advance(Math.Min(1, current - last)); last = current;
                         if (current >= snapshotAt && broadcast.IsCompleted)
                         {
-                            bool controlling; lock (runtime.Sync) controlling = runtime.World.Villages.Any(v => v.Cats.Any(c => c.ControlledBy.Length > 0));
-                            snapshotAt = current + (controlling ? 0.1 : 0.5);
+                            snapshotAt = current + 0.1;
                             broadcast = Task.Run(async () =>
                             {
                                 await Task.WhenAll(clients.Values.Select(async peer =>
@@ -145,12 +149,12 @@ public static class HostEntry
                         {
                             saveAt = current + 5;
                             try { runtime.Save(); Interlocked.Exchange(ref failures, 0); }
-                            catch (IOException) { Interlocked.Increment(ref failures); }
+                            catch (Exception error) when (error is IOException || error is UnauthorizedAccessException) { Interlocked.Increment(ref failures); }
                         }
                     }
                 }
                 catch (OperationCanceledException) { }
-                finally { try { runtime.Save(); } catch (IOException) { Interlocked.Increment(ref failures); } }
+                finally { try { runtime.Save(); } catch (Exception error) when (error is IOException || error is UnauthorizedAccessException) { Interlocked.Increment(ref failures); } }
             }));
         return app;
     }

@@ -32,9 +32,9 @@ build uses ARM64 IL2CPP. Browser and other native exports are not verified targe
 
 ## Controls
 
-- WASD or arrows pan the management camera. The wheel zooms; middle drag pans.
-- Click a cat or workplace to inspect it. The top navigation opens management tools.
-- Use Build to choose a plan, then click a clear known site. Cats must carry its materials.
+- WASD or arrows pan the management camera. Wheel, +/− keys and the on-screen buttons zoom. Right or middle drag grabs the world; Home centers the village.
+- Click a cat or workplace to inspect it. The left navigation opens management tools, and Back returns from an inspector to its list.
+- Use Build to extend a road from the shrine, then choose a clear building site beside it. Every new building needs an entrance on that connected road network. Cats carry the construction materials.
 - Assign a worker and edit station or individual work queues in the workplace inspector.
 - Research offers searchable cards and a dependency map for all 487 studies.
 - Inspect a cat and press Tab to enter third-person control. WASD walks, right drag
@@ -46,6 +46,16 @@ build uses ARM64 IL2CPP. Browser and other native exports are not verified targe
 Inventory marked with an asterisk is a physical Accountant report, which can be
 stale. The game does not pretend an unvisited pile has a fresh exact count.
 Action failures appear at the bottom of the window.
+
+New villages have a centered 3×3 shrine, a road around it and four open gates.
+Existing saves keep their buildings, cats and progress. To try the revised founding
+layout without replacing a played world, launch with a separate, unused save path:
+
+```sh
+open -n 'artifacts/macos/Idle Cat Forest.app' --args --forest-save "$PWD/artifacts/playtest/world.json" --forest-seed 41
+```
+
+Reusing that path resumes its world. A seed applies only when creating a new save.
 
 ## Shared world and saves
 

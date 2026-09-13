@@ -77,7 +77,7 @@ namespace IdleCatForest.Simulation
             if (TimeSeconds - v.FoundedAt < 6 * 3600 || beds - adults - v.Cats.Count(c => c.PregnantUntil >= 0) > 1 || Total(v, "food") < adults * 3 || Total(v, "water") < adults * 4 || v.Buildings.Any(b => b.Kind == "den" && !b.Completed))
                 return;
             foreach (var p in v.Known.OrderBy(p => Int2.Distance(v.Center, p)).ThenBy(p => p.Z).ThenBy(p => p.X))
-                if (FreeSite(v, p, 2, 2))
+                if (FreeSite(v, p, 2, 2) && FreeBuildingEntrance(v, p).HasValue)
                 {
                     var result = Plan(v, "den", p, null);
                     if (result.Success)

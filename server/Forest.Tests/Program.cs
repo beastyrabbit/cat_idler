@@ -94,6 +94,63 @@ Test("legacy native bearer import is private and never rewrites its source", () 
     }
     finally { Directory.Delete(directory, true); }
 });
+await AsyncTest("shared host survives save permission loss and recovers readiness", async () =>
+{
+    if (OperatingSystem.IsWindows()) return;
+    var directory = Path.Combine(Path.GetTempPath(), "forest-save-permission-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(directory);
+    var permissions = File.GetUnixFileMode(directory);
+    try
+    {
+        var path = Path.Combine(directory, "world.json");
+        using var runtime = new AuthorityRuntime(path, 41);
+        var original = File.ReadAllBytes(path);
+        var catIds = runtime.World.Villages.Single().Cats.Select(cat => cat.Id).ToArray();
+        await using var app = HostEntry.Build(runtime, "http://127.0.0.1:0", true);
+        await app.StartAsync();
+        try
+        {
+            var address = app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>().Addresses.Single();
+            using var http = new HttpClient { BaseAddress = new Uri(address), Timeout = TimeSpan.FromSeconds(2) };
+            File.SetUnixFileMode(directory, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+            try { runtime.Save(); throw new Exception("fixture did not deny save access"); }
+            catch (UnauthorizedAccessException) { }
+            Check((await http.GetAsync("/ready")).IsSuccessStatusCode, "host began unready before automatic save failures");
+            await Task.Delay(TimeSpan.FromSeconds(6.5));
+            lock (runtime.Sync) Check(runtime.World.TimeSeconds > 5.7, "save permission failure stopped automatic simulation ticks");
+            async Task WaitForReadiness(System.Net.HttpStatusCode expected, TimeSpan timeout)
+            {
+                var clock = System.Diagnostics.Stopwatch.StartNew();
+                while (clock.Elapsed < timeout)
+                {
+                    using var response = await http.GetAsync("/ready");
+                    if (response.StatusCode == expected) return;
+                    await Task.Delay(100);
+                }
+                throw new Exception("readiness did not become " + expected);
+            }
+            await WaitForReadiness(System.Net.HttpStatusCode.ServiceUnavailable, TimeSpan.FromSeconds(12));
+            Check(File.ReadAllBytes(path).SequenceEqual(original), "failed saves changed the last durable world");
+            double beforeRecovery;
+            lock (runtime.Sync) beforeRecovery = runtime.World.TimeSeconds;
+            Check(beforeRecovery >= 14, "repeated save failures stopped simulation");
+            File.SetUnixFileMode(directory, permissions);
+            await WaitForReadiness(System.Net.HttpStatusCode.OK, TimeSpan.FromSeconds(7));
+            var saved = SaveStore.Load<World>(path);
+            Check(saved.TimeSeconds > beforeRecovery, "readiness recovered without saving the advanced world");
+            Check(saved.Villages.Single().Cats.Select(cat => cat.Id).SequenceEqual(catIds), "save recovery replaced founding identities");
+            AuthorityRuntime.ValidateWorld(saved);
+        }
+        finally
+        {
+            File.SetUnixFileMode(directory, permissions);
+            await app.StopAsync();
+            // The automatic loop observes shutdown on its next timer continuation.
+            await Task.Delay(150);
+        }
+    }
+    finally { File.SetUnixFileMode(directory, permissions); Directory.Delete(directory, true); }
+});
 Test("full simulation save retains cargo reservations queues identities and entropy", () =>
 {
     var directory = Path.Combine(Path.GetTempPath(), "forest-runtime-test-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(directory);
@@ -240,6 +297,33 @@ await AsyncTest("real loopback identities village privacy signed actions and res
     }
     finally { Directory.Delete(directory, true); }
 });
+await AsyncTest("autonomous live snapshots arrive throughout each second", async () =>
+{
+    var directory = Path.Combine(Path.GetTempPath(), "forest-live-snapshot-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(directory);
+    try
+    {
+        using var runtime = new AuthorityRuntime(Path.Combine(directory, "world.json"), 41);
+        await using var app = HostEntry.Build(runtime, "http://127.0.0.1:0", true);
+        await app.StartAsync();
+        var address = app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>().Addresses.Single().Replace("http://", "ws://") + "/ws";
+        using var client = new WorldClient(address, Path.Combine(directory, "client.json"));
+        await client.ConnectAsync();
+        var samples = new List<double>(); var clock = System.Diagnostics.Stopwatch.StartNew(); long sequence = client.LatestFrame.Sequence;
+        while (clock.Elapsed.TotalSeconds < 1.25)
+        {
+            await Task.Delay(10);
+            var frame = client.LatestFrame;
+            if (frame.Sequence == sequence) continue;
+            sequence = frame.Sequence; samples.Add(frame.World.TimeSeconds);
+            Check(frame.World.Villages.SelectMany(v => v.Cats).All(c => c.ControlledBy == ""), "snapshot test accidentally enabled direct-control cadence");
+        }
+        Check(samples.Count >= 6, "autonomous world delivered only " + samples.Count + " snapshots in 1.25 seconds");
+        Check(samples.Zip(samples.Skip(1), (a, b) => b - a).All(delta => delta > 0 && delta < 0.4), "autonomous snapshots remained on a coarse update cadence");
+        client.Dispose(); await app.StopAsync();
+    }
+    finally { Directory.Delete(directory, true); }
+});
 await AsyncTest("automatic broadcasts cannot roll back newer selection and cat control", async () =>
 {
     var directory = Path.Combine(Path.GetTempPath(), "forest-frame-order-test-" + Guid.NewGuid().ToString("N"));
@@ -291,12 +375,12 @@ await AsyncTest("signed physical trade resumes escrow after restart and transfer
                 Int2 Move(Int2 p) => new(p.X + delta.X, p.Z + delta.Z);
                 village.Center = center; village.Known = village.Known.Select(Move).ToList();
                 foreach (var cat in village.Cats) { cat.Position = Move(cat.Position); cat.X += delta.X; cat.Z += delta.Z; }
-                foreach (var building in village.Buildings) building.Position = Move(building.Position);
+                foreach (var building in village.Buildings) { building.Position = Move(building.Position); if (building.HasEntrance) building.Entrance = Move(building.Entrance); }
                 foreach (var pile in village.Stockpiles) pile.Position = Move(pile.Position);
-                foreach (var p in village.Known) { var tile = runtime.World.TileAt(p); tile.Water = tile.Mountain = false; tile.Wall = false; }
+                foreach (var p in village.Known) { var tile = runtime.World.TileAt(p); World.ClearSurface(tile, 0); tile.Water = tile.Mountain = false; tile.Wall = false; }
             }
             Rebase(first, new Int2(30, 0)); Rebase(second, new Int2(45, 0));
-            for (int x = 30; x <= 45; x++) { var tile = runtime.World.TileAt(new Int2(x, 0)); tile.Water = tile.Mountain = tile.Wall = false; }
+            for (int x = 30; x <= 45; x++) { var tile = runtime.World.TileAt(new Int2(x, 0)); World.ClearSurface(tile, 0); tile.Water = tile.Mountain = tile.Wall = false; }
             first.Contacts.Add(second.Id); second.Contacts.Add(first.Id);
             first.Items.Add(new Item { Id = "exact-trade-tool", Kind = "tool", Material = "wood", Quality = 3, Condition = 17, MaxCondition = 42, Weight = 2.5, VillageId = first.Id, LocationId = first.Stockpiles[0].Id });
             second.Stockpiles[0].Goods.Add(new IdleCatForest.Simulation.Stack("gem", 5));
@@ -351,6 +435,201 @@ Test("movement rate budget preserves ordinary action limits", () =>
     for (int i = 0; i < 120; i++) budget.Allow("ip", "socket", "owner", true, 12000);
     Check(!budget.Allow("ip", "other-socket", "owner", true, 12000), "reconnection bypassed signed player movement limit");
 });
+foreach (bool automaticTicks in new[] { false, true })
+    await AsyncTest(automaticTicks ? "rate-limited socket still receives scheduled snapshots" : "rate-limited socket keeps its frame without building projections", async () =>
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "forest-socket-budget-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            using var runtime = new AuthorityRuntime(Path.Combine(directory, "world.json"), 41);
+            await using var app = HostEntry.Build(runtime, "http://127.0.0.1:0", automaticTicks);
+            await app.StartAsync();
+            try
+            {
+                var address = app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>().Addresses.Single().Replace("http://", "ws://") + "/ws";
+                using var client = new WorldClient(address, Path.Combine(directory, "client.json"));
+                await client.ConnectAsync();
+                int denied = 0;
+                for (int i = 0; i < 35; i++)
+                {
+                    var before = client.LatestFrame;
+                    var result = await client.SendAsync(new GameAction { Kind = "Presence" });
+                    if (result.Success) Check(client.LatestFrame.Sequence > before.Sequence, "accepted action did not update the client frame");
+                    else
+                    {
+                        Check(result.Error.StartsWith("Too many actions.", StringComparison.Ordinal), "burst failed for a reason other than its action budget");
+                        denied++;
+                        if (!automaticTicks) Check(ReferenceEquals(client.LatestFrame, before), "rate-limited request replaced the client's latest frame");
+                    }
+                }
+                Check(denied >= 6, "socket burst did not exhaust the ordinary action budget");
+                if (!automaticTicks)
+                    Check(runtime.Project(null).Sequence == client.LatestFrame.Sequence + 1, "rejected requests built hidden full-world projections");
+                else
+                {
+                    double before = client.LatestWorld.TimeSeconds;
+                    var clock = System.Diagnostics.Stopwatch.StartNew();
+                    while (client.LatestWorld.TimeSeconds <= before && clock.Elapsed < TimeSpan.FromSeconds(3)) await Task.Delay(100);
+                    Check(client.LatestWorld.TimeSeconds > before && client.Status == "Connected", "throttling stopped scheduled snapshots or disconnected the client");
+                }
+                using var other = new WorldClient(address, Path.Combine(directory, "other.json"));
+                await other.ConnectAsync();
+                var previous = other.LatestFrame.Sequence;
+                Check((await other.SendAsync(new GameAction { Kind = "Presence" })).Success && other.LatestFrame.Sequence > previous, "throttled peer blocked another player's accepted action");
+            }
+            finally { await app.StopAsync(); if (automaticTicks) await Task.Delay(150); }
+        }
+        finally { Directory.Delete(directory, true); }
+    });
+Test("live simulation resumes fractional saves without replaying elapsed work", () =>
+{
+    var directory = Path.Combine(Path.GetTempPath(), "forest-live-restart-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(directory);
+    try
+    {
+        var path = Path.Combine(directory, "world.json"); var whole = World.Create(41); var village = whole.Villages.Single(); var cat = village.Cats[1];
+        var job = new Job { Id = whole.Id("job"), Kind = "woodcut", Phase = "working", Position = cat.Position, CatId = cat.Id, RequiredWork = 100 };
+        village.Jobs.Add(job); cat.JobId = job.Id;
+        whole.Step(.075); Check(job.Progress > 0 && job.Progress < 1, "live work did not advance before the first full second");
+        AuthorityRuntime.ValidateWorld(whole); SaveStore.Save(path, whole);
+        var resumed = SaveStore.Load<World>(path); AuthorityRuntime.ValidateWorld(resumed);
+        Check(resumed.TimeSeconds == whole.TimeSeconds && resumed.SimulationTimeSeconds == whole.SimulationTimeSeconds, "save lost its consumed step or fractional remainder");
+        whole.Step(.125); resumed.Step(.025); resumed.Step(.1);
+        Check(JToken.DeepEquals(JToken.Parse(WireJson.Encode(whole)), JToken.Parse(WireJson.Encode(resumed))), "fractional restart changed timing, identities, work or finite ownership");
+        var legacy = JObject.Parse(WireJson.Encode(whole)); legacy.Remove("SimulationTimeSeconds"); legacy.Remove("ContinuousClockInitialized");
+        legacy["TimeSeconds"] = 43200.025; legacy["PendingSeconds"] = .025;
+        SaveStore.Save(path, legacy); var oldSave = SaveStore.Load<World>(path);
+        double before = oldSave.Villages.Single().Jobs.Single(j => j.Id == job.Id).Progress;
+        oldSave.Step(.075); AuthorityRuntime.ValidateWorld(oldSave);
+        var retained = oldSave.Villages.Single().Jobs.Single(j => j.Id == job.Id);
+        Check(retained.CatId == cat.Id && retained.Progress >= before && retained.Progress - before < .2, "legacy save replayed elapsed work or replaced its carrier");
+        SaveStore.Save(path, oldSave); var again = SaveStore.Load<World>(path);
+        Check(again.ContinuousClockInitialized && again.SimulationTimeSeconds == oldSave.SimulationTimeSeconds, "upgraded fractional clock did not persist");
+    }
+    finally { Directory.Delete(directory, true); }
+});
+Test("failed path retry cache survives fractional save and resumes once", () =>
+{
+    var directory = Path.Combine(Path.GetTempPath(), "forest-path-retry-restart-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(directory);
+    try
+    {
+        var path = Path.Combine(directory, "world.json"); var whole = World.Create(41); var village = whole.Villages.Single(); var cat = village.Cats[1];
+        foreach (var other in village.Cats.Where(c => c.Id != cat.Id)) { other.ControlledBy = "fixture-observer"; other.ControlLeaseUntil = 10000; }
+        var start = new Int2(20, 20); var destination = new Int2(21, 20);
+        cat.Position = start; cat.X = start.X; cat.Z = start.Z; cat.BuildingId = ""; cat.Path.Clear();
+        foreach (var offset in new[] { new Int2(1, 0), new Int2(-1, 0), new Int2(0, 1), new Int2(0, -1) })
+        {
+            var neighbor = new Int2(start.X + offset.X, start.Z + offset.Z); var tile = whole.TileAt(neighbor);
+            tile.Wall = tile.Water = tile.Mountain = tile.Road = tile.Dirt = false; tile.Biome = "grass";
+            village.BoundaryEdges.Add(new BoundaryEdge { From = start, To = neighbor });
+        }
+        var origin = whole.TileAt(start); origin.Wall = origin.Water = origin.Mountain = false;
+        var job = new Job { Id = whole.Id("job"), Kind = "woodcut", Phase = "travel", Position = destination, CatId = cat.Id, RequiredWork = 1000 };
+        village.Jobs.Add(job); cat.JobId = job.Id; cat.Cargo.Add(new Stack("logs", 8));
+        whole.Step(.075);
+        Check(cat.HasFailedPath && cat.FailedPathStart.Equals(start) && cat.FailedPathDestination.Equals(destination) && cat.NextPathAttemptAt == 1, "blocked movement did not record its retry boundary");
+        Check(cat.Position.Equals(start) && job.Progress == 0, "blocked work moved or advanced before saving");
+        AuthorityRuntime.ValidateWorld(whole); SaveStore.Save(path, whole);
+        var resumed = SaveStore.Load<World>(path); AuthorityRuntime.ValidateWorld(resumed);
+        void SameState() => Check(JToken.DeepEquals(JToken.Parse(WireJson.Encode(whole)), JToken.Parse(WireJson.Encode(resumed))), "restart or elapsed partitions changed retry state, work, cargo or identities");
+        SameState();
+        whole.Step(.325); resumed.Step(.125); resumed.Step(.2); SameState();
+        foreach (var world in new[] { whole, resumed }) world.Villages.Single().BoundaryEdges.RemoveAll(edge => edge.From.Equals(start));
+        whole.Step(.575); resumed.Step(.2); resumed.Step(.375); SameState();
+        Check(cat.HasFailedPath && cat.Position.Equals(start) && cat.X == start.X && job.Progress == 0, "cleared route bypassed the persisted retry deadline");
+        whole.Step(.025); resumed.Step(.025); SameState();
+        Check(!cat.HasFailedPath && cat.X > start.X && cat.X < destination.X && job.Progress == 0, "retry boundary did not resume fractional physical movement");
+        whole.Step(1.025); resumed.Step(.425); resumed.Step(.6); SameState();
+        Check(cat.Position.Equals(destination) && job.Progress > 0 && !job.Completed && cat.JobId == job.Id && job.CatId == cat.Id && World.Amount(cat.Cargo, "logs") == 8, "recovered route lost its work owner or finite cargo");
+        AuthorityRuntime.ValidateWorld(resumed); SaveStore.Save(path, resumed); resumed = SaveStore.Load<World>(path);
+        whole.Step(.975); resumed.Step(.475); resumed.Step(.5); SameState(); AuthorityRuntime.ValidateWorld(resumed);
+        Check(resumed.Villages.Single().Jobs.Count(j => j.Id == job.Id) == 1, "second restart duplicated the recovered job");
+    }
+    finally { Directory.Delete(directory, true); }
+});
+foreach (bool exactPayment in new[] { false, true })
+    Test("blocked caravan unload retry survives restart " + (exactPayment ? "exact" : "scalar"), () =>
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "forest-unload-retry-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(directory);
+        try
+        {
+            var whole = new World { Seed = 41 };
+            var source = new Village { Id = "unload-source", Center = new Int2(0, 0), Communal = true };
+            var target = new Village { Id = "unload-target", Center = new Int2(10, 0), OwnerId = "unload-owner" };
+            whole.Villages.AddRange(new[] { source, target });
+            for (int x = -1; x <= 3; x++) for (int z = -1; z <= 1; z++)
+                whole.Tiles.Add(new Tile { Position = new Int2(x, z), Biome = "grass", Wall = x == -1 || x == 3 || z != 0 });
+            whole.Tiles.Add(new Tile { Position = target.Center, Biome = "grass" });
+            source.Stockpiles.Add(new Stockpile { Id = "unload-receiving", Position = new Int2(2, 0), Kind = "storage", Capacity = 100 });
+            target.Stockpiles.Add(new Stockpile { Id = "unload-peer-store", Position = target.Center, Kind = "storage", Capacity = 100 });
+            source.BoundaryEdges.Add(new BoundaryEdge { From = new Int2(1, 0), To = new Int2(2, 0) });
+            // Explicit persisted state: the caravan has returned, but its receiving store is fenced off.
+            var trade = new TradeOffer { Id = "unload-trade", FromVillageId = source.Id, ToVillageId = target.Id, Status = "unloading", Position = source.Center, HasContinuousPosition = true, Offered = new Stack("logs", 3), Requested = new Stack(exactPayment ? "tools" : "gem", exactPayment ? 1 : 2) };
+            if (exactPayment) trade.RequestedItems.Add(new Item { Id = "unload-exact-tool", Kind = "tool", Material = "wood", Quality = 3, Condition = 17, MaxCondition = 42, VillageId = target.Id, LocationId = trade.Id });
+            whole.TradeOffers.Add(trade);
+            long Searches(World world) => (long)typeof(World).GetField("pathSearchCount", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(world)!;
+            whole.Step(.075); Check(Searches(whole) == 0, "waiting caravan searched storage between planning boundaries");
+            var path = Path.Combine(directory, "world.json"); AuthorityRuntime.ValidateWorld(whole); SaveStore.Save(path, whole); var resumed = SaveStore.Load<World>(path);
+            void SameState() => Check(JToken.DeepEquals(JToken.Parse(WireJson.Encode(whole)), JToken.Parse(WireJson.Encode(resumed))), "unloading retry changed authoritative state across partitions/restart");
+            whole.Step(.925); resumed.Step(.425); resumed.Step(.5); SameState();
+            Check(Searches(whole) == 1 && Searches(resumed) == 1 && trade.Status == "unloading", "unreachable storage did not get one planning search");
+            whole.Step(.95); resumed.Step(.45); resumed.Step(.5); SameState();
+            Check(Searches(whole) == 1 && Searches(resumed) == 1 && source.Stockpiles[0].Goods.Count == 0 && target.Stockpiles[0].Goods.Count == 0 && source.Items.Count == 0, "blocked unload repeated searches or credited escrow");
+            source.BoundaryEdges.Clear(); resumed.Villages[0].BoundaryEdges.Clear();
+            whole.Step(.05); resumed.Step(.025); resumed.Step(.025); SameState();
+            Check(trade.Status == "completed" && trade.OfferedDelivered && World.Amount(target.Stockpiles[0].Goods, "logs") == 3, "cleared unload failed exactly-once delivery");
+            if (exactPayment)
+            {
+                var item = source.Items.Single(); Check(item.Id == "unload-exact-tool" && item.Condition == 17 && item.Quality == 3 && item.LocationId == source.Stockpiles[0].Id && item.VillageId == source.Id && trade.RequestedItems.Count == 0, "unload changed exact payment identity or ownership");
+            }
+            else Check(World.Amount(source.Stockpiles[0].Goods, "gem") == 2, "unload changed scalar payment");
+            SaveStore.Save(path, resumed); resumed = SaveStore.Load<World>(path); whole.Step(1.075); resumed.Step(.475); resumed.Step(.6); SameState(); AuthorityRuntime.ValidateWorld(resumed);
+            Check(World.Amount(target.Stockpiles[0].Goods, "logs") == 3 && (exactPayment ? source.Items.Count == 1 : World.Amount(source.Stockpiles[0].Goods, "gem") == 2), "completed unload replayed after restart");
+        }
+        finally { Directory.Delete(directory, true); }
+    });
+Test("scalar haul retargets blocked destination across restart", () =>
+{
+    var directory = Path.Combine(Path.GetTempPath(), "forest-scalar-retarget-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(directory);
+    try
+    {
+        var path = Path.Combine(directory, "world.json"); var world = World.Create(41); var v = world.Villages.Single();
+        v.Buildings.RemoveAll(b => b.Kind != "den" && b.Kind != "shrine"); v.Stockpiles.RemoveRange(1, v.Stockpiles.Count - 1); v.Stockpiles[0].Accepts = new List<string> { "food", "water" };
+        var cat = v.Cats.First(c => c.Id != v.LeaderId); cat.Position = new Int2(1, 2); cat.X = 1; cat.Z = 2;
+        foreach (var other in v.Cats.Where(c => c.Id != cat.Id)) { other.ControlledBy = "fixture-observer"; other.ControlLeaseUntil = 10000; }
+        var source = new Stockpile { Id = world.Id("source-store"), Position = new Int2(-5, 1), Width = 1, Depth = 1, Capacity = 100, Accepts = new List<string> { "logs" }, Goods = new List<Stack> { new Stack("logs", 8) } };
+        var blocked = new Stockpile { Id = world.Id("original-store"), Position = new Int2(5, 1), Width = 1, Depth = 1, Capacity = 8, Accepts = new List<string> { "logs" } };
+        var alternate = new Stockpile { Id = world.Id("alternate-store"), Position = new Int2(5, 4), Width = 1, Depth = 1, Capacity = 8, Accepts = new List<string> { "logs" } };
+        v.Stockpiles.Add(source); v.Stockpiles.Add(blocked); v.Stockpiles.Add(alternate);
+        var context = new PlayerContext { PlayerId = "fixture-scalar-hauler", VillageId = v.Id }; string catId = cat.Id, sourceId = source.Id, blockedId = blocked.Id, alternateId = alternate.Id;
+        var result = world.Apply(context, new GameAction { Kind = "HaulGatherSpot", CatId = cat.Id, TargetId = source.Id }); Check(result.Success, "scalar haul rejected: " + result.Error); string jobId = result.EntityId; var job = v.Jobs.Single(j => j.Id == jobId);
+        Check(job.TargetId == blockedId && job.Amount == 8, "haul did not choose the initial nearer store");
+        for (int tick = 0; tick < 100 && job.Phase != "input_delivery"; tick++) world.Step(1);
+        Check(job.Phase == "input_delivery" && World.Amount(cat.Cargo, "logs") == 8 && World.Amount(source.Goods, "logs") == 0, "scalar haul did not enter its carried input_delivery phase");
+        result = world.Apply(context, new GameAction { Kind = "CreateZone", Resource = "avoid", Position = blocked.Position, End = blocked.Position }); Check(result.Success, "public original-store obstruction failed: " + result.Error); string zoneId = result.EntityId;
+        void Restart()
+        {
+            AuthorityRuntime.ValidateWorld(world); SaveStore.Save(path, world); world = SaveStore.Load<World>(path); AuthorityRuntime.ValidateWorld(world);
+            v = world.Villages.Single(); cat = v.Cats.Single(c => c.Id == catId); job = v.Jobs.Single(j => j.Id == jobId); source = v.Stockpiles.Single(p => p.Id == sourceId); blocked = v.Stockpiles.Single(p => p.Id == blockedId); alternate = v.Stockpiles.Single(p => p.Id == alternateId);
+        }
+        Restart();
+        Check(job.Phase == "input_delivery" && job.TargetId == blockedId && job.Position.Equals(blocked.Position) && cat.JobId == jobId && World.Amount(cat.Cargo, "logs") == 8, "restart did not retain the already-saved original input-delivery target and cargo");
+        for (int tick = 0; tick < 100 && !job.Completed; tick++)
+        {
+            world.Step(1); Check(v.Stockpiles.Any(p => p.Id == zoneId) && !world.Walkable(v, blocked.Position), "recovery removed the saved obstruction");
+            Check(job.CatId == catId && (job.Completed || cat.JobId == jobId), "recovery replaced the saved carrier or work owner");
+            Check(World.Amount(source.Goods, "logs") == 0 && World.Amount(blocked.Goods, "logs") == 0, "recovery returned cargo to source or delivered through the obstruction");
+            Check(v.Stockpiles.Sum(p => World.Amount(p.Goods, "logs")) + v.Cats.Sum(c => World.Amount(c.Cargo, "logs")) + v.Jobs.Where(j => !j.Completed).Sum(j => World.Amount(j.Local, "logs")) == 8, "restarted retargeting changed finite scalar ownership");
+        }
+        Check(job.Completed && job.TargetId == alternateId && job.Position.Equals(alternate.Position) && cat.Position.Equals(alternate.Position) && cat.Cargo.Count == 0 && World.Amount(alternate.Goods, "logs") == 8, "saved scalar input_delivery never recovered to the reachable alternate store");
+        Restart(); world.Step(2);
+        Check(v.Jobs.Count(j => j.Id == jobId) == 1 && job.Completed && cat.JobId == "" && World.Amount(alternate.Goods, "logs") == 8 && World.Amount(source.Goods, "logs") == 0 && World.Amount(blocked.Goods, "logs") == 0 && world.Reservations.Count == 0, "completed scalar recovery replayed or retained stale claims after another restart");
+    }
+    finally { Directory.Delete(directory, true); }
+});
 Test("exact crafted haul survives claimed pickup and full-storage restarts", () =>
 {
     var directory = Path.Combine(Path.GetTempPath(), "forest-exact-haul-" + Guid.NewGuid().ToString("N"));
@@ -399,6 +678,7 @@ Test("exact crafted haul survives claimed pickup and full-storage restarts", () 
     finally { Directory.Delete(directory, true); }
 });
 ImportScenarios.Run(Test, Check);
+WorldGenerationTests.Run(Test, Check);
 if (Environment.GetEnvironmentVariable("FOREST_IMPORTED_WORLD") is string importedWorld)
     Test("external synthetic SQLite world resumes deterministically", () =>
     {

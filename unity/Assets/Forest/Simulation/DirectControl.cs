@@ -26,7 +26,7 @@ namespace IdleCatForest.Simulation
                     {
                         var den = v.Buildings.Find(b => b.Id == c.BedId && b.Completed);
                         if (den != null && Int2.Distance(c.Position, den.Position) <= 1)
-                            c.Rest = Math.Min(100, c.Rest + seconds * 0.15 * Service(v, "beds", "restRecovery", 1));
+                            c.Rest = Math.Min(100, c.Rest + SpendActorTime(c) * 0.15 * Service(v, "beds", "restRecovery", 1));
                         else
                             c.Goal = "player_control";
                     }

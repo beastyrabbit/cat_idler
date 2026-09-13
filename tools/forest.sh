@@ -23,7 +23,7 @@ case "$forest_command" in
   server-test) dotnet run --project "$forest_root/server/Forest.Tests/Forest.Tests.csproj" -- "$@" ;;
   edit-test)
     mkdir -p "$forest_root/artifacts/tests"
-    unity test "$forest_project" --mode EditMode --output "$forest_root/artifacts/tests/editmode.xml" --timeout 600 --format json \
+    unity test "$forest_project" --mode EditMode --output "$forest_root/artifacts/tests/editmode.xml" --timeout 1200 --format json \
       --filter 'SimulationTests|regression\.|catalog\.|capability\.|chain\.|legacy_upgrade\.|legacy_effect\.|building_effect\.|service_effect\.|resource_effect\.|recipe\.' "$@"
     ;;
   play-test)

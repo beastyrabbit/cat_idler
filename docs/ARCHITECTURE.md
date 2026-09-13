@@ -23,12 +23,36 @@ The .NET projects compile the simulation and authority source from Unity's Asset
 directory. There is one implementation of game rules. Unity assembly definitions
 keep simulation independent of the engine, rendering, network I/O and clocks.
 
+## Terrain and dungeon levels
+
+New worlds save generation version 1. Coordinate-seeded climate and elevation
+produce connected biomes, rivers with shallow fords, and lakes with deeper shelves.
+Saved founding profiles protect usable settlement approaches. Version 0 saves
+retain their original generator and explored layout.
+
+Each grid position includes a level. Dungeon floors overlap in horizontal space
+and connect through explicit stairs; movement consumes their full 3D distance.
+Creature health, finite chest goods, explorer risk decisions and return cargo
+belong to the same authority as ordinary work. Client projections reveal only
+discovered floors and occupants. Unity reads these heights and shows the selected
+level without generating tiles or changing path validity. See
+[world generation](unity/WORLD_GENERATION.md) and [dungeons](unity/DUNGEONS.md).
+
 ## Time and decisions
 
 `World.Step(seconds)` receives explicit time. Seeded random state, stable IDs,
-job phases and reservations belong to the world. Economy and personal needs advance
-at one-second boundaries; controlled movement advances in smaller quanta. Different
-input partitions must produce the same state at the same simulation boundary.
+job phases and reservations belong to the world. Autonomous and controlled movement,
+needs, work, farming and transport advance in fixed 50-millisecond simulation steps.
+Each cat shares one time budget between movement and work. Rates are measured per
+simulated second, so shorter steps do not multiply production or consumption.
+Planning and ecology retain their slower schedules. Different input partitions
+must produce the same state at the same simulation boundary.
+
+The save retains both requested elapsed time and the last consumed simulation
+step. Loading a partial step continues its remaining time; older saves begin from
+their existing clock without replaying elapsed work. Moving vehicles, merchants,
+caravans and raiders retain fractional coordinates plus their last reached grid
+position, which remains the anchor for route and boundary checks.
 
 The Leader creates bounded primitive survival and scouting work. Specialist
 officers create work in their researched categories. Jobs execute physical travel,

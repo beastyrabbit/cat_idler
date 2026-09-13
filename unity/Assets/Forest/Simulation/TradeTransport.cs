@@ -64,6 +64,8 @@ namespace IdleCatForest.Simulation
             t.Progress = 0;
             t.X = sender.Center.X;
             t.Z = sender.Center.Z;
+            t.Position = sender.Center;
+            t.HasContinuousPosition = true;
             t.AcceptedAt = t.LastAdvancedAt = TimeSeconds;
             t.Status = "outbound";
             return ActionResult.Ok(t.Id);
@@ -113,12 +115,50 @@ namespace IdleCatForest.Simulation
             t.Status = "cancelled";
             return ActionResult.Ok();
         }
-        private void TickTrades()
+        private static bool AtTravelPoint(double x, double z, Int2 point) => Math.Abs(x - point.X) < 1e-9 && Math.Abs(z - point.Z) < 1e-9;
+        private static bool AdvanceTraveler(ref double x, ref double z, Int2 target, double speed, double dt)
+        {
+            double dx = target.X - x, dz = target.Z - z, distance = Math.Sqrt(dx * dx + dz * dz);
+            double travel = Math.Max(0, speed * dt);
+            if (distance <= travel + 1e-9)
+            {
+                x = target.X;
+                z = target.Z;
+                return true;
+            }
+            if (distance > 0)
+            {
+                x += dx / distance * travel;
+                z += dz / distance * travel;
+            }
+            return false;
+        }
+        private static double TravelProgress(double x, double z, Int2 anchor) => Math.Sqrt((x - anchor.X) * (x - anchor.X) + (z - anchor.Z) * (z - anchor.Z));
+        private static void InitializeVehicle(Vehicle vehicle)
+        {
+            if (vehicle.HasContinuousPosition)
+                return;
+            vehicle.X = vehicle.Position.X;
+            vehicle.Z = vehicle.Position.Z;
+            vehicle.Progress = 0;
+            vehicle.HasContinuousPosition = true;
+        }
+        private void TickTrades(double dt, bool planning)
         {
             foreach (var t in TradeOffers.Where(t => t.Status == "outbound" || t.Status == "returning" || t.Status == "unloading"))
             {
+                if (!t.HasContinuousPosition)
+                {
+                    // Earlier saves already persisted caravan coordinates, unlike other travelers.
+                    var next = t.PathIndex < t.Path.Count ? t.Path[t.PathIndex] : new Int2((int)Math.Round(t.X), (int)Math.Round(t.Z));
+                    t.Position = new Int2((int)(next.X > t.X ? Math.Floor(t.X) : Math.Ceiling(t.X)), (int)(next.Z > t.Z ? Math.Floor(t.Z) : Math.Ceiling(t.Z)));
+                    t.HasContinuousPosition = true;
+                    t.Progress = TravelProgress(t.X, t.Z, t.Position);
+                }
                 if (t.Status == "unloading")
                 {
+                    if (!planning)
+                        continue;
                     var source = Village(t.FromVillageId);
                     var target = Village(t.ToVillageId);
                     if (source == null || target == null)
@@ -137,18 +177,27 @@ namespace IdleCatForest.Simulation
                     Note(target, "trade", "Barter delivery completed", t.Id);
                     continue;
                 }
-                if (t.PathIndex < t.Path.Count && !Walkable(t.Path[t.PathIndex]))
-                    continue;
-                t.Progress += 0.8;
-                if (t.Progress >= 1)
+                if (t.PathIndex < t.Path.Count)
                 {
-                    t.Progress -= 1;
-                    if (t.PathIndex < t.Path.Count)
+                    var waypoint = t.Path[t.PathIndex];
+                    var next = t.Position;
+                    if (next.X != waypoint.X)
+                        next.X += Math.Sign(waypoint.X - next.X);
+                    else if (next.Z != waypoint.Z)
+                        next.Z += Math.Sign(waypoint.Z - next.Z);
+                    if (!Walkable(next) || !Crossable(t.Position, next))
                     {
-                        t.X = t.Path[t.PathIndex].X;
-                        t.Z = t.Path[t.PathIndex].Z;
+                        AdvanceTraveler(ref t.X, ref t.Z, t.Position, 0.8, dt);
+                        t.Progress = TravelProgress(t.X, t.Z, t.Position);
+                        continue;
                     }
-                    t.PathIndex++;
+                    if (AdvanceTraveler(ref t.X, ref t.Z, next, 0.8, dt))
+                    {
+                        t.Position = next;
+                        if (next.Equals(waypoint))
+                            t.PathIndex++;
+                    }
+                    t.Progress = TravelProgress(t.X, t.Z, t.Position);
                 }
                 t.LastAdvancedAt = TimeSeconds;
                 if (t.PathIndex < t.Path.Count)
@@ -206,9 +255,16 @@ namespace IdleCatForest.Simulation
             v.Coins += price;
             return ActionResult.Ok(item.Id);
         }
-        private void TickTrader(Village v)
+        private void TickTrader(Village v, double dt, bool planning)
         {
             var t = v.Trader;
+            if (!t.HasContinuousPosition)
+            {
+                t.X = t.Position.X;
+                t.Z = t.Position.Z;
+                t.Progress = 0;
+                t.HasContinuousPosition = true;
+            }
             if (t.Phase == "absent")
             {
                 if (TimeSeconds < t.NextAt)
@@ -218,6 +274,9 @@ namespace IdleCatForest.Simulation
                 t.Exterior = new Int2(v.Center.X, v.Center.Z + v.Radius + 3);
                 t.VisitDestination = v.Center;
                 t.Position = t.Exterior.Value;
+                t.X = t.Position.X;
+                t.Z = t.Position.Z;
+                t.Progress = 0;
                 t.Path = Path(t.Position, t.VisitDestination.Value) ?? new List<Int2>();
                 t.PathIndex = 0;
                 t.Phase = "arriving";
@@ -235,22 +294,33 @@ namespace IdleCatForest.Simulation
                 t.PathIndex = 0;
                 t.Phase = "departing";
             }
-            if (t.Path.Count == 0 || t.PathIndex < t.Path.Count && !Walkable(t.Path[t.PathIndex]))
+            if (t.Path.Count == 0 || t.PathIndex < t.Path.Count && (!Walkable(t.Path[t.PathIndex]) || !Crossable(t.Position, t.Path[t.PathIndex])))
             {
                 t.BlockedReason = "blocked_route";
-                if ((long)TimeSeconds % 10 == 0)
+                if (!AtTravelPoint(t.X, t.Z, t.Position))
+                {
+                    AdvanceTraveler(ref t.X, ref t.Z, t.Position, 0.8, dt);
+                    t.Progress = TravelProgress(t.X, t.Z, t.Position);
+                    return;
+                }
+                if (planning && (long)TimeSeconds % 10 == 0)
                 {
                     t.Path = Path(t.Position, t.Phase == "arriving" ? t.VisitDestination ?? v.Center : t.Exterior ?? new Int2(v.Center.X, v.Center.Z + v.Radius + 3)) ?? new List<Int2>();
                     t.PathIndex = 0;
                 }
                 return;
             }
-            t.Progress += 0.8;
-            if (t.Progress < 1)
-                return;
-            t.Progress -= 1;
+            t.BlockedReason = "";
             if (t.PathIndex < t.Path.Count)
-                t.Position = t.Path[t.PathIndex++];
+            {
+                var next = t.Path[t.PathIndex];
+                if (AdvanceTraveler(ref t.X, ref t.Z, next, 0.8, dt))
+                {
+                    t.Position = next;
+                    t.PathIndex++;
+                }
+                t.Progress = TravelProgress(t.X, t.Z, t.Position);
+            }
             if (t.PathIndex < t.Path.Count)
                 return;
             if (t.Phase == "arriving")
@@ -268,6 +338,7 @@ namespace IdleCatForest.Simulation
                 t.Items.Clear();
             }
         }
+        private bool FreeInfrastructureFootprint(Village v, string kind, Int2 p) => !v.Buildings.Any(b => Contains(b.Position, b.Width, b.Depth, p)) && (kind != "road" || RoadSpace(v, p));
         private ActionResult PlanLinear(Village v, GameAction a, string kind, Cat cat)
         {
             if (kind == "rail" && !Catalog.Owns(v, "unlock_capability", "rail_logistics"))
@@ -283,11 +354,12 @@ namespace IdleCatForest.Simulation
                     p.Z += Math.Sign(a.End.Z - p.Z);
                 path.Add(p);
             }
-            if (path.Count > 128 || path.Any(at => !v.Known.Contains(at) || !Walkable(at) || TileAt(at).Road || TileAt(at).Rail || v.Jobs.Any(j => !j.Completed && (j.Kind == "road" || j.Kind == "rail") && j.Path.Contains(at))))
+            if (path.Count > 128 || path.Any(at => !v.Known.Contains(at) || !Walkable(at) || !FreeInfrastructureFootprint(v, kind, at) || PendingExpansionWall(v, at) || RoadSurface(TileAt(at)) || TileAt(at).Rail || v.Jobs.Any(j => !j.Completed && (j.Kind == "road" || j.Kind == "rail") && j.Path.Contains(at))))
                 return ActionResult.Fail("Route must be mapped, free, dry, and unclaimed");
             if (path.Any(at => !CanModifyTerrain(v.Id, at)))
                 return ActionResult.Fail("Foreign territory cannot be modified");
-            if (kind == "road" && !path.Any(at => Neighbors(at).Any(n => TileAt(n).Road)))
+            var connected = kind == "road" ? ConnectedRoads(v) : null;
+            if (kind == "road" && !path.Any(at => Neighbors(at).Any(connected.Contains)))
                 return ActionResult.Fail("Road must join shrine road network");
             var result = CreateInputJob(v, cat, kind, path[0], kind == "rail" ? "metal" : "materials", path.Count, 30 * path.Count, "");
             if (result.Success)
@@ -360,6 +432,7 @@ namespace IdleCatForest.Simulation
             var vehicle = v.Vehicles.Find(vehicle => vehicle.Mode == a.Mode && vehicle.RouteId == "" && vehicle.Position.Equals(source.Position));
             if (vehicle == null)
                 return ActionResult.Fail("Free physical vehicle must be at the route source");
+            InitializeVehicle(vehicle);
             var route = new TransportRoute { Id = Id("route"), Mode = a.Mode, CatId = c.Id, VehicleId = vehicle.Id, SourceId = source.Id, DestinationId = destination.Id, Resource = a.Resource, Amount = a.Amount, Path = new List<Int2>(a.Path), Repeat = a.Repeat };
             v.Routes.Add(route);
             vehicle.RouteId = route.Id;
@@ -372,9 +445,18 @@ namespace IdleCatForest.Simulation
             if (route == null)
                 return ActionResult.Fail("Unknown route");
             var vehicle = v.Vehicles.Find(x => x.Id == route.VehicleId);
+            if (vehicle != null)
+                InitializeVehicle(vehicle);
             bool accessibleWreck = vehicle != null && !v.Cats.Any(c => c.Id == route.CatId && c.Alive) && Walkable(v, vehicle.Position);
+            if (route.Mode == "rail" && vehicle != null && !accessibleWreck && !AtTravelPoint(vehicle.X, vehicle.Z, vehicle.Position))
+            {
+                route.CancelRequested = true;
+                route.Repeat = false;
+                route.Phase = "settling_cancel";
+                return ActionResult.Ok(route.Id);
+            }
             if (route.Mode == "shipping" && vehicle != null && !accessibleWreck && route.Path.Count > 0 &&
-                (!vehicle.Position.Equals(route.Path[0]) || vehicle.Cargo.Count > 0 || vehicle.ItemIds.Count > 0))
+                (!vehicle.Position.Equals(route.Path[0]) || !AtTravelPoint(vehicle.X, vehicle.Z, route.Path[0]) || vehicle.Cargo.Count > 0 || vehicle.ItemIds.Count > 0))
             {
                 route.CancelRequested = true;
                 route.Repeat = false;
@@ -409,7 +491,45 @@ namespace IdleCatForest.Simulation
             v.Routes.Remove(route);
             return ActionResult.Ok();
         }
-        private void ReturnVessel(Village v, TransportRoute route, Vehicle vehicle, Cat driver)
+        private bool ReboardTransport(TransportRoute route, Vehicle vehicle, Cat driver, double dt)
+        {
+            InitializeVehicle(vehicle);
+            if (driver.Goal.StartsWith("need_", StringComparison.Ordinal))
+                return false;
+            if (driver.Position.Equals(vehicle.Position) && Math.Abs(driver.X - vehicle.X) < 1e-9 && Math.Abs(driver.Z - vehicle.Z) < 1e-9)
+                return true;
+            driver.Goal = "returning to " + route.Mode;
+            double vehicleDx = vehicle.X - vehicle.Position.X, vehicleDz = vehicle.Z - vehicle.Position.Z;
+            double driverDx = driver.X - vehicle.Position.X, driverDz = driver.Z - vehicle.Position.Z;
+            bool onApproach = driver.Position.Equals(vehicle.Position) && Math.Abs(driverDx * vehicleDz - driverDz * vehicleDx) < 1e-9 && driverDx * vehicleDx + driverDz * vehicleDz >= 0 && driverDx * driverDx + driverDz * driverDz <= vehicleDx * vehicleDx + vehicleDz * vehicleDz + 1e-9;
+            if (!onApproach && !Move(driver, vehicle.Position, dt))
+            {
+                route.BlockedReason = driver.BlockedReason;
+                return false;
+            }
+            if (!AtTravelPoint(vehicle.X, vehicle.Z, vehicle.Position))
+            {
+                var next = new Int2(vehicle.Position.X + Math.Sign(vehicle.X - vehicle.Position.X), vehicle.Position.Z + Math.Sign(vehicle.Z - vehicle.Position.Z));
+                var village = Village(driver.VillageId);
+                if (!Walkable(village, next) || !Crossable(vehicle.Position, next))
+                {
+                    route.BlockedReason = "blocked_reboarding_route";
+                    return false;
+                }
+                double dx = vehicle.X - driver.X, dz = vehicle.Z - driver.Z, distance = Math.Sqrt(dx * dx + dz * dz);
+                double speed = CatMovementSpeed(village, TileAt(next));
+                double travel = Math.Min(distance, speed * Math.Min(dt, ActorTime(driver)));
+                UseActorTime(driver, travel / speed);
+                if (distance > 1e-9)
+                {
+                    driver.X += dx / distance * travel;
+                    driver.Z += dz / distance * travel;
+                }
+            }
+            route.BlockedReason = "";
+            return false;
+        }
+        private void ReturnVessel(Village v, TransportRoute route, Vehicle vehicle, Cat driver, double dt)
         {
             if (driver == null)
             {
@@ -419,7 +539,28 @@ namespace IdleCatForest.Simulation
                     route.BlockedReason = "driver_required · build bridge access to salvage wreck";
                 return;
             }
+            if (!ReboardTransport(route, vehicle, driver, dt))
+                return;
+            if (route.Mode == "rail")
+            {
+                driver.Goal = "returning rail vehicle to its reached tile";
+                if (AdvanceTraveler(ref vehicle.X, ref vehicle.Z, vehicle.Position, 1, SpendActorTime(driver)))
+                    CancelRoute(v, route.Id);
+                vehicle.Progress = TravelProgress(vehicle.X, vehicle.Z, vehicle.Position);
+                driver.X = vehicle.X;
+                driver.Z = vehicle.Z;
+                return;
+            }
             driver.Goal = driver.ControlledBy != "" ? "player_control · returning to dock" : "returning vessel to dock";
+            bool retreatingEdge = route.PathIndex <= 0 || (vehicle.X - vehicle.Position.X) * (route.Path[route.PathIndex - 1].X - vehicle.Position.X) + (vehicle.Z - vehicle.Position.Z) * (route.Path[route.PathIndex - 1].Z - vehicle.Position.Z) <= 0;
+            if (!AtTravelPoint(vehicle.X, vehicle.Z, vehicle.Position) && retreatingEdge)
+            {
+                AdvanceTraveler(ref vehicle.X, ref vehicle.Z, vehicle.Position, 1, SpendActorTime(driver));
+                vehicle.Progress = TravelProgress(vehicle.X, vehicle.Z, vehicle.Position);
+                driver.X = vehicle.X;
+                driver.Z = vehicle.Z;
+                return;
+            }
             if (route.PathIndex > 0)
             {
                 int next = route.PathIndex - 1;
@@ -427,13 +568,21 @@ namespace IdleCatForest.Simulation
                 if (next > 0 && !tile.Water && !tile.Dock)
                 {
                     route.BlockedReason = "return_route_blocked";
+                    AdvanceTraveler(ref vehicle.X, ref vehicle.Z, vehicle.Position, 1, SpendActorTime(driver));
+                    vehicle.Progress = TravelProgress(vehicle.X, vehicle.Z, vehicle.Position);
+                    driver.X = vehicle.X;
+                    driver.Z = vehicle.Z;
                     return;
                 }
-                route.PathIndex = next;
-                vehicle.Position = route.Path[next];
+                if (AdvanceTraveler(ref vehicle.X, ref vehicle.Z, route.Path[next], 1, SpendActorTime(driver)))
+                {
+                    route.PathIndex = next;
+                    vehicle.Position = route.Path[next];
+                }
+                vehicle.Progress = TravelProgress(vehicle.X, vehicle.Z, vehicle.Position);
                 driver.Position = vehicle.Position;
-                driver.X = vehicle.Position.X;
-                driver.Z = vehicle.Position.Z;
+                driver.X = vehicle.X;
+                driver.Z = vehicle.Z;
                 return;
             }
             var source = v.Stockpiles.Find(p => p.Id == route.SourceId);
@@ -462,15 +611,17 @@ namespace IdleCatForest.Simulation
             driver.Goal = driver.ControlledBy != "" ? "player_control" : "idle";
             v.Routes.Remove(route);
         }
-        private void TickTransport(Village v)
+        private void TickTransport(Village v, double dt, bool planning)
         {
             foreach (var route in v.Routes.ToArray())
             {
                 var c = v.Cats.Find(c => c.Id == route.CatId && c.Alive);
                 var vehicle = v.Vehicles.Find(x => x.Id == route.VehicleId);
+                if (vehicle != null)
+                    InitializeVehicle(vehicle);
                 if (route.CancelRequested && vehicle != null)
                 {
-                    ReturnVessel(v, route, vehicle, c);
+                    ReturnVessel(v, route, vehicle, c, dt);
                     continue;
                 }
                 if (c == null || vehicle == null)
@@ -479,6 +630,8 @@ namespace IdleCatForest.Simulation
                     continue;
                 }
                 if (c.ControlledBy != "" || c.Goal.StartsWith("need_", StringComparison.Ordinal))
+                    continue;
+                if (route.Phase != "boarding" && !ReboardTransport(route, vehicle, c, dt))
                     continue;
                 var source = v.Stockpiles.Find(s => s.Id == route.SourceId);
                 var destination = v.Stockpiles.Find(s => s.Id == route.DestinationId);
@@ -490,11 +643,17 @@ namespace IdleCatForest.Simulation
                 c.Goal = route.Mode + " · " + route.Phase;
                 if (route.Phase == "boarding")
                 {
-                    if (Move(c, source.Position, 1))
+                    if (!ReboardTransport(route, vehicle, c, dt))
+                        continue;
+                    if (!AtTravelPoint(vehicle.X, vehicle.Z, source.Position))
                     {
-                        vehicle.Position = c.Position;
-                        route.Phase = "loading";
+                        AdvanceTraveler(ref vehicle.X, ref vehicle.Z, source.Position, 1, SpendActorTime(c));
+                        vehicle.Progress = TravelProgress(vehicle.X, vehicle.Z, vehicle.Position);
+                        c.X = vehicle.X;
+                        c.Z = vehicle.Z;
+                        continue;
                     }
+                    route.Phase = "loading";
                     continue;
                 }
                 if (route.Phase == "loading")
@@ -563,18 +722,27 @@ namespace IdleCatForest.Simulation
                     continue;
                 }
                 var tile = TileAt(route.Path[next]);
-                if (route.Mode == "rail" ? !tile.Rail : (!tile.Water && !tile.Dock && next != 0 && next != route.Path.Count - 1))
+                if (route.Mode == "rail" ? !tile.Rail || !Walkable(v, route.Path[next]) || !Crossable(vehicle.Position, route.Path[next]) : (!tile.Water && !tile.Dock && next != 0 && next != route.Path.Count - 1))
                 {
                     route.BlockedReason = "route_blocked";
+                    AdvanceTraveler(ref vehicle.X, ref vehicle.Z, vehicle.Position, 1, SpendActorTime(c));
+                    vehicle.Progress = TravelProgress(vehicle.X, vehicle.Z, vehicle.Position);
+                    c.X = vehicle.X;
+                    c.Z = vehicle.Z;
                     continue;
                 }
-                route.PathIndex = next;
-                vehicle.Position = route.Path[next];
+                double travelTime = SpendActorTime(c);
+                if (AdvanceTraveler(ref vehicle.X, ref vehicle.Z, route.Path[next], 1, travelTime))
+                {
+                    route.PathIndex = next;
+                    vehicle.Position = route.Path[next];
+                }
+                vehicle.Progress = TravelProgress(vehicle.X, vehicle.Z, vehicle.Position);
                 c.Position = vehicle.Position;
-                c.X = c.Position.X;
-                c.Z = c.Position.Z;
+                c.X = vehicle.X;
+                c.Z = vehicle.Z;
                 route.BlockedReason = "";
-                Add(c.Skills, "haul", 1.0 / 3600);
+                Add(c.Skills, "haul", travelTime / 3600);
             }
         }
     }

@@ -7,7 +7,7 @@ namespace IdleCatForest.Simulation
     public partial class World
     {
         private static string JobLabor(string kind) => kind == "water" ? "fetch_water" : kind == "logs" || kind == "replant" ? "woodcut" : kind == "fibre" ? "forage" : kind == "fish" ? "fishing" : kind == "offering" ? "ritual" : kind == "expand" || kind == "road" || kind == "rail" || kind == "bridge" || kind == "dock" ? "build" : kind;
-        private bool FreeWorker(Village v, Cat c) => c != null && c.JobId == "" && c.BuildingId == "" && c.ControlledBy == "" && !v.Routes.Any(r => r.CatId == c.Id);
+        private bool FreeWorker(Village v, Cat c) => c != null && !IsDungeonExplorer(c) && c.Position.Level == 0 && c.JobId == "" && c.BuildingId == "" && c.ControlledBy == "" && !v.Routes.Any(r => r.CatId == c.Id);
         private Cat AvailableCat(Village v, string labor) => v.Cats.Where(c => c.Alive && c.AgeHours >= 12 && FreeWorker(v, c) && c.Migration != "arriving" && c.Migration != "departing")
             .OrderByDescending(c => (c.Preferences.Contains(labor) ? 100 : 0) + (c.Boosted ? 20 : 0) + Amount(c.Skills, labor)).ThenBy(c => c.Id, StringComparer.Ordinal).FirstOrDefault();
         private void StartJob(Village v, Cat c, Job j)
@@ -75,7 +75,7 @@ namespace IdleCatForest.Simulation
                         for (int x = -5; x < 5; x++)
                         {
                             var p = new Int2(v.Center.X + x, v.Center.Z + z);
-                            if (FreeSite(v, p, 2, 2))
+                            if (FreeSite(v, p, 2, 2) && FreeBuildingEntrance(v, p).HasValue)
                                 return Plan(v, "den", p, c);
                         }
                     return ActionResult.Fail("No clear Den footprint");
@@ -107,6 +107,8 @@ namespace IdleCatForest.Simulation
                         return ActionResult.Fail("Expansion already active");
                     if (!CanConstructJob(v, pending))
                         return ActionResult.Fail("Foreign territory blocks expansion");
+                    if (pending.OriginalKind != "expand_village" && ExpansionFootprintBlocked(v, v.Radius + 2, pending.Path))
+                        return ActionResult.Fail("Existing footprint or entrance blocks expansion");
                     if (c.Cargo.Count > 0)
                         Spill(v, c.Position, c.Cargo);
                     pending.CatId = c.Id;
@@ -117,6 +119,8 @@ namespace IdleCatForest.Simulation
                 int radius = v.Radius + 2;
                 if (!CanModifyTerrain(v.Id, new Int2(v.Center.X - radius, v.Center.Z - radius), radius * 2 + 1, radius * 2 + 1))
                     return ActionResult.Fail("Foreign territory blocks expansion");
+                if (ExpansionFootprintBlocked(v, radius))
+                    return ActionResult.Fail("Existing footprint or entrance blocks expansion");
                 var perimeter = new List<Int2>();
                 for (int x = -radius; x <= radius; x++)
                 {
@@ -129,7 +133,7 @@ namespace IdleCatForest.Simulation
                     perimeter.Add(new Int2(v.Center.X - radius, v.Center.Z + z));
                     perimeter.Add(new Int2(v.Center.X + radius, v.Center.Z + z));
                 }
-                perimeter.RemoveAll(p => FarmExterior(v, p, radius));
+                perimeter.RemoveAll(p => FarmExterior(v, p, radius) || LayoutGate(v, p, radius));
                 if (perimeter.Any(p => !v.Known.Contains(p) || !Walkable(p)))
                     return ActionResult.Fail("Survey a dry reachable outer perimeter first");
                 var result = CreateInputJob(v, c, "expand", v.Center, "materials", perimeter.Count, 10, "");
@@ -191,10 +195,10 @@ namespace IdleCatForest.Simulation
         }
         private IEnumerable<Int2> Neighbors(Int2 p)
         {
-            yield return new Int2(p.X, p.Z + 1);
-            yield return new Int2(p.X + 1, p.Z);
-            yield return new Int2(p.X, p.Z - 1);
-            yield return new Int2(p.X - 1, p.Z);
+            yield return new Int2(p.X, p.Z + 1, p.Level);
+            yield return new Int2(p.X + 1, p.Z, p.Level);
+            yield return new Int2(p.X, p.Z - 1, p.Level);
+            yield return new Int2(p.X - 1, p.Z, p.Level);
         }
         private ActionResult StartHaul(Village v, Cat c, Stockpile source)
         {
@@ -207,7 +211,7 @@ namespace IdleCatForest.Simulation
                 var item = v.Items.Where(i => i.LocationId == source.Id).OrderBy(i => i.Id, StringComparer.Ordinal).FirstOrDefault();
                 if (item == null)
                     return ActionResult.Fail("Empty source");
-                var itemStorage = ItemHaulStorage(v, ItemResource(item.Kind), source.Position, source.Id);
+                var itemStorage = Storage(v, ItemResource(item.Kind), 1, source.Position, source.Id);
                 if (itemStorage == null)
                     return ActionResult.Fail("No accepting destination");
                 if (Path(c.Position, source.Position, v) == null)
@@ -217,20 +221,18 @@ namespace IdleCatForest.Simulation
                 item.LocationId = haul.Id;
                 return ActionResult.Ok(haul.Id);
             }
-            double amount = Math.Min(8, resource.Amount);
-            var destination = Storage(v, resource.Resource, amount, source.Position);
-            if (destination == null || destination.Id == source.Id)
-                return ActionResult.Fail("No accepting destination");
-            string id = Id("job");
             double free = resource.Amount - Reservations.Where(r => r.PileId == source.Id && r.Resource == resource.Resource).Sum(r => r.Amount);
-            amount = Math.Min(amount, free);
+            double amount = Math.Min(8, free);
             if (amount <= 0)
                 return ActionResult.Fail("Cargo already claimed");
+            var destination = Storage(v, resource.Resource, amount, source.Position, source.Id);
+            if (destination == null)
+                return ActionResult.Fail("No accepting destination");
+            string id = Id("job");
             Reservations.Add(new Reservation { OwnerId = id, VillageId = v.Id, PileId = source.Id, Resource = resource.Resource, Amount = amount });
             StartJob(v, c, new Job { Id = id, Kind = "haul", Phase = "fetch", SourceId = source.Id, TargetId = destination.Id, Position = destination.Position, Resource = resource.Resource, Amount = amount });
             return ActionResult.Ok(id);
         }
-        private Stockpile ItemHaulStorage(Village v, string resource, Int2 from, string sourceId) => v.Stockpiles.Where(p => p.Kind == "storage" && p.Id != sourceId && HasRoom(v, p, resource, 1)).OrderBy(p => Int2.Distance(p.Position, from)).ThenBy(p => p.Id, StringComparer.Ordinal).FirstOrDefault(p => Path(from, p.Position, v) != null);
         private Stockpile Spill(Village v, Int2 p, List<Stack> goods)
         {
             if (goods.Count == 0)
@@ -248,6 +250,7 @@ namespace IdleCatForest.Simulation
         }
         private void CancelWork(Village v, Cat c, bool preserveUnassignedCargo = false)
         {
+            CancelDungeon(c);
             if (v.Accounting?.WorkerId == c.Id)
                 v.Accounting = null;
             foreach (var route in v.Routes.Where(r => r.CatId == c.Id).ToArray())
@@ -318,10 +321,10 @@ namespace IdleCatForest.Simulation
                 if (f.WorkerId == c.Id)
                     f.WorkerId = "";
             c.JobId = "";
-            c.BuildingId = "";
+            c.BuildingId = v.Routes.FirstOrDefault(r => r.CatId == c.Id)?.Id ?? "";
             c.ResumeJobId = "";
             c.Path.Clear();
-            c.Goal = "idle";
+            c.Goal = c.BuildingId == "" ? "idle" : "transport returning";
         }
         private void Finish(Village v, Cat c, Job j)
         {
@@ -361,7 +364,7 @@ namespace IdleCatForest.Simulation
                 return j.Path.All(p => CanModifyTerrain(v.Id, p)) && (j.Kind != "wagon" && j.Kind != "vessel" || CanModifyTerrain(v.Id, j.Position));
             return true;
         }
-        private void TickJob(Village v, Cat c, Job j)
+        private void TickJob(Village v, Cat c, Job j, double dt)
         {
             if (!CanConstructJob(v, j))
             {
@@ -370,6 +373,44 @@ namespace IdleCatForest.Simulation
             }
             if (j.BlockedReason == "foreign_territory")
                 j.BlockedReason = c.BlockedReason = "";
+            bool planning = TimeSeconds + 1e-9 >= j.NextPlanningAt;
+            if (!planning && (j.BlockedReason == "expansion_footprint_blocked" || j.BlockedReason == "infrastructure_footprint_blocked" || j.BlockedReason == "building_entrance_disconnected"))
+                return;
+            if (planning)
+            {
+                j.NextPlanningAt = Math.Floor(TimeSeconds) + 1;
+                if (j.Kind == "expand" && j.OriginalKind != "expand_village")
+                {
+                    if (ExpansionFootprintBlocked(v, v.Radius + 2, j.Path))
+                    {
+                        j.BlockedReason = c.BlockedReason = "expansion_footprint_blocked";
+                        return;
+                    }
+                    if (j.BlockedReason == "expansion_footprint_blocked")
+                        j.BlockedReason = c.BlockedReason = "";
+                }
+                if (j.Kind == "road" || j.Kind == "rail")
+                {
+                    if (j.Path.Any(p => !FreeInfrastructureFootprint(v, j.Kind, p)))
+                    {
+                        j.BlockedReason = c.BlockedReason = "infrastructure_footprint_blocked";
+                        return;
+                    }
+                    if (j.BlockedReason == "infrastructure_footprint_blocked")
+                        j.BlockedReason = c.BlockedReason = "";
+                }
+                if (j.Kind == "build")
+                {
+                    var scaffold = v.Buildings.Find(b => b.Id == j.TargetId);
+                    if (scaffold != null && !ConnectedEntrance(v, scaffold))
+                    {
+                        j.BlockedReason = c.BlockedReason = "building_entrance_disconnected";
+                        return;
+                    }
+                    if (j.BlockedReason == "building_entrance_disconnected")
+                        j.BlockedReason = c.BlockedReason = "";
+                }
+            }
             if (j.Kind == "production" && j.Phase != "output_delivery")
             {
                 var station = v.Buildings.Find(b => b.Id == j.TargetId);
@@ -385,7 +426,7 @@ namespace IdleCatForest.Simulation
             {
                 if (c.Cargo.Count == 0 && Reservations.Any(r => r.OwnerId == j.Id + ":resume"))
                 {
-                    PickupClaim(v, c, j.Id + ":resume", j);
+                    PickupClaim(v, c, j.Id + ":resume", j, dt);
                     return;
                 }
                 if (!Reservations.Any(r => r.OwnerId == j.Id + ":resume"))
@@ -394,7 +435,7 @@ namespace IdleCatForest.Simulation
             c.Goal = j.Kind + " · " + j.Phase;
             if (j.Phase == "item_fetch")
             {
-                if (!Move(c, j.Position, 1))
+                if (!Move(c, j.Position, dt))
                     return;
                 j.Phase = "output_delivery";
                 c.Path.Clear();
@@ -402,23 +443,28 @@ namespace IdleCatForest.Simulation
             }
             if (j.Kind == "scout")
             {
-                for (int z = -2; z <= 2; z++)
-                    for (int x = -2; x <= 2; x++)
-                    {
-                        var p = new Int2(c.Position.X + x, c.Position.Z + z);
-                        var observed = TileAt(p);
-                        if (!c.ScoutNotes.Contains(p))
-                            c.ScoutNotes.Add(p);
-                        if (j.Resource != "" && j.Phase != "return" && ((j.Resource == "water" && observed.Water) || SourceAmount(observed, j.Resource) > 0))
+                if (planning || !j.HasObservedPosition || !j.ObservedPosition.Equals(c.Position))
+                {
+                    j.HasObservedPosition = true;
+                    j.ObservedPosition = c.Position;
+                    for (int z = -2; z <= 2; z++)
+                        for (int x = -2; x <= 2; x++)
                         {
-                            j.Phase = "return";
-                            j.TargetId = p.ToString();
-                            c.Path.Clear();
+                            var p = new Int2(c.Position.X + x, c.Position.Z + z);
+                            var observed = TileAt(p);
+                            if (!c.ScoutNotes.Contains(p))
+                                c.ScoutNotes.Add(p);
+                            if (j.Resource != "" && j.Phase != "return" && ((j.Resource == "water" && observed.Water) || SourceAmount(observed, j.Resource) > 0))
+                            {
+                                j.Phase = "return";
+                                j.TargetId = p.ToString();
+                                c.Path.Clear();
+                            }
                         }
-                    }
+                }
                 if (j.Phase == "return")
                 {
-                    if (Move(c, v.Center, 1))
+                    if (Move(c, v.Center, dt))
                     {
                         foreach (var p in c.ScoutNotes)
                             if (!v.Known.Contains(p))
@@ -436,7 +482,7 @@ namespace IdleCatForest.Simulation
                     }
                     return;
                 }
-                if (Move(c, j.Position, 1))
+                if (Move(c, j.Position, dt))
                 {
                     if (j.Path.Count > 0 && j.PathIndex + 1 < j.Path.Count)
                     {
@@ -459,16 +505,16 @@ namespace IdleCatForest.Simulation
             }
             if (j.Kind == "build")
             {
-                var b = v.Buildings.Find(x => x.Id == j.TargetId) ?? ResolveScaffold(v, c, j);
+                var b = v.Buildings.Find(x => x.Id == j.TargetId) ?? (planning ? ResolveScaffold(v, c, j) : null);
                 if (b == null)
                     return;
                 if (b.Required.All(s => Amount(b.Inputs, s.Resource) >= s.Amount))
                 {
-                    if (!Move(c, b.Position, 1))
+                    if (!Move(c, b.Position, dt))
                         return;
                     j.Phase = "working";
-                    b.Progress += WorkRate(v, c, "build", b.Kind);
-                    if (b.Progress >= b.RequiredWork)
+                    b.Progress += SpendActorTime(c) * WorkRate(v, c, "build", b.Kind);
+                    if (b.Progress + 1e-9 >= b.RequiredWork)
                     {
                         b.Inputs.Clear();
                         Commission(v, b);
@@ -479,7 +525,7 @@ namespace IdleCatForest.Simulation
                 }
                 if (c.Cargo.Count > 0)
                 {
-                    if (!Move(c, b.Position, 1))
+                    if (!Move(c, b.Position, dt))
                         return;
                     foreach (var s in c.Cargo)
                         Add(b.Inputs, s.Resource, s.Amount);
@@ -496,7 +542,7 @@ namespace IdleCatForest.Simulation
                         return;
                     }
                 }
-                PickupClaim(v, c, b.Id, j);
+                PickupClaim(v, c, b.Id, j, dt);
                 return;
             }
             if (j.Phase == "fetch")
@@ -509,15 +555,30 @@ namespace IdleCatForest.Simulation
                 }
                 if (Reservations.Any(r => r.OwnerId == j.Id))
                 {
-                    PickupClaim(v, c, j.Id, j);
+                    PickupClaim(v, c, j.Id, j, dt);
                     return;
                 }
                 j.Phase = "input_delivery";
             }
             if (j.Phase == "input_delivery")
             {
-                if (!Move(c, j.Position, 1))
+                if (!Move(c, j.Position, dt))
+                {
+                    if (j.Kind == "haul" && c.BlockedReason == "blocked_route" && j.Local.Count == 0 && c.Cargo.Count > 0 && TimeSeconds + 1e-9 >= j.NextStorageAttemptAt)
+                    {
+                        var carried = c.Cargo[0];
+                        var alternate = Storage(v, carried.Resource, carried.Amount, c.Position, j.SourceId);
+                        j.NextStorageAttemptAt = alternate == null ? Math.Floor(TimeSeconds) + 1 : 0;
+                        if (alternate != null)
+                        {
+                            j.TargetId = alternate.Id;
+                            j.Position = alternate.Position;
+                            c.Path.Clear();
+                            j.BlockedReason = c.BlockedReason = "";
+                        }
+                    }
                     return;
+                }
                 foreach (var s in c.Cargo)
                     Add(j.Local, s.Resource, s.Amount);
                 c.Cargo.Clear();
@@ -538,7 +599,7 @@ namespace IdleCatForest.Simulation
             }
             if (j.Phase == "travel")
             {
-                if (!Move(c, j.Position, 1))
+                if (!Move(c, j.Position, dt))
                     return;
                 j.Phase = "working";
             }
@@ -586,10 +647,10 @@ namespace IdleCatForest.Simulation
                 {
                     if (j.OriginalKind == "expand_village")
                     {
-                        if (!Move(c, j.Position, 1))
+                        if (!Move(c, j.Position, dt))
                             return;
-                        j.Progress += WorkRate(v, c, "build", "");
-                        if (j.Progress >= j.RequiredWork)
+                        j.Progress += SpendActorTime(c) * WorkRate(v, c, "build", "");
+                        if (j.Progress + 1e-9 >= j.RequiredWork)
                         {
                             ClaimLegacyTile(v, j);
                             Finish(v, c, j);
@@ -610,10 +671,23 @@ namespace IdleCatForest.Simulation
                         return;
                     }
                     var target = j.Path[j.PathIndex];
-                    var stand = Neighbors(target).Where(Walkable).OrderBy(p => Int2.Distance(p, c.Position)).FirstOrDefault(p => Path(c.Position, p) != null);
+                    if (!j.HasWorkStand || j.WorkStandIndex != j.PathIndex || !Walkable(j.WorkStand))
+                    {
+                        if (!planning && j.WorkStandIndex == j.PathIndex)
+                            return;
+                        j.WorkStandIndex = j.PathIndex;
+                        var stand = Neighbors(target).Where(Walkable).OrderBy(p => Int2.Distance(p, c.Position)).Where(p => Path(c.Position, p) != null).Select(p => (Int2?)p).FirstOrDefault();
+                        j.HasWorkStand = stand.HasValue;
+                        if (!stand.HasValue)
+                        {
+                            j.BlockedReason = c.BlockedReason = "blocked_route";
+                            return;
+                        }
+                        j.WorkStand = stand.Value;
+                    }
                     if (c.Cargo.Count == 0)
                     {
-                        if (!Move(c, j.Position, 1))
+                        if (!Move(c, j.Position, dt))
                             return;
                         if (Amount(j.Local, "materials") < 1)
                         {
@@ -623,10 +697,14 @@ namespace IdleCatForest.Simulation
                         Add(j.Local, "materials", -1);
                         Add(c.Cargo, "materials", 1);
                     }
-                    if (!Move(c, stand, 1))
+                    if (!Move(c, j.WorkStand, dt))
+                    {
+                        if (c.BlockedReason == "blocked_route")
+                            j.HasWorkStand = false;
                         return;
-                    j.Progress++;
-                    if (j.Progress < 10)
+                    }
+                    j.Progress += SpendActorTime(c);
+                    if (j.Progress + 1e-9 < 10)
                         return;
                     j.Progress = 0;
                     TileAt(target).Wall = true;
@@ -644,7 +722,7 @@ namespace IdleCatForest.Simulation
                     var target = j.Path[j.PathIndex];
                     if (c.Cargo.Count == 0)
                     {
-                        if (!Move(c, j.Position, 1))
+                        if (!Move(c, j.Position, dt))
                             return;
                         if (Amount(j.Local, j.Resource) < 1)
                         {
@@ -654,10 +732,10 @@ namespace IdleCatForest.Simulation
                         Add(j.Local, j.Resource, -1);
                         Add(c.Cargo, j.Resource, 1);
                     }
-                    if (!Move(c, target, 1))
+                    if (!Move(c, target, dt))
                         return;
-                    j.Progress++;
-                    if (j.Progress < 30)
+                    j.Progress += SpendActorTime(c);
+                    if (j.Progress + 1e-9 < 30)
                         return;
                     j.Progress = 0;
                     var tile = TileAt(target);
@@ -672,10 +750,10 @@ namespace IdleCatForest.Simulation
                     j.PathIndex++;
                     return;
                 }
-                if (!Move(c, j.Position, 1))
+                if (!Move(c, j.Position, dt))
                     return;
-                j.Progress += WorkRate(v, c, j.Kind == "production" ? Catalog.Recipe(j.RecipeId)?.Labor ?? "process" : JobLabor(j.Kind), j.Kind == "production" ? Catalog.Recipe(j.RecipeId)?.Building : "") * j.SpeedMultiplier;
-                if (j.Progress < j.RequiredWork)
+                j.Progress += SpendActorTime(c) * WorkRate(v, c, j.Kind == "production" ? Catalog.Recipe(j.RecipeId)?.Labor ?? "process" : JobLabor(j.Kind), j.Kind == "production" ? Catalog.Recipe(j.RecipeId)?.Building : "") * j.SpeedMultiplier;
+                if (j.Progress + 1e-9 < j.RequiredWork)
                     return;
                 if (j.Kind == "production")
                 {
@@ -788,7 +866,7 @@ namespace IdleCatForest.Simulation
             {
                 if (c.Cargo.Count == 0 && j.Local.Count > 0)
                 {
-                    if (!Move(c, j.Position, 1))
+                    if (!Move(c, j.Position, dt))
                         return;
                     var s = j.Local[0];
                     double take = Math.Min(CarryCapacity(v, s.Resource), s.Amount);
@@ -803,14 +881,31 @@ namespace IdleCatForest.Simulation
                     Finish(v, c, j);
                     return;
                 }
-                var pile = j.Kind == "haul" && deliveredItem != null ? ItemHaulStorage(v, resource, c.Position, j.SourceId) : Storage(v, resource, cargo?.Amount ?? 1, c.Position);
+                var pile = v.Stockpiles.Find(s => s.Id == j.DeliveryPileId && s.Kind == "storage");
+                if (pile != null && !HasRoom(v, pile, resource, cargo?.Amount ?? 1))
+                    pile = null;
+                if (pile == null && TimeSeconds + 1e-9 < j.NextStorageAttemptAt)
+                    return;
+                if (pile == null)
+                {
+                    pile = Storage(v, resource, cargo?.Amount ?? 1, c.Position, j.Kind == "haul" ? j.SourceId : null);
+                    j.NextStorageAttemptAt = Math.Floor(TimeSeconds) + 1;
+                }
                 if (pile == null)
                 {
                     j.BlockedReason = c.BlockedReason = "output_storage_full_or_unreachable";
                     return;
                 }
-                if (!Move(c, pile.Position, 1))
+                j.DeliveryPileId = pile.Id;
+                if (!Move(c, pile.Position, dt))
+                {
+                    if (c.BlockedReason == "blocked_route")
+                    {
+                        j.DeliveryPileId = "";
+                        j.NextStorageAttemptAt = Math.Floor(TimeSeconds) + 1;
+                    }
                     return;
+                }
                 if (cargo != null)
                 {
                     Add(pile.Goods, cargo.Resource, cargo.Amount);
@@ -822,11 +917,12 @@ namespace IdleCatForest.Simulation
                     j.ItemIds.Remove(deliveredItem.Id);
                 }
                 Add(c.Skills, "haul", 0.25);
+                j.DeliveryPileId = "";
                 if (j.Local.Count == 0 && c.Cargo.Count == 0 && j.ItemIds.Count == 0)
                     Finish(v, c, j);
             }
         }
-        private void PickupClaim(Village v, Cat c, string ownerId, Job j)
+        private void PickupClaim(Village v, Cat c, string ownerId, Job j, double dt)
         {
             var claim = Reservations.FirstOrDefault(r => r.OwnerId == ownerId);
             if (claim == null)
@@ -838,7 +934,7 @@ namespace IdleCatForest.Simulation
                 j.BlockedReason = "source_changed";
                 return;
             }
-            if (!Move(c, pile.Position, 1))
+            if (!Move(c, pile.Position, dt))
                 return;
             double quantity = Math.Min(CarryCapacity(v, claim.Resource), claim.Amount);
             Add(pile.Goods, claim.Resource, -quantity);
@@ -857,7 +953,7 @@ namespace IdleCatForest.Simulation
             }
             Int2? site = null;
             foreach (var p in v.Known.OrderBy(p => Int2.Distance(v.Center, p)).ThenBy(p => p.Z).ThenBy(p => p.X))
-                if (FreeSite(v, p, 2, 2, kind == "field") && Path(c.Position, p, v) != null)
+                if (FreeSite(v, p, 2, 2, kind == "field") && FreeBuildingEntrance(v, p).HasValue && Path(c.Position, p, v) != null)
                 {
                     site = p;
                     break;
@@ -876,7 +972,7 @@ namespace IdleCatForest.Simulation
                 j.BlockedReason = "missing_scaffold_input";
                 return null;
             }
-            var scaffold = new Building { Id = Id(kind), Kind = kind, Position = site.Value, Required = bill, RequiredWork = Math.Max(1, j.RequiredWork), Progress = j.Progress, Inputs = j.Local };
+            var scaffold = new Building { Id = Id(kind), Kind = kind, Position = site.Value, Entrance = FreeBuildingEntrance(v, site.Value).Value, HasEntrance = true, Required = bill, RequiredWork = Math.Max(1, j.RequiredWork), Progress = j.Progress, Inputs = j.Local };
             j.Local = new List<Stack>();
             v.Buildings.Add(scaffold);
             j.TargetId = scaffold.Id;
@@ -895,6 +991,55 @@ namespace IdleCatForest.Simulation
             if (v.Items.Any(i => c.Equipment.Contains(i.Id) && i.Kind == "tool" && i.Condition > 0))
                 rate *= 1.15;
             return Math.Clamp(rate, 0.1, 20);
+        }
+        private bool PendingExpansionWall(Village v, Int2 at) => v.Jobs.Any(j => !j.Completed && j.Kind == "expand" && j.OriginalKind != "expand_village" && j.Path.Contains(at));
+        private Int2? FreeBuildingEntrance(Village v, Int2 position)
+        {
+            var expansions = v.Jobs.Where(j => !j.Completed && j.Kind == "expand" && j.OriginalKind != "expand_village").ToArray();
+            var walls = expansions.SelectMany(j => j.Path).ToHashSet();
+            var roads = ConnectedRoads(v, walls, expansions.Length > 0 ? v.Radius + 2 : 0);
+            foreach (var at in EntranceCandidates(new Building { Position = position }).OrderBy(p => Int2.Distance(p, v.Center)).ThenBy(p => p.Z).ThenBy(p => p.X))
+                if (roads.Contains(at))
+                    return at;
+            return null;
+        }
+        private bool ExpansionFootprintBlocked(Village v, int radius, List<Int2> plannedWalls = null)
+        {
+            bool WallAt(Int2 p) => plannedWalls != null && plannedWalls.Contains(p) || Math.Max(Math.Abs(p.X - v.Center.X), Math.Abs(p.Z - v.Center.Z)) == radius && !LayoutGate(v, p, radius) && !FarmExterior(v, p, radius);
+            var walls = plannedWalls == null ? new HashSet<Int2>() : plannedWalls.ToHashSet();
+            for (int offset = -radius; offset <= radius; offset++)
+                foreach (var p in new[] { new Int2(v.Center.X + offset, v.Center.Z - radius), new Int2(v.Center.X + offset, v.Center.Z + radius), new Int2(v.Center.X - radius, v.Center.Z + offset), new Int2(v.Center.X + radius, v.Center.Z + offset) })
+                    if (WallAt(p))
+                        walls.Add(p);
+            if (v.Jobs.Any(j => !j.Completed && (j.Kind == "road" || j.Kind == "rail") && j.Path.Any(walls.Contains)))
+                return true;
+            var currentRoads = ConnectedRoads(v);
+            var roads = ConnectedRoads(v, walls, radius);
+            bool WallCrosses(Int2 origin, int width, int depth)
+            {
+                for (int x = 0; x < width; x++)
+                    for (int z = 0; z < depth; z++)
+                        if (WallAt(new Int2(origin.X + x, origin.Z + z)))
+                            return true;
+                return false;
+            }
+            foreach (var building in v.Buildings)
+            {
+                if (WallCrosses(building.Position, building.Width, building.Depth))
+                    return true;
+                if (building.Kind != "shrine")
+                {
+                    var entrance = BuildingEntrance(v, building);
+                    if (entrance.HasValue && (walls.Contains(entrance.Value) || currentRoads.Contains(entrance.Value) && !roads.Contains(entrance.Value)))
+                        return true;
+                }
+            }
+            return v.Stockpiles.Any(p => p.Kind != "spill" && !p.Kind.StartsWith("zone_", StringComparison.Ordinal) && WallCrosses(p.Position, p.Width, p.Depth));
+        }
+        private bool ExpansionFarmBoundary(Village v, int radius, Int2 from, Int2 to)
+        {
+            bool Inside(Int2 p) => Math.Abs(p.X - v.Center.X) <= radius && Math.Abs(p.Z - v.Center.Z) <= radius;
+            return Inside(from) && Inside(to) && FarmExterior(v, from, radius) != FarmExterior(v, to, radius);
         }
         private void Expand(Village v)
         {
@@ -920,7 +1065,7 @@ namespace IdleCatForest.Simulation
                     t.Amount = 0;
                     t.ClaimId = v.Id;
                     t.Biome = "meadow";
-                    t.Wall = (Math.Abs(x) == v.Radius || Math.Abs(z) == v.Radius) && !(x == 0 && z == v.Radius);
+                    t.Wall = (Math.Abs(x) == v.Radius || Math.Abs(z) == v.Radius) && !LayoutGate(v, p, v.Radius);
                     if (!v.Known.Contains(p))
                         v.Known.Add(p);
                 }

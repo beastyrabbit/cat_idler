@@ -10,6 +10,8 @@ namespace IdleCatForest.Simulation
         {
             if (context == null || action == null)
                 return ActionResult.Fail("Missing action or identity");
+            if (action.Position.Level != 0 || action.End.Level != 0 || action.Path != null && action.Path.Any(p => p.Level != 0))
+                return ActionResult.Fail("Surface designations require surface coordinates; use the dungeon stairs to change level");
             if (!Finite(action.Amount) || !Finite(action.OtherAmount) || Math.Abs((long)action.Position.X) > 1000000 || Math.Abs((long)action.Position.Z) > 1000000 || Math.Abs((long)action.End.X) > 1000000 || Math.Abs((long)action.End.Z) > 1000000 || action.Accepts == null || action.Path == null || action.Path.Count > 1024 || action.Path.Any(p => Math.Abs((long)p.X) > 1000000 || Math.Abs((long)p.Z) > 1000000))
                 return ActionResult.Fail("Invalid finite action arguments");
             string kind = (action.Kind ?? "").Replace("_", "").ToLowerInvariant();
@@ -41,6 +43,7 @@ namespace IdleCatForest.Simulation
                 }
                 var v = Found(Id("village"), action.Name.Trim(), context.PlayerId, center, false);
                 Villages.Add(v);
+                EnsureVillageDungeon(v);
                 player.PersonalVillageId = player.SelectedVillageId = v.Id;
                 return new ActionResult { Success = true, EntityId = v.Id, VillageId = v.Id };
             }
@@ -273,13 +276,16 @@ namespace IdleCatForest.Simulation
                 case "movecat":
                     if (cat == null || cat.ControlledBy != context.PlayerId)
                         return ActionResult.Fail("Control lease required");
-                    if (village.Routes.Any(r => r.CatId == cat.Id && r.CancelRequested && r.PathIndex > 0))
+                    if (village.Routes.Any(r => r.CatId == cat.Id && r.CancelRequested && (r.PathIndex > 0 || village.Vehicles.Any(vehicle => vehicle.Id == r.VehicleId && vehicle.HasContinuousPosition && Math.Abs(vehicle.X - vehicle.Position.X) + Math.Abs(vehicle.Z - vehicle.Position.Z) > 1e-9))))
                         return ActionResult.Fail("Vessel is physically returning this cat to its dock");
                     if (Math.Abs(action.Position.X) + Math.Abs(action.Position.Z) != 1)
                         return ActionResult.Fail("Movement must be one cardinal direction");
-                    var next = new Int2(cat.Position.X + action.Position.X, cat.Position.Z + action.Position.Z);
+                    var stairs = DungeonNeighbors(cat.Position).Where(p => Math.Sign(p.X - cat.Position.X) == action.Position.X && Math.Sign(p.Z - cat.Position.Z) == action.Position.Z).Select(p => (Int2?)p).FirstOrDefault();
+                    var next = stairs ?? new Int2(cat.Position.X + action.Position.X, cat.Position.Z + action.Position.Z, cat.Position.Level);
                     if (!Walkable(village, next) || !Crossable(cat.Position, next))
                         return ActionResult.Fail("Blocked route");
+                    if (stairs.HasValue && !village.Known.Contains(next))
+                        village.Known.Add(next);
                     cat.Path = new List<Int2> { next };
                     cat.ControlLeaseUntil = TimeSeconds + 30;
                     return ActionResult.Ok();
@@ -287,6 +293,14 @@ namespace IdleCatForest.Simulation
                     if (cat == null || cat.ControlledBy != context.PlayerId)
                         return ActionResult.Fail("Control lease required");
                     return Interact(village, cat, action);
+                case "exploredungeon":
+                    return ExploreDungeon(village, cat, action.TargetId);
+                case "recallexplorer":
+                    return RecallExplorer(village, cat);
+                case "attackcreature":
+                    if (cat == null || cat.ControlledBy != context.PlayerId)
+                        return ActionResult.Fail("Control lease required");
+                    return AttackCreature(village, cat, action.TargetId);
                 default:
                     return ActionResult.Fail("Unknown action: " + action.Kind);
             }
@@ -369,8 +383,10 @@ namespace IdleCatForest.Simulation
         {
             if (c == null || c.ControlledBy != "")
                 return ActionResult.Fail("Available living cat required");
-            if (v.Routes.Any(r => r.CatId == c.Id && r.Mode == "shipping" && r.PathIndex > 0))
-                return ActionResult.Fail("Return the vessel to its dock before reassigning its driver");
+            if (IsDungeonExplorer(c))
+                return ActionResult.Fail("Recall the explorer and wait for its return before assigning work");
+            if (v.Routes.Any(r => r.CatId == c.Id && (r.Mode == "shipping" && r.PathIndex > 0 || v.Vehicles.Any(vehicle => vehicle.Id == r.VehicleId && vehicle.HasContinuousPosition && Math.Abs(vehicle.X - vehicle.Position.X) + Math.Abs(vehicle.Z - vehicle.Position.Z) > 1e-9))))
+                return ActionResult.Fail("Return the vehicle to a safe stopping point before reassigning its driver");
             if (b == null && a.TargetId != "")
             {
                 var farm = v.Farms.Find(f => f.Id == a.TargetId);
@@ -430,7 +446,9 @@ namespace IdleCatForest.Simulation
                 {
                     var at = new Int2(p.X + x, p.Z + z);
                     var t = TileAt(at);
-                    if (!v.Known.Contains(at) || !Walkable(at) || t.Road || t.Rail)
+                    if (!v.Known.Contains(at) || !Walkable(at) || RoadSurface(t) || t.Rail || ShrineRing(v, at) || v.Buildings.Any(b => b.HasEntrance && b.Entrance.Equals(at)))
+                        return false;
+                    if (v.Jobs.Any(j => !j.Completed && (j.Kind == "road" || j.Kind == "rail") && j.Path.Contains(at)) || PendingExpansionWall(v, at))
                         return false;
                     if (exterior ? t.ClaimId != "" : t.ClaimId != v.Id)
                         return false;
@@ -439,7 +457,7 @@ namespace IdleCatForest.Simulation
                 }
             return true;
         }
-        private static bool Contains(Int2 p, int w, int d, Int2 at) => at.X >= p.X && at.X < p.X + w && at.Z >= p.Z && at.Z < p.Z + d;
+        private static bool Contains(Int2 p, int w, int d, Int2 at) => at.Level == p.Level && at.X >= p.X && at.X < p.X + w && at.Z >= p.Z && at.Z < p.Z + d;
         private ActionResult Plan(Village v, string kind, Int2 p, Cat c)
         {
             kind = Snake(kind);
@@ -449,6 +467,9 @@ namespace IdleCatForest.Simulation
                 return ActionResult.Fail("Research unlock required");
             if (!FreeSite(v, p, 2, 2, kind == "field"))
                 return ActionResult.Fail("Occupied, unmapped, or invalid footprint");
+            var entry = FreeBuildingEntrance(v, p);
+            if (!entry.HasValue)
+                return ActionResult.Fail("Building entrance must touch the shrine-connected road network");
             int count = v.Buildings.Count(b => b.Kind == kind);
             double timber = 4 + count * 2, blocks = 2 + count;
             string timberKind = Available(v, "lumber") >= timber ? "lumber" : "planks";
@@ -457,7 +478,7 @@ namespace IdleCatForest.Simulation
             c = c ?? AvailableCat(v, "build");
             if (!FreeWorker(v, c))
                 return ActionResult.Fail("No available builder");
-            var b = new Building { Id = Id(kind), Kind = kind, Position = p, RequiredWork = 120 + count * 30 };
+            var b = new Building { Id = Id(kind), Kind = kind, Position = p, Entrance = entry.Value, HasEntrance = true, RequiredWork = 120 + count * 30 };
             b.Required.Add(new Stack(timberKind, timber));
             b.Required.Add(new Stack("blocks", blocks));
             if (!Reserve(v, b.Id, timberKind, timber) || !Reserve(v, b.Id, "blocks", blocks))
@@ -477,6 +498,8 @@ namespace IdleCatForest.Simulation
             {
                 p = a.Position;
                 width = depth = 1;
+                if (!FreeSite(v, p, width, depth, GetTile(p)?.ClaimId != v.Id))
+                    return ActionResult.Fail("Invalid fishing area");
                 if (!Walkable(p) || !new[] { new Int2(1, 0), new Int2(-1, 0), new Int2(0, 1), new Int2(0, -1) }.Any(d => TileAt(new Int2(p.X + d.X, p.Z + d.Z)).Water))
                     return ActionResult.Fail("Fishing needs a walkable shore");
             }
@@ -491,6 +514,8 @@ namespace IdleCatForest.Simulation
                 return ActionResult.Fail("Invalid stored resource");
             if (!CanModifyTerrain(v.Id, p, width, depth))
                 return ActionResult.Fail("Foreign territory cannot host this work site");
+            if (kind == "zone" && a.Resource == "avoid" && (ConnectedRoads(v).Any(at => Contains(p, width, depth, at)) || v.Buildings.Any(b => b.HasEntrance && Contains(p, width, depth, b.Entrance) || b.Kind == "shrine" && p.X < b.Position.X + b.Width && p.X + width > b.Position.X && p.Z < b.Position.Z + b.Depth && p.Z + depth > b.Position.Z)))
+                return ActionResult.Fail("Avoid zones cannot cover shrine roads or building entrances");
             var pile = new Stockpile { Id = Id("pile"), Position = p, Width = width, Depth = depth, Capacity = width * depth * 100, Kind = kind == "zone" ? "zone_" + a.Resource : kind == "designatestockpile" ? "storage" : kind == "designatefishingspot" ? "fishing" : "gather", Accepts = new List<string>(a.Accepts) };
             if (kind == "designategatherspot")
                 pile.Accepts = new List<string> { a.Resource };
@@ -535,6 +560,8 @@ namespace IdleCatForest.Simulation
             }
             if (c == null)
                 return ActionResult.Fail("Living bearer required");
+            if (IsDungeonExplorer(c))
+                return ActionResult.Fail("Recall the explorer before changing its equipment");
             if (kind == "equipitem")
             {
                 if (!new[] { "tool", "weapon", "armor" }.Contains(item.Kind) || item.Condition <= 0 || !v.Stockpiles.Any(p => p.Id == item.LocationId) || v.Items.Any(i => i.LocationId == c.Id && i.Kind == item.Kind))
@@ -559,6 +586,19 @@ namespace IdleCatForest.Simulation
         {
             if (a.Mode == "eat" || a.Mode == "drink" || a.Mode == "rest")
                 return ControlledNeed(v, c, a.Mode);
+            if (c.Position.Level < 0 && a.TargetId == "")
+            {
+                var chest = Dungeons.SelectMany(d => d.Floors).FirstOrDefault(f => f.LootPosition.Equals(c.Position) && Math.Abs(c.X - f.LootPosition.X) + Math.Abs(c.Z - f.LootPosition.Z) < 1e-8 && f.Loot.Any(s => s.Amount > 0));
+                if (chest == null)
+                    return ActionResult.Fail("Walk to a dungeon chest or select a nearby pile");
+                foreach (var stack in chest.Loot.ToArray())
+                {
+                    double take = Math.Min(stack.Amount, Math.Max(0, CarryCapacity(v, stack.Resource) - Amount(c.Cargo, stack.Resource)));
+                    Add(c.Cargo, stack.Resource, take);
+                    Add(chest.Loot, stack.Resource, -take);
+                }
+                return ActionResult.Ok();
+            }
             var pile = v.Stockpiles.Find(s => s.Id == a.TargetId);
             if (pile != null)
             {

@@ -1,6 +1,6 @@
 {
   "blender": "5.2.1 LTS",
-  "asset_count": 80,
+  "asset_count": 82,
   "passed": true,
   "checks": [
     "FBX reimport",
@@ -15,19 +15,19 @@
   "results": [
     {
       "asset": "cat",
-      "triangles": 2144,
+      "triangles": 2572,
       "mesh_count": 7,
       "passed": true
     },
     {
       "asset": "tree_oak",
-      "triangles": 952,
+      "triangles": 1280,
       "mesh_count": 1,
       "passed": true
     },
     {
       "asset": "tree_pine",
-      "triangles": 156,
+      "triangles": 1788,
       "mesh_count": 1,
       "passed": true
     },
@@ -93,13 +93,13 @@
     },
     {
       "asset": "den",
-      "triangles": 2488,
+      "triangles": 6288,
       "mesh_count": 1,
       "passed": true
     },
     {
       "asset": "food_storage",
-      "triangles": 4844,
+      "triangles": 6780,
       "mesh_count": 1,
       "passed": true
     },
@@ -111,7 +111,7 @@
     },
     {
       "asset": "beds",
-      "triangles": 2480,
+      "triangles": 4680,
       "mesh_count": 1,
       "passed": true
     },
@@ -123,13 +123,13 @@
     },
     {
       "asset": "nursery",
-      "triangles": 2768,
+      "triangles": 5672,
       "mesh_count": 1,
       "passed": true
     },
     {
       "asset": "elder_corner",
-      "triangles": 2796,
+      "triangles": 5700,
       "mesh_count": 1,
       "passed": true
     },
@@ -141,19 +141,19 @@
     },
     {
       "asset": "mouse_farm",
-      "triangles": 2960,
+      "triangles": 4896,
       "mesh_count": 1,
       "passed": true
     },
     {
       "asset": "shrine",
-      "triangles": 804,
+      "triangles": 3540,
       "mesh_count": 1,
       "passed": true
     },
     {
       "asset": "workshop",
-      "triangles": 3084,
+      "triangles": 5020,
       "mesh_count": 1,
       "passed": true
     },
@@ -165,79 +165,79 @@
     },
     {
       "asset": "smithy",
-      "triangles": 2244,
+      "triangles": 4180,
       "mesh_count": 1,
       "passed": true
     },
     {
       "asset": "barracks",
-      "triangles": 2392,
+      "triangles": 4328,
       "mesh_count": 1,
       "passed": true
     },
     {
       "asset": "accounting_tent",
-      "triangles": 3260,
+      "triangles": 5196,
       "mesh_count": 1,
       "passed": true
     },
     {
       "asset": "wood_cutter",
-      "triangles": 2748,
+      "triangles": 4684,
       "mesh_count": 1,
       "passed": true
     },
     {
       "asset": "stone_prep",
-      "triangles": 2128,
+      "triangles": 4064,
       "mesh_count": 1,
       "passed": true
     },
     {
       "asset": "woodworking",
-      "triangles": 2288,
+      "triangles": 4224,
       "mesh_count": 1,
       "passed": true
     },
     {
       "asset": "clothier",
-      "triangles": 3120,
+      "triangles": 5056,
       "mesh_count": 1,
       "passed": true
     },
     {
       "asset": "tannery",
-      "triangles": 2214,
+      "triangles": 4150,
       "mesh_count": 1,
       "passed": true
     },
     {
       "asset": "research_hut",
-      "triangles": 3020,
+      "triangles": 4956,
       "mesh_count": 1,
       "passed": true
     },
     {
       "asset": "smelter",
-      "triangles": 2984,
+      "triangles": 4920,
       "mesh_count": 1,
       "passed": true
     },
     {
       "asset": "mill",
-      "triangles": 2836,
+      "triangles": 4772,
       "mesh_count": 1,
       "passed": true
     },
     {
       "asset": "sawmill",
-      "triangles": 3120,
+      "triangles": 5056,
       "mesh_count": 1,
       "passed": true
     },
     {
       "asset": "school",
-      "triangles": 2908,
+      "triangles": 4844,
       "mesh_count": 1,
       "passed": true
     },
@@ -249,19 +249,31 @@
     },
     {
       "asset": "road",
-      "triangles": 224,
+      "triangles": 408,
       "mesh_count": 1,
       "passed": true
     },
     {
       "asset": "fence",
-      "triangles": 188,
+      "triangles": 444,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "fence_post",
+      "triangles": 134,
+      "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "fence_rail",
+      "triangles": 176,
       "mesh_count": 1,
       "passed": true
     },
     {
       "asset": "gate",
-      "triangles": 276,
+      "triangles": 2700,
       "mesh_count": 1,
       "passed": true
     },
@@ -297,7 +309,7 @@
     },
     {
       "asset": "healing_tent",
-      "triangles": 2612,
+      "triangles": 4548,
       "mesh_count": 1,
       "passed": true
     },
