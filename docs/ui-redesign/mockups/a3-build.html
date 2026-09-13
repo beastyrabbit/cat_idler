@@ -1,0 +1,62 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Atlas — Build mode</title>
+<link href="https://fonts.googleapis.com/css2?family=Alegreya:ital,wght@0,500;0,700;1,500;1,700&family=Alegreya+Sans:wght@500;700;800&family=Courier+Prime:wght@400;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="atlas.css">
+<style>
+.catalog{position:absolute;left:0;right:404px;bottom:0;height:134px;z-index:5;padding:10px 22px 0 200px}
+.catalog .eyebrow{position:absolute;left:200px;top:0}
+.cards{display:flex;gap:10px;margin-top:8px}
+.card{width:158px;height:98px;padding-right:44px;background:var(--vel4);border:1.5px solid var(--vel3);padding:6px 8px;position:relative;font-size:11.5px;line-height:1.25}
+.card img{position:absolute;right:5px;top:8px;width:34px;height:34px;image-rendering:pixelated}
+.card b{display:block;font:700 15px Alegreya;margin-bottom:2px}.card .cost{font-family:'Courier Prime';font-weight:700;font-size:11.5px}
+.card .g{position:absolute;left:8px;bottom:6px;font:800 9px 'Alegreya Sans';letter-spacing:.12em;text-transform:uppercase;color:var(--moss)}
+.card.on{border:2px solid var(--madder);box-shadow:2px 3px 0 rgba(42,33,24,.15)}.card.lock{opacity:.55}.card.lock .g{color:var(--madder)}.card.built .g{color:var(--ink2)}
+.check div{display:grid;grid-template-columns:20px 1fr auto;gap:8px;padding:4px 0;font-size:13px;align-items:center;border-bottom:1px solid var(--vel3)}
+.check .ok{color:var(--moss)}.check .no{color:var(--madder)}.check span:last-child{font-family:'Courier Prime';font-weight:700;text-align:right}
+.check .ic{width:16px;height:16px}
+.mode{position:absolute;left:22px;top:96px;z-index:6;background:var(--madder);color:var(--vel);padding:6px 12px;font:800 12px 'Alegreya Sans';letter-spacing:.14em;text-transform:uppercase;box-shadow:2px 2px 0 rgba(0,0,0,.25)}
+.mode small{display:block;font:italic 12px Alegreya;letter-spacing:0;text-transform:none;opacity:.9}
+</style></head><body>
+<div class="frame"><canvas class="world" id="w" width="1516" height="868"></canvas><canvas id="ghost" width="1516" height="868"></canvas>
+  <div class="callout" id="gc"><b>Den</b> · 1 tile blocked by a haystack · <i>move it or shift the plan</i></div></div>
+<div class="mode">Build mode · Den<small>click to place · R rotate entrance · Esc cancel</small></div>
+<script src="icons.js"></script><script src="world.js"></script><script src="atlas.js"></script>
+<script>
+const foot=`<div class="catalog"><div class="eyebrow">Build · 8 of 25 buildings available · 4 studied but unaffordable · 13 locked</div><div class="cards">
+ <div class="card on"><img src="../../../public/images/game/buildings/den.png"><b>Den</b>5 beds · 3 × 3<br><span class="cost">24 logs · 8 stone</span><span class="g">ready</span></div>
+ <div class="card"><img src="../../../public/images/game/props/well.png"><b>Well</b>water inside walls · 1 × 1<br><span class="cost">6 stone · 2 planks</span><span class="g">ready</span></div>
+ <div class="card"><img src="../../../public/images/game/buildings/storehouse.png"><b>Storehouse</b>roofed storage · 3 × 3<br><span class="cost">30 logs · 12 stone</span><span class="g">ready</span></div>
+ <div class="card"><img src="../../../public/images/game/buildings/mill.png"><b>Acc. Tent</b>Accountant's office<br><span class="cost">10 logs · 4 cloth</span><span class="g">built</span></div>
+ <div class="card lock"><img src="../../../public/images/game/buildings/clothier.png"><b>Clothier</b>fibre → thread → cloth<br><span class="cost">28 logs · 6 planks</span><span class="g">needs Fibre craft</span></div>
+ <div class="card lock"><img src="../../../public/images/game/buildings/wood_cutter.png"><b>Forester</b>automates wood<br><span class="cost">36 logs · 10 stone</span><span class="g">needs Woodlore II</span></div>
+ <div class="card"><img src="../../../public/images/game/infra/road_cross.png"><b>Stone road</b>faster hauling<br><span class="cost">1 block / tile</span><span class="g">ready</span></div>
+ <div class="card"><img src="../../../public/images/game/infra/palisade_topdown.png"><b>Palisade · gate</b>walls and gates<br><span class="cost">2 logs / tile</span><span class="g">ready</span></div>
+</div></div>`;
+const ledger=`<div class="eyebrow">Plan · building</div>
+  <div class="subject"><div class="portrait bld"><img src="../../../public/images/game/buildings/den.png"></div><div><h2>Den</h2><p>Roofed home · 5 beds · 3 × 3 tiles · entrance on the south road</p></div></div>
+  <p class="line">Placing a <u>Den</u> in the north-west block. Eight tiles are clear; one is under a <u>haystack</u>. Materials are on hand, though the stone count is <span class="bad">an estimate</span>.</p>
+  <div class="h">Can it be built here?</div>
+  <div class="check">
+   <div><span class="no">${icon('alert')}</span><span>Footprint clear</span><span class="no">8 of 9</span></div>
+   <div><span class="ok">${icon('check')}</span><span>Entrance touches a road</span><span>south road</span></div>
+   <div><span class="ok">${icon('check')}</span><span>Inside the village interior</span><span>yes</span></div>
+   <div><span class="ok">${icon('check')}</span><span>Logs 24</span><span>96 counted</span></div>
+   <div><span class="no">${icon('clock')}</span><span>Stone 8</span><span>≈44 · 6 h old</span></div>
+   <div><span class="ok">${icon('check')}</span><span>Research</span><span>none needed</span></div>
+   <div><span class="ok">${icon('check')}</span><span>A builder is free</span><span>Bramble</span></div>
+  </div>
+  <div class="h">What happens next</div>
+  <div class="rows"><div><span>Haul</span><span>32 loads · Steward</span></div><div><span>Build time</span><span>≈ 3 h at 1×</span></div><div><span>Beds gained</span><span>5 · fixes 2 bedless</span></div></div>
+  <div class="acts"><span class="act dis">Place here<small>blocked by 1 tile</small></span><span class="act hot">Move the haystack<small>Steward hauls it</small></span><span class="act">Shift plan 1 tile east</span><span class="act">Cancel · Esc</span></div>`;
+atlasChrome({tab:'Build',ledger,foot});
+renderWorld(document.getElementById('w'),{scale:3,ox:-90,oy:-110,annotate:false}).then(({P,px,py})=>{
+  const g=document.getElementById('ghost').getContext('2d');
+  // ghost footprint at tiles (9..11, 8..10); (11,9) is under a haystack
+  for(let y=8;y<=10;y++)for(let x=9;x<=11;x++){const bad=(x==11&&y==9);
+    g.fillStyle=bad?'rgba(178,63,44,.55)':'rgba(120,190,90,.45)';g.fillRect(px(x)+2,py(y)+2,P-4,P-4);
+    g.strokeStyle=bad?'#b23f2c':'#e8f5d8';g.lineWidth=2;g.setLineDash([6,4]);g.strokeRect(px(x)+2,py(y)+2,P-4,P-4);g.setLineDash([]);}
+  // entrance marker on the south road
+  g.fillStyle='#fff0c2';g.beginPath();g.moveTo(px(10.5),py(11)-2);g.lineTo(px(10.5)-9,py(11)-14);g.lineTo(px(10.5)+9,py(11)-14);g.closePath();g.fill();
+  g.font='700 12px Alegreya Sans';g.fillStyle='#2a2118';g.fillText('entrance',px(10.5)-24,py(11.6)+4);
+  const c=document.getElementById('gc');c.style.left=(px(12.2))+'px';c.style.top=(py(8.2))+'px';
+});
+</script></body></html>

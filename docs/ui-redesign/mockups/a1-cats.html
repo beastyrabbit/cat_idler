@@ -1,0 +1,47 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Atlas — Cats census</title>
+<link href="https://fonts.googleapis.com/css2?family=Alegreya:ital,wght@0,500;0,700;1,500;1,700&family=Alegreya+Sans:wght@500;700;800&family=Courier+Prime:wght@400;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="atlas.css">
+<style>.tbl td.name{white-space:nowrap}.role{display:inline-block;font:800 9px 'Alegreya Sans';letter-spacing:.12em;text-transform:uppercase;color:var(--vel);background:var(--brass);padding:1px 5px;border-radius:2px;margin-left:6px;vertical-align:2px}.role.w{background:var(--ink2)}.tbl .doing{max-width:330px}.tbl .doing u{text-decoration-color:var(--brass);text-underline-offset:2px}
+.summary{display:flex;gap:22px;margin:8px 0 2px;font-size:13px;color:var(--ink2)}.summary b{font-family:'Courier Prime';color:var(--ink)}</style>
+</head><body>
+<div class="frame"><canvas class="world" id="w" width="1516" height="868"></canvas>
+  <div class="callout" style="left:196px;top:770px"><b>Sawmill</b> · <i>blocked: no logs</i></div></div>
+<script src="icons.js"></script><script src="world.js"></script><script src="atlas.js"></script>
+<script>
+const rows=[
+ ['Mallow','Hauler','','Carrying 3 logs → <u>Sawmill</u>; then rest. <b class="bad">Thirsty, no water reachable.</b>',[58,24,71,92],'Haul 3 · Forestry 1','Den 2','sel'],
+ ['Hazel','Steward','o','Directing 5 haulers · at the <u>Log pile</u>. <b class="bad">Thirsty.</b>',[62,31,80,95],'Haul 4 · Lore 2','Den 1',''],
+ ['Bramble','Sawyer','','Waiting at the <u>Sawmill</u> — no logs delivered',[70,66,74,100],'Woodwork 3','Den 3','bad'],
+ ['Thistle','—','','<b class="bad">Idle</b> — no job matches preferences (haul off, farm off)',[80,72,90,100],'Farm 2','Den 3','bad'],
+ ['Pip','Accountant','o','Counting the <u>Stone pile</u> · round 4, pile 6 of 8',[65,60,70,100],'Lore 3 · Haul 1','Den 1',''],
+ ['Wren','Warrior','w','Guarding the north gate · fox 3 tiles away',[74,68,60,100],'Fight 3','Den 2',''],
+ ['Sorrel','Hauler','','Carrying 4 water from the <u>river</u> → Barrels',[55,80,62,98],'Haul 2','Den 2',''],
+ ['Juniper','Farmer','','Harvesting grain · <u>South field</u> · ready in 2 h',[61,70,55,100],'Farm 4','Den 3',''],
+ ['Moss','Smith','','Carrying 2 ore → <u>Smithy</u> · iron tools 1 of 3',[41,64,70,97],'Smith 2 · Haul 1','Den 1',''],
+ ['Clover','Nursing','','Resting in <u>Den 1</u> with a newborn kitten',[66,70,45,90],'Farm 1','Den 1 (reserved)',''],
+ ['Fennel','Hauler','','Sleeping · <u>Den 3</u> · wakes at 15:00',[70,75,30,100],'Haul 2','Den 3',''],
+ ['Rook','Hauler','','Carrying 6 grain → <u>Mill</u>',[59,63,77,100],'Haul 3','no bed','bad'],
+ ['Ash','Explorer','','Exploring <u>Root Hollow</u> · floor 2 of 3 · cargo 2 of 6',[50,54,60,82],'Fight 2 · Scout 3','no bed','bad'],
+ ['Sage','Woodcutter','','Felling oak at the <u>north stand</u> · 3 of 5 logs',[68,71,66,100],'Forestry 3','Den 2',''],
+ ['Poppy','Scholar','','Studying <u>Stone dressing II</u> at the Research Hut · 40 %',[72,69,80,100],'Lore 4','Den 1',''],
+ ['Birch','kitten','','Playing near Den 1 · grows up in 9 h',[80,82,88,100],'—','Den 1',''],
+];
+const spark=v=>`<span class="spark">${v.map(x=>`<i class="${x<35?'low':x<60?'mid':''}" style="--w:${x}%"></i>`).join('')}</span>`;
+const spread=`<div class="hd"><h2>Cats</h2><p>31 alive · 12 at work · 5 resting · 4 kittens · 3 need care · 2 without a bed</p><span class="x">Esc · close</span></div>
+<div class="chips"><span class="chip on">Attention first</span><span class="chip">By role</span><span class="chip">By workplace</span><span class="chip">Idle</span><span class="chip">Kittens</span><span class="chip">Away</span><span class="chip search">search cat names…</span></div>
+<table class="tbl"><thead><tr><th>Cat</th><th>Doing · going · why</th><th>Hunger · thirst · rest · health</th><th>Skills</th><th>Bed</th></tr></thead><tbody>
+${rows.map(r=>`<tr class="${r[7]=='sel'?'sel':''}"><td class="name"><b>${r[0]}</b>${r[1]!='—'?`<span class="role ${r[2]}">${r[1]}</span>`:''}</td><td class="doing">${r[3]}</td><td>${spark(r[4])}</td><td class="dim">${r[5]}</td><td class="${r[6].startsWith('no')?'bad':'dim'}">${r[6]}</td></tr>`).join('')}
+</tbody></table><p style="margin:8px 0 0;font:italic 12px Alegreya;color:var(--ink2)">15 more cats below · scroll or search</p>`;
+const ledger=`<div class="eyebrow">Ledger · cat no. 17</div>
+  <div class="subject"><div class="portrait"></div><div><h2>Mallow</h2><p>Hauler · adult, 31 h · sleeps in Den 2, bed 3 of 5</p></div></div>
+  <p class="line">Carrying <u>3 logs</u> from the <u>Log pile</u> to the <u>Sawmill</u>, because <u>Hazel the Steward</u> asked. <span class="bad">Thirsty</span>, and no water is reachable; will try to rest after.</p>
+  <div class="h">Needs</div><div class="needs">
+    <div><span>Hunger</span><div class="t mid"><i style="width:58%"></i></div><span class="n">58</span></div>
+    <div><span>Thirst</span><div class="t low"><i style="width:24%"></i></div><span class="n" style="color:var(--madder)">24</span></div>
+    <div><span>Rest</span><div class="t"><i style="width:71%"></i></div><span class="n">71</span></div>
+    <div><span>Health</span><div class="t"><i style="width:92%"></i></div><span class="n">92</span></div></div>
+  <div class="h">Work preferences</div><div class="rows"><div><span>Haul</span><span>yes</span></div><div><span>Forestry</span><span>yes</span></div><div><span>Farm</span><span>if needed</span></div><div><span>Fight</span><span>never</span></div><div><span>Study</span><span>if needed</span></div></div>
+  <div class="acts"><span class="act hot">Send for water first<small>drops the logs at the plaza</small></span><span class="act">Boost Mallow<small>1 blessing</small></span><span class="act">Take the reins<small>Tab</small></span><span class="act">Find on map</span></div>`;
+atlasChrome({tab:'Cats',ledger,spread});
+renderWorld(document.getElementById('w'),{scale:3,ox:-270,oy:-110,pathColor:'#fff0c2',selColor:'#fff0c2',destColor:'#fff0c2',needColor:'#d94a35'});
+</script></body></html>

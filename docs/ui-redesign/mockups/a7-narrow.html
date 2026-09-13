@@ -1,0 +1,49 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Atlas — narrow window 1280×720</title>
+<link href="https://fonts.googleapis.com/css2?family=Alegreya:ital,wght@0,500;0,700;1,500;1,700&family=Alegreya+Sans:wght@500;700;800&family=Courier+Prime:wght@400;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="atlas.css">
+<style>
+body{width:1280px;height:720px}
+.frame{top:82px;right:0;bottom:190px;left:0}
+.topn{position:absolute;top:0;left:0;right:0;height:56px;z-index:5;display:flex;align-items:center;padding:0 14px;gap:14px}
+.topn h1{margin:0;font:700 20px/1 Alegreya;font-variant:small-caps}
+.tn{display:flex;gap:4px;margin-left:auto}
+.tn div{display:flex;align-items:center;gap:5px;padding:4px 8px;border:1px solid var(--vel3);background:var(--vel4);font:700 15px 'Courier Prime'}
+.tn img{width:16px;height:16px;image-rendering:pixelated;filter:invert(.25) sepia(.5)}
+.tn div.est{color:var(--ink2)}.tn div.est:after{content:"6h";font:italic 10px Alegreya;color:var(--madder)}
+.tn div.ok:after{content:"✓";font:700 10px 'Alegreya Sans';color:var(--moss)}
+.spd{display:flex;gap:4px}.spd span{width:26px;height:26px;border:1.5px solid var(--ink);border-radius:50%;display:grid;place-items:center;font:700 11px 'Alegreya Sans'}.spd span.on{background:var(--ink);color:var(--vel)}
+.strip{position:absolute;left:0;right:0;top:56px;height:26px;z-index:6;display:flex;gap:2px;padding:0 6px;background:var(--vel2);border-bottom:1.5px solid var(--ink2)}
+.strip div{padding:5px 8px;font:700 10.5px 'Alegreya Sans';letter-spacing:.08em;text-transform:uppercase;color:var(--ink2);white-space:nowrap}.strip div.on{background:var(--madder);color:var(--vel)}
+.strip div em{font-style:normal;background:var(--madder);color:var(--vel);border-radius:8px;padding:0 4px;font-size:9px;margin-left:3px}
+.sheet{position:absolute;left:0;right:0;bottom:0;height:190px;z-index:6;background:var(--vel);border-top:2px solid var(--ink);padding:10px 16px;display:grid;grid-template-columns:52px 1fr 300px 240px;gap:14px;align-items:start}
+.sheet .portrait{width:52px;height:52px;background-position:-14px 2px;background-size:1536px 96px}
+.sheet h2{margin:0;font:700 22px/1 Alegreya}.sheet .sub{color:var(--ink2);font-size:12px}
+.sheet .line{font-size:14px;padding:6px 0;margin:6px 0 0;border-bottom:0}
+.sheet .needs div{grid-template-columns:52px 1fr 28px;font-size:12px;padding:2px 0}
+.sheet .acts{margin-top:0;flex-direction:column;gap:6px}.sheet .act{padding:6px 10px;font-size:12.5px}
+.attn{position:absolute;left:12px;bottom:200px;z-index:7;background:var(--vel4);border:1.5px solid var(--madder);padding:6px 10px 6px 34px;font:700 12px 'Alegreya Sans';color:var(--madder);box-shadow:2px 2px 0 rgba(0,0,0,.2)}
+.attn .wax{position:absolute;left:6px;top:5px;width:22px;height:22px;border-radius:50%;background:var(--madder);color:var(--vel);display:grid;place-items:center}.attn .wax .ic{width:12px;height:12px}
+.mini2{position:absolute;right:12px;bottom:200px;z-index:7;width:120px;height:80px;border:1.5px solid var(--ink);background:var(--vel2);overflow:hidden}.mini2 canvas{position:absolute;left:0;top:0}.mini2 .vp{position:absolute;border:1.5px solid var(--madder);left:30px;top:22px;width:58px;height:36px}
+</style></head><body>
+<div class="frame"><canvas class="world" id="w" width="1280" height="448"></canvas>
+  <div class="callout" style="left:452px;top:390px"><b>Sawmill</b> · <i>blocked</i></div></div>
+<div class="topn"><h1>The Commons</h1><span style="font:italic 12px Alegreya;color:var(--ink2)">31 cats · day 2, 13:30</span>
+  <div class="tn"><div class="ok"><img src="../../../public/images/game/icons/food.png">184</div><div class="ok"><img src="../../../public/images/game/icons/water.png">72</div><div class="ok"><img src="../../../public/images/game/icons/logs.png">96</div><div class="est"><img src="../../../public/images/game/icons/stone.png">≈44</div><div><img src="../../../public/images/game/icons/refined.png">320</div><div><img src="../../../public/images/game/icons/blessings.png">18</div></div>
+  <div class="spd"><span>‖</span><span class="on">1×</span><span>4×</span><span>8×</span></div></div>
+<div class="strip" id="strip"></div>
+<div class="attn"><span class="wax" id="wx"></span>Attention · 4 — thirst, Sawmill, beds, fox</div>
+<div class="mini2"><canvas id="mini" width="120" height="80"></canvas><div class="vp"></div></div>
+<div class="sheet">
+  <div class="portrait"></div>
+  <div><h2>Mallow</h2><div class="sub">Hauler · adult · Den 2 · job automated by the Steward</div>
+    <p class="line">Carrying <u>3 logs</u> to the <u>Sawmill</u>, 31 tiles, because <u>Hazel</u> asked. <span class="bad">Thirsty</span>; no water reachable.</p></div>
+  <div class="needs"><div><span>Hunger</span><div class="t mid"><i style="width:58%"></i></div><span class="n">58</span></div><div><span>Thirst</span><div class="t low"><i style="width:24%"></i></div><span class="n" style="color:var(--madder)">24</span></div><div><span>Rest</span><div class="t"><i style="width:71%"></i></div><span class="n">71</span></div><div><span>Health</span><div class="t"><i style="width:92%"></i></div><span class="n">92</span></div></div>
+  <div class="acts"><span class="act hot">Send for water first</span><span class="act">Boost Mallow · 1 blessing</span><span class="act">Take the reins · Tab</span></div>
+</div>
+<script src="icons.js"></script><script src="world.js"></script>
+<script>
+document.getElementById('strip').innerHTML=NAV.map((n,i)=>`<div class="${i==0?'on':''}">${n}${n=='Cats'?'<em>3</em>':n=='Work'?'<em>1</em>':''}</div>`).join('');
+document.getElementById('wx').innerHTML=icon('alert');
+renderWorld(document.getElementById('w'),{scale:2.5,ox:-40,oy:-100,pathColor:'#fff0c2',selColor:'#fff0c2',destColor:'#fff0c2',needColor:'#d94a35'});
+renderWorld(document.getElementById('mini'),{scale:0.18,ox:0,oy:4,annotate:false});
+</script></body></html>

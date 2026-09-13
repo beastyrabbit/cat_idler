@@ -1,0 +1,116 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Direction 3 — Field Atlas</title>
+<link href="https://fonts.googleapis.com/css2?family=Alegreya:ital,wght@0,500;0,700;1,500;1,700&family=Alegreya+Sans:wght@500;700;800&family=Courier+Prime:wght@400;700&display=swap" rel="stylesheet">
+<style>
+:root{--vel:#efe4c6;--vel2:#e3d3ab;--vel3:#d8c69a;--ink:#2a2118;--ink2:#6b5a43;--madder:#b23f2c;--moss:#4f6e3a;--brass:#a88a4a;--water:#4f7f9a}
+*{box-sizing:border-box}body{margin:0;width:1920px;height:1080px;overflow:hidden;background:var(--vel);color:var(--ink);font:14px/1.4 'Alegreya Sans',sans-serif;position:relative}
+body:before{content:"";position:absolute;inset:0;background:radial-gradient(ellipse at 20% 10%,rgba(255,255,255,.35),transparent 55%),radial-gradient(ellipse at 90% 100%,rgba(120,90,40,.12),transparent 50%);pointer-events:none;z-index:1}
+canvas.world{position:absolute;left:0;top:0}
+.ic{width:1em;height:1em;display:inline-block;vertical-align:-2px}
+.sc{font-variant:small-caps;letter-spacing:.06em}
+.frame{position:absolute;left:0;top:78px;right:404px;bottom:134px;overflow:hidden;border:2px solid var(--ink);box-shadow:inset 0 0 0 4px var(--vel),inset 0 0 0 5px var(--ink2)}
+.frame canvas{position:absolute;left:0;top:0}
+.top{position:absolute;top:0;left:0;right:0;height:78px;z-index:5;display:flex;align-items:center;padding:0 22px;gap:36px}
+.title h1{margin:0;font:700 30px/1 Alegreya,serif;letter-spacing:.02em}.title h1 span{font-variant:small-caps}
+.title p{margin:4px 0 0;color:var(--ink2);font-style:italic;font-family:Alegreya,serif;font-size:14px}
+.tally{display:flex;gap:6px;margin:0 auto}
+.tally div{min-width:118px;text-align:center;border-left:1px solid var(--vel3);padding:0 10px}
+.tally b{font:700 25px/1.05 'Courier Prime',monospace;display:block}
+.tally span{display:block;font-size:11px;color:var(--ink2);font-weight:800;text-transform:uppercase;letter-spacing:.12em}
+.tally i{display:block;font:italic 11px Alegreya,serif;color:var(--madder)}
+.tally i.est{color:var(--ink2)}.tally b.est{color:var(--ink2)}
+.stamp{display:inline-block;border:1.5px solid var(--madder);color:var(--madder);border-radius:3px;font:700 9px 'Alegreya Sans';letter-spacing:.14em;padding:0 4px;transform:rotate(-4deg);text-transform:uppercase}
+.clock{text-align:right}.clock b{font:italic 700 18px Alegreya,serif;display:block}.clock small{color:var(--ink2);font-size:12px}
+.speed{display:inline-flex;gap:6px;margin-left:10px;vertical-align:middle}
+.speed span{width:30px;height:30px;border:1.5px solid var(--ink);border-radius:50%;display:grid;place-items:center;font:700 12px 'Alegreya Sans'}
+.speed span.on{background:var(--ink);color:var(--vel)}
+.index{position:absolute;right:404px;top:96px;z-index:6;display:flex;flex-direction:column;gap:3px;transform:translateX(100%)}
+.index div{width:112px;padding:6px 10px 6px 12px;background:var(--vel2);border:1.5px solid var(--ink2);border-left:0;color:var(--ink2);font:700 12px 'Alegreya Sans';text-transform:uppercase;letter-spacing:.1em;display:flex;justify-content:space-between}
+.index div.on{background:var(--madder);color:var(--vel);border-color:var(--madder);width:124px}
+.index div em{font-style:normal;background:var(--madder);color:var(--vel);border-radius:8px;padding:0 5px;font-size:10px}
+.index div.on em{background:var(--vel);color:var(--madder)}
+.ledger{position:absolute;right:0;top:78px;width:404px;bottom:134px;z-index:5;padding:18px 24px 18px 140px;border-left:1px solid var(--vel3)}
+.ledger .eyebrow{font:800 10px 'Alegreya Sans';letter-spacing:.2em;text-transform:uppercase;color:var(--madder)}
+.subject{display:flex;gap:12px;align-items:center;margin:8px 0 10px}
+.portrait{width:70px;height:70px;border-radius:50%;border:2px solid var(--ink);background:var(--vel2) url(../../../public/images/cats/cat-sheet.png) -12px 6px/2048px 128px no-repeat;image-rendering:pixelated}
+.subject h2{margin:0;font:700 30px/1 Alegreya,serif}.subject p{margin:2px 0 0;color:var(--ink2);font-size:12.5px}
+.line{font:italic 500 17px/1.45 Alegreya,serif;border-top:1px solid var(--ink);border-bottom:1px solid var(--ink);padding:10px 0;margin:6px 0 12px}
+.line u{text-decoration:underline;text-decoration-color:var(--brass);text-underline-offset:3px;font-style:normal;font-weight:700}
+.line .bad{color:var(--madder);font-weight:700}
+.h{font:800 11px 'Alegreya Sans';letter-spacing:.18em;text-transform:uppercase;color:var(--ink2);margin:12px 0 4px;border-bottom:1px dotted var(--ink2);padding-bottom:2px}
+.rows div{display:flex;justify-content:space-between;padding:3px 0;font-size:13.5px}.rows div span:last-child{font-family:'Courier Prime';font-weight:700}
+.rows .bad{color:var(--madder)}
+.needs div{display:grid;grid-template-columns:62px 1fr 34px;gap:8px;align-items:center;padding:3px 0;font-size:13px}
+.needs .t{height:5px;background:var(--vel3);position:relative}.needs .t i{position:absolute;left:0;top:0;bottom:0;background:var(--moss)}.needs .low i{background:var(--madder)}.needs .mid i{background:var(--brass)}
+.needs .n{font-family:'Courier Prime';font-weight:700;text-align:right}
+.dots{letter-spacing:2px;color:var(--ink)}
+.acts{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+.act{border:1.5px solid var(--ink);padding:7px 12px;font:700 13px 'Alegreya Sans';border-radius:2px}
+.act.hot{background:var(--madder);border-color:var(--madder);color:var(--vel)}
+.act small{display:block;font-weight:500;font-size:11px;color:inherit;opacity:.8}
+.foot{position:absolute;left:0;right:404px;bottom:0;height:134px;z-index:5;padding:12px 22px 0 200px}
+.foot .eyebrow{position:absolute;left:200px;top:0;font:800 10px 'Alegreya Sans';letter-spacing:.2em;text-transform:uppercase;color:var(--madder)}
+.notes{display:flex;gap:18px;margin-top:6px}
+.note{background:#f6ecd2;border:1px solid var(--vel3);box-shadow:2px 3px 0 rgba(42,33,24,.12);padding:10px 12px 10px 40px;position:relative;width:330px;font-size:13.5px;line-height:1.35}
+.note:nth-child(odd){transform:rotate(-.6deg)}.note:nth-child(even){transform:rotate(.5deg)}
+.note .wax{position:absolute;left:8px;top:10px;width:24px;height:24px;border-radius:50%;background:var(--madder);color:var(--vel);display:grid;place-items:center;box-shadow:inset 0 0 0 2px rgba(255,255,255,.25)}
+.note .wax.brass{background:var(--brass)}.note .wax .ic{width:13px;height:13px}
+.note a{display:block;color:var(--madder);font-weight:700;text-decoration:underline;text-underline-offset:2px;margin-top:3px}
+.compass{position:absolute;left:14px;bottom:8px;width:176px;height:120px;z-index:6;border:1.5px solid var(--ink);background:var(--vel2);overflow:hidden}
+.compass canvas{position:absolute;left:0;top:0}
+.compass .vp{position:absolute;border:1.5px solid var(--madder);left:16px;top:22px;width:112px;height:72px}
+.compass .n{position:absolute;right:6px;top:2px;font:700 11px Alegreya;color:var(--ink)}
+.hint{position:absolute;right:420px;bottom:8px;z-index:6;font:italic 12px Alegreya,serif;color:var(--ink2)}
+.callout{position:absolute;z-index:4;background:rgba(239,228,198,.96);border:1.5px solid var(--ink);padding:4px 8px;font:700 12px 'Alegreya Sans';color:var(--ink);box-shadow:2px 2px 0 rgba(0,0,0,.25)}
+.callout i{font-style:normal;color:var(--madder)}
+</style></head><body>
+<div class="frame"><canvas class="world" id="w" width="1516" height="868"></canvas>
+  <div class="callout" style="left:1036px;top:492px"><b>Moss</b> · 2 ore → Smithy</div>
+  <div class="callout" style="left:598px;top:742px"><b>Sawmill</b> · <i>blocked: no logs</i></div>
+</div>
+<div class="top">
+  <div class="title"><h1><span>The Commons</span></h1><p>A village of 31 cats · 12 at work · 8 studies underway · second day</p></div>
+  <div class="tally">
+    <div><b>184</b><span>Food</span><i>counted ¼ h ago</i></div>
+    <div><b>72</b><span>Water</span><i>counted ¼ h ago</i></div>
+    <div><b>96</b><span>Logs</span><i>counted ¼ h ago</i></div>
+    <div><b class="est">≈44</b><span>Stone</span><i class="est">estimate · 6 h old</i></div>
+    <div><b>320</b><span>Research</span><i class="est">exact</i></div>
+    <div><b>18</b><span>Blessings</span><i class="est">exact</i></div>
+  </div>
+  <div class="clock"><b>Day 2, half past one</b><small>hour 37.5 · running <span class="speed"><span>‖</span><span class="on">1×</span><span>4×</span><span>8×</span></span></small></div>
+</div>
+<div class="index" id="index"></div>
+<aside class="ledger">
+  <div class="eyebrow">Ledger · cat no. 17</div>
+  <div class="subject"><div class="portrait"></div><div><h2>Mallow</h2><p>Hauler · adult, 31 h · sleeps in Den 2, bed 3 of 5</p></div></div>
+  <p class="line">Carrying <u>3 logs</u> from the <u>Log pile</u> to the <u>Sawmill</u>, because <u>Hazel the Steward</u> asked. <span class="bad">Thirsty</span>, and no water is reachable; will try to rest after.</p>
+  <div class="h">Journey</div>
+  <div class="rows"><div><span>Distance</span><span>31 tiles</span></div><div><span>Arrives</span><span>in 52 s</span></div><div><span>Route</span><span>east road → plaza → south</span></div><div><span>Job</span><span>automated · Steward</span></div></div>
+  <div class="h">Needs</div>
+  <div class="needs">
+    <div><span>Hunger</span><div class="t mid"><i style="width:58%"></i></div><span class="n">58</span></div>
+    <div><span>Thirst</span><div class="t low"><i style="width:24%"></i></div><span class="n bad" style="color:var(--madder)">24</span></div>
+    <div><span>Rest</span><div class="t"><i style="width:71%"></i></div><span class="n">71</span></div>
+    <div><span>Health</span><div class="t"><i style="width:92%"></i></div><span class="n">92</span></div>
+  </div>
+  <div class="h">Skills</div>
+  <div class="rows"><div><span>Hauling</span><span class="dots">●●●○○</span></div><div><span>Forestry</span><span class="dots">●○○○○</span></div><div><span>Fighting</span><span class="dots">○○○○○</span></div></div>
+  <div class="acts"><span class="act hot">Send for water first<small>drops the logs at the plaza</small></span><span class="act">Boost Mallow<small>1 blessing</small></span><span class="act">Take the reins<small>Tab</small></span></div>
+</aside>
+<div class="foot"><div class="eyebrow">Needs attention · 4</div>
+  <div class="notes">
+    <div class="note"><span class="wax" id="w1"></span>Mallow and Hazel are thirsty and no water is reachable from the village.<a>Designate a well · send a water run to the river</a></div>
+    <div class="note"><span class="wax" id="w2"></span>The Sawmill is blocked: no logs have been delivered. Two haul jobs are waiting for a free hauler.<a>Assign a hauler · open Work</a></div>
+    <div class="note"><span class="wax brass" id="w3"></span>Two cats have no bed. Every Den is full.<a>Plan a Den — 24 logs, 8 stone</a></div>
+    <div class="note"><span class="wax brass" id="w4"></span>A fox is at the north gate. The Captain's office is vacant, so defense is yours.<a>Rally Wren</a></div>
+  </div>
+</div>
+<div class="compass"><canvas id="mini" width="176" height="120"></canvas><div class="vp"></div><div class="n">N</div></div>
+<div class="hint">WASD or right-drag to pan · wheel to zoom · click to inspect · Tab to take the reins · saved 12 s ago</div>
+<script src="icons.js"></script><script src="world.js"></script>
+<script>
+document.getElementById('index').innerHTML=NAV.map((n,i)=>`<div class="${i==0?'on':''}">${n}${n=='Cats'?'<em>3</em>':n=='Work'?'<em>1</em>':''}</div>`).join('');
+['w1','w2'].forEach(id=>document.getElementById(id).innerHTML=icon('alert'));['w3','w4'].forEach(id=>document.getElementById(id).innerHTML=icon('pin'));
+renderWorld(document.getElementById('w'),{scale:3,ox:-90,oy:-110,pathColor:'#fff0c2',selColor:'#fff0c2',destColor:'#fff0c2',needColor:'#d94a35'});
+renderWorld(document.getElementById('mini'),{scale:0.27,ox:0,oy:8,annotate:false});
+</script></body></html>

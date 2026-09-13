@@ -1,0 +1,18 @@
+<!doctype html><html><head><meta charset="utf-8"><link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=Instrument+Serif:ital@1&display=swap" rel="stylesheet"><link rel="stylesheet" href="glass.css"><title>Glass — direct control (Tab)</title>
+<style>.reins{position:absolute;left:50%;bottom:22px;transform:translateX(-50%);width:760px;padding:12px 16px;z-index:6;display:grid;grid-template-columns:52px 1fr 240px;gap:14px;align-items:center}
+.reins b.n{font-size:18px;font-weight:800;display:block}.reins .sub{color:var(--dim);font-weight:600;font-size:12px}
+.keys{display:flex;gap:12px;margin-top:8px;font-size:12px;font-weight:700}.keys b{display:inline-block;border:1px solid var(--edge);border-radius:6px;padding:1px 6px;font-size:11px;margin-right:4px;background:var(--fill)}
+.near{position:absolute;left:50%;bottom:150px;transform:translateX(-50%);z-index:6;display:flex;gap:6px}.near div{padding:6px 10px;font-weight:800;font-size:12px}.near div b{display:inline-block;border:1px solid var(--edge);border-radius:6px;padding:0 6px;font-size:11px;margin-right:6px;background:var(--fill)}.near div.far{opacity:.55}
+.prompt{position:absolute;z-index:5;padding:4px 8px;font-weight:800;font-size:12px;white-space:nowrap}.prompt b{display:inline-block;border:1px solid var(--edge);border-radius:6px;padding:0 6px;font-size:11px;margin-right:6px;background:var(--fill)}
+.bars{display:grid;grid-template-columns:auto 1fr auto;gap:3px 8px;font-size:11px;font-weight:700;color:var(--dim);align-items:center}.bars i{display:block;height:5px;background:rgba(255,255,255,.12);border-radius:3px;overflow:hidden}.bars i:after{content:"";display:block;height:100%;width:var(--w);background:var(--ok)}.bars i.low:after{background:var(--bad)}.bars i.mid:after{background:var(--sun)}
+.vig{position:absolute;inset:0;box-shadow:inset 0 0 220px rgba(0,0,0,.55);pointer-events:none;z-index:4}</style></head><body>
+<canvas id="w" width="1920" height="1080"></canvas><div class="vig"></div>
+<div class="prompt g" id="pr"><b>E</b>drink at the Barrels · 2 tiles</div>
+<div class="near"><div class="g"><b>E</b>Barrels · drink · 2 tiles</div><div class="g far"><b>E</b>Log pile · drop 3 logs · 3 tiles</div><div class="g far"><b>E</b>Shrine · offer · 9 tiles</div></div>
+<div class="reins g2"><div class="portrait"></div><div><b class="n">You hold Mallow's reins</b><div class="sub">carrying 3 logs · haul order 41 paused while you steer</div><div class="keys"><span><b>WASD</b>walk</span><span><b>E</b>interact</span><span><b>Q</b>drop cargo</span><span><b>Tab</b>hand back</span></div></div>
+<div class="bars"><span>Hunger</span><i class="mid" style="--w:58%"></i><span>58</span><span>Thirst</span><i class="low" style="--w:24%"></i><span style="color:var(--bad)">24</span><span>Rest</span><i style="--w:71%"></i><span>71</span><span>Health</span><i style="--w:92%"></i><span>92</span></div></div>
+<script src="icons.js"></script><script src="world.js"></script><script src="glass.js"></script>
+<script>
+glassChrome({tab:'Overview',dock:false,mini:false,hint:false,res:false});
+renderWorld(document.getElementById('w'),{scale:3,ox:-420,oy:-20,cols:56,annotate:true,pathColor:'rgba(0,0,0,0)',destColor:'rgba(0,0,0,0)',selColor:'#ffd166',needColor:null}).then(({px,py})=>{const p=document.getElementById('pr');p.style.left=(px(29.2))+'px';p.style.top=(py(7.4))+'px';});
+</script></body></html>

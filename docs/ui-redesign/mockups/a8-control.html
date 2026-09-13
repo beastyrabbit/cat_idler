@@ -1,0 +1,33 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Atlas — direct control (Tab)</title>
+<link href="https://fonts.googleapis.com/css2?family=Alegreya:ital,wght@0,500;0,700;1,500;1,700&family=Alegreya+Sans:wght@500;700;800&family=Courier+Prime:wght@400;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="atlas.css">
+<style>
+.frame{right:0;bottom:0;top:78px}.frame:after{content:"";position:absolute;inset:0;box-shadow:inset 0 0 220px rgba(20,10,0,.55);pointer-events:none}
+.reins{position:absolute;left:50%;bottom:26px;transform:translateX(-50%);width:820px;z-index:6;background:var(--vel);border:2px solid var(--ink);padding:12px 16px;display:grid;grid-template-columns:64px 1fr 260px;gap:16px;align-items:center;box-shadow:0 8px 0 rgba(0,0,0,.35)}
+.reins .portrait{width:64px;height:64px}
+.reins h2{margin:0;font:700 22px/1 Alegreya}.reins .sub{color:var(--ink2);font-size:12.5px;margin-top:2px}
+.reins .keys{display:flex;gap:14px;margin-top:8px;font-size:12.5px}.reins .keys b{display:inline-block;border:1.5px solid var(--ink);border-radius:3px;padding:0 6px;font:700 11px 'Alegreya Sans';margin-right:4px;min-width:22px;text-align:center}
+.reins .needs div{grid-template-columns:52px 1fr 28px;font-size:12px;padding:2px 0}
+.near{position:absolute;left:50%;bottom:150px;transform:translateX(-50%);z-index:6;display:flex;gap:8px}
+.near div{background:rgba(239,228,198,.96);border:1.5px solid var(--ink);padding:6px 10px;font:700 12.5px 'Alegreya Sans';box-shadow:2px 2px 0 rgba(0,0,0,.3)}
+.near div b{display:inline-block;border:1.5px solid var(--ink);border-radius:3px;padding:0 5px;font-size:11px;margin-right:6px}.near div.far{opacity:.6}
+.mode{position:absolute;left:22px;top:96px;z-index:6;background:var(--ink);color:var(--vel);padding:6px 12px;font:800 12px 'Alegreya Sans';letter-spacing:.14em;text-transform:uppercase}
+.mode small{display:block;font:italic 12px Alegreya;letter-spacing:0;text-transform:none;opacity:.9}
+.prompt{position:absolute;z-index:5;background:var(--ink);color:var(--vel);padding:4px 8px;font:700 12px 'Alegreya Sans';white-space:nowrap}
+.prompt b{display:inline-block;border:1.5px solid var(--vel);border-radius:3px;padding:0 5px;font-size:11px;margin-right:6px}
+.index{display:none}.ledger{display:none}.foot{display:none}.compass{display:none}.hint{display:none}
+</style></head><body>
+<div class="frame"><canvas class="world" id="w" width="1920" height="1002"></canvas><div class="prompt" id="pr"><b>E</b>drink at the Barrels · 2 tiles</div></div>
+<div class="mode">You hold Mallow's reins<small>the Steward's order is paused · Tab hands back</small></div>
+<div class="near"><div><b>E</b>Barrels · drink · 2 tiles</div><div class="far"><b>E</b>Log pile · drop 3 logs · 3 tiles</div><div class="far"><b>E</b>Shrine · offer · 9 tiles</div></div>
+<div class="reins">
+  <div class="portrait"></div>
+  <div><h2>Mallow</h2><div class="sub">Carrying 3 logs · haul order 41 paused while you steer</div>
+   <div class="keys"><span><b>W A S D</b>walk</span><span><b>E</b>interact</span><span><b>Q</b>drop cargo</span><span><b>Tab</b>hand back the reins</span></div></div>
+  <div class="needs"><div><span>Hunger</span><div class="t mid"><i style="width:58%"></i></div><span class="n">58</span></div><div><span>Thirst</span><div class="t low"><i style="width:24%"></i></div><span class="n" style="color:var(--madder)">24</span></div><div><span>Rest</span><div class="t"><i style="width:71%"></i></div><span class="n">71</span></div><div><span>Health</span><div class="t"><i style="width:92%"></i></div><span class="n">92</span></div></div>
+</div>
+<script src="icons.js"></script><script src="world.js"></script><script src="atlas.js"></script>
+<script>
+atlasChrome({tab:'Overview',ledger:'',foot:'',compass:false,hint:false,index:false});
+renderWorld(document.getElementById('w'),{scale:3,ox:-420,oy:-20,cols:56,annotate:true,pathColor:'rgba(0,0,0,0)',destColor:'rgba(0,0,0,0)',selColor:'#fff0c2',needColor:'#d94a35'}).then(({px,py})=>{const p=document.getElementById('pr');p.style.left=(px(29.2))+'px';p.style.top=(py(7.6))+'px';});
+</script></body></html>

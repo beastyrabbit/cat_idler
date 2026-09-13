@@ -1,0 +1,105 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Direction 5 — Command Deck</title>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{--deck:#1b201b;--steel:#2b352e;--steel2:#344038;--edge:#4c5c4e;--brass:#c9a24e;--ink:#e6e9df;--dim:#97a396;--bad:#e2684a;--ok:#86c56d;--info:#6fb3c8}
+*{box-sizing:border-box}body{margin:0;width:1920px;height:1080px;overflow:hidden;background:#0a120d;color:var(--ink);font:13px/1.35 Barlow,sans-serif;position:relative}
+canvas{position:absolute;left:0;top:0}
+.ic{width:1em;height:1em;display:inline-block;vertical-align:-2px}
+.cond{font-family:'Barlow Condensed',sans-serif;text-transform:uppercase;letter-spacing:.08em}
+.ticker{position:absolute;top:0;left:0;right:0;height:42px;background:linear-gradient(#232a24,#1b201b);border-bottom:2px solid var(--brass);display:flex;align-items:center;padding:0 14px;gap:20px;z-index:5}
+.ticker .name{font:700 20px 'Barlow Condensed';text-transform:uppercase;letter-spacing:.06em;color:#fff}
+.ticker .time{color:var(--dim);font-weight:600}
+.seg{display:flex;border:1px solid var(--edge);border-radius:3px;overflow:hidden}.seg span{padding:4px 10px;font:700 12px 'Barlow Condensed';letter-spacing:.06em;color:var(--dim);border-right:1px solid var(--edge)}.seg span:last-child{border:0}.seg span.on{background:var(--brass);color:#1a1608}
+.res{display:flex;gap:4px;margin-left:10px}
+.r{display:flex;align-items:center;gap:6px;padding:3px 10px;background:var(--steel);border:1px solid var(--edge);border-radius:3px}
+.r img{width:16px;height:16px;image-rendering:pixelated}.r b{font:700 16px 'Barlow Condensed';letter-spacing:.02em}.r i{font-style:normal;font-size:10px;color:var(--ok);font-weight:700}.r i.st{color:var(--brass)}
+.feed{margin-left:auto;color:var(--dim);font-weight:600;white-space:nowrap;overflow:hidden;max-width:560px;font-size:12px}
+.feed b{color:var(--brass);font-weight:700;margin-right:8px}
+.alerts{position:absolute;right:14px;top:54px;display:flex;flex-direction:column;gap:5px;z-index:5;width:400px}
+.al{background:rgba(27,32,27,.94);border:1px solid var(--edge);border-left:4px solid var(--bad);padding:7px 10px;display:flex;align-items:center;gap:10px;font-weight:600}
+.al.w{border-left-color:var(--brass)}.al.i{border-left-color:var(--info)}
+.al .k{margin-left:auto;font:700 11px 'Barlow Condensed';letter-spacing:.08em;color:var(--brass);border:1px solid var(--edge);padding:2px 6px;border-radius:2px;white-space:nowrap}
+.console{position:absolute;left:0;right:0;bottom:0;height:250px;background:linear-gradient(#2b352e,#1e2620);border-top:3px solid var(--brass);z-index:6;display:flex}
+.console:before{content:"";position:absolute;left:0;right:0;top:0;height:10px;background:repeating-linear-gradient(90deg,transparent 0 30px,rgba(0,0,0,.18) 30px 32px)}
+.cat-tabs{position:absolute;left:0;right:0;top:-34px;height:32px;display:flex;gap:2px;padding:0 10px}
+.cat-tabs div{padding:6px 14px;background:rgba(27,32,27,.92);border:1px solid var(--edge);border-bottom:0;border-radius:4px 4px 0 0;font:700 13px 'Barlow Condensed';letter-spacing:.08em;text-transform:uppercase;color:var(--dim);display:flex;gap:6px;align-items:center}
+.cat-tabs div .ic{width:15px;height:15px}.cat-tabs div.on{background:var(--brass);color:#1a1608;border-color:var(--brass)}
+.cat-tabs div em{font-style:normal;background:var(--bad);color:#fff;border-radius:8px;padding:0 5px;font-size:10px}
+.mini{width:330px;padding:16px 14px;position:relative}
+.mini .f{width:302px;height:200px;border:2px solid var(--edge);background:#0c1410;position:relative;overflow:hidden;box-shadow:inset 0 0 0 2px #1a231c}
+.mini canvas{position:absolute;left:0;top:0}.mini .vp{position:absolute;border:1.5px solid var(--brass);left:70px;top:50px;width:150px;height:96px}
+.subject{flex:1;padding:14px 18px;border-left:1px solid var(--edge);border-right:1px solid var(--edge);display:grid;grid-template-columns:110px 1fr;gap:14px}
+.portrait{width:104px;height:104px;background:#0f1612 url(../../../public/images/cats/cat-sheet.png) -22px 8px/3072px 192px no-repeat;image-rendering:pixelated;border:2px solid var(--edge)}
+.subject .who b{font:700 24px 'Barlow Condensed';letter-spacing:.04em;text-transform:uppercase;display:block;color:#fff}.subject .who small{color:var(--dim);font-weight:600}
+.needs{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:8px 0 10px}
+.n small{display:flex;justify-content:space-between;font:700 11px 'Barlow Condensed';letter-spacing:.08em;text-transform:uppercase;color:var(--dim)}.n small b{color:#fff}
+.n .t{height:8px;background:#0f1612;border:1px solid var(--edge);margin-top:3px}.n .t i{display:block;height:100%;background:var(--ok)}.n.low .t i{background:var(--bad)}.n.mid .t i{background:var(--brass)}
+.cells{display:grid;grid-template-columns:repeat(5,1fr);gap:8px}
+.cell{background:#1a221c;border:1px solid var(--edge);padding:6px 8px;min-height:64px}
+.cell em{display:block;font:700 10px 'Barlow Condensed';letter-spacing:.14em;text-transform:uppercase;color:var(--brass);font-style:normal;margin-bottom:3px}
+.cell b{font-weight:700;color:#fff}.cell span{display:block;color:var(--dim);font-size:11.5px}.cell.bad b{color:var(--bad)}
+.cmd{width:470px;padding:14px 14px 14px 16px;display:grid;grid-template-columns:repeat(4,1fr);grid-auto-rows:64px;gap:6px;align-content:start}
+.b{background:var(--steel2);border:1px solid var(--edge);border-radius:3px;padding:6px 8px;position:relative;font:700 13px 'Barlow Condensed';letter-spacing:.04em;text-transform:uppercase;display:flex;align-items:flex-end;line-height:1.05}
+.b .key{position:absolute;top:4px;left:6px;font-size:10px;color:var(--brass);letter-spacing:.1em}.b .ic{position:absolute;top:6px;right:6px;width:16px;height:16px;color:var(--dim)}
+.b.hot{background:var(--bad);color:#fff;border-color:transparent}.b.hot .key{color:#fff}.b.dis{opacity:.4}
+.cmd .grp{grid-column:1/-1;font:700 10px 'Barlow Condensed';letter-spacing:.16em;text-transform:uppercase;color:var(--dim);align-self:end;height:auto}
+.status{position:absolute;left:340px;bottom:6px;color:var(--dim);font-size:11px;font-weight:600;z-index:7}
+.tag{position:absolute;z-index:4;background:rgba(27,32,27,.92);border:1px solid var(--edge);padding:3px 7px;font:700 11px 'Barlow Condensed';letter-spacing:.06em;text-transform:uppercase}
+.tag i{font-style:normal;color:var(--bad)}
+</style></head><body>
+<canvas id="w" width="1920" height="1080"></canvas>
+<div class="ticker">
+  <span class="name">The Commons</span><span class="time">Day 2 · 13:30 · h 37.5</span>
+  <div class="seg"><span>‖</span><span class="on">1×</span><span>4×</span><span>8×</span></div>
+  <div class="res">
+    <div class="r"><img src="../../../public/images/game/icons/food.png"><b>184</b><i>✓</i></div>
+    <div class="r"><img src="../../../public/images/game/icons/water.png"><b>72</b><i>✓</i></div>
+    <div class="r"><img src="../../../public/images/game/icons/logs.png"><b>96</b><i>✓</i></div>
+    <div class="r"><img src="../../../public/images/game/icons/stone.png"><b>44</b><i class="st">6H</i></div>
+    <div class="r"><img src="../../../public/images/game/icons/refined.png"><b>320</b></div>
+    <div class="r"><img src="../../../public/images/game/icons/blessings.png"><b>18</b></div>
+  </div>
+  <div class="feed"><b>13:12</b>Bramble finished 12 planks at Woodworking · <b>12:50</b>Pip counted the Log pile: 96 · <b>12:31</b>Clover's kitten was born · <b>12:05</b>Stone dressing studied</div>
+</div>
+<div class="alerts">
+  <div class="al">Mallow, Hazel thirsty — no reachable water<span class="k">F1 · water run</span></div>
+  <div class="al w">Sawmill blocked — no logs delivered<span class="k">F2 · assign</span></div>
+  <div class="al w">2 cats without a bed<span class="k">F3 · plan den</span></div>
+  <div class="al i">Fox at north gate · Captain vacant<span class="k">F4 · rally</span></div>
+</div>
+<div class="tag" style="left:640px;top:748px">Sawmill · <i>blocked</i></div>
+<div class="console">
+  <div class="cat-tabs" id="tabs"></div>
+  <div class="mini"><div class="f"><canvas id="mini" width="302" height="200"></canvas><div class="vp"></div></div></div>
+  <div class="subject">
+    <div class="portrait"></div>
+    <div>
+      <div class="who"><b>Mallow</b><small>Hauler · adult, 31 h · Den 2 · skills: hauling 3, forestry 1 · job: automated (Steward)</small></div>
+      <div class="needs">
+        <div class="n mid"><small>Hunger <b>58</b></small><div class="t"><i style="width:58%"></i></div></div>
+        <div class="n low"><small>Thirst <b>24</b></small><div class="t"><i style="width:24%"></i></div></div>
+        <div class="n"><small>Rest <b>71</b></small><div class="t"><i style="width:71%"></i></div></div>
+        <div class="n"><small>Health <b>92</b></small><div class="t"><i style="width:92%"></i></div></div>
+      </div>
+      <div class="cells">
+        <div class="cell"><em>Doing</em><b>Carrying 3 logs</b><span>claimed from Log pile NE</span></div>
+        <div class="cell"><em>Going to</em><b>Sawmill</b><span>31 tiles · 52 s · via plaza</span></div>
+        <div class="cell"><em>Because</em><b>Haul order #41</b><span>Steward Hazel · automatic</span></div>
+        <div class="cell bad"><em>Then</em><b>Rest · thirsty</b><span>no reachable water</span></div>
+        <div class="cell"><em>Report</em><b>Log pile 96</b><span>counted ¼ h ago by Pip</span></div>
+      </div>
+    </div>
+  </div>
+  <div class="cmd">
+    <div class="b hot"><span class="key">Q</span>Water run first</div><div class="b"><span class="key">W</span>Boost</div><div class="b"><span class="key">E</span>Release job</div><div class="b"><span class="key">R</span>Preferences</div>
+    <div class="b"><span class="key">A</span>Take control</div><div class="b"><span class="key">S</span>Follow</div><div class="b"><span class="key">D</span>Send to bed</div><div class="b"><span class="key">F</span>Equip</div>
+    <div class="b dis"><span class="key">Z</span>Train warrior</div><div class="b dis"><span class="key">X</span>Appoint officer</div><div class="b"><span class="key">C</span>Go to</div><div class="b"><span class="key">V</span>Explore</div>
+  </div>
+</div>
+<div class="status">saved 12 s ago · connected · 50 ms step</div>
+<script src="icons.js"></script><script src="world.js"></script>
+<script>
+document.getElementById('tabs').innerHTML=NAV.map((n,i)=>`<div class="${i==0?'on':''}">${icon(n.toLowerCase())}${n}${n=='Cats'?'<em>3</em>':''}</div>`).join('');
+renderWorld(document.getElementById('w'),{scale:3,ox:-30,oy:-90,pathColor:'#c9a24e',selColor:'#c9a24e',destColor:'#c9a24e',needColor:'#e2684a'});
+renderWorld(document.getElementById('mini'),{scale:0.46,ox:0,oy:-30,annotate:false});
+</script></body></html>

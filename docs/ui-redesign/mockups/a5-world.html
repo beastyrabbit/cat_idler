@@ -1,0 +1,50 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Atlas — World & expedition</title>
+<link href="https://fonts.googleapis.com/css2?family=Alegreya:ital,wght@0,500;0,700;1,500;1,700&family=Alegreya+Sans:wght@500;700;800&family=Courier+Prime:wght@400;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="atlas.css">
+<style>.floors{display:flex;gap:6px;margin:6px 0}.floors div{flex:1;border:1.5px solid var(--ink2);padding:6px 8px;font-size:12px;background:var(--vel4)}.floors b{display:block;font:700 13px Alegreya}.floors .done{border-color:var(--moss);color:var(--moss)}.floors .now{border-color:var(--madder);background:#f2dcd0}.floors .dim{opacity:.55}
+.prog{height:8px;background:var(--vel3);position:relative;margin:6px 0 4px}.prog i{position:absolute;left:0;top:0;bottom:0;background:var(--madder)}.prog b{position:absolute;top:-16px;font:800 9px 'Alegreya Sans';letter-spacing:.12em;text-transform:uppercase;color:var(--ink2)}
+.cargo{display:flex;gap:5px}.cargo i{width:30px;height:30px;border:1.5px solid var(--ink2);border-radius:3px;display:grid;place-items:center;background:var(--vel4)}.cargo i img{width:20px;height:20px;image-rendering:pixelated;filter:invert(.7) sepia(.6) saturate(1.4) hue-rotate(-20deg)}.cargo i.e{border-style:dashed;opacity:.5}
+.sites{margin-top:10px}.sites tr td:first-child{width:200px}</style>
+</head><body>
+<div class="frame"><canvas class="world" id="w" width="1516" height="868"></canvas><canvas id="ov" width="1516" height="868"></canvas>
+  <div class="callout" id="c1"><b>Root Hollow</b> · entrance · <i>Ash inside, floor 2</i></div></div>
+<script src="icons.js"></script><script src="world.js"></script><script src="atlas.js"></script>
+<script>
+const spread=`<div class="hd"><h2>World</h2><p>Surface · 2 known sites · 1 expedition out · fog lifts for good only when a scout touches the shrine</p><span class="x">Esc · close</span></div>
+<div class="chips"><span class="chip on">Surface</span><span class="chip">Root Hollow · floor 1</span><span class="chip on" style="background:var(--madder);border-color:var(--madder)">Root Hollow · floor 2</span><span class="chip">Root Hollow · floor 3 · unseen</span><span class="chip">Scouts</span><span class="chip">Other villages</span></div>
+<table class="tbl sites"><thead><tr><th>Site</th><th>Where</th><th>Threat</th><th>Explored</th><th>Loot left</th><th>State</th></tr></thead><tbody>
+<tr class="sel"><td><b>Root Hollow</b><br><span class="dim">seeded dungeon · 3 floors</span></td><td>14 tiles west of the west gate</td><td>moderate · badgers</td><td>2 of 3 floors</td><td class="num">3 chests</td><td><span class="state waiting">Ash inside</span></td></tr>
+<tr><td><b>Bramblewood shaft</b><br><span class="dim">entrance seen, not entered</span></td><td>22 tiles north-east, past the river</td><td class="dim">unknown</td><td class="dim">0 of ?</td><td class="dim">?</td><td><span class="state manual">Ready cat needed</span></td></tr>
+<tr><td><b>Mosslight</b><br><span class="dim">player village</span></td><td>140 tiles south · road unbuilt</td><td>—</td><td>—</td><td>—</td><td><span class="state auto">Trade offer open</span></td></tr>
+</tbody></table>
+<div class="h" style="margin-top:16px">Who could go next</div>
+<table class="tbl"><thead><tr><th>Cat</th><th>Health</th><th>Needs</th><th>Fighting</th><th>Equipment</th><th>Ready?</th></tr></thead><tbody>
+<tr><td><b>Wren</b> · warrior</td><td class="num">100</td><td>fed, rested</td><td>●●●○○</td><td>iron sword · leather cap</td><td class="ok">ready · guarding the gate</td></tr>
+<tr><td><b>Moss</b> · smith</td><td class="num">97</td><td class="bad">hungry 41</td><td>●●○○○</td><td>none</td><td class="bad">eat first · needs a weapon</td></tr>
+<tr><td><b>Thistle</b></td><td class="num">100</td><td>fed, rested</td><td>○○○○○</td><td>none</td><td class="bad">no fighting skill · train at Barracks</td></tr>
+</tbody></table>`;
+const ledger=`<div class="eyebrow">Ledger · expedition</div>
+  <div class="subject"><div class="portrait" style="background-position:-268px 6px;filter:saturate(0) brightness(.95)"></div><div><h2>Ash</h2><p>Explorer · adult · fighting 2, scouting 3 · left at 12:10</p></div></div>
+  <p class="line">Inside <u>Root Hollow</u>, on <u>floor 2 of 3</u>, fighting a <u>badger guardian</u>. Carrying <u>2 of 6</u> loads. Health <span class="bad">82</span> and falling slowly; will retreat on her own below 50.</p>
+  <div class="h">Floors</div>
+  <div class="floors"><div class="done"><b>Floor 1</b>cleared</div><div class="now"><b>Floor 2</b>guardian</div><div class="dim"><b>Floor 3</b>unseen</div></div>
+  <div class="h">Route home · 41 tiles</div><div class="prog"><i style="width:38%"></i></div>
+  <div class="h">Cargo</div>
+  <div class="cargo"><i><img src="../../../public/images/game/icons/goods.png"></i><i><img src="../../../public/images/game/icons/metal.png"></i><i class="e"></i><i class="e"></i><i class="e"></i><i class="e"></i></div>
+  <div class="h">Readiness</div>
+  <div class="needs"><div><span>Health</span><div class="t"><i style="width:82%"></i></div><span class="n">82</span></div><div><span>Hunger</span><div class="t mid"><i style="width:50%"></i></div><span class="n">50</span></div><div><span>Thirst</span><div class="t mid"><i style="width:54%"></i></div><span class="n">54</span></div></div>
+  <div class="rows"><div><span>Unloads at</span><span>Crates · NE</span></div><div><span>Way home</span><span>stairs · gate open</span></div></div>
+  <div class="acts"><span class="act hot">Recall to village<small>retraces the route</small></span><span class="act">Follow Ash<small>camera</small></span><span class="act">Show entrance</span><span class="act">Take the reins<small>Tab</small></span></div>`;
+atlasChrome({tab:'World',ledger,spread});
+renderWorld(document.getElementById('w'),{scale:3,ox:60,oy:-110,annotate:false}).then(({P,px,py})=>{
+  const o=document.getElementById('ov').getContext('2d');
+  // entrance at tile (2.5, 8.5) and the surface route from the west gate
+  const route=[[7.5,11.5],[5.5,11.5],[5.5,9.5],[3.2,8.8]];
+  o.lineCap='round';o.lineJoin='round';o.strokeStyle='rgba(0,0,0,.45)';o.lineWidth=7;o.beginPath();route.forEach(([x,y],i)=>i?o.lineTo(px(x),py(y)):o.moveTo(px(x),py(y)));o.stroke();
+  o.strokeStyle='#fff0c2';o.lineWidth=3;o.setLineDash([10,9]);o.beginPath();route.forEach(([x,y],i)=>i?o.lineTo(px(x),py(y)):o.moveTo(px(x),py(y)));o.stroke();o.setLineDash([]);
+  o.fillStyle='#3b3b3b';o.beginPath();o.ellipse(px(2.6),py(8.6),30,18,0,0,Math.PI*2);o.fill();
+  o.fillStyle='#0b0d0c';o.beginPath();o.ellipse(px(2.6),py(8.8),20,10,0,0,Math.PI*2);o.fill();
+  o.strokeStyle='#b23f2c';o.lineWidth=3;o.beginPath();o.ellipse(px(2.6),py(8.6),40,26,0,0,Math.PI*2);o.stroke();
+  const c=document.getElementById('c1');c.style.left=(px(3.6))+'px';c.style.top=(py(7.2))+'px';
+});
+</script></body></html>

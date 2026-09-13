@@ -1,0 +1,44 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Atlas — Work</title>
+<link href="https://fonts.googleapis.com/css2?family=Alegreya:ital,wght@0,500;0,700;1,500;1,700&family=Alegreya+Sans:wght@500;700;800&family=Courier+Prime:wght@400;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="atlas.css">
+<style>.why{background:var(--vel4);border:1px solid var(--vel3);border-left:3px solid var(--madder);padding:10px 14px;margin:0;font-size:13px}
+.why b{font-family:Alegreya;font-size:15px;display:block;margin-bottom:4px}.why ol{margin:4px 0 6px 18px;padding:0}.why li{margin:2px 0}
+.why .acts{margin-top:8px}.why .act{padding:5px 10px;font-size:12px}
+.owner{display:grid;grid-template-columns:repeat(7,1fr);gap:6px;margin:8px 0 10px}.owner div{border:1px solid var(--vel3);padding:5px 7px;font-size:11.5px;background:var(--vel4)}
+.owner em{display:block;font:800 9px 'Alegreya Sans';letter-spacing:.12em;text-transform:uppercase;color:var(--ink2);font-style:normal}.owner b{display:block;font-family:Alegreya;font-size:13px}.owner .v b{color:var(--madder)}.owner .a b{color:var(--moss)}</style>
+</head><body>
+<div class="frame"><canvas class="world" id="w" width="1516" height="868"></canvas>
+  <div class="callout" style="left:196px;top:770px"><b>Sawmill</b> · <i>blocked: no logs</i></div></div>
+<script src="icons.js"></script><script src="world.js"></script><script src="atlas.js"></script>
+<script>
+const spread=`<div class="hd"><h2>Work</h2><p>10 workplaces · 12 cats at work · 1 blocked · 2 jobs waiting · hauling automated by the Steward</p><span class="x">Esc · close</span></div>
+<div class="owner">
+ <div class="a"><em>Steward</em><b>Hazel</b>hauling, piles</div><div class="a"><em>Accountant</em><b>Pip</b>counting rounds</div><div class="v"><em>Forester</em><b>vacant</b>wood is manual</div><div class="v"><em>Farmer</em><b>vacant</b>fields are manual</div><div class="v"><em>Captain</em><b>vacant</b>defense is manual</div><div class="v"><em>Loremaster</em><b>vacant</b>research manual</div><div class="v"><em>Cloth leader</em><b>vacant</b>cloth is manual</div>
+</div>
+<div class="chips"><span class="chip on">All</span><span class="chip">Blocked · waiting</span><span class="chip">Manual only</span><span class="chip">Automated</span><span class="chip">Hauling</span><span class="chip">Stations</span><span class="chip search">search workplaces…</span></div>
+<table class="tbl"><thead><tr><th>Workplace</th><th>State</th><th>Who</th><th>Recipe · queue</th><th>Why · next</th></tr></thead><tbody>
+<tr class="sel"><td><b>Sawmill</b><br><span class="dim">open station · 1 crew slot</span></td><td><span class="state blocked">Blocked</span></td><td>Bramble <span class="dim">waiting</span></td><td>Structural lumber<br><span class="dim">0 of 6 · repeat on</span></td><td class="bad">No logs at the station (0 of 4). Two haul jobs are queued; Steward has no free hauler.</td></tr>
+<tr><td colspan="5"><div class="why"><b>Why the Sawmill is blocked</b>
+ <ol><li>The recipe needs 4 logs at the station; the Sawmill's log pile holds 0 (counted 13:10).</li><li>Two haul jobs from the north-east Log pile are queued (31 tiles each way).</li><li>Steward Hazel owns hauling. All 5 haulers are busy: Mallow and Sorrel are mid-trip, Fennel is asleep, Rook is carrying grain, Hazel herself is thirsty.</li><li>Thistle is idle but has hauling turned off in preferences.</li></ol>
+ <div class="acts"><span class="act hot">Let Thistle haul</span><span class="act">Boost hauling · 1 blessing</span><span class="act">Move the Log pile nearer</span><span class="act">Pause the queue</span></div></div></td></tr>
+<tr><td><b>Hauling</b><br><span class="dim">village-wide</span></td><td><span class="state auto">Automated</span></td><td>Hazel + 5 haulers</td><td>7 orders<br><span class="dim">2 waiting</span></td><td>Steward decides; you may boost or add haulers.</td></tr>
+<tr><td><b>Wood Cutter</b><br><span class="dim">open station</span></td><td><span class="state manual">Manual</span></td><td>Sage</td><td>Fell oak · 3 of 5 logs</td><td>No Forester's Lodge yet — you choose what to fell.</td></tr>
+<tr><td><b>Smithy</b></td><td><span class="state waiting">Waiting</span></td><td>Moss <span class="dim">bringing ore</span></td><td>Iron tools · 1 of 3</td><td>Needs 2 more ore; Moss arrives in 12 s.</td></tr>
+<tr><td><b>Mill</b></td><td><span class="state manual">Manual</span></td><td>— <span class="dim">no worker</span></td><td>Flour · queue empty</td><td>Rook is bringing 6 grain; add a recipe to start.</td></tr>
+<tr><td><b>Research Hut</b></td><td><span class="state manual">Manual</span></td><td>Poppy, Yarrow</td><td>Stone dressing II · 40 %</td><td>Loremaster vacant — you pick the daily study.</td></tr>
+<tr><td><b>South field</b><br><span class="dim">farm 11 × 3</span></td><td><span class="state manual">Manual</span></td><td>Juniper</td><td>Grain · harvest in 2 h</td><td>Farmer vacant — replant after harvest.</td></tr>
+<tr><td><b>Water run</b></td><td><span class="state manual">Manual</span></td><td>Sorrel</td><td>4 water from the river</td><td class="bad">No well inside the walls; every run crosses the east gate.</td></tr>
+<tr><td><b>Log pile · NE</b></td><td><span class="state auto">Counting</span></td><td>Pip</td><td>Round 4 · 6 of 8 piles</td><td>Stone pile next, in 20 min.</td></tr>
+<tr><td><b>Barracks</b></td><td><span class="state manual">Vacant</span></td><td>—</td><td>Train warrior</td><td>Captain vacant — Wren guards by your order.</td></tr>
+</tbody></table>`;
+const ledger=`<div class="eyebrow">Ledger · workplace</div>
+  <div class="subject"><div class="portrait bld"><img src="../../../public/images/game/buildings/woodworking.png"></div><div><h2>Sawmill</h2><p>Open station · south-west block · 1 crew slot · built hour 19</p></div></div>
+  <p class="line"><u>Bramble</u> is waiting at the Sawmill for <u>logs</u> that nobody is free to carry. The queue wants <u>6 lumber</u>.</p>
+  <div class="h">Station</div>
+  <div class="rows"><div><span>Input on site</span><span class="bad">0 of 4 logs</span></div><div><span>Output goes to</span><span>Storehouse</span></div><div><span>Recipe</span><span>2 logs → 1 lumber</span></div><div><span>Queue</span><span>6 · repeat on</span></div><div><span>Crew</span><span>Bramble · woodwork 3</span></div><div><span>Last output</span><span>12:40 · 2 lumber</span></div></div>
+  <div class="h">Deliveries</div>
+  <div class="rows"><div><span>Haul job 41</span><span>Mallow · 52 s</span></div><div><span>Haul job 42</span><span class="bad">unclaimed</span></div><div><span>Haul job 43</span><span class="bad">unclaimed</span></div></div>
+  <div class="acts"><span class="act hot">Let Thistle haul<small>turns hauling on for Thistle</small></span><span class="act">Boost hauling<small>1 blessing</small></span><span class="act">Edit queue</span><span class="act">Find on map</span></div>`;
+atlasChrome({tab:'Work',ledger,spread});
+renderWorld(document.getElementById('w'),{scale:3,ox:-270,oy:-110,pathColor:'#fff0c2',selColor:'#fff0c2',destColor:'#fff0c2',needColor:'#d94a35'});
+</script></body></html>

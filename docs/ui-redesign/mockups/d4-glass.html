@@ -1,0 +1,92 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Direction 4 — Glass Clearing</title>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=Instrument+Serif:ital@1&display=swap" rel="stylesheet">
+<style>
+:root{--glass:rgba(14,24,18,.66);--edge:rgba(255,255,255,.16);--ink:#eef3ea;--dim:#a9b8a8;--sun:#ffd166;--bad:#ff6b57;--ok:#7ed37a;--info:#7cc6e6}
+*{box-sizing:border-box}body{margin:0;width:1920px;height:1080px;overflow:hidden;background:#0a120d;color:var(--ink);font:13px/1.4 Manrope,sans-serif;position:relative}
+canvas{position:absolute;left:0;top:0}
+.ic{width:1em;height:1em;display:inline-block;vertical-align:-2px}
+.g{background:var(--glass);backdrop-filter:blur(14px) saturate(1.2);border:1px solid var(--edge);border-radius:16px;box-shadow:0 10px 30px rgba(0,0,0,.35)}
+.chip{position:absolute;left:20px;top:18px;padding:10px 16px 10px 14px;display:flex;align-items:center;gap:14px;z-index:5}
+.chip h1{margin:0;font:italic 400 26px/1 'Instrument Serif',serif}.chip small{display:block;color:var(--dim);font-weight:600;font-size:11.5px;margin-top:2px}
+.seg{display:flex;background:rgba(0,0,0,.35);border-radius:10px;padding:3px;gap:2px}
+.seg span{padding:5px 10px;border-radius:8px;font-weight:800;font-size:12px;color:var(--dim)}.seg span.on{background:var(--sun);color:#1a1608}
+.res{position:absolute;right:20px;top:18px;display:flex;gap:8px;z-index:5}
+.pill{padding:8px 12px 8px 10px;display:flex;align-items:center;gap:8px;border-radius:999px}
+.pill img{width:18px;height:18px;image-rendering:pixelated}.pill b{font-weight:800;font-size:15px}.pill span{color:var(--dim);font-size:11px;font-weight:700}
+.pill i{font-style:normal;color:var(--ok);font-size:11px;font-weight:800}.pill i.stale{color:var(--sun)}.pill.stale b{color:var(--dim)}
+.toasts{position:absolute;left:50%;top:18px;transform:translateX(-50%);display:flex;flex-direction:column;gap:6px;z-index:5;width:520px}
+.toast{padding:8px 10px 8px 12px;display:flex;align-items:center;gap:10px;border-radius:12px;font-weight:700}
+.toast .dot{width:9px;height:9px;border-radius:50%;background:var(--bad);flex:none;box-shadow:0 0 10px var(--bad)}.toast .dot.w{background:var(--sun);box-shadow:0 0 10px var(--sun)}
+.toast .a{margin-left:auto;background:rgba(255,255,255,.12);border:1px solid var(--edge);border-radius:8px;padding:4px 9px;font-size:12px;white-space:nowrap}
+.toast .more{color:var(--dim);font-weight:700;text-align:center;font-size:11.5px}
+.dock{position:absolute;left:50%;bottom:20px;transform:translateX(-50%);padding:8px;display:flex;gap:6px;z-index:5;border-radius:22px}
+.dk{width:56px;height:56px;border-radius:14px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;color:var(--dim);font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;position:relative}
+.dk .ic{width:22px;height:22px}.dk.on{background:rgba(255,209,102,.18);color:var(--sun);box-shadow:inset 0 0 0 1px var(--sun)}
+.dk em{position:absolute;top:5px;right:6px;width:16px;height:16px;border-radius:50%;background:var(--bad);color:#fff;font:800 10px/16px Manrope;text-align:center;font-style:normal}
+.card{position:absolute;left:1440px;top:230px;width:340px;padding:14px;z-index:5}
+.card .hd{display:flex;gap:10px;align-items:center}
+.portrait{width:52px;height:52px;border-radius:14px;background:rgba(255,255,255,.08) url(../../../public/images/cats/cat-sheet.png) -6px 4px/2048px 128px no-repeat;image-rendering:pixelated;border:1px solid var(--edge)}
+.card .hd b{font-size:19px;font-weight:800;display:block}.card .hd small{color:var(--dim);font-weight:600}
+.card .now{margin:12px 0 10px;font-size:14px;font-weight:700;line-height:1.5}
+.card .now u{text-decoration:none;color:var(--sun)}.card .why{color:var(--dim);font-weight:600;font-size:12px}
+.rings{display:flex;gap:10px;margin:10px 0}
+.ring{width:64px;text-align:center;font-size:10px;font-weight:800;color:var(--dim);text-transform:uppercase}
+.ring div{width:50px;height:50px;border-radius:50%;margin:0 auto 4px;display:grid;place-items:center;font:800 13px Manrope;color:#fff;position:relative}
+.ring div:after{content:"";position:absolute;inset:6px;border-radius:50%;background:#15221a}
+.ring div span{position:relative;z-index:1}
+.acts{display:flex;gap:6px;flex-wrap:wrap}
+.act{border:1px solid var(--edge);background:rgba(255,255,255,.08);border-radius:10px;padding:7px 11px;font-weight:800;font-size:12px}
+.act.hot{background:var(--sun);color:#1a1608;border-color:transparent}
+.mini{position:absolute;right:20px;bottom:20px;width:230px;height:150px;overflow:hidden;z-index:5}
+.mini canvas{position:absolute;left:0;top:0}.mini .vp{position:absolute;border:1.5px solid var(--sun);left:60px;top:38px;width:120px;height:70px;border-radius:4px}
+.tag{position:absolute;z-index:4;padding:5px 9px;border-radius:9px;font-weight:800;font-size:12px}
+.tag i{font-style:normal;color:var(--bad)}
+.hint{position:absolute;left:20px;bottom:24px;color:rgba(255,255,255,.55);font-weight:700;font-size:11.5px;z-index:5}
+svg.lead{position:absolute;left:0;top:0;z-index:4;pointer-events:none}
+</style></head><body>
+<canvas id="w" width="1920" height="1080"></canvas>
+<canvas id="over" width="1920" height="1080"></canvas>
+<svg class="lead" width="1920" height="1080"><path d="M1440 300 C 1400 300, 1380 420, 1322 428" fill="none" stroke="#ffd166" stroke-width="2"/><circle cx="1322" cy="428" r="4" fill="#ffd166"/></svg>
+<div class="chip g"><div><h1>The Commons</h1><small>Day 2 · 13:30 · 31 cats, 12 at work</small></div><div class="seg"><span>‖</span><span class="on">1×</span><span>4×</span><span>8×</span></div></div>
+<div class="res">
+  <div class="pill g"><img src="../../../public/images/game/icons/food.png"><b>184</b><i>✓</i></div>
+  <div class="pill g"><img src="../../../public/images/game/icons/water.png"><b>72</b><i>✓</i></div>
+  <div class="pill g"><img src="../../../public/images/game/icons/logs.png"><b>96</b><i>✓</i></div>
+  <div class="pill g stale"><img src="../../../public/images/game/icons/stone.png"><b>44</b><i class="stale">6h</i></div>
+  <div class="pill g"><img src="../../../public/images/game/icons/refined.png"><b>320</b><span>res</span></div>
+  <div class="pill g"><img src="../../../public/images/game/icons/blessings.png"><b>18</b><span>bless</span></div>
+</div>
+<div class="toasts">
+  <div class="toast g"><span class="dot"></span>Mallow and Hazel are thirsty · no reachable water<span class="a">Send a water run</span></div>
+  <div class="toast g"><span class="dot w"></span>Sawmill blocked · no logs delivered<span class="a">Assign a hauler</span></div>
+  <div class="toast more">2 more · fox at north gate · 2 cats without beds</div>
+</div>
+<div class="card g">
+  <div class="hd"><div class="portrait"></div><div><b>Mallow</b><small>Hauler · adult · Den 2</small></div></div>
+  <div class="now">Carrying <u>3 logs</u> to the <u>Sawmill</u> · 31 tiles, 52 s<br><span class="why">because Steward Hazel ordered a haul · then rest</span></div>
+  <div class="rings">
+    <div class="ring"><div style="background:conic-gradient(#ffd166 58%,rgba(255,255,255,.12) 0)"><span>58</span></div>hunger</div>
+    <div class="ring"><div style="background:conic-gradient(#ff6b57 24%,rgba(255,255,255,.12) 0)"><span>24</span></div>thirst</div>
+    <div class="ring"><div style="background:conic-gradient(#7ed37a 71%,rgba(255,255,255,.12) 0)"><span>71</span></div>rest</div>
+    <div class="ring"><div style="background:conic-gradient(#7ed37a 92%,rgba(255,255,255,.12) 0)"><span>92</span></div>health</div>
+  </div>
+  <div class="acts"><span class="act hot">Water first</span><span class="act">Boost</span><span class="act">Control · Tab</span><span class="act">More…</span></div>
+</div>
+<div class="tag g" style="left:668px;top:790px">Sawmill · <i>blocked: no logs</i></div>
+<div class="tag g" style="left:1010px;top:560px">Moss · 2 ore → Smithy</div>
+<div class="dock g" id="dock"></div>
+<div class="mini g"><canvas id="mini" width="230" height="150"></canvas><div class="vp"></div></div>
+<div class="hint">WASD pan · wheel zoom · click to inspect · Tab to control · saved 12 s ago</div>
+<script src="icons.js"></script><script src="world.js"></script>
+<script>
+document.getElementById('dock').innerHTML=NAV.map((n,i)=>`<div class="dk ${i==0?'on':''}">${icon(n.toLowerCase())}${n}${n=='Cats'?'<em>3</em>':''}</div>`).join('');
+renderWorld(document.getElementById('w'),{scale:3,ox:-30,oy:-20,pathColor:'#ffd166',selColor:'#ffd166',destColor:'#ffd166',needColor:null}).then(({P,px,py,scene})=>{
+  const o=document.getElementById('over').getContext('2d');
+  // need rings around cats whose lowest need is below 40%
+  const rings=[['Mallow',0.24,'#ff6b57'],['Hazel',0.31,'#ff6b57'],['Moss',0.41,'#ffd166']];
+  for(const [n,v,c] of rings){const cat=scene.cats.find(k=>k.name==n);const x=px(cat.x),y=py(cat.y)-26;
+    o.lineWidth=4;o.strokeStyle='rgba(0,0,0,.45)';o.beginPath();o.arc(x,y,34,0,Math.PI*2);o.stroke();
+    o.strokeStyle=c;o.beginPath();o.arc(x,y,34,-Math.PI/2,-Math.PI/2+Math.PI*2*v);o.stroke();}
+});
+renderWorld(document.getElementById('mini'),{scale:0.36,ox:-10,oy:-20,annotate:false});
+</script></body></html>
