@@ -1,95 +1,97 @@
-#forest-ui { flex-grow: 1; color: rgb(239,235,217); font-size: 15px; }
-.top { position: absolute; top: 14px; left: 14px; right: 14px; height: 92px; flex-direction: row; align-items: center; justify-content: space-between; padding: 12px 18px; background-color: rgba(27,43,36,0.98); border-radius: 12px; border-top-width: 2px; border-top-color: rgb(181,157,98); }
+#forest-ui { flex-grow: 1; color: rgb(238,243,234); font-size: 15px; }
+
+/* Glass Clearing palette: the forest stays visible under the management chrome. */
+.top { position: absolute; top: 14px; left: 18px; right: 18px; height: 92px; flex-direction: row; align-items: center; justify-content: space-between; padding: 12px 18px; background-color: rgba(12,22,16,0.78); border-width: 1px; border-color: rgba(177,206,177,0.32); border-radius: 16px; }
 .brand { flex-shrink: 1; min-width: 130px; max-width: 290px; margin-right: 18px; }
-.eyebrow { font-size: 10px; letter-spacing: 1.5px; color: rgb(198,174,111); margin-bottom: 4px; }
-.headline { font-size: 22px; -unity-font-style: bold; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.village-summary { color: rgb(184,199,171); font-size: 12px; margin-top: 5px; white-space: nowrap; }
+.eyebrow { font-size: 10px; letter-spacing: 1.5px; color: rgb(255,209,102); margin-bottom: 4px; }
+.headline { font-size: 22px; -unity-font-style: bold; color: rgb(238,243,234); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.village-summary { color: rgb(169,184,168); font-size: 12px; margin-top: 5px; white-space: nowrap; }
 .resources { flex-direction: row; justify-content: center; flex-grow: 1; }
-.resource { padding: 0px 17px; border-left-width: 1px; border-left-color: rgb(63,81,60); }
-.resource-value { font-size: 23px; -unity-font-style: bold; color: rgb(245,232,193); }
-.resource-name { color: rgb(178,193,160); font-size: 12px; margin-top: 2px; }
+.resource { padding: 0px 17px; border-left-width: 1px; border-left-color: rgba(177,206,177,0.22); }
+.resource-value { font-size: 23px; -unity-font-style: bold; color: rgb(238,243,234); }
+.resource-name { color: rgb(169,184,168); font-size: 12px; margin-top: 2px; }
 .clock { align-items: flex-end; margin-left: 16px; }
+.clock-label { font-size: 12px; color: rgb(169,184,168); margin-bottom: 4px; }
 .clock .row > Button { min-width: 34px; min-height: 30px; padding: 4px 6px; }
-.clock-label { font-size: 12px; color: rgb(185,199,173); margin-bottom: 4px; }
-.navigation { position: absolute; left: 14px; top: 120px; bottom: 82px; width: 116px; padding: 9px 7px; border-radius: 10px; background-color: rgba(27,43,36,0.95); }
+.attention-seal { min-width: 52px; min-height: 48px; margin-left: 10px; padding: 8px 13px; font-size: 17px; color: rgb(238,243,234); background-color: rgba(10,19,14,0.90); border-width: 1px; border-color: rgba(177,206,177,0.34); border-radius: 16px; }
+.attention-seal.has-attention { color: rgb(255,107,87); border-color: rgb(255,107,87); }
+
+.navigation { position: absolute; left: 14px; top: 120px; bottom: 82px; width: 116px; padding: 9px 7px; border-radius: 16px; background-color: rgba(10,19,14,0.84); border-width: 1px; border-color: rgba(177,206,177,0.30); }
 .navigation .unity-scroll-view__content-viewport { overflow: hidden; }
 #forest-ui .unity-scroller { margin: 0px; padding: 0px; border-width: 0px; background-color: rgba(0,0,0,0); }
 #forest-ui .unity-scroller--vertical { width: 7px; min-width: 7px; max-width: 7px; margin-left: 5px; }
-#forest-ui .unity-scroller--horizontal { height: 7px; min-height: 7px; max-height: 7px; margin-top: 5px; }
 #forest-ui .unity-scroller .unity-scroller__low-button, #forest-ui .unity-scroller .unity-scroller__high-button, #forest-ui .unity-scroller RepeatButton { display: none; }
 #forest-ui .unity-scroller .unity-scroller__slider { flex-grow: 1; margin: 0px; padding: 0px; border-width: 0px; min-width: 0px; min-height: 0px; background-color: rgba(0,0,0,0); }
-#forest-ui .unity-scroller--vertical .unity-scroller__slider { width: 7px; min-width: 7px; max-width: 7px; }
-#forest-ui .unity-scroller--horizontal .unity-scroller__slider { height: 7px; min-height: 7px; max-height: 7px; }
-#forest-ui .unity-scroller .unity-base-field__input { margin: 0px; padding: 0px; border-width: 0px; min-width: 0px; min-height: 0px; background-color: rgba(0,0,0,0); }
 #forest-ui .unity-scroller .unity-base-slider__drag-container { margin: 0px; padding: 0px; border-width: 0px; background-color: rgb(21,36,27); border-radius: 4px; }
 #forest-ui .unity-scroller .unity-base-slider__tracker { border-width: 0px; background-color: rgba(0,0,0,0); background-image: none; }
 #forest-ui .unity-scroller .unity-base-slider__dragger { margin: 0px; border-width: 0px; border-radius: 4px; background-color: rgb(96,119,75); background-image: none; }
-#forest-ui .unity-scroller .unity-base-slider__dragger:hover { background-color: rgb(158,164,99); }
-#forest-ui .unity-scroller--vertical .unity-base-slider__dragger { width: 7px; min-width: 7px; max-width: 7px; left: 0px; right: 0px; }
-#forest-ui .unity-scroller--horizontal .unity-base-slider__dragger { height: 7px; min-height: 7px; max-height: 7px; top: 0px; bottom: 0px; }
-#forest-ui .unity-scroller .unity-base-slider__dragger-border { display: none; }
-.nav-group { color: rgb(163,184,142); font-size: 10px; letter-spacing: 1px; margin: 9px 8px 4px 8px; }
-.navigation-button { padding: 7px 4px 7px 10px; margin: 1px 0px; min-height: 33px; font-size: 14px; border-width: 0px; border-left-width: 3px; border-left-color: rgba(0,0,0,0); background-color: rgba(0,0,0,0); -unity-text-align: middle-left; border-radius: 3px; white-space: nowrap; }
-.navigation-button.active { color: rgb(255,241,201); background-color: rgb(67,88,57); border-left-color: rgb(218,184,106); -unity-font-style: bold; }
-Button { flex-shrink: 0; min-height: 35px; padding: 7px 12px; margin: 4px 0px; color: rgb(239,234,212); background-color: rgb(52,76,50); border-width: 1px; border-color: rgb(90,115,70); border-radius: 6px; font-size: 14px; white-space: normal; }
-Button:hover { background-color: rgb(72,96,58); border-color: rgb(203,178,105); }
-Button:active, Button.active { background-color: rgb(114,104,61); border-color: rgb(216,186,111); color: rgb(255,248,221); }
-Button:focus { border-color: rgb(236,208,132); }
+.nav-group { color: rgb(255,209,102); font-size: 10px; letter-spacing: 1px; margin: 9px 8px 4px 8px; }
+.navigation-button { padding: 7px 4px 7px 10px; margin: 1px 0px; min-height: 33px; font-size: 14px; border-width: 0px; border-left-width: 3px; border-left-color: rgba(0,0,0,0); background-color: rgba(22,39,27,0.62); -unity-text-align: middle-left; border-radius: 10px; white-space: nowrap; }
+.navigation-button.active { color: rgb(238,243,234); background-color: rgba(63,86,58,0.86); border-left-color: rgb(255,209,102); -unity-font-style: bold; }
+
+Button { flex-shrink: 0; min-height: 35px; padding: 7px 12px; margin: 4px 0px; color: rgb(238,243,234); background-color: rgba(35,58,39,0.90); border-width: 1px; border-color: rgba(177,206,177,0.28); border-radius: 10px; font-size: 14px; white-space: normal; }
+Button:hover { background-color: rgba(63,86,58,0.95); border-color: rgb(255,209,102); }
+Button:active, Button.active { background-color: rgba(255,209,102,0.34); border-color: rgb(255,209,102); color: rgb(238,243,234); }
+Button:focus { border-color: rgb(255,209,102); }
 Button:disabled { opacity: 0.5; }
-Button.primary { background-color: rgb(120,94,47); border-color: rgb(186,151,82); color: rgb(255,243,209); -unity-font-style: bold; }
-Button.quiet { background-color: rgba(0,0,0,0); border-color: rgb(70,89,61); }
+Button.primary { background-color: rgba(92,79,39,0.92); border-color: rgb(255,209,102); color: rgb(255,244,207); -unity-font-style: bold; }
+Button.quiet { background-color: rgba(0,0,0,0); border-color: rgba(177,206,177,0.28); }
 .row { flex-direction: row; flex-wrap: wrap; align-items: center; }
 .row > Button { margin-right: 6px; }
-.drawer { position: absolute; top: 120px; left: 140px; bottom: 82px; width: 420px; padding: 15px 17px 10px 17px; border-radius: 12px; background-color: rgba(29,45,37,0.985); border-width: 1px; border-color: rgb(90,109,71); }
+
+.drawer { position: absolute; top: 120px; left: 140px; bottom: 82px; width: 420px; padding: 15px 17px 10px 17px; border-radius: 16px; background-color: rgba(12,22,16,0.90); border-width: 1px; border-color: rgba(177,206,177,0.32); }
 .drawer.wide { width: auto; right: 14px; }
-.drawer-heading { flex-shrink: 0; justify-content: space-between; padding-bottom: 11px; border-bottom-width: 1px; border-bottom-color: rgb(76,94,65); }
+.drawer-heading { flex-shrink: 0; justify-content: space-between; padding-bottom: 11px; border-bottom-width: 1px; border-bottom-color: rgba(177,206,177,0.20); }
 .drawer-title-group { flex-grow: 1; flex-shrink: 1; }
-.title { font-size: 24px; -unity-font-style: bold; color: rgb(243,229,190); white-space: normal; }
-.drawer-subtitle { color: rgb(178,194,160); font-size: 12px; white-space: normal; margin-top: 4px; }
+.title { font-size: 24px; -unity-font-style: bold; color: rgb(238,243,234); white-space: normal; }
+.drawer-subtitle { color: rgb(169,184,168); font-size: 12px; white-space: normal; margin-top: 4px; }
 .drawer-heading Button { min-height: 30px; font-size: 12px; padding: 5px 8px; }
 .drawer-scroll { flex-grow: 1; margin-top: 8px; }
 .drawer-scroll > .unity-scroll-view__content-viewport { padding-right: 10px; }
-.body { white-space: normal; margin-top: 6px; margin-bottom: 8px; }
-.subtitle { font-size: 17px; -unity-font-style: bold; white-space: normal; margin-top: 10px; margin-bottom: 7px; color: rgb(232,219,179); }
-.muted { color: rgb(172,192,158); white-space: normal; font-size: 13px; margin: 4px 0px; }
-.warning { color: rgb(246,185,125); white-space: normal; margin: 7px 0px; padding-left: 9px; border-left-width: 2px; border-left-color: rgb(204,146,83); }
-.card { padding: 9px 2px 13px 2px; margin-bottom: 4px; border-bottom-width: 1px; border-bottom-color: rgb(65,86,59); }
+.body { white-space: normal; margin-top: 6px; margin-bottom: 8px; color: rgb(238,243,234); }
+.subtitle { font-size: 17px; -unity-font-style: bold; white-space: normal; margin-top: 10px; margin-bottom: 7px; color: rgb(255,209,102); }
+.muted { color: rgb(169,184,168); white-space: normal; font-size: 13px; margin: 4px 0px; }
+.warning { color: rgb(255,107,87); white-space: normal; margin: 7px 0px; padding-left: 9px; border-left-width: 2px; border-left-color: rgb(255,107,87); }
+.card { padding: 9px 10px 13px 10px; margin-bottom: 7px; border-width: 1px; border-color: rgba(177,206,177,0.23); border-radius: 12px; background-color: rgba(22,39,27,0.74); }
 .card > .subtitle { margin-top: 2px; }
 .card-heading { justify-content: space-between; }
 .card-heading > .subtitle { flex-grow: 1; flex-shrink: 1; }
 .card-heading > Button { margin-left: 8px; }
-.work-position { padding: 10px 12px; margin: 9px 0px; border-radius: 7px; background-color: rgb(34,54,40); border-left-width: 3px; border-left-color: rgb(131,152,87); }
-.work-position > .subtitle { margin-top: 1px; }
-.queue-entry { padding: 9px 0px; border-top-width: 1px; border-top-color: rgb(68,88,60); }
+.research-cards { flex-direction: row; flex-wrap: wrap; }
+.research-card { width: 290px; min-height: 245px; padding: 15px; margin: 7px; border-radius: 12px; border-width: 1px; border-color: rgba(177,206,177,0.28); background-color: rgba(22,39,27,0.82); }
+.research-card.complete { border-color: rgb(126,211,122); background-color: rgba(31,58,36,0.84); }
+.research-card.locked { background-color: rgba(10,19,14,0.80); }
+.research-card > Button { margin-top: 8px; }
+.separator { height: 1px; background-color: rgba(177,206,177,0.20); margin: 17px 0px 11px 0px; }
+.stock-row { padding: 7px 1px; border-bottom-width: 1px; border-bottom-color: rgba(177,206,177,0.16); }
+.work-position { padding: 10px 12px; margin: 9px 0px; border-radius: 12px; background-color: rgba(22,39,27,0.74); border-left-width: 3px; border-left-color: rgb(126,211,122); }
+.queue-entry { padding: 9px 0px; border-top-width: 1px; border-top-color: rgba(177,206,177,0.18); }
 .queue-entry > .subtitle { font-size: 15px; margin-top: 2px; }
 .queue-entry .row > Button { min-height: 31px; padding: 5px 9px; font-size: 12px; }
 .need-grid { flex-direction: row; flex-wrap: wrap; margin: 6px -3px; }
 .need-grid > .unity-progress-bar { width: 47%; margin: 4px; }
 .labor-grid { flex-direction: row; flex-wrap: wrap; }
 .labor-grid > Toggle { width: 47%; }
-.research-cards { flex-direction: row; flex-wrap: wrap; }
-.research-card { width: 290px; min-height: 245px; padding: 15px; margin: 7px; border-radius: 9px; border-width: 1px; border-color: rgb(80,104,68); background-color: rgb(35,55,40); }
-.research-card.complete { border-color: rgb(122,152,86); background-color: rgb(44,66,43); }
-.research-card.locked { background-color: rgb(32,44,37); }
-.research-card > Button { margin-top: 8px; }
-.separator { height: 1px; background-color: rgb(76,93,64); margin: 17px 0px 11px 0px; }
-.stock-row { padding: 7px 1px; border-bottom-width: 1px; border-bottom-color: rgb(53,76,52); }
-.bottom { position: absolute; bottom: 14px; left: 14px; right: 14px; min-height: 52px; padding: 9px 13px; border-radius: 9px; background-color: rgba(24,39,32,0.95); flex-direction: row; align-items: center; }
+
+.tethered-inspector { position: absolute; width: 292px; min-height: 112px; padding: 13px; background-color: rgba(10,19,14,0.92); border-width: 1px; border-color: rgb(255,209,102); border-radius: 14px; }
+.tethered-inspector > Button { align-self: flex-start; }
+.bottom { position: absolute; bottom: 14px; left: 14px; right: 14px; min-height: 52px; padding: 9px 13px; border-radius: 14px; background-color: rgba(10,19,14,0.88); border-width: 1px; border-color: rgba(177,206,177,0.28); flex-direction: row; align-items: center; }
 .bottom-copy { flex-grow: 1; flex-shrink: 1; }
-.hint { color: rgb(224,213,180); font-size: 12px; white-space: normal; }
-.feedback { color: rgb(249,201,127); font-size: 14px; white-space: normal; margin-top: 4px; -unity-font-style: bold; }
-.feedback.failure { color: rgb(246,165,130); }
-.status { color: rgb(158,183,146); font-size: 11px; margin-top: 4px; white-space: normal; }
+.hint { color: rgb(238,243,234); font-size: 12px; white-space: normal; }
+.feedback { color: rgb(255,209,102); font-size: 14px; white-space: normal; margin-top: 4px; -unity-font-style: bold; }
+.feedback.failure { color: rgb(255,107,87); }
+.status { color: rgb(169,184,168); font-size: 11px; margin-top: 4px; white-space: normal; }
 .view-controls { flex-direction: row; flex-shrink: 0; margin-left: 12px; }
 .view-controls > Button { min-width: 33px; min-height: 33px; padding: 4px 8px; margin-left: 5px; font-size: 14px; }
-.unity-base-field { margin: 8px 0px; min-height: 32px; color: rgb(230,225,202); }
-.unity-base-field__label { min-width: 100px; max-width: 135px; white-space: normal; }
-.unity-base-field__input { background-color: rgb(19,35,27); color: rgb(244,232,196); border-width: 1px; border-color: rgb(84,106,65); padding: 6px; border-radius: 4px; font-size: 14px; }
+.unity-base-field { margin: 8px 0px; min-height: 32px; color: rgb(238,243,234); }
+.unity-base-field__label { min-width: 100px; max-width: 135px; white-space: normal; color: rgb(169,184,168); }
+.unity-base-field__input { background-color: rgba(10,19,14,0.90); color: rgb(238,243,234); border-width: 1px; border-color: rgba(177,206,177,0.28); padding: 6px; border-radius: 8px; font-size: 14px; }
 .unity-toggle__input { border-width: 0px; background-color: rgba(0,0,0,0); }
 .unity-progress-bar { margin: 6px 0px; height: 27px; }
-.unity-progress-bar__background { background-color: rgb(17,31,23); border-radius: 4px; }
-.unity-progress-bar__progress { background-color: rgb(96,130,66); border-radius: 4px; }
-.unity-progress-bar__title { color: rgb(251,243,218); font-size: 12px; -unity-font-style: bold; }
+.unity-progress-bar__background { background-color: rgba(10,19,14,0.90); border-radius: 8px; }
+.unity-progress-bar__progress { background-color: rgb(126,211,122); border-radius: 8px; }
+.unity-progress-bar__title { color: rgb(238,243,234); font-size: 12px; -unity-font-style: bold; }
+
 .compact .top { padding: 10px 12px; height: 84px; }
 .compact .brand { margin-right: 6px; max-width: 205px; }
 .compact .headline { font-size: 19px; }
@@ -133,3 +135,7 @@ Button.quiet { background-color: rgba(0,0,0,0); border-color: rgb(70,89,61); }
 .narrow.has-feedback .hint { display: none; }
 .narrow.has-feedback .feedback { font-size: 12px; }
 .narrow.has-feedback .navigation, .narrow.has-feedback .drawer { bottom: 92px; }
+
+/* Direct-control mode gives the cat the foreground and reduces management chrome. */
+.direct-control .top, .direct-control .navigation, .direct-control .drawer, .direct-control .tethered-inspector { display: none; }
+.direct-control .bottom { left: 25%; right: 25%; background-color: rgba(10,19,14,0.94); border-color: rgb(255,209,102); }

@@ -53,6 +53,9 @@ namespace IdleCatForest.Presentation
         private VisualElement root, drawer, content, navigation;
         private ScrollView scroll;
         private Label headline, villageSummary, clockLabel, status, hint, feedback, drawerTitle, drawerSubtitle;
+        private Button attentionSeal;
+        private VisualElement tetheredInspector;
+        private Label tetheredInspectorTitle, tetheredInspectorBody;
         private Button backButton;
         private readonly Dictionary<string, Label> resourceLabels = new Dictionary<string, Label>();
         private readonly Dictionary<string, Button> navigationButtons = new Dictionary<string, Button>();
@@ -107,6 +110,7 @@ namespace IdleCatForest.Presentation
                 float selected = speed;
                 speedButtons[speed] = Button(speeds, speed == 0 ? "Ⅱ" : speed + "×", () => Game.SetSpeed(selected), speed == 0 ? "Pause local world" : "Local simulation speed");
             }
+            attentionSeal = Button(top, "✓", () => { if (OpenSection == "Events") ClosePanel(); else OpenPanel("Events"); }, "Open attention"); attentionSeal.AddToClassList("attention-seal");
             var nav = new ScrollView(ScrollViewMode.Vertical); nav.AddToClassList("navigation"); nav.AddToClassList("interactive"); root.Add(nav);
             navigation = nav;
             nav.horizontalScrollerVisibility = ScrollerVisibility.Hidden;
@@ -120,7 +124,11 @@ namespace IdleCatForest.Presentation
                 var button = Button(nav, name, () => { if (OpenSection == name) ClosePanel(); else OpenPanel(name); }, SectionSummary(name));
                 button.AddToClassList("navigation-button"); navigationButtons[name] = button;
             }
-            drawer = Element(root, "drawer interactive"); drawer.style.display = DisplayStyle.None;
+            drawer = Element(root, "drawer glass-panel interactive"); drawer.style.display = DisplayStyle.None;
+            tetheredInspector = Element(root, "tethered-inspector glass-panel interactive"); tetheredInspector.style.display = DisplayStyle.None;
+            tetheredInspectorTitle = Label(tetheredInspector, "", "title");
+            tetheredInspectorBody = Label(tetheredInspector, "", "body");
+            Button(tetheredInspector, "Inspect", () => OpenPanel("Inspect"));
             var heading = Element(drawer, "drawer-heading row");
             var titleGroup = Element(heading, "drawer-title-group"); drawerTitle = Label(titleGroup, "", "title"); drawerSubtitle = Label(titleGroup, "", "drawer-subtitle");
             backButton = Button(heading, "Back", () => OpenPanel(inspectOrigin)); backButton.AddToClassList("quiet");
@@ -138,6 +146,8 @@ namespace IdleCatForest.Presentation
 
         private void Update()
         {
+            root.EnableInClassList("direct-control", Game.View != null && Game.View.DirectControl);
+            if (Village != null) UpdateTetheredInspector();
             if (OpenSection != "" && Village?.Id == renderedVillageId)
                 foreach (var update in liveUpdates) update();
             if (Time.unscaledTime < nextRefresh) return; nextRefresh = Time.unscaledTime + .5f;
@@ -153,10 +163,42 @@ namespace IdleCatForest.Presentation
             status.text = Game.Status;
             feedback.text = HumanReason(Game.LastAction); feedback.style.display = Game.LastAction.Length == 0 ? DisplayStyle.None : DisplayStyle.Flex;
             feedback.EnableInClassList("failure", actionFailed);
+            var attention = Village.Raids.Count + Village.Jobs.Count(j => !j.Completed && j.BlockedReason != "");
+            attentionSeal.text = attention > 0 ? "⚠ " + Math.Min(99, attention) : "✓";
+            attentionSeal.EnableInClassList("has-attention", attention > 0);
             root.EnableInClassList("has-feedback", Game.LastAction.Length > 0);
             hint.text = HasPlacement ? placementLabel + " · Esc cancels" : Game.View.DirectControl ? "Controlling " + Game.View.ControlledCat.Name + " · WASD walk · right drag look · E interact · Tab return" : "WASD / right drag pan · wheel / + − zoom · click to inspect · Tab controls cat";
             if ((OpenSection == "Inspect" || OpenSection == "Cats" || OpenSection == "Stores" || OpenSection == "Events") && !TextInputFocused && Mouse.current?.leftButton.isPressed != true)
             { var offset = scroll.scrollOffset; RenderPanel(); scroll.scrollOffset = offset; }
+        }
+
+        private void UpdateTetheredInspector()
+        {
+            if (root.panel == null || Game.View.Camera == null) return;
+            var cat = Game.View.SelectedCat;
+            var building = Game.View.SelectedBuilding;
+            if (cat == null && building == null) { tetheredInspector.style.display = DisplayStyle.None; return; }
+            Vector3 world;
+            if (cat != null)
+                world = new Vector3((float)cat.X, (float)Game.CurrentWorld.WalkHeight(cat.Position) + .7f, (float)cat.Z);
+            else
+                world = new Vector3(building.Position.X + building.Width * .5f, (float)Game.CurrentWorld.WalkHeight(building.Position) + .7f, building.Position.Z + building.Depth * .5f);
+            var screen = Game.View.Camera.WorldToScreenPoint(world);
+            if (screen.z <= 0) { tetheredInspector.style.display = DisplayStyle.None; return; }
+            var panelPoint = RuntimePanelUtils.ScreenToPanel(root.panel, new Vector2(screen.x, Screen.height - screen.y));
+            tetheredInspector.style.left = Mathf.Clamp(panelPoint.x + 18, 20, Mathf.Max(20, Screen.width - 340));
+            tetheredInspector.style.top = Mathf.Clamp(panelPoint.y - 78, 120, Mathf.Max(120, Screen.height - 190));
+            tetheredInspector.style.display = DisplayStyle.Flex;
+            if (cat != null)
+            {
+                tetheredInspectorTitle.text = cat.Name;
+                tetheredInspectorBody.text = "Doing " + Pretty(cat.Goal) + (cat.BlockedReason == "" ? "" : "\nBecause " + HumanReason(cat.BlockedReason));
+            }
+            else
+            {
+                tetheredInspectorTitle.text = Pretty(building.Kind);
+                tetheredInspectorBody.text = (building.WorkerId == "" ? "Waiting for a worker" : "Working") + (building.BlockedReason == "" ? "" : "\nBecause " + HumanReason(building.BlockedReason));
+            }
         }
 
         private string Reported(string resource, bool compact = false)

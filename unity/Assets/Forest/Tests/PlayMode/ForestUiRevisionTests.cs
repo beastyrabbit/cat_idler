@@ -45,6 +45,14 @@ namespace IdleCatForest.Tests
             Assert.That(panel.referenceDpi, Is.InRange(96f, 120f));
         }
 
+        [Test]
+        public void GlassClearingChromeProvidesAttentionSealAndSubjectInspector()
+        {
+            Assert.That(Root.Q<Button>(className: "attention-seal"), Is.Not.Null);
+            Assert.That(Root.Q<VisualElement>(className: "tethered-inspector"), Is.Not.Null);
+            Assert.That(Root.Q<VisualElement>(className: "top").resolvedStyle.backgroundColor.a, Is.LessThan(1f));
+        }
+
         [UnityTest]
         public IEnumerator WorldFocusReservesOnlyTheVisibleSidebarAndDrawer()
         {
