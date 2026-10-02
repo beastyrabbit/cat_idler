@@ -1,10 +1,9 @@
 
-
 namespace IdleCatForest.Simulation
 {
     public partial class World
     {
-        private ActionResult HandleExploreDungeon(Village village, GameAction action, Cat cat) => ExploreDungeon(village, cat, action.TargetId);
+        private ActionResult HandleExploreDungeon(Village village, GameAction action, Cat cat) => ExploreDungeon(village, cat, action.TargetId, action.AcceptDeadly);
         private ActionResult HandleRecallExplorer(Village village, Cat cat) => RecallExplorer(village, cat);
         private ActionResult HandleAttackCreature(PlayerContext context, Village village, GameAction action, Cat cat)
         {
