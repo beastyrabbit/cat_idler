@@ -63,9 +63,8 @@ namespace IdleCatForest.Presentation
         PrimaryDrag,
         PrimaryDragEnd,
         /// <summary>
-        /// The primary button went down over the world this frame. Today's world selection and
-        /// placement react on the press, so W1 binds them here; a later owner may move them to
-        /// <see cref="PrimaryClick"/>.
+        /// The primary button went down over the world this frame. Since W2-18 world selection and
+        /// placement react on <see cref="PrimaryClick"/> (release without a drag), so a left drag can pan.
         /// </summary>
         PrimaryPress,
     }
