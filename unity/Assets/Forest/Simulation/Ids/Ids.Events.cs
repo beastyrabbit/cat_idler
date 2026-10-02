@@ -43,5 +43,44 @@ namespace IdleCatForest.Simulation
         public const string Death = "death";
         public const string ExpeditionLoot = "expedition_loot";
         public const string Error = "error";
+
+        // Added in W2-08.
+        /// <summary>A save-time or post-fault invariant repair (trimmed claims, unassigned double work, freed beds).</summary>
+        public const string Repaired = "repaired";
+    }
+
+    /// <summary>
+    /// How loudly an event should be surfaced. Saved in event logs: never rename a value.
+    /// Info events are routine (job completions, scout notes) and live in <c>Village.RoutineEvents</c>,
+    /// so they never evict notable or alert events from <c>Village.Events</c>.
+    /// </summary>
+    public static class EventSeverity
+    {
+        public const string Info = "info";
+        public const string Notable = "notable";
+        public const string Alert = "alert";
+
+        /// <summary>The default severity of a kind when its caller gives none (also used for logs saved before severities).</summary>
+        public static string ForKind(string kind)
+        {
+            switch (kind)
+            {
+                case EventKind.Completed:
+                case EventKind.Discovery:
+                case EventKind.Repaired:
+                    return Info;
+                case EventKind.Raid:
+                case EventKind.RaidWarning:
+                case EventKind.RaidBreach:
+                case EventKind.RaidLoss:
+                case EventKind.Death:
+                case EventKind.RecoveryBlocked:
+                case EventKind.StorageEmpty:
+                case EventKind.Error:
+                    return Alert;
+                default:
+                    return Notable;
+            }
+        }
     }
 }

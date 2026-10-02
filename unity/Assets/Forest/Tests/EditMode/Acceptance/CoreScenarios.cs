@@ -44,6 +44,256 @@ namespace IdleCatForest.Acceptance
                 string kind = mover;
                 yield return new Scenario("regression.continuous_" + kind, () => ContinuousMover(kind));
             }
+            // W2-08: event metadata, fault isolation, validation split and non-inserting route searches.
+            yield return new Scenario("core.event_metadata_from_entities", EventMetadata);
+            yield return new Scenario("core.routine_events_never_evict_notable", RoutineEventsNeverEvict);
+            yield return new Scenario("core.legacy_log_evicts_routine_first", LegacyLogEvictsRoutineFirst);
+            yield return new Scenario("core.milestone_helpers", MilestoneHelpers);
+            yield return new Scenario("core.fault_in_village_cancels_job_and_keeps_stepping", FaultInVillage);
+            yield return new Scenario("core.fault_without_actor_logs_and_keeps_stepping", FaultWithoutActor);
+            yield return new Scenario("core.validate_split_and_repair", ValidateSplitAndRepair);
+            yield return new Scenario("core.path_search_inserts_no_tiles", PathSearchInsertsNoTiles);
+            yield return new Scenario("core.path_search_matches_inserted_terrain", PathSearchMatchesInsertedTerrain);
+            yield return new Scenario("core.path_search_sees_new_claims", PathSearchSeesNewClaims);
+        }
+
+        // ---- W2-08 ------------------------------------------------------------------------------
+
+        /// <summary>Calls World's private Note(village, kind, text, entityId) the way the simulation does.</summary>
+        static void NoteVia(World w, Village v, string kind, string text, string id = "")
+        {
+            var note = typeof(World).GetMethods(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).Single(m => m.Name == "Note" && m.GetParameters().Length == 4);
+            note.Invoke(w, new object[] { v, kind, text, id });
+        }
+        static void EventMetadata()
+        {
+            var w = ContinuousFixture(out var v, out var c, true);
+            var job = v.Jobs.Single();
+            job.Position = new Int2(4, 2);
+            var den = v.Buildings.First(b => b.Kind == "den");
+            NoteVia(w, v, EventKind.Death, c.Name + " died from needs", c.Id);
+            var death = v.Events.Last();
+            Check(death.Kind == EventKind.Death && death.Severity == EventSeverity.Alert && death.Seq > 0, "A death was not an alert with a sequence number");
+            Check(death.Position.HasValue && death.Position.Value.Equals(c.Position) && death.ActorName == c.Name, "A cat event did not carry the cat's position and name");
+            NoteVia(w, v, EventKind.Completed, c.Name + " completed hunt", job.Id);
+            Check(v.Events.Last() == death, "A job completion entered the notable log");
+            var completed = v.RoutineEvents.Last();
+            Check(completed.Severity == EventSeverity.Info && completed.ActorName == c.Name && completed.Position.Value.Equals(job.Position), "A completion did not carry the worker and the job position");
+            Check(completed.Args != null && completed.Args["job"] == JobKind.Hunt, "A completion did not name its job kind");
+            NoteVia(w, v, EventKind.Upgrade, "den reached level 2", den.Id);
+            var upgrade = v.Events.Last();
+            Check(upgrade.Severity == EventSeverity.Notable && upgrade.Position.Value.Equals(den.Position) && upgrade.ActorName == "", "A building event did not carry the building position");
+            NoteVia(w, v, EventKind.Expansion, "Settlement grew", "");
+            Check(!v.Events.Last().Position.HasValue && v.Events.Last().Args == null, "An event without an entity invented a position or arguments");
+            var since = w.EventsSince(v, death.Seq);
+            Check(since.Select(e => e.Kind).SequenceEqual(new[] { EventKind.Completed, EventKind.Upgrade, EventKind.Expansion }), "EventsSince did not merge both logs in sequence order: " + string.Join(",", since.Select(e => e.Kind)));
+            Check(w.EventsSince(v, 0).Count == v.Events.Count + v.RoutineEvents.Count, "EventsSince(0) did not return the whole log");
+            var legacy = new Event { Kind = EventKind.Raid, Text = "old raid" };
+            Check(legacy.EffectiveSeverity() == EventSeverity.Alert && new Event { Kind = EventKind.Completed }.EffectiveSeverity() == EventSeverity.Info, "Events saved without a severity did not fall back to their kind's");
+            Valid(w);
+        }
+        static void RoutineEventsNeverEvict()
+        {
+            var w = Fixture(out var v, out var c);
+            NoteVia(w, v, "raid", "Raiders approach the south gate");
+            for (int i = 0; i < 150; i++)
+                NoteVia(w, v, "completed", c.Name + " completed hunt " + i);
+            Check(v.Events.Count(e => e.Kind == "raid") == 1, "Routine completions evicted the raid warning");
+            Check(v.Events.All(e => e.Kind != "completed"), "Routine completions entered the notable log");
+            Check(v.RoutineEvents.Count == World.RoutineEventCap && v.RoutineEvents.Last().Text.EndsWith(" 149", StringComparison.Ordinal) && v.RoutineEvents.First().Text.EndsWith(" 50", StringComparison.Ordinal), "The routine ring did not keep the newest entries");
+            for (int i = 0; i < 120; i++)
+                NoteVia(w, v, "migration", "Wanderer " + i);
+            Check(v.Events.Count == World.NotableEventCap && v.Events.Last().Text == "Wanderer 119", "The notable log lost its cap or its newest entry");
+        }
+        static void LegacyLogEvictsRoutineFirst()
+        {
+            var w = Fixture(out var v, out var c);
+            // A log saved before the split: no severities, completions mixed with a raid.
+            v.Events.Clear();
+            v.Events.Add(new Event { Kind = EventKind.Raid, Text = "old raid", Seq = 1 });
+            for (int i = 0; i < 99; i++)
+                v.Events.Add(new Event { Kind = EventKind.Completed, Text = "old completion " + i, Seq = 2 + i });
+            w.NextEventSeq = 101;
+            NoteVia(w, v, EventKind.Migration, "A wanderer approaches");
+            NoteVia(w, v, EventKind.Birth, "A kitten was born");
+            Check(v.Events.Count == World.NotableEventCap && v.Events[0].Text == "old raid", "A legacy raid was evicted before legacy completions");
+            Check(v.Events.Count(e => e.Kind == EventKind.Completed) == 97 && v.Events.First(e => e.Kind == EventKind.Completed).Text == "old completion 2", "Legacy completions were not evicted oldest first");
+        }
+        static void MilestoneHelpers()
+        {
+            var w = Fixture(out var v, out var c);
+            var den = v.Buildings.First(b => b.Kind == "den");
+            var pile = v.Stockpiles[0];
+            var built = w.NoteBuildingCompleted(v, den);
+            Check(built.Kind == EventKind.BuildingCompleted && built.Severity == EventSeverity.Notable && built.Args["building"] == "den" && built.Position.Value.Equals(den.Position) && v.Events.Last() == built, "Building completion milestone is wrong");
+            var found = w.NoteResourceDiscovered(v, c, "stone", new Int2(9, 9));
+            Check(found.Kind == EventKind.Discovery && found.Severity == EventSeverity.Notable && v.Events.Last() == found && found.Position.Value.Equals(new Int2(9, 9)) && found.ActorName == c.Name && found.Args["resource"] == "stone", "A discovery milestone was not notable with its own position");
+            var full = w.NoteStorageFull(v, pile, "food");
+            Check(full != null && full.Kind == EventKind.StorageFull && full.Position.Value.Equals(pile.Position) && full.Args["resource"] == "food", "Storage-full milestone is wrong");
+            Check(w.NoteStorageFull(v, pile, "food") == null && w.NoteStorageFull(v, pile, "water") != null, "Storage-full notices were not throttled per resource");
+            var empty = w.NoteStorageEmpty(v, "water");
+            Check(empty.Kind == EventKind.StorageEmpty && empty.Severity == EventSeverity.Alert && w.NoteStorageEmpty(v, "water") == null, "Storage-empty notice is not a throttled alert");
+            w.Step(World.StorageNoticeSeconds);
+            Check(w.NoteStorageEmpty(v, "water") != null, "Storage-empty notice never repeated after its throttle");
+            var rank = w.NoteRankUp(v, c, "hunting", 2);
+            Check(rank.Kind == EventKind.RankUp && rank.Args["skill"] == "hunting" && rank.Args["rank"] == "2" && rank.ActorName == c.Name, "Rank-up milestone is wrong");
+            var raid = new Raid { Id = w.Id("helper-raid"), Position = new Int2(0, 5) };
+            v.Raids.Add(raid);
+            var repelled = w.NoteRaidRepelled(v, raid);
+            Check(repelled.Kind == EventKind.RaidRepelled && repelled.Severity == EventSeverity.Notable && repelled.Position.Value.Equals(raid.Position), "Raid-repelled milestone is wrong");
+            var loot = w.NoteExpeditionLoot(v, c, new[] { new Stack("food", 3), new Stack("bone", 1.5) });
+            Check(loot.Kind == EventKind.ExpeditionLoot && loot.Args["food"] == "3" && loot.Args["bone"] == "1.5" && loot.Text.Contains("1.5 bone"), "Expedition loot milestone is wrong: " + loot.Text);
+            Check(v.RoutineEvents.Count == 0, "A milestone entered the routine log");
+        }
+        /// <summary>A water job whose saved local cargo is corrupt: completing it throws inside the village tick.</summary>
+        static Job PoisonJob(World w, Village v, Cat c)
+        {
+            var job = new Job { Id = w.Id("poison-work"), Kind = "water", Resource = "water", Amount = 5, Phase = "working", CatId = c.Id, Position = c.Position, RequiredWork = 0.01 };
+            job.Local.Add(new Stack("water", -100));
+            v.Jobs.Add(job);
+            c.JobId = job.Id;
+            c.BuildingId = "";
+            c.ControlledBy = "";
+            w.Reservations.Add(new Reservation { OwnerId = job.Id, VillageId = v.Id, PileId = v.Stockpiles[0].Id, Resource = "food", Amount = 3 });
+            return job;
+        }
+        static void FaultInVillage()
+        {
+            var w = Fixture(out var home, out var c);
+            var personal = w.Village(Act(w, home, new GameAction { Kind = "FoundVillage", Name = "Fault neighbour" }).EntityId);
+            Check(w.Villages.IndexOf(personal) > w.Villages.IndexOf(home), "Fault fixture must tick the faulting village first");
+            var job = PoisonJob(w, home, c);
+            var other = home.Cats.First(cat => cat != c);
+            var neighbour = personal.Cats.First(cat => cat.Alive);
+            double neighbourHunger = neighbour.Hunger, start = w.TimeSeconds;
+            w.Step(World.SimulationStepSeconds);
+            Near(w.TimeSeconds - start, World.SimulationStepSeconds, "A village fault stopped the clock");
+            Check(neighbour.Hunger < neighbourHunger, "A fault in one village stopped the next village's tick");
+            Check(job.Completed && job.CatId == "" && c.JobId == "" && !w.Reservations.Any(r => r.OwnerId == job.Id), "The faulting job was not cancelled with its claims released");
+            var error = home.Events.Last();
+            Check(error.Kind == EventKind.Error && error.Severity == EventSeverity.Alert && error.EntityId == c.Id && error.Args["cancelled"] == "true" && error.Args["phase"] == "village", "The fault was not logged as an alert on the cat");
+            Check(w.IsolatedFaults().Count == 1 && w.IsolatedFaults()[0].Contains("Negative water"), "The fault was not recorded for diagnostics");
+            double otherHunger = other.Hunger;
+            w.Step(5);
+            Check(other.Hunger < otherHunger && w.IsolatedFaults().Count == 1, "The faulting village did not resume cleanly");
+            Check(home.Events.Count(e => e.Kind == EventKind.Error) == 1, "A single fault logged more than one error");
+            Valid(w);
+        }
+        static void FaultWithoutActor()
+        {
+            var w = Fixture(out var v, out var c);
+            // An unloading caravan with no requested-goods record throws in the trade phase, where no cat is acting.
+            w.TradeOffers.Add(new TradeOffer { Id = w.Id("broken-caravan"), Status = "unloading", X = 3, Z = 2, FromVillageId = v.Id, ToVillageId = v.Id, Offered = new Stack("logs", 1), Requested = null });
+            double hunger = v.Cats[1].Hunger;
+            for (int i = 0; i < 3; i++)
+                w.Step(1);
+            Near(w.TimeSeconds, 3, "A trade fault stopped the clock");
+            Check(v.Cats[1].Hunger < hunger, "A trade fault stopped the villages");
+            Check(w.IsolatedFaults().Count > 0 && w.IsolatedFaults().All(f => f.Contains("trades")), "The trade fault was not isolated in its phase");
+            var errors = v.Events.Where(e => e.Kind == EventKind.Error).ToList();
+            Check(errors.Count == 1 && errors[0].EntityId == "" && errors[0].Args["phase"] == "trades", "A repeating fault without an actor was not logged once");
+        }
+        static void ValidateSplitAndRepair()
+        {
+            var w = Fixture(out var v, out var c);
+            var pile = v.Stockpiles[0];
+            var owner = new Job { Id = w.Id("claim-owner"), Kind = "haul", Phase = "fetch", Position = pile.Position };
+            v.Jobs.Add(owner);
+            w.Reservations.Add(new Reservation { OwnerId = owner.Id, VillageId = v.Id, PileId = pile.Id, Resource = "food", Amount = 600 });
+            w.Reservations.Add(new Reservation { OwnerId = owner.Id, VillageId = v.Id, PileId = pile.Id, Resource = "food", Amount = 600 });
+            var den = v.Buildings.First(b => b.Kind == "den" && b.Completed);
+            int capacity = w.DenCapacity(v);
+            var crowd = v.Cats.Where(cat => cat.Alive).Take(capacity + 2).ToList();
+            foreach (var cat in crowd)
+                cat.BedId = den.Id;
+            var kept = new Job { Id = w.Id("kept-work"), Kind = "hunt", CatId = c.Id, Position = c.Position };
+            var extra = new Job { Id = w.Id("extra-work"), Kind = "logs", CatId = c.Id, Position = c.Position };
+            v.Jobs.Add(extra);
+            v.Jobs.Add(kept);
+            c.JobId = kept.Id;
+            var repairable = w.ValidateRepairable();
+            Check(repairable.Contains("Overclaimed " + pile.Id) && repairable.Contains("Overbooked bed " + den.Id) && repairable.Contains("Double work owner " + c.Id), "Repairable breaches were not reported: " + string.Join("; ", repairable));
+            Check(w.ValidateFatal().Count == 0 && w.Validate().Count == repairable.Count, "Validate is not the union of fatal and repairable breaches");
+            var repaired = w.RepairInvariants();
+            Check(repaired.Count == 3 && w.ValidateRepairable().Count == 0 && w.Validate().Count == 0, "Repair left breaches: " + string.Join("; ", w.Validate()));
+            Near(w.Reservations.Where(r => r.PileId == pile.Id && r.Resource == "food").Sum(r => r.Amount), 1000, "Over-claims were not trimmed to the stock");
+            Check(crowd.Count(cat => cat.BedId == den.Id) == capacity && crowd.Take(capacity).All(cat => cat.BedId == den.Id), "The den did not keep its first sleepers");
+            Check(c.JobId == kept.Id && kept.CatId == c.Id && extra.CatId == "" && !extra.Completed && extra.BlockedReason == Blocked.WorkerRequired, "The double owner did not keep its current job and release the other");
+            Check(v.RoutineEvents.Count(e => e.Kind == EventKind.Repaired) == 3 && v.Events.All(e => e.Kind != EventKind.Repaired), "Repairs were not logged as routine events");
+            Check(new[] { "overclaimed", "overbooked_bed", "double_work_owner" }.All(r => v.RoutineEvents.Any(e => e.Args["repair"] == r)), "A repair event did not name its repair");
+            w.TimeSeconds = double.NaN;
+            v.Cats.Add(new Cat { Id = c.Id, VillageId = v.Id, Name = "Twin" });
+            var fatal = w.ValidateFatal();
+            Check(fatal.Contains("Invalid clock") && fatal.Contains("Duplicate entity identity") && w.ValidateRepairable().Count == 0, "Fatal breaches were not reported as fatal: " + string.Join("; ", fatal));
+            Check(w.RepairInvariants().Count == 0 && w.ValidateFatal().Count == fatal.Count, "Repair touched a fatal breach");
+        }
+        static Int2 FarTarget(World w, Village v, int distance)
+        {
+            // A passable generated tile walled in on every side: the search explores until its budget ends.
+            for (int x = distance; x < distance + 40; x++)
+            {
+                var p = new Int2(v.Center.X + x, v.Center.Z);
+                var t = w.GenerateSurfaceTile(p);
+                if (!t.Water && !t.Mountain)
+                    return p;
+            }
+            throw new InvalidOperationException("No dry target tile in the fixture row");
+        }
+        static void PathSearchInsertsNoTiles()
+        {
+            var w = Fixture(out var v, out var c);
+            var target = FarTarget(w, v, 30);
+            var cage = new[] { new Int2(target.X + 1, target.Z), new Int2(target.X - 1, target.Z), new Int2(target.X, target.Z + 1), new Int2(target.X, target.Z - 1) };
+            foreach (var p in cage)
+                w.TileAt(p).Wall = true;
+            int tiles = w.Tiles.Count;
+            uint random = w.RandomState;
+            Check(w.Path(v.Center, target, v) == null && w.Path(c.Position, target) == null, "The caged target was reachable");
+            Check(w.Tiles.Count == tiles && w.GetTile(target) == null, "A failed route search inserted " + (w.Tiles.Count - tiles) + " tiles");
+            Check(w.RandomState == random, "A route search consumed entropy");
+            Check(w.Walkable(target) && w.GetTile(target) != null && w.Tiles.Count == tiles + 1, "Walkable no longer explores the tile a mover steps on");
+        }
+        static void PathSearchMatchesInsertedTerrain()
+        {
+            var lazy = Fixture(out var a, out var ca);
+            var eager = Fixture(out var b, out var cb);
+            var target = FarTarget(lazy, a, 18);
+            for (int x = -6; x <= target.X + 6; x++)
+                for (int z = -12; z <= 12; z++)
+                    eager.TileAt(new Int2(x, z));
+            var routeLazy = lazy.Path(a.Center, target, a);
+            var routeEager = eager.Path(b.Center, target, b);
+            Check(routeLazy != null && routeEager != null, "Fixture target is unreachable");
+            Check(routeLazy.SequenceEqual(routeEager), "A search over generated tiles chose a different route than over inserted ones");
+            Check(lazy.GetTile(target) == null, "A successful route search inserted its target");
+        }
+        static void PathSearchSeesNewClaims()
+        {
+            var w = Fixture(out var v, out var c);
+            Int2? blocked = null, beside = null;
+            // Beyond the founding plateau (radius + 6 plus a 20-tile shoulder), where water and rock survive.
+            for (int x = v.Radius + 27; x < v.Radius + 160 && blocked == null; x++)
+                for (int z = -40; z <= 40 && blocked == null; z++)
+                {
+                    var p = new Int2(v.Center.X + x, v.Center.Z + z);
+                    var q = new Int2(p.X - 1, p.Z);
+                    var tp = w.GenerateSurfaceTile(p);
+                    var tq = w.GenerateSurfaceTile(q);
+                    bool pBlocked = tp.Mountain || tp.Water && tp.WaterDepth > .45;
+                    bool qOpen = !tq.Mountain && !(tq.Water && tq.WaterDepth > .45);
+                    if (pBlocked && qOpen && w.GetTile(p) == null && w.GetTile(q) == null)
+                    {
+                        blocked = p;
+                        beside = q;
+                    }
+                }
+            Check(blocked.HasValue, "No blocked generated tile near the fixture");
+            Check(w.Path(beside.Value, blocked.Value) == null, "A blocked generated tile was passable");
+            int tiles = w.Tiles.Count;
+            v.Radius = Math.Max(Math.Abs(blocked.Value.X - v.Center.X), Math.Abs(blocked.Value.Z - v.Center.Z)) + 1;
+            var route = w.Path(beside.Value, blocked.Value);
+            Check(route != null && route.Count == 1 && route[0].Equals(blocked.Value), "A route search read stale generated terrain after a claim changed");
+            Check(w.Tiles.Count == tiles, "The claimed search inserted tiles");
         }
         static void ContinuousNpc()
         {

@@ -6,26 +6,42 @@ namespace IdleCatForest.Simulation
 {
     public partial class World
     {
-        public bool Walkable(Int2 p)
-        {
-            var t = TileAt(p);
-            return !t.Wall && !t.Mountain && (!t.Water || t.Bridge || GenerationVersion > 0 && t.WaterDepth > 0 && t.WaterDepth <= .45);
-        }
+        /// <summary>Whether a mover may stand on <paramref name="p"/>. Inserts the tile (a mover about to step there explores it).</summary>
+        public bool Walkable(Int2 p) => WalkableTile(TileAt(p));
         public List<Int2> Path(Int2 start, Int2 end) => Path(start, end, null);
-        public bool Walkable(Village village, Int2 p)
+        /// <summary>Whether a cat of <paramref name="village"/> may stand on <paramref name="p"/>. Inserts the tile like <see cref="Walkable(Int2)"/>.</summary>
+        public bool Walkable(Village village, Int2 p) => WalkableTile(village, p, TileAt(p));
+        private bool WalkableTile(Tile t) => !t.Wall && !t.Mountain && (!t.Water || t.Bridge || GenerationVersion > 0 && t.WaterDepth > 0 && t.WaterDepth <= .45);
+        private bool WalkableTile(Village village, Int2 p, Tile t)
         {
-            var t = TileAt(p);
             if (t.Landform == "dungeon_opening")
                 return false;
             if (t.Wall || t.Water && !t.Bridge && !(GenerationVersion > 0 && t.WaterDepth > 0 && t.WaterDepth <= .45) || t.Mountain && (p.Level != 0 || !Catalog.Owns(village, "unlock_capability", "mountain_travel")))
                 return false;
             return !village.Stockpiles.Any(s => s.Kind == "zone_avoid" && Contains(s.Position, s.Width, s.Depth, p));
         }
+        /// <summary>
+        /// A 4-connected route from <paramref name="start"/> to <paramref name="end"/>, or null. The search
+        /// reads saved tiles and cached generated ones and never inserts a tile, so a failed search toward an
+        /// unreachable target leaves the saved world unchanged.
+        /// </summary>
         public List<Int2> Path(Int2 start, Int2 end, Village village)
         {
             pathSearchCount++;
-            TileAt(start);
-            bool Passable(Int2 p) => village == null ? Walkable(p) : Walkable(village, p);
+            RefreshGeneratedTiles();
+            generatedTilesChecked = true;
+            try
+            {
+                return Search(start, end, village);
+            }
+            finally
+            {
+                generatedTilesChecked = false;
+            }
+        }
+        private List<Int2> Search(Int2 start, Int2 end, Village village)
+        {
+            bool Passable(Int2 p) => village == null ? WalkableTile(ReadTile(p)) : WalkableTile(village, p, ReadTile(p));
             if (start.Equals(end))
                 return new List<Int2>();
             if (!Passable(end))
@@ -82,7 +98,10 @@ namespace IdleCatForest.Simulation
         }
         private bool Move(Cat c, Int2 destination, double dt)
         {
+            faultActor = c;
             var village = Village(c.VillageId);
+            // The tile a cat stands on is explored: route searches no longer insert their start.
+            TileAt(c.Position);
             if (!c.HasHeight)
             {
                 c.Y = WalkHeight(c.Position);
@@ -190,12 +209,23 @@ namespace IdleCatForest.Simulation
             ClearPathFailure(c);
             return c.Position.Equals(destination);
         }
+        /// <summary>
+        /// <see cref="WalkHeight"/> for route checks: an unexplored tile reads as what TileAt would insert
+        /// (a route search no longer inserts the tiles it compares) instead of the presentation's 0.
+        /// </summary>
+        private double RouteHeight(Int2 p)
+        {
+            if (p.Level < 0)
+                return DungeonHeight(p);
+            var tile = ReadTile(p);
+            return tile.Bridge && tile.Water ? tile.WaterSurface + 0.08 : tile.Elevation;
+        }
         public bool Crossable(Int2 a, Int2 b) => Crossable(a, b, null, 0);
         private bool Crossable(Int2 a, Int2 b, Village expanding, int expansionRadius)
         {
             if (a.Level != b.Level)
                 return DungeonEdge(a, b);
-            if (GenerationVersion > 0 && Math.Abs(WalkHeight(a) - WalkHeight(b)) > .65)
+            if (GenerationVersion > 0 && Math.Abs(RouteHeight(a) - RouteHeight(b)) > .65)
                 return false;
             foreach (var v in Villages)
             {
