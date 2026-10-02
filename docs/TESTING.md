@@ -34,15 +34,19 @@ or contact a paid AI provider.
 
 ## Unity and native player
 
-Close this project's Editor before batch tests or a build:
+Close this project's Editor before batch tests or a build. Unity batch commands
+need a held Unity slot (and `FOREST_INTEGRATOR=1` on the main checkout):
 
 ```sh
+bash tools/forest.sh unity-slot acquire <id>
 bash tools/forest.sh edit-test
 bash tools/forest.sh play-test
 bash tools/forest.sh build
+bash tools/forest.sh unity-slot release <id>
 ```
 
-Reports are written to ignored `artifacts/tests`. Inspect the NUnit counts,
+Reports are written to ignored `$FOREST_ARTIFACTS/tests/$FOREST_RUN_ID/`
+(`editmode.xml`, `editmode.log`, `playmode.xml`). Inspect the NUnit counts,
 failures and Editor/runtime logs. A successful CLI envelope or process launch is
 not proof of a passed suite.
 

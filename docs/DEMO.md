@@ -115,7 +115,7 @@ tag and the path of the wave report under `artifacts/demo/`.
 
 | Wave | Purpose | Packages | Status | Tag | Report |
 |---|---|---|---|---|---|
-| W0 | Guardrails: compile gate, worktrees, Unity slots, captures, CI, demo brief, seams | 5 (1 integration) | In progress | `demo-w0` | `artifacts/demo/wave-0/report.md` |
+| W0 | Guardrails: compile gate, worktrees, Unity slots, captures, CI, demo brief, seams | 5 (1 integration) | Done (2026-10-02; 4 of 4 merged) | `demo-w0` | `artifacts/demo/wave-0/report.md` |
 | W1 | Behaviour-neutral splits and every frozen contract | 9 (1 integration) | Not started | `demo-w1` | `artifacts/demo/wave-1/report.md` |
 | W2 | Core rebuild in parallel; staged integration A, B, C | 29 (3 integration) | Not started | `demo-w2a`, `demo-w2b`, `demo-w2` | `artifacts/demo/wave-2/report.md` |
 | W3 | Features: milestones, shell, settings, demo boundary, build mode, drawers, direct control, animation, art hookup, FX, markers, audio, art | 22 (1 integration) | Not started | `demo-w3` | `artifacts/demo/wave-3/report.md` |
@@ -274,8 +274,11 @@ reconcile into `ForestView.Terrain.cs` (`TerrainTick()`, called from `Reconcile`
 
 `Pres/Capture/CaptureDriver.cs` (W0-01) drives the player for `forest.sh capture` through
 public members only: `ForestGame.Instance`, `ForestGame.SetSpeed`, `ForestGame.Act`,
-`ForestGame.CurrentWorld`, `ForestGame.UI`, `ForestView.FocusVillage`, `ForestView.ZoomBy`,
+`ForestGame.CurrentWorld` (including `World.TimeSeconds`), `ForestGame.Selected` (the selected village),
+`ForestGame.UI`, `ForestView.FocusVillage`, `ForestView.ZoomBy`,
 `ForestView.InspectCat`, `ForestView.InspectBuilding`, `ForestView.ViewLevel`,
-`ForestUI.OpenPanel(string)`, `ForestUI.ClosePanel()`, `ForestUI.OpenSection` (read-only property). These signatures are frozen until W5-03 owns
+`ForestUI.OpenPanel(string)`, `ForestUI.ClosePanel()`, `ForestUI.OpenSection` (read-only property), and the
+model fields `Cat.Id`, `Cat.Name`, `Cat.Alive`, `Cat.JobId`, `Building.Id`, `Building.Kind`. The driver finds the
+view with `GetComponent<ForestView>()` on the `ForestGame` object. These signatures are frozen until W5-03 owns
 the capture folder. `--forest-save <path>` must keep opening that world directly (no title
 screen) for tooling, also after W3-04.

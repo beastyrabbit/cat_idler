@@ -20,7 +20,7 @@ dotnet tools/scenarios/bin/Debug/net10.0/Forest.Scenarios.dll --filter=catalog.
 dotnet tools/scenarios/bin/Debug/net10.0/Forest.Scenarios.dll --filter=building_effect.
 dotnet tools/scenarios/bin/Debug/net10.0/Forest.Scenarios.dll --filter=service_effect.
 dotnet tools/scenarios/bin/Debug/net10.0/Forest.Scenarios.dll --filter=resource_effect.
-dotnet tools/scenarios/bin/Debug/net10.0/Forest.Scenarios.dll --exclude-campaigns
+dotnet run --project tools/scenarios -c Release -- --jobs=0
 dotnet tools/scenarios/bin/Debug/net10.0/Forest.Scenarios.dll --filter=campaign.fresh_48h_seed_7
 ```
 

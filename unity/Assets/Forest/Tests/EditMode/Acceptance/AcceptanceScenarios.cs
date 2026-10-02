@@ -18,6 +18,7 @@ namespace IdleCatForest.Acceptance
             foreach (var scenario in DungeonScenarios.Cases()) yield return scenario;
             foreach (var scenario in SpatialScenarios.Cases()) yield return scenario;
             foreach (var scenario in WorldGenerationScenarios.Cases()) yield return scenario;
+            foreach (var scenario in SeamScenarios.Cases()) yield return scenario;
             yield return new Scenario("regression.continuous_storage_input_retry", () => ContinuousInputStorage(false));
             yield return new Scenario("regression.continuous_storage_input_immediate_alternate", () => ContinuousInputStorage(true));
             yield return new Scenario("regression.continuous_storage_removed_scalar_destination", () => ContinuousRemovedStorage(false));

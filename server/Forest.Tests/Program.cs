@@ -74,6 +74,14 @@ Test("versioned save roundtrip preserves exact cargo and fails closed on corrupt
     }
     finally { Directory.Delete(directory, true); }
 });
+Test("pacing profile is saved and derived pace never is", () =>
+{
+    var world = World.Create(4242); var json = WireJson.Encode(world); var root = JObject.Parse(json);
+    Check(root.Value<string>("PacingProfile") == "classic" && root.Property("Pace") == null, "pacing profile save shape");
+    root.Remove("PacingProfile");
+    Check(WireJson.Decode<World>(root.ToString(Newtonsoft.Json.Formatting.None)).CurrentPacing() == Pacing.Classic, "old save not classic");
+    world.PacingProfile = "demo"; Check(WireJson.Clone(world).CurrentPacing() == Pacing.Demo, "demo profile lost on reload");
+});
 Test("legacy native bearer import is private and never rewrites its source", () =>
 {
     var directory = Path.Combine(Path.GetTempPath(), "forest-bearer-test-" + Guid.NewGuid().ToString("N"));

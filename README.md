@@ -24,9 +24,15 @@ bash tools/forest.sh open
 To build the native application, close this project's Editor first:
 
 ```sh
+bash tools/forest.sh unity-slot acquire <id>
 bash tools/forest.sh build
-open 'artifacts/macos/Idle Cat Forest.app'
+open "<player path printed by build>"
+bash tools/forest.sh unity-slot release <id>
 ```
+
+`build` writes the player to `$FOREST_ARTIFACTS/macos/<worktree>/<run id>/Idle Cat Forest.app`
+and prints that path. Unity batch commands need a held slot; see the
+[development guide](docs/unity/DEVELOPMENT.md).
 
 The project pins Unity Pipeline **0.6.0-exp.1** and its package graph. The native
 build uses ARM64 IL2CPP. Browser and other native exports are not verified targets.
@@ -53,7 +59,7 @@ Existing saves keep their buildings, cats and progress. To try the revised found
 layout without replacing a played world, launch with a separate, unused save path:
 
 ```sh
-open -n 'artifacts/macos/Idle Cat Forest.app' --args --forest-save "$PWD/artifacts/playtest/world.json" --forest-seed 41
+open -n "<player path printed by build>" --args --forest-save "$PWD/artifacts/playtest/world.json" --forest-seed 41
 ```
 
 Reusing that path resumes its world. A seed applies only when creating a new save.
@@ -83,9 +89,12 @@ files intact. Import writes a new destination.
 ```sh
 dotnet build IdleCatForest.slnx --no-restore
 bash tools/forest.sh server-test
-dotnet run --project tools/scenarios/Forest.Scenarios.csproj
+dotnet run --project tools/scenarios -c Release -- --jobs=0
+bash tools/forest.sh check
+bash tools/forest.sh unity-slot acquire <id>   # Unity batch commands need a held slot
 bash tools/forest.sh edit-test
 bash tools/forest.sh play-test
+bash tools/forest.sh unity-slot release <id>
 ```
 
 Close this project's Editor before batch Unity tests. The

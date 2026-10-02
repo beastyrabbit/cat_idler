@@ -174,7 +174,7 @@ bash tools/forest.sh build
 forest_perf_dir="$(mktemp -d /tmp/forest-native-performance.XXXXXX)"
 dotnet tools/presentation-fixture/bin/Debug/net10.0/Forest.PresentationFixture.dll "$forest_perf_dir/founding30.json" 30
 dotnet tools/presentation-fixture/bin/Debug/net10.0/Forest.PresentationFixture.dll "$forest_perf_dir/expanded150.json" 150
-open -n 'artifacts/macos/Idle Cat Forest.app' --args --forest-save "$forest_perf_dir/founding30.json" --forest-evidence "$forest_perf_dir/30" -screen-fullscreen 0 -screen-width 2400 -screen-height 1500
+open -n "<player path printed by bash tools/forest.sh build>" --args --forest-save "$forest_perf_dir/founding30.json" --forest-evidence "$forest_perf_dir/30" -screen-fullscreen 0 -screen-width 2400 -screen-height 1500
 ```
 
 Leave the player at 1× in the default management view without interaction or
@@ -187,7 +187,7 @@ or F10, or starting any recording. Quit this synthetic 30-cat player before
 launching the expanded fixture:
 
 ```sh
-open -n 'artifacts/macos/Idle Cat Forest.app' --args --forest-save "$forest_perf_dir/expanded150.json" --forest-evidence "$forest_perf_dir/150" -screen-fullscreen 0 -screen-width 2400 -screen-height 1500
+open -n "<player path printed by bash tools/forest.sh build>" --args --forest-save "$forest_perf_dir/expanded150.json" --forest-evidence "$forest_perf_dir/150" -screen-fullscreen 0 -screen-width 2400 -screen-height 1500
 ```
 
 Observe `$forest_perf_dir/150/performance.json` at 3,600 frame samples, approximately
