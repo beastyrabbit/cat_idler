@@ -1,119 +1,180 @@
 using System.Collections.Generic;
 using System.Linq;
-using System.Text.RegularExpressions;
 using IdleCatForest.Simulation;
 
 namespace IdleCatForest.Presentation
 {
     /// <summary>What kind of identifier <see cref="UiText.Name"/> turns into player text.</summary>
-    public enum NameKind { Other, Building, Resource, Recipe, Study, Labor, Role, Job, Phase, Goal, Biome, Upgrade, Item, Pile, Village, Cat }
+    public enum NameKind
+    {
+        Other, Building, Resource, Recipe, Study, Labor, Role, Job, Phase, Goal, Biome, Upgrade, Item, Pile, Village, Cat,
+        Category, Material, Creature, Crop, Family, Capability, Stat,
+    }
 
     /// <summary>
-    /// Every player-facing string goes through here. Pure C# without UnityEngine so it can be tested
-    /// outside Unity. The Wave 1 stubs return exactly the strings the UI showed before the split;
-    /// W2-15 replaces them with the authored copy.
+    /// Every player-facing string goes through here. Pure C# without UnityEngine so it is tested outside
+    /// Unity (<c>dotnet test tools/presentation-tests</c>). The tables and templates live in
+    /// <c>UI/Text/</c>: <see cref="Names"/>, <see cref="Numbers"/>, <see cref="GameClock"/>,
+    /// <see cref="NowLines"/>, <see cref="Reasons"/>, <see cref="Confirmations"/>, <see cref="Effects"/> and
+    /// <see cref="EventLines"/>. Numbers always use the invariant culture; no output carries an id, a
+    /// coordinate or snake_case.
     /// </summary>
     public static class UiText
     {
+        /// <summary>
+        /// The readable form of any id: catalog names first (buildings, recipes, resources, labors, roles,
+        /// blessings, biomes, goals), otherwise the id in words with entity numbers dropped.
+        /// </summary>
         public static string Pretty(string name)
         {
-            if (string.IsNullOrEmpty(name)) return "";
-            return Regex.Replace(name.Replace('_', ' '), "(?<=[a-z])(?=[A-Z])", " ");
+            if (string.IsNullOrEmpty(name))
+                return "";
+            foreach (var kind in PrettyOrder)
+                if (Names.IsAuthored(kind, name))
+                    return Names.Of(kind, name);
+            if (NowLines.IsAuthoredGoal(name))
+                return NowLines.GoalText(name);
+            return Names.Humanize(name);
         }
 
-        public static string Name(NameKind kind, string id)
+        private static readonly NameKind[] PrettyOrder =
         {
-            if (kind == NameKind.Study)
-                return Catalog.Research.Find(study => study.Id == id)?.Name ?? id;
-            return Pretty(id);
+            NameKind.Building, NameKind.Recipe, NameKind.Resource, NameKind.Labor, NameKind.Role, NameKind.Upgrade,
+            NameKind.Phase, NameKind.Biome, NameKind.Category, NameKind.Creature, NameKind.Material,
+        };
+
+        /// <summary>The display name of an id of a known kind; never the id itself.</summary>
+        public static string Name(NameKind kind, string id) => Names.Of(kind, id);
+
+        /// <summary>A building in a village, numbered among its kind: "Den 3".</summary>
+        public static string Name(Village village, Building building) => Names.Building(village, building);
+
+        /// <summary>A stockpile by what it belongs to: "Food Store", "Log pile", "Stockpile 2".</summary>
+        public static string Name(Village village, Stockpile pile) => Names.Pile(village, pile);
+
+        /// <summary>A number with at most <paramref name="decimals"/> decimals, invariant culture, grouped.</summary>
+        public static string Num(double v, int decimals = 0) => Numbers.Num(v, decimals);
+
+        /// <summary>A whole number, invariant culture, grouped: "19,995".</summary>
+        public static string Whole(double v) => Numbers.Whole(v);
+
+        /// <summary>"Day 1 · 06:00" from the world time and the pacing day scale.</summary>
+        public static string Clock(double timeSeconds, double dayScale) => GameClock.Clock(timeSeconds, dayScale);
+
+        /// <summary>"06:00".</summary>
+        public static string TimeOfDay(double timeSeconds, double dayScale) => GameClock.TimeOfDay(timeSeconds, dayScale);
+
+        /// <summary>A duration such as the age of a count: "40 s", "12 min", "6 h".</summary>
+        public static string Age(double seconds) => GameClock.Duration(seconds);
+
+        /// <summary>"12 min ago", "just now".</summary>
+        public static string Ago(double seconds) => GameClock.Ago(seconds);
+
+        /// <summary>"1 study", "2 studies".</summary>
+        public static string Plural(int n, string one, string many) => Numbers.Plural(n, one, many);
+
+        /// <summary>"3 logs", "1 log", "5 food".</summary>
+        public static string Amount(double amount, string resource) => Names.Amount(amount, resource);
+
+        /// <summary>"10 %" from 0.1.</summary>
+        public static string Percent(double fraction) => Numbers.Percent(fraction);
+
+        /// <summary>What the cat is doing now: "Bringing water to the Food Store · 9 tiles".</summary>
+        public static string NowLine(World w, Village v, Cat c) => NowLines.NowLine(w, v, c);
+
+        /// <summary>"Because there is no path", "Because Steward Hazel ordered a haul", or "".</summary>
+        public static string CauseLine(World w, Village v, Cat c) => NowLines.CauseLine(w, v, c);
+
+        /// <summary>The full sentence for a blocked or failure code, with a next step.</summary>
+        public static string Reason(string code) => Reasons.Reason(code);
+
+        /// <summary>A reason with its typed arguments: "Needs 5 research · you have 0.4".</summary>
+        public static string Reason(string code, IReadOnlyDictionary<string, string> args) => Reasons.Reason(code, args);
+
+        /// <summary>The short lowercase cause of a blocked code: "there is no path".</summary>
+        public static string Cause(string code) => Reasons.Cause(code);
+
+        /// <summary>The text of any action result code: "Planned" or a refusal sentence.</summary>
+        public static string Result(string code) => Reasons.Result(code);
+
+        /// <summary>The confirmation verb for an action kind: "Planned"; "" for routine steering.</summary>
+        public static string Confirm(string actionKind) => Confirmations.Confirm(actionKind);
+
+        /// <summary>The confirmation with its subject: "Den planned", "Studied Basic Tools".</summary>
+        public static string Confirm(GameAction action, Village village = null) => Confirmations.Confirm(action, village);
+
+        /// <summary>A refused action in the colony's voice; never an engine message or exception text.</summary>
+        public static string ActionError(ActionResult r) => Reasons.ActionError(r);
+
+        /// <summary>An effect sentence: "+10 % hunt yield", "Unlocks the Clothier".</summary>
+        public static string Effect(string payloadKind, string target, double value) => Effects.Effect(payloadKind, target, value);
+
+        /// <summary>An effect sentence with the building attribute: "Sawmill works 10 % faster".</summary>
+        public static string Effect(ResearchPayload payload) => Effects.Of(payload);
+
+        /// <summary>One line per event in the colony's voice, without a time stamp.</summary>
+        public static string EventLine(Event e) => EventLines.Line(e);
+
+        /// <summary>One line per event with names resolved from the village.</summary>
+        public static string EventLine(Village v, Event e) => EventLines.Line(e, v);
+
+        /// <summary>"06:21" for today's events, "Day 1 · 06:21" for older ones.</summary>
+        public static string EventStamp(World w, Event e) =>
+            w == null || e == null ? "" : GameClock.Stamp(e.Time, w.TimeSeconds, w.CurrentPacing().DayScale);
+
+        /// <summary>"3 logs, 5 food"; "nothing" when empty.</summary>
+        public static string Goods(IEnumerable<Stack> goods)
+        {
+            var parts = goods == null ? new List<string>() : goods.Where(s => s != null && s.Amount > 1e-9).Select(s => Names.Amount(s.Amount, s.Resource)).ToList();
+            return parts.Count == 0 ? "nothing" : string.Join(", ", parts);
         }
 
-        public static string Num(double v, int decimals = 0) => v.ToString(decimals <= 0 ? "0" : "0." + new string('0', decimals));
+        /// <summary>"Hunting 4 · Building 2": skill levels by labor, best first.</summary>
+        public static string Skills(IEnumerable<Stack> skills)
+        {
+            var parts = skills == null ? new List<string>() : skills.Where(s => s != null && s.Amount >= 0.5).OrderByDescending(s => s.Amount)
+                .Select(s => Names.Of(NameKind.Labor, s.Resource) + " " + Numbers.Floor(s.Amount)).ToList();
+            return parts.Count == 0 ? "No skills yet" : string.Join(" · ", parts);
+        }
 
-        public static string Whole(double v) => v.ToString("0");
-
-        public static string Clock(double timeSeconds, double dayScale) => "Hour " + (timeSeconds / 3600).ToString("0.0");
-
-        public static string Age(double seconds) => (seconds / 3600).ToString("0.0") + "h";
-
-        public static string Plural(int n, string one, string many) => n + " " + (n == 1 ? one : many);
-
-        public static string NowLine(World w, Village v, Cat c) => c == null ? "" : "Doing " + Pretty(c.Goal);
-
-        public static string Reason(string code) => HumanReason(code);
-
-        public static string Confirm(string actionKind) => Pretty(actionKind) + " accepted";
-
-        public static string ActionError(ActionResult r) => r == null ? "" : r.Error;
-
-        public static string Effect(string payloadKind, string target, double value) =>
-            Pretty(payloadKind) + ": " + target + (value != 0 ? " " + value.ToString("0.##") : "");
-
-        public static string EventLine(Event e) => (e.Time / 3600).ToString("0.0") + "h  " + e.Text;
-
-        public static string Goods(IEnumerable<Stack> goods) =>
-            goods.Any() ? string.Join(", ", goods.Select(s => s.Amount.ToString("0.#") + " " + s.Resource)) : "none";
-
-        /// <summary>The last physical count of a resource, marked with an asterisk.</summary>
+        /// <summary>
+        /// The last physical count of a resource: the number (compact) or the number with the count's age.
+        /// Before any count: "—" (compact) or "not counted yet".
+        /// </summary>
         public static string Reported(World world, Village village, string resource, bool compact = false)
         {
-            bool any = village.Stockpiles.Any(p => p.CountedAt >= 0);
-            if (any) return world.ReportedTotal(village, resource).ToString("0") + "*";
-            return compact ? "—" : "uncounted";
+            var counted = village.Stockpiles.Where(p => p.CountedAt >= 0).ToList();
+            if (counted.Count == 0)
+                return compact ? "—" : "not counted yet";
+            string value = Numbers.Whole(world.ReportedTotal(village, resource));
+            if (compact)
+                return value;
+            double age = world.TimeSeconds - counted.Max(p => p.CountedAt);
+            return value + " · counted " + GameClock.Ago(age);
         }
 
         public static string SectionSummary(string section)
         {
             switch (section)
             {
-                case "Village": return "Your home, neighbors and shared world";
+                case "Village": return "Your colony at a glance";
                 case "Cats": return "Every pair of paws has a purpose";
                 case "Build": return "Plan a place, connect it, bring materials";
                 case "Work": return "Direct today's work and staff workshops";
-                case "Stores": return "Physical goods, counts and equipment";
-                case "Research": return "New craft, buildings and ways to thrive";
+                case "Stores": return "Goods, counts and equipment";
+                case "Research": return "New crafts, buildings and ways to thrive";
                 case "Officers": return "Give a specialist responsibility";
                 case "Shrine": return "Offerings, blessings and rituals";
-                case "World": return "Terrain, exploration and dungeon levels";
-                case "Defense": return "Train and protect your village";
+                case "World": return "Terrain, scouting and the dungeon";
+                case "Defense": return "Train guards and protect the colony";
                 case "Trade": return "Exchange goods with passing visitors";
                 case "Routes": return "Move cargo by rail and water";
-                case "Events": return "What has happened in your village";
-                default: return "Needs, work and next actions";
+                case "Events": return "What has happened in your colony";
+                default: return "Needs, work and next steps";
             }
         }
 
-        public static string HumanReason(string reason)
-        {
-            switch (reason)
-            {
-                case "": return "";
-                case "blocked_route": case "route_blocked": return "No walkable route. Check the gate, roads and any water along the way.";
-                case "foreign_territory": return "This site belongs to another village. Choose land within your village.";
-                case "building_entrance_disconnected": return "The entrance is cut off. Connect its road back to the shrine to resume construction.";
-                case "infrastructure_footprint_blocked": return "Road or rail work is paused. A building, stockpile or farm occupies the reserved route. Clear that footprint to resume.";
-                case "expansion_footprint_blocked": return "Expansion is paused because the new fence would cross a building, entrance or stockpile. Its materials and completed fence sections remain reserved.";
-                case "queue_empty": return "Ready for work. Add a recipe to this worker's queue.";
-                case "queue_paused": return "Production is paused. Resume the queue when you are ready.";
-                case "worker_required": return "Waiting for a worker. Assign an available cat.";
-                case "recipe_locked": case "building_research_required": return "Research required. Open Research to unlock this work.";
-                case "missing_input": case "missing_recipe_input": return "Waiting for recipe ingredients in a reachable stockpile.";
-                case "missing_grain": return "Waiting for grain. Grow or gather grain and deliver it to storage.";
-                case "need_supply_missing": return "Food or water is missing or unreachable. Check supplies and paths.";
-                case "output_storage_full": case "output_storage_full_or_unreachable": return "Finished goods are waiting. Make room in a matching stockpile and check its route.";
-                case "station_local_full": return "The workshop is full. Move finished goods into storage.";
-                case "input_claimed": return "Another worker has reserved these ingredients. Waiting for more supplies.";
-                case "missing_scaffold_input": case "wall_materials_missing": return "Construction is waiting for its reserved materials to arrive.";
-                case "paving_input_missing": return "Road work is waiting for paving materials.";
-                case "blocked_harvest_route": return "The harvest cannot reach storage. Clear a walkable route.";
-                case "blocked_handoff_route": return "The field's collection point is unreachable. Check the path.";
-                case "handoff_full": return "The field's collection point is full. Haul its goods to storage.";
-                case "return_route_blocked": return "The return route is blocked. Restore a path for this cargo.";
-                case "return_storage_full": case "storage_full": return "Destination storage is full. Free space or add a matching stockpile.";
-                case "source_changed": return "The original supply source has changed. Check its remaining goods.";
-                case "site_required": return "Choose a clear construction site connected to the village.";
-                default: return Pretty(reason);
-            }
-        }
+        /// <summary>The player sentence for a blocked reason or message; same as <see cref="Reason(string)"/>.</summary>
+        public static string HumanReason(string reason) => Reasons.Reason(reason);
     }
 }

@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    Unity-free tests for the player copy layer. Compiles the pure Simulation sources plus
+    Presentation/UI/UiText.cs and Presentation/UI/Text/**, which must stay free of UnityEngine.
+    Run with: dotnet test tools/presentation-tests
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>9.0</LangVersion>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <RootNamespace>IdleCatForest.Presentation.Tests</RootNamespace>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../unity/Assets/Forest/Simulation/**/*.cs" />
+    <Compile Include="../../unity/Assets/Forest/Presentation/UI/UiText.cs" />
+    <Compile Include="../../unity/Assets/Forest/Presentation/UI/Text/**/*.cs" />
+    <Compile Include="*.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.10.1" />
+    <PackageReference Include="NUnit" Version="5.0.0" />
+    <PackageReference Include="NUnit3TestAdapter" Version="6.3.0" />
+  </ItemGroup>
+</Project>
