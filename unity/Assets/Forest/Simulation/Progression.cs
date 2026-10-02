@@ -9,7 +9,51 @@ namespace IdleCatForest.Simulation
         private static readonly string[] RecipeFamilies = { "hunting", "foraging", "grain_milling", "baking", "herbalism", "textile_work", "leatherworking", "carpentry", "stonecraft", "metallurgy", "toolmaking", "weaponcraft", "armorcraft", "food_preservation", "brewing", "waterworks", "trade_goods", "animal_husbandry", "field_craft", "expedition_supplies" };
         private static readonly Dictionary<string, string> FamilyCache = new Dictionary<string, string>();
         private static readonly int[] UpgradeBaseCosts = { 2, 3, 5, 5, 6, 7 };
-        public double UpgradeLevel(Village v, string key) => v.UpgradeLevels.Where(s => Snake(s.Resource) == Snake(key)).Sum(s => s.Amount);
+        /// <summary>One village's upgrade levels by normalised key, valid while its level list is unchanged.</summary>
+        private sealed class UpgradeLevelSnapshot
+        {
+            public List<Stack> Source;
+            public int Signature;
+            public readonly Dictionary<string, double> Levels = new Dictionary<string, double>(StringComparer.Ordinal);
+        }
+        private sealed class UpgradeLevelCache
+        {
+            public UpgradeLevelSnapshot Current;
+        }
+        // Not serialized (private) and keyed weakly, so saves and cloned worlds never carry it.
+        private readonly System.Runtime.CompilerServices.ConditionalWeakTable<Village, UpgradeLevelCache> upgradeLevelCaches = new System.Runtime.CompilerServices.ConditionalWeakTable<Village, UpgradeLevelCache>();
+
+        // Called per cat per step (resilience, work rates), so it neither allocates nor re-normalises keys.
+        public double UpgradeLevel(Village v, string key) => UpgradeLevels(v).Levels.TryGetValue(UpgradeKey(key), out var level) ? level : 0;
+
+        private UpgradeLevelSnapshot UpgradeLevels(Village v)
+        {
+            int signature = 17;
+            foreach (var s in v.UpgradeLevels)
+                signature = unchecked(signature * 31 + (s.Resource ?? "").GetHashCode() * 7 + s.Amount.GetHashCode());
+            var cache = upgradeLevelCaches.GetValue(v, _ => new UpgradeLevelCache());
+            var current = cache.Current;
+            if (current != null && ReferenceEquals(current.Source, v.UpgradeLevels) && current.Signature == signature)
+                return current;
+            var fresh = new UpgradeLevelSnapshot { Source = v.UpgradeLevels, Signature = signature };
+            foreach (var s in v.UpgradeLevels)
+            {
+                string normal = UpgradeKey(s.Resource);
+                fresh.Levels[normal] = (fresh.Levels.TryGetValue(normal, out var sum) ? sum : 0) + s.Amount;
+            }
+            cache.Current = fresh;
+            return fresh;
+        }
+
+        /// <summary>Upgrade keys are stored snake_case; legacy rows and callers may still use camelCase.</summary>
+        private static string UpgradeKey(string key)
+        {
+            key = key ?? "";
+            foreach (char ch in key)
+                if (char.IsUpper(ch) || ch == ' ')
+                    return Snake(key);
+            return key;
+        }
         public double UpgradeCost(Village v, string key)
         {
             int index = Array.IndexOf(Catalog.Upgrades, Snake(key));
@@ -28,9 +72,9 @@ namespace IdleCatForest.Simulation
             if (v.Blessings < cost)
                 return ActionResult.Fail("Insufficient blessings");
             v.Blessings -= cost;
-            v.UpgradeLevels.RemoveAll(s => Snake(s.Resource) == key);
+            v.UpgradeLevels.RemoveAll(s => UpgradeKey(s.Resource) == key);
             v.UpgradeLevels.Add(new Stack(key, level + 1));
-            Note(v, "upgrade", key + " reached level " + (level + 1));
+            Note(v, EventKind.Upgrade, key + " reached level " + (level + 1));
             return ActionResult.Ok(key);
         }
         private double UpgradeWorkRate(Village v, string labor)
@@ -59,7 +103,7 @@ namespace IdleCatForest.Simulation
             double seconds = Pace.BoostSeconds + UpgradeLevel(v, "click_power") * Pace.BoostSecondsPerClickPower;
             if (v.BoostsUsed > Pace.BoostFreePerMinute)
                 seconds = Math.Max(Pace.BoostMinSeconds, Math.Floor(seconds * Math.Pow(Pace.BoostDecay, (v.BoostsUsed - Pace.BoostFreePerMinute) / Pace.BoostDecayClicks)));
-            var building = job.Kind == "build" ? v.Buildings.Find(b => b.Id == job.TargetId) : null;
+            var building = job.Kind == JobKind.Build ? v.Buildings.Find(b => b.Id == job.TargetId) : null;
             if (building != null)
                 building.RequiredWork = Math.Max(building.Progress + 1, building.RequiredWork - seconds);
             else
@@ -91,7 +135,46 @@ namespace IdleCatForest.Simulation
         public double RecipeDuration(Village v, Recipe recipe) => recipe.Seconds * (FamilyOwned(v, recipe, "bulk") ? Pace.FamilyBulkDurationFactor : 1);
         private static bool Completed(Village v, string kind) => v.Buildings.Any(b => b.Kind == kind && b.Completed);
         public int DenCapacity(Village v) => Math.Max(5, (int)Catalog.Effect(v, "housingPerDen", 5));
-        public double CarryCapacity(Village v, string resource = "") => Math.Clamp(Catalog.Effect(v, "haulCapacity", 8) + (resource == "water" ? Catalog.Effect(v, "waterCarryCapacity", 0) : 0), 8, 64);
+        // haulCapacity studies are multipliers on the base load of 8 (legacy haul_capacity_mult starts at 1).
+        public double CarryCapacity(Village v, string resource = "") => Math.Clamp(BaseCarryLoad * Catalog.Effect(v, "haulCapacity", 1) + (resource == "water" ? Catalog.Effect(v, "waterCarryCapacity", 0) : 0), BaseCarryLoad, 64);
+        private const double BaseCarryLoad = 8;
+
+        // PACING-HANDOFF ToolQualityWorkScale: Pacing.Jobs knob, classic 0 (flat WorkToolBonus), demo 0.375.
+        private const double DemoToolQualityWorkScale = 0.375;
+        private double ToolQualityWorkScale => Pace.Profile == Pacing.DemoProfile ? DemoToolQualityWorkScale : 0;
+
+        /// <summary>
+        /// The work-rate factor of the cat's equipped tool: 1 without a working tool. Classic gives every tool the
+        /// flat <c>WorkToolBonus</c>; the demo scales it with quality, material and condition like
+        /// <c>EquipmentPower</c>, so a basic quality-1 wood tool keeps the flat bonus and better tools beat it.
+        /// </summary>
+        public double ToolWorkBonus(Village v, Cat c)
+        {
+            if (!v.Items.Any(i => c.Equipment.Contains(i.Id) && i.Kind == "tool" && i.Condition > 0))
+                return 1;
+            double scale = ToolQualityWorkScale;
+            return scale <= 0 ? Pace.WorkToolBonus : 1 + (EquipmentPower(v, c, "tool") - 1) * scale;
+        }
+
+        /// <summary>
+        /// Demo only: a cat starting work that has no tool takes the best free tool from storage, as the Equip
+        /// action would, so crafted tools reach workers without micromanagement.
+        /// </summary>
+        private void AutoEquipTool(Village v, Cat c, Job j)
+        {
+            if (Pace.Profile != Pacing.DemoProfile || j.Kind == JobKind.Haul || j.Kind == JobKind.Scout || IsDungeonExplorer(c))
+                return;
+            if (v.Items.Any(i => i.LocationId == c.Id && i.Kind == "tool"))
+                return;
+            var best = v.Items.Where(i => i.Kind == "tool" && i.Condition > 0 && v.Stockpiles.Any(p => p.Id == i.LocationId))
+                .OrderByDescending(ToolRank).ThenBy(i => i.Id, StringComparer.Ordinal).FirstOrDefault();
+            if (best == null)
+                return;
+            best.LocationId = c.Id;
+            c.Equipment.Add(best.Id);
+        }
+
+        private static double ToolRank(Item item) => (item.Quality + 1) * (item.Material == "metal" ? 1.5 : item.Material == "stone" ? 1.2 : item.Material == "bone" ? 1.1 : 1) * Math.Min(1, item.Condition / Math.Max(1, item.MaxCondition));
         private double Service(Village v, string building, string effect, double baseline = 1) => Completed(v, building) ? Catalog.Effect(v, effect, baseline) : baseline;
         public double ResourceCapacityBonus(Village v, string resource)
         {
@@ -143,6 +226,8 @@ namespace IdleCatForest.Simulation
                     if (loss > 0)
                         Add(pile.Goods, s.Resource, -loss);
                 }
+            // Spills emptied by spoilage, spending or need trips go away on the same upkeep tick.
+            PruneEmptySpills(v);
         }
         private double SourceAmount(Tile tile, string resource) => tile.Resource == resource ? tile.Amount : Amount(tile.Deposits, resource);
         private void TakeSource(Tile tile, string resource, double amount)
