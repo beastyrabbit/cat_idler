@@ -8,7 +8,8 @@
     border-radius: 16px;
     border-width: 1px;
     border-color: rgba(255, 255, 255, 0.14);
-    background-color: rgba(12, 22, 16, 0.88);
+    /* Runtime UI Toolkit has no backdrop blur, so the card uses the opaque glass fallback over the busy map. */
+    background-color: rgba(12, 22, 16, 0.93);
     color: rgb(238, 243, 234);
     font-size: 13px;
     overflow: hidden;
