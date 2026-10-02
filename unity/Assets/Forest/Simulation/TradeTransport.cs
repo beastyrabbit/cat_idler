@@ -187,11 +187,11 @@ namespace IdleCatForest.Simulation
                         next.Z += Math.Sign(waypoint.Z - next.Z);
                     if (!Walkable(next) || !Crossable(t.Position, next))
                     {
-                        AdvanceTraveler(ref t.X, ref t.Z, t.Position, 0.8, dt);
+                        AdvanceTraveler(ref t.X, ref t.Z, t.Position, Pace.CaravanSpeed, dt);
                         t.Progress = TravelProgress(t.X, t.Z, t.Position);
                         continue;
                     }
-                    if (AdvanceTraveler(ref t.X, ref t.Z, next, 0.8, dt))
+                    if (AdvanceTraveler(ref t.X, ref t.Z, next, Pace.CaravanSpeed, dt))
                     {
                         t.Position = next;
                         if (next.Equals(waypoint))
@@ -226,7 +226,7 @@ namespace IdleCatForest.Simulation
                 return ActionResult.Fail("Invalid purchase");
             if (Amount(v.Trader.Goods, a.Resource) < a.Amount)
                 return ActionResult.Fail("Trader sold out");
-            double cost = a.Amount * 2;
+            double cost = a.Amount * Pace.TraderBuyPrice;
             if (v.Coins < cost)
                 return ActionResult.Fail("Insufficient coin");
             var pile = Storage(v, a.Resource, a.Amount, v.Center);
@@ -245,7 +245,7 @@ namespace IdleCatForest.Simulation
             var item = v.Items.Find(i => i.Id == a.TargetId && v.Stockpiles.Any(p => p.Id == i.LocationId && p.Kind == "storage"));
             if (item == null)
                 return ActionResult.Fail("Exact stored item required");
-            double price = (item.Quality + 1) * 4 * Catalog.Effect(v, "tradeValue", 1);
+            double price = (item.Quality + 1) * Pace.TraderSellPricePerQuality * Catalog.Effect(v, "tradeValue", 1);
             if (v.Trader.Coins < price || item.Weight > 20 || v.Trader.Items.Sum(i => i.Weight) + item.Weight > 100)
                 return ActionResult.Fail("Trader purse or wagon capacity exhausted");
             v.Items.Remove(item);
@@ -280,11 +280,11 @@ namespace IdleCatForest.Simulation
                 t.Path = Path(t.Position, t.VisitDestination.Value) ?? new List<Int2>();
                 t.PathIndex = 0;
                 t.Phase = "arriving";
-                t.Coins = 1000;
+                t.Coins = Pace.TraderPurse;
                 t.Items.Clear();
                 t.Goods.Clear();
                 foreach (var resource in new[] { "food", "water", "herbs", "materials", "logs", "planks", "blocks", "ore", "metal", "fibre", "grain" })
-                    t.Goods.Add(new Stack(resource, 20 + Random() % 40));
+                    t.Goods.Add(new Stack(resource, Pace.TraderStockBase + Random() % Pace.TraderStockSpread));
             }
             if (t.Phase == "trading")
             {
@@ -299,11 +299,11 @@ namespace IdleCatForest.Simulation
                 t.BlockedReason = "blocked_route";
                 if (!AtTravelPoint(t.X, t.Z, t.Position))
                 {
-                    AdvanceTraveler(ref t.X, ref t.Z, t.Position, 0.8, dt);
+                    AdvanceTraveler(ref t.X, ref t.Z, t.Position, Pace.TraderSpeed, dt);
                     t.Progress = TravelProgress(t.X, t.Z, t.Position);
                     return;
                 }
-                if (planning && (long)TimeSeconds % 10 == 0)
+                if (planning && (long)TimeSeconds % Pace.TraderReplanSeconds == 0)
                 {
                     t.Path = Path(t.Position, t.Phase == "arriving" ? t.VisitDestination ?? v.Center : t.Exterior ?? new Int2(v.Center.X, v.Center.Z + v.Radius + 3)) ?? new List<Int2>();
                     t.PathIndex = 0;
@@ -314,7 +314,7 @@ namespace IdleCatForest.Simulation
             if (t.PathIndex < t.Path.Count)
             {
                 var next = t.Path[t.PathIndex];
-                if (AdvanceTraveler(ref t.X, ref t.Z, next, 0.8, dt))
+                if (AdvanceTraveler(ref t.X, ref t.Z, next, Pace.TraderSpeed, dt))
                 {
                     t.Position = next;
                     t.PathIndex++;
@@ -326,7 +326,7 @@ namespace IdleCatForest.Simulation
             if (t.Phase == "arriving")
             {
                 t.Phase = "trading";
-                t.Until = TimeSeconds + 900;
+                t.Until = TimeSeconds + Pace.TraderWindowSeconds;
                 t.BlockedReason = "";
                 Note(v, "trader", "Finite merchant wagon reached the shrine");
             }
@@ -334,7 +334,7 @@ namespace IdleCatForest.Simulation
             {
                 t.Phase = "absent";
                 t.LastDepartedAt = TimeSeconds;
-                t.NextAt = TimeSeconds + 12 * 3600;
+                t.NextAt = TimeSeconds + Pace.TraderIntervalSeconds;
                 t.Items.Clear();
             }
         }
@@ -361,7 +361,7 @@ namespace IdleCatForest.Simulation
             var connected = kind == "road" ? ConnectedRoads(v) : null;
             if (kind == "road" && !path.Any(at => Neighbors(at).Any(connected.Contains)))
                 return ActionResult.Fail("Road must join shrine road network");
-            var result = CreateInputJob(v, cat, kind, path[0], kind == "rail" ? "metal" : "materials", path.Count, 30 * path.Count, "");
+            var result = CreateInputJob(v, cat, kind, path[0], kind == "rail" ? "metal" : "materials", path.Count, Pace.LinearWorkPerTile * path.Count, "");
             if (result.Success)
                 v.Jobs.Find(j => j.Id == result.EntityId).Path = path;
             return result;
@@ -383,7 +383,7 @@ namespace IdleCatForest.Simulation
             if (kind == "vessel" && !TileAt(a.Position).Dock)
                 return ActionResult.Fail("Completed dock required");
             var position = kind == "bridge" ? Neighbors(a.Position).First(Walkable) : a.Position;
-            var result = CreateInputJob(v, c, kind, position, resource, amount, 120, "");
+            var result = CreateInputJob(v, c, kind, position, resource, amount, Pace.InfrastructureWork, "");
             if (result.Success)
                 v.Jobs.Find(j => j.Id == result.EntityId).Path = new List<Int2> { a.Position };
             return result;
@@ -494,11 +494,11 @@ namespace IdleCatForest.Simulation
         private bool ReboardTransport(TransportRoute route, Vehicle vehicle, Cat driver, double dt)
         {
             InitializeVehicle(vehicle);
-            if (driver.Goal.StartsWith("need_", StringComparison.Ordinal))
+            if (driver.Goal.StartsWith(GoalKey.NeedPrefix, StringComparison.Ordinal))
                 return false;
             if (driver.Position.Equals(vehicle.Position) && Math.Abs(driver.X - vehicle.X) < 1e-9 && Math.Abs(driver.Z - vehicle.Z) < 1e-9)
                 return true;
-            driver.Goal = "returning to " + route.Mode;
+            driver.Goal = GoalKey.ReturningToPrefix + route.Mode;
             double vehicleDx = vehicle.X - vehicle.Position.X, vehicleDz = vehicle.Z - vehicle.Position.Z;
             double driverDx = driver.X - vehicle.Position.X, driverDz = driver.Z - vehicle.Position.Z;
             bool onApproach = driver.Position.Equals(vehicle.Position) && Math.Abs(driverDx * vehicleDz - driverDz * vehicleDx) < 1e-9 && driverDx * vehicleDx + driverDz * vehicleDz >= 0 && driverDx * driverDx + driverDz * driverDz <= vehicleDx * vehicleDx + vehicleDz * vehicleDz + 1e-9;
@@ -543,19 +543,19 @@ namespace IdleCatForest.Simulation
                 return;
             if (route.Mode == "rail")
             {
-                driver.Goal = "returning rail vehicle to its reached tile";
-                if (AdvanceTraveler(ref vehicle.X, ref vehicle.Z, vehicle.Position, 1, SpendActorTime(driver)))
+                driver.Goal = GoalKey.ReturningRailVehicle;
+                if (AdvanceTraveler(ref vehicle.X, ref vehicle.Z, vehicle.Position, Pace.VehicleSpeed, SpendActorTime(driver)))
                     CancelRoute(v, route.Id);
                 vehicle.Progress = TravelProgress(vehicle.X, vehicle.Z, vehicle.Position);
                 driver.X = vehicle.X;
                 driver.Z = vehicle.Z;
                 return;
             }
-            driver.Goal = driver.ControlledBy != "" ? "player_control · returning to dock" : "returning vessel to dock";
+            driver.Goal = driver.ControlledBy != "" ? GoalKey.PlayerControlReturningToDock : GoalKey.ReturningVesselToDock;
             bool retreatingEdge = route.PathIndex <= 0 || (vehicle.X - vehicle.Position.X) * (route.Path[route.PathIndex - 1].X - vehicle.Position.X) + (vehicle.Z - vehicle.Position.Z) * (route.Path[route.PathIndex - 1].Z - vehicle.Position.Z) <= 0;
             if (!AtTravelPoint(vehicle.X, vehicle.Z, vehicle.Position) && retreatingEdge)
             {
-                AdvanceTraveler(ref vehicle.X, ref vehicle.Z, vehicle.Position, 1, SpendActorTime(driver));
+                AdvanceTraveler(ref vehicle.X, ref vehicle.Z, vehicle.Position, Pace.VehicleSpeed, SpendActorTime(driver));
                 vehicle.Progress = TravelProgress(vehicle.X, vehicle.Z, vehicle.Position);
                 driver.X = vehicle.X;
                 driver.Z = vehicle.Z;
@@ -568,13 +568,13 @@ namespace IdleCatForest.Simulation
                 if (next > 0 && !tile.Water && !tile.Dock)
                 {
                     route.BlockedReason = "return_route_blocked";
-                    AdvanceTraveler(ref vehicle.X, ref vehicle.Z, vehicle.Position, 1, SpendActorTime(driver));
+                    AdvanceTraveler(ref vehicle.X, ref vehicle.Z, vehicle.Position, Pace.VehicleSpeed, SpendActorTime(driver));
                     vehicle.Progress = TravelProgress(vehicle.X, vehicle.Z, vehicle.Position);
                     driver.X = vehicle.X;
                     driver.Z = vehicle.Z;
                     return;
                 }
-                if (AdvanceTraveler(ref vehicle.X, ref vehicle.Z, route.Path[next], 1, SpendActorTime(driver)))
+                if (AdvanceTraveler(ref vehicle.X, ref vehicle.Z, route.Path[next], Pace.VehicleSpeed, SpendActorTime(driver)))
                 {
                     route.PathIndex = next;
                     vehicle.Position = route.Path[next];
@@ -608,7 +608,7 @@ namespace IdleCatForest.Simulation
             if (driver.BuildingId == route.Id)
                 driver.BuildingId = "";
             driver.Path.Clear();
-            driver.Goal = driver.ControlledBy != "" ? "player_control" : "idle";
+            driver.Goal = driver.ControlledBy != "" ? GoalKey.PlayerControl : GoalKey.Idle;
             v.Routes.Remove(route);
         }
         private void TickTransport(Village v, double dt, bool planning)
@@ -629,7 +629,7 @@ namespace IdleCatForest.Simulation
                     CancelRoute(v, route.Id);
                     continue;
                 }
-                if (c.ControlledBy != "" || c.Goal.StartsWith("need_", StringComparison.Ordinal))
+                if (c.ControlledBy != "" || c.Goal.StartsWith(GoalKey.NeedPrefix, StringComparison.Ordinal))
                     continue;
                 if (route.Phase != "boarding" && !ReboardTransport(route, vehicle, c, dt))
                     continue;
@@ -640,14 +640,14 @@ namespace IdleCatForest.Simulation
                     CancelRoute(v, route.Id);
                     continue;
                 }
-                c.Goal = route.Mode + " · " + route.Phase;
+                c.Goal = route.Mode + GoalKey.Separator + route.Phase;
                 if (route.Phase == "boarding")
                 {
                     if (!ReboardTransport(route, vehicle, c, dt))
                         continue;
                     if (!AtTravelPoint(vehicle.X, vehicle.Z, source.Position))
                     {
-                        AdvanceTraveler(ref vehicle.X, ref vehicle.Z, source.Position, 1, SpendActorTime(c));
+                        AdvanceTraveler(ref vehicle.X, ref vehicle.Z, source.Position, Pace.VehicleSpeed, SpendActorTime(c));
                         vehicle.Progress = TravelProgress(vehicle.X, vehicle.Z, vehicle.Position);
                         c.X = vehicle.X;
                         c.Z = vehicle.Z;
@@ -725,14 +725,14 @@ namespace IdleCatForest.Simulation
                 if (route.Mode == "rail" ? !tile.Rail || !Walkable(v, route.Path[next]) || !Crossable(vehicle.Position, route.Path[next]) : (!tile.Water && !tile.Dock && next != 0 && next != route.Path.Count - 1))
                 {
                     route.BlockedReason = "route_blocked";
-                    AdvanceTraveler(ref vehicle.X, ref vehicle.Z, vehicle.Position, 1, SpendActorTime(c));
+                    AdvanceTraveler(ref vehicle.X, ref vehicle.Z, vehicle.Position, Pace.VehicleSpeed, SpendActorTime(c));
                     vehicle.Progress = TravelProgress(vehicle.X, vehicle.Z, vehicle.Position);
                     c.X = vehicle.X;
                     c.Z = vehicle.Z;
                     continue;
                 }
                 double travelTime = SpendActorTime(c);
-                if (AdvanceTraveler(ref vehicle.X, ref vehicle.Z, route.Path[next], 1, travelTime))
+                if (AdvanceTraveler(ref vehicle.X, ref vehicle.Z, route.Path[next], Pace.VehicleSpeed, travelTime))
                 {
                     route.PathIndex = next;
                     vehicle.Position = route.Path[next];
@@ -742,7 +742,7 @@ namespace IdleCatForest.Simulation
                 c.X = vehicle.X;
                 c.Z = vehicle.Z;
                 route.BlockedReason = "";
-                Add(c.Skills, "haul", travelTime / 3600);
+                GainSkill(c, "haul", travelTime / Pace.TransportSkillSecondsPerPoint);
             }
         }
     }

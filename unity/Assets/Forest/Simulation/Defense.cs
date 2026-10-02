@@ -32,22 +32,22 @@ namespace IdleCatForest.Simulation
                     Note(v, "defense", "Raid repelled", raid.Id);
                     continue;
                 }
-                var warrior = v.Cats.Where(c => c.Alive && c.ControlledBy == "" && c.Position.Level == 0 && !IsDungeonExplorer(c) && !c.Goal.StartsWith("need_", StringComparison.Ordinal) && Amount(c.Skills, "fight") > 0).OrderByDescending(c => Amount(c.Skills, "fight")).FirstOrDefault();
+                var warrior = v.Cats.Where(c => c.Alive && c.ControlledBy == "" && c.Position.Level == 0 && !IsDungeonExplorer(c) && !c.Goal.StartsWith(GoalKey.NeedPrefix, StringComparison.Ordinal) && Amount(c.Skills, "fight") > 0).OrderByDescending(c => Amount(c.Skills, "fight")).FirstOrDefault();
                 if (warrior != null)
                 {
                     if (warrior.JobId != "" || warrior.BuildingId != "")
                         CancelWork(v, warrior);
-                    warrior.Goal = "defending";
+                    warrior.Goal = GoalKey.Defending;
                     if (Move(warrior, raid.Position, dt) && Math.Abs(warrior.X - raid.X) + Math.Abs(warrior.Z - raid.Z) <= 1)
                     {
                         double fighting = SpendActorTime(warrior);
                         if (fighting > 0)
                         {
-                            raid.Health -= fighting * 0.1 * EquipmentPower(v, warrior, "weapon") * WorkRate(v, warrior, "fight", "barracks") * Catalog.Effect(v, "combatPower", 1) * Catalog.Effect(v, "combatPowerMult", 1) * Service(v, "barracks", "barracksReadiness", 1);
-                            warrior.Health -= fighting * 0.03 / Math.Max(1, EquipmentPower(v, warrior, "armor") * Catalog.Effect(v, "defensePower", 1) * Catalog.Effect(v, "defenseMult", 1) * Service(v, "walls", "wallDefense", 1));
-                            Add(warrior.Skills, "fight", fighting / 3600);
+                            raid.Health -= fighting * Pace.DefenderStrikePerSecond * EquipmentPower(v, warrior, "weapon") * WorkRate(v, warrior, "fight", "barracks") * Catalog.Effect(v, "combatPower", 1) * Catalog.Effect(v, "combatPowerMult", 1) * Service(v, "barracks", "barracksReadiness", 1);
+                            warrior.Health -= fighting * Pace.RaiderStrikePerSecond / Math.Max(1, EquipmentPower(v, warrior, "armor") * Catalog.Effect(v, "defensePower", 1) * Catalog.Effect(v, "defenseMult", 1) * Service(v, "walls", "wallDefense", 1));
+                            GainSkill(warrior, "fight", fighting / Pace.DefenderSkillSecondsPerPoint);
                             foreach (var item in v.Items.Where(i => warrior.Equipment.Contains(i.Id)))
-                                item.Condition = Math.Max(0, item.Condition - fighting * 0.005);
+                                item.Condition = Math.Max(0, item.Condition - fighting * Pace.DefenderWeaponWearPerSecond);
                             continue;
                         }
                     }
@@ -59,7 +59,7 @@ namespace IdleCatForest.Simulation
                     {
                         if (!AtTravelPoint(raid.X, raid.Z, raid.Position))
                         {
-                            AdvanceTraveler(ref raid.X, ref raid.Z, raid.Position, 0.5, dt);
+                            AdvanceTraveler(ref raid.X, ref raid.Z, raid.Position, Pace.RaidSpeed, dt);
                             raid.Progress = TravelProgress(raid.X, raid.Z, raid.Position);
                             continue;
                         }
@@ -68,7 +68,7 @@ namespace IdleCatForest.Simulation
                     }
                     if (raid.Path.Count > 0 && Walkable(raid.Path[0]) && Crossable(raid.Position, raid.Path[0]))
                     {
-                        if (AdvanceTraveler(ref raid.X, ref raid.Z, raid.Path[0], 0.5, dt))
+                        if (AdvanceTraveler(ref raid.X, ref raid.Z, raid.Path[0], Pace.RaidSpeed, dt))
                         {
                             raid.Position = raid.Path[0];
                             raid.Path.RemoveAt(0);
@@ -84,12 +84,12 @@ namespace IdleCatForest.Simulation
                     continue;
                 }
                 raid.Phase = "departing";
-                double amount = Math.Min(20, Available(v, "food") * 0.3);
+                double amount = Math.Min(Pace.RaidLootMax, Available(v, "food") * Pace.RaidLootShare);
                 if (amount > 0 && Spend(v, "food", amount))
                     Add(raid.Loot, "food", amount);
                 var victim = v.Cats.Where(c => c.Alive && c.ControlledBy == "").OrderBy(c => Int2.Distance(c.Position, v.Center)).FirstOrDefault();
                 if (victim != null)
-                    victim.Health = Math.Max(0, victim.Health - 20 / Service(v, "walls", "wallDefense", 1));
+                    victim.Health = Math.Max(0, victim.Health - Pace.RaidBreachDamage / Service(v, "walls", "wallDefense", 1));
                 Note(v, "raid_breach", "Raiders reached the shrine and looted finite supplies", raid.Id);
             }
         }
