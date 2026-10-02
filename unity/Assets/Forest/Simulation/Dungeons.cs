@@ -217,7 +217,7 @@ namespace IdleCatForest.Simulation
         public ActionResult ExploreDungeon(Village village, Cat cat, string siteId)
         {
             var site = Dungeons.Find(d => d.Id == siteId && d.RumoredBy.Contains(village.Id));
-            if (cat == null || !cat.Alive || !village.Cats.Contains(cat) || cat.ControlledBy != "" || cat.AgeHours < Pace.WorkingAgeHours || cat.Migration == "arriving" || cat.Migration == "departing")
+            if (cat == null || !cat.Alive || !village.Cats.Contains(cat) || cat.ControlledBy != "" || cat.AgeHours < Pace.WorkerMinAgeHours || cat.Migration == "arriving" || cat.Migration == "departing")
                 return ActionResult.Fail("Choose a living adult cat in this village and release direct control");
             if (site == null)
                 return ActionResult.Fail("No known dungeon entrance");

@@ -202,7 +202,7 @@ edit_test() {
   [ -x "$forest_unity_exe" ] || die "Unity editor not found at $forest_unity_exe (set FOREST_UNITY_ROOT)"
   mkdir -p "$out"
   echo "edit-test: report $out/editmode.xml, log $out/editmode.log"
-  # The '!\.campaign\.' name guard keeps the multi-hour campaign twins out until they carry the Campaign category.
+  # Campaign cases carry the Campaign category and are Explicit; the '!\.campaign\.' name guard is only a backstop.
   run_with_timeout 2400 "$forest_unity_exe" -batchmode -nographics -projectPath "$forest_project" \
     -runTests -testPlatform EditMode \
     -assemblyNames 'IdleCatForest.Acceptance.Tests;IdleCatForest.Simulation.Tests' \
@@ -331,7 +331,7 @@ EOF
 
 case "$forest_command" in
   open) unity open "$forest_project" --editor-version "$forest_unity_version" "$@" ;;
-  setup) unity_guard; unity command forest_setup --project-path "$forest_project" --format json "$@" ;;
+  setup) unity_guard; mkdir -p "$FOREST_ARTIFACTS/tests/$FOREST_RUN_ID"; run_with_timeout 900 "$forest_unity_exe" -batchmode -nographics -quit -projectPath "$forest_project" -executeMethod IdleCatForest.Editor.ForestEditor.Setup -logFile "$FOREST_ARTIFACTS/tests/$FOREST_RUN_ID/setup.log"; grep '^forest_setup:' "$FOREST_ARTIFACTS/tests/$FOREST_RUN_ID/setup.log" ;;
   play) unity command editor_play --project-path "$forest_project" --format json "$@" ;;
   stop) unity command editor_stop --project-path "$forest_project" --format json "$@" ;;
   inspect) unity_guard; unity command forest_inspect --project-path "$forest_project" --format json "$@" ;;

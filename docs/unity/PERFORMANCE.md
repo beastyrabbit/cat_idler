@@ -96,13 +96,13 @@ staffed station worked throughout the measurement.
 
 ## What the counters measure
 
-[`ForestGame.Update`](../../unity/Assets/Forest/Presentation/ForestGame.cs) records
+[`ForestGame.Update`](../../unity/Assets/Forest/Presentation/Game/ForestGame.Telemetry.cs) records
 the unscaled interval between frames, including the frame limiter and normal
 player work. This is a frame interval, not isolated GPU or rendering CPU time.
 
 A stopwatch surrounds each `LocalAuthority.Advance(0.05)` call. Every call runs
 actor movement, needs, work and transport through
-[`World.Step`](../../unity/Assets/Forest/Simulation/World.cs). Calls that cross a
+[`World.Step`](../../unity/Assets/Forest/Simulation/World/World.cs). Calls that cross a
 whole simulation second also perform the slower planning updates and enter the
 subset reported under the existing `economyTicks`, `economyP50` and `economyP95`
 JSON names. Those timings include that call's actor work and planning. They do

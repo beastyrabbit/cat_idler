@@ -5,7 +5,6 @@ namespace IdleCatForest.Simulation
     {
         // Aging, in game hours of a cat's age.
         public double KittenUntilHours = 24;
-        public double WorkingAgeHours = 12;
         public double ElderAgeHours = 240;
         /// <summary>Elder age for the leader and the loremaster.</summary>
         public double HonouredElderAgeHours = 288;

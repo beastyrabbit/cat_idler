@@ -37,8 +37,10 @@ For projects below `/tmp`, macOS reports the canonical `/private/tmp` path to
 Pipeline. Use the project path returned by `unity status` for live commands.
 
 Open `Assets/Scenes/Forest.unity` and press Play. If regenerating project settings
-or the entry scene, stop Play mode and run `bash tools/forest.sh setup` first.
-The setup uses Editor APIs and saves the scene; it never copies a Library cache.
+or the entry scene, close the Editor on this project and run `bash tools/forest.sh setup`
+first (a batch run that needs a Unity slot). The setup is idempotent: it creates the scene
+only when it is missing, adds the ForestGame object only when none exists, saves only when
+it changed something and logs a `forest_setup:` line. It never copies a Library cache.
 
 The initial local shared world has the communal village. Use **Village** to found
 your personal village or connect to an explicit shared server. Local state lives

@@ -116,7 +116,7 @@ tag and the path of the wave report under `artifacts/demo/`.
 | Wave | Purpose | Packages | Status | Tag | Report |
 |---|---|---|---|---|---|
 | W0 | Guardrails: compile gate, worktrees, Unity slots, captures, CI, demo brief, seams | 5 (1 integration) | Done (2026-10-02; 4 of 4 merged) | `demo-w0` | `artifacts/demo/wave-0/report.md` |
-| W1 | Behaviour-neutral splits and every frozen contract | 9 (1 integration) | Not started | `demo-w1` | `artifacts/demo/wave-1/report.md` |
+| W1 | Behaviour-neutral splits and every frozen contract | 9 (1 integration) | Done (2026-10-02; 8 of 8 merged) | `demo-w1` | `artifacts/demo/wave-1/report.md` |
 | W2 | Core rebuild in parallel; staged integration A, B, C | 29 (3 integration) | Not started | `demo-w2a`, `demo-w2b`, `demo-w2` | `artifacts/demo/wave-2/report.md` |
 | W3 | Features: milestones, shell, settings, demo boundary, build mode, drawers, direct control, animation, art hookup, FX, markers, audio, art | 22 (1 integration) | Not started | `demo-w3` | `artifacts/demo/wave-3/report.md` |
 | W4 | Polish and ship-readiness, Windows (conditional), playtest punch lists | 12 (1 integration) | Not started | `demo-w4` | `artifacts/demo/wave-4/report.md` |
@@ -124,7 +124,10 @@ tag and the path of the wave report under `artifacts/demo/`.
 
 ## Appendix: Frozen contracts
 
-Copied from section 3 of the wave plan; integrators keep it current.
+Copied from section 3 of the wave plan; integrators keep it current. **Frozen at W1-INT
+(2026-10-02):** sections 3.1 to 3.7 are re-synced with the merged code, the integrator's rulings
+on Wave 1 deviations are in 3.4, and section 3.8 lists every constant, knob, intent, hook, element
+name and scenario prefix as generated from the code.
 
 These names exist after Wave 1 so that no Wave 2 to Wave 5 package needs a file it does not own.
 W0-04 creates the cross-cutting seams, W1 packages create the rest, W0-03 copies this section
@@ -202,15 +205,22 @@ their own files. The complete lists, plus the codes pre-declared for Wave 2, are
 
 | Contract | File | Created by | Implemented by |
 |---|---|---|---|
-| `Milestones.Current(World, Village)` returning `MilestoneStatus { Id, Index, Count, Progress, HintCode, Complete }`; `Milestones.DemoComplete(World, Village)` | `Sim/Milestones.cs` | W1-02 (returns none / false) | W3-01 |
+| `Milestones.Current(World, Village)` returning `MilestoneStatus { Id, Index, Count, Progress, HintCode, Complete }` (immutable: readonly fields and a constructor; `MilestoneStatus.None`); `Milestones.DemoComplete(World, Village)` | `Sim/Milestones.cs` | W1-02 (returns none / false) | W3-01 |
 | `Attention.Compute(World, Village)` returning `IReadOnlyList<AttentionItem>`; `AttentionItem { Id, Severity, TitleCode, CauseCode, Section, Anchor, ActionKind, Args }`; `Attention.CountBySection(World, Village)` | `Sim/Attention.cs` | W1-02 (empty) | W2-16, then W3-06 |
-| `Die(Village, Cat, string cause)` overload | `Sim/Systems/Population.cs` | W1-02 (ignores cause) | W3-02 |
+| `Die(Village, Cat, string cause)`: the existing private `World` method (parameter renamed to `cause`; it already writes the cause into the death note, so no separate overload exists) | `Sim/Systems/Population.cs` | W1-02 | W3-02 |
+| `CatActivity` and the pure `World.ActivityOf(Village, Cat)` (unused by game code in W1) | `Sim/Activity.cs` | W1-02 | W2-03 |
+| `DayClock`: static `GameMinutes(World)`, `Day(World)`, `DayFraction(World)`, `IsNight(World)`; Day 1 starts at 06:00, scaled by `DayScale`; never saved | `Sim/DayClock.cs` | W1-02 | W2-01, W2-17 |
+| `World.RandomInt(int n)` (high bits, one draw, throws for n <= 0) | `Sim/World/World.cs` | W1-03 | all W2 simulation packages |
+| `ActionResult.Code` (default `""`), `ActionResult.Args` (null by default), `ActionResult.Fail(string code, string message, params (string key, string value)[] args)`, `ActionResult.Ok(string code, string entityId, params (string key, string value)[] args)`; the legacy `Ok`/`Fail` keep an empty code | `Sim/Model/ActionResult.Codes.cs` | W1-03 | W2-06 |
+| `Event.Seq` and `World.NextEventSeq`, assigned in `Note`; old saves continue above the highest `Seq` found | `Sim/Model/Event.Seq.cs` | W1-03 | W2-08 |
 | `DemoScope`: `SharedWorldEnabled`, `IsSectionVisible(string)`, `IsStudyVisible(string)`, `IsBuildingVisible(string)`, `MaxDungeonDepth`, `Check(GameAction)` | `Auth/DemoScope.cs` | W1-05 (all visible, Check ok) | W3-06 |
 | `ShellLinks`: `StoreUrl` (null), `WishlistAvailable` (false), `OpenStore()`, `FeedbackUrl` | `Pres/Shell/ShellLinks.cs` | W1-05 | W3-06 |
 | `GameSettings`: static `UiScale` (1), `LargerText`, `ReducedMotion`, `Volume(string bus)` (1), `MuteInBackground`, `Quality`, `event Action Changed` | `Pres/Shell/GameSettings.cs` | W1-05 (defaults, no persistence) | W3-05 |
 | `UiEvents`: static events `Clicked`, `Confirmed`, `Failed`, `Opened`, `Closed`, `Attention`, `Flourish(string kind)` | `Pres/UI/UiEvents.cs` | W1-05 (declared, raised nowhere) | W2-16 |
 | `ForestGame.Faulted` (false), `ForestGame.Changed` event, `ForestGame.PersistenceTick(double steppedSeconds)` called once per frame from `Update` | `Pres/Game/ForestGame.cs`, `Pres/Game/ForestGame.Persistence.cs` | W1-07 | W2-12 (Faulted), W2-11 (PersistenceTick) |
 | `LocalAuthority.RestoreLastGood()` returning bool (false) | `Auth/LocalAuthority.cs` | W1-07 | W2-11 |
+| `ForestGame.PersistenceTick` is `private void PersistenceTick(double steppedSeconds)`, called once per frame after the telemetry frame and `StepLocal` (0 in remote play) and before `Changed` is raised; `Changed` fires at most once per frame when `Revision` or the remote frame sequence changed | `Pres/Game/ForestGame.Persistence.cs` | W1-07 | W2-11, W2-12 |
+| `DemoScope.Check(GameAction)` returns an `ActionResult` (Success true today), so `LocalAuthority.Apply` can return a refusal directly | `Auth/DemoScope.cs` | W1-05 | W3-06 |
 | `CatMotion.PawContact` static event `(string catId, Vector3 position)` | `Pres/View/CatMotion.cs` | W1-06 (never raised) | W3-13 raises, W3-17 subscribes |
 | `Visual` child: every entity root has one child named `Visual` holding the model; `ForestView.VisualOf(GameObject)`; reconcile writes only the root | `Pres/View/ForestView.Entities.cs` | W1-06 | used by W3-14, W3-15, W4-07 |
 | Carried cargo rendering in its own partial (`ReconcileCarriedCargo`, `ItemCargoAsset`) | `Pres/View/ForestView.Cargo.cs` | W1-06 | W3-13 (sockets) |
@@ -220,6 +230,17 @@ their own files. The complete lists, plus the codes pre-declared for Wave 2, are
 Mount slots in `ForestUI`: `slot-chip`, `slot-seal`, `slot-pills`, `slot-dock`, `slot-hint`,
 `slot-drawer`, `slot-card`, `slot-toasts`, `slot-mode`, `slot-reins`, `slot-objective`,
 `slot-modal`.
+
+**W1-INT rulings on Wave 1 deviations.** Accepted as built: `Die` is the existing method rather
+than a new overload; `TickIdle(Village, Cat, double dt, bool planning)` takes the extra `planning`
+argument; `DayClock` is a static class so the clock never enters save JSON; the stub types are
+immutable; `NightSleepBias` is pre-declared as 15; the coded success helper is
+`ActionResult.Ok(code, entityId, args)` (the wire format has no success message, and W2-06 needs the
+affected entity id); `PointerAction` gained `PrimaryPress` (today's selection timing). W1-02's
+`WorkingAgeHours` duplicated W1-01's `WorkerMinAgeHours` (both 12); W1-INT removed it and
+`Leader.cs` and `Dungeons.cs` now read `WorkerMinAgeHours`. `Blocked.RouteBlocked`
+(`route_blocked`, pre-declared) and `Blocked.BlockedRoute` (`blocked_route`, what movement sets
+today) are distinct constants; W2-05 and W2-15 handle both.
 
 ### 3.5 Input router
 
@@ -243,8 +264,10 @@ Wave 2, W3-12 owns it in Wave 3. Everyone else only calls its API from their own
   the highest priority down until one returns true; ties run in registration order.
 - `IDisposable BindPointer(PointerAction action, int priority, Func<PointerInfo, bool> handler)`
   with `PointerAction { PrimaryClick, SecondaryClick, PrimaryDragStart, PrimaryDrag,
-  PrimaryDragEnd }`. Pointer actions are not dispatched while `PointerOverUi` is true. A
-  primary press that moves more than 6 px becomes a drag and produces no click.
+  PrimaryDragEnd, PrimaryPress }`. `PrimaryPress` fires on the press frame. A gesture that
+  starts over UI is ignored, a drag is latched until release and a click released over UI is
+  suppressed (W2-18 may tighten this). A primary press that moves more than 6 px
+  (`KeyMap.DragThresholdPixels`) becomes a drag and produces no click.
 - The Esc order is therefore: modal, popover, placement, leave control, close drawer,
   deselect, open pause.
 
@@ -282,3 +305,267 @@ model fields `Cat.Id`, `Cat.Name`, `Cat.Alive`, `Cat.JobId`, `Building.Id`, `Bui
 view with `GetComponent<ForestView>()` on the `ForestGame` object. These signatures are frozen until W5-03 owns
 the capture folder. `--forest-save <path>` must keep opening that world directly (no title
 screen) for tooling, also after W3-04.
+
+### 3.8 Frozen lists (frozen at W1-INT)
+
+Generated from the merged code on 2026-10-02. Packages may add members; they must not rename or
+remove one listed here. Values are byte-identical to the literals they replaced.
+
+#### Identifier constants
+
+**`JobKind`** (`Sim/Ids/Ids.Jobs.cs`, 37): `Hunt` = `hunt`, `Water` = `water`, `Logs` = `logs`, `Quarry` = `quarry`, `Fibre` = `fibre`, `Fish` = `fish`, `Scout` = `scout`, `Replant` = `replant`, `Train` = `train`, `Expand` = `expand`, `Haul` = `haul`, `Build` = `build`, `Production` = `production`, `Offering` = `offering`, `MouseFarm` = `mouse_farm`, `Road` = `road`, `Rail` = `rail`, `Bridge` = `bridge`, `Dock` = `dock`, `Wagon` = `wagon`, `Vessel` = `vessel`, `SupplyFood` = `supply_food`, `LeaderPlanHunt` = `leader_plan_hunt`, `HuntExpedition` = `hunt_expedition`, `SupplyWater` = `supply_water`, `FetchWater` = `fetch_water`, `GatherLogs` = `gather_logs`, `ForageFibre` = `forage_fibre`, `ReplantTree` = `replant_tree`, `Explore` = `explore`, `TrainWarrior` = `train_warrior`, `ExpandVillage` = `expand_village`, `LeaderPlanHouse` = `leader_plan_house`, `BuildHouse` = `build_house`, `Ritual` = `ritual`, `CarryOffering` = `carry_offering`, `PerformOffering` = `perform_offering`
+**`JobPhase`** (`Sim/Ids/Ids.Jobs.cs`, 7): `Travel` = `travel`, `Fetch` = `fetch`, `ItemFetch` = `item_fetch`, `InputDelivery` = `input_delivery`, `Working` = `working`, `OutputDelivery` = `output_delivery`, `Return` = `return`
+**`Blocked`** (`Sim/Ids/Ids.Blocked.cs`, 19): `ForeignTerritory` = `foreign_territory`, `ExpansionFootprintBlocked` = `expansion_footprint_blocked`, `InfrastructureFootprintBlocked` = `infrastructure_footprint_blocked`, `BuildingEntranceDisconnected` = `building_entrance_disconnected`, `QueuePaused` = `queue_paused`, `MissingScaffoldInput` = `missing_scaffold_input`, `UnknownRecipe` = `unknown_recipe`, `MissingRecipeInput` = `missing_recipe_input`, `WallMaterialsMissing` = `wall_materials_missing`, `PavingInputMissing` = `paving_input_missing`, `OutputStorageFullOrUnreachable` = `output_storage_full_or_unreachable`, `WorkerRequired` = `worker_required`, `SourceChanged` = `source_changed`, `BuildingResearchRequired` = `building_research_required`, `SiteRequired` = `site_required`, `BlockedRoute` = `blocked_route`, `MissingMaterial` = `missing_material`, `RouteBlocked` = `route_blocked`, `SourceExcluded` = `source_excluded`
+**`GoalKey`** (`Sim/Ids/Ids.Goals.cs`, 33): `Idle` = `idle`, `RestingAtHome` = `resting at home`, `Leaving` = `leaving`, `Research` = `research`, `Defending` = `defending`, `PlayerControl` = `player_control`, `PlayerRest` = `player_rest`, `ProductionPaused` = `production paused`, `NeedPrefix` = `need_`, `NeedDrink` = `need_drink`, `NeedEat` = `need_eat`, `NeedHeal` = `need_heal`, `NeedSleep` = `need_sleep`, `Separator` = ` · `, `FarmPrefix` = `farm · `, `AccountingPrefix` = `accounting · `, `AccountingReturning` = `accounting · returning to tent`, `ExploringDungeon` = `exploring dungeon`, `ReturningFromDungeon` = `returning from dungeon`, `DescendingDungeonStairs` = `descending dungeon stairs`, `FightingDungeonGuardian` = `fighting dungeon guardian`, `CollectingDungeonSupplies` = `collecting dungeon supplies`, `ReturningToPrefix` = `returning to `, `ReturningRailVehicle` = `returning rail vehicle to its reached tile`, `ReturningVesselToDock` = `returning vessel to dock`, `PlayerControlReturningToDock` = `player_control · returning to dock`, `TransportReturning` = `transport returning`, `IdleNap` = `idle_nap`, `IdleGroom` = `idle_groom`, `IdleSocial` = `idle_social`, `IdlePatrol` = `idle_patrol`, `IdleShrine` = `idle_shrine`, `IdlePlay` = `idle_play`
+**`ResultCode`** (`Sim/Ids/Ids.Codes.cs`, 16): `Ok` = `ok`, `Queued` = `queued`, `Planned` = `planned`, `Assigned` = `assigned`, `Released` = `released`, `Studied` = `studied`, `Boosted` = `boosted`, `Cancelled` = `cancelled`, `Demolished` = `demolished`, `NotAWorkplace` = `not_a_workplace`, `UnknownTarget` = `unknown_target`, `RequiresPlayers` = `requires_players`, `FullGameOnly` = `full_game_only`, `MissingMaterial` = `missing_material`, `AllGroundsBusy` = `all_grounds_busy`, `NotImplemented` = `not_implemented`
+**`EventKind`** (`Sim/Ids/Ids.Events.cs`, 31): `Research` = `research`, `Tithe` = `tithe`, `Completed` = `completed`, `Defense` = `defense`, `Dungeon` = `dungeon`, `Election` = `election`, `Emergency` = `emergency`, `Expansion` = `expansion`, `Migration` = `migration`, `Pregnancy` = `pregnancy`, `Raid` = `raid`, `RaidBreach` = `raid_breach`, `RaidLoss` = `raid_loss`, `Recovery` = `recovery`, `RecoveryBlocked` = `recovery_blocked`, `Trade` = `trade`, `Trader` = `trader`, `Upgrade` = `upgrade`, `Milestone` = `milestone`, `RaidWarning` = `raid_warning`, `RaidRepelled` = `raid_repelled`, `BuildingCompleted` = `building_completed`, `Discovery` = `discovery`, `StorageFull` = `storage_full`, `StorageEmpty` = `storage_empty`, `RankUp` = `rank_up`, `Birth` = `birth`, `Arrival` = `arrival`, `Death` = `death`, `ExpeditionLoot` = `expedition_loot`, `Error` = `error`
+
+#### Pacing knobs (classic values; every `Demo<Domain>()` hook is empty at W1)
+- **`Pacing.Jobs.cs`** (57; hook `DemoJobs()`): `WorkerMinAgeHours` 12, `AssignPreferenceScore` 100, `AssignBoostScore` 20, `HuntWork` 120, `GatherWork` 60, `TrainWork` 120, `ScoutWork` 15, `ExpansionWork` 10, `OfferingWork` 30, `OfferingHerbs` 5, `AutoDenSearchRadius` 5, `ScoutSurveyRingStep` 2, `ScoutSurveyMaxRadius` 10, `ScoutBaseRadius` 12, `ScoutKnownTilesPerRadius` 100, `ScoutRadiusJitter` 8, `ScoutSightRadius` 2, `ScoutMaxSeconds` 180, `HaulBatchMax` 8, `HaulSkillPerDelivery` 0.25, `SpillPileCapacity` 1000000, `ItemSpillPileCapacity` 10000, `JobPlanningIntervalSeconds` 1, `StorageRetrySeconds` 1, `LaborSkillPerJob` 1, `RoleExperiencePerJob` 1, `SpecializationRoleExperience` 25, `ToolWearPerJob` 0.1, `WallSegmentWork` 10, `PavingSegmentWork` 30, `ScaffoldTimberBase` 4, `ScaffoldTimberPerExisting` 2, `ScaffoldBlocksBase` 2, `ScaffoldBlocksPerExisting` 1, `ScaffoldMinWork` 1, `ItemBaseCondition` 100, `PreservationDurabilityMult` 1.25, `OfferingHerbsPerBlessing` 5, `MouseFarmFoodPerCycle` 4, `TrainFightSkill` 3, `ReplantRegrowSeconds` 86400, `HuntMasteryYieldPerLevel` 0.12, `FishCatchMax` 8, `HuntHidePerFood` 0.25, `HuntBonePerFood` 0.125, `HuntRegrowSeconds` 3600, `WorkSkillDivisor` 300, `WorkSkillBonusCap` 0.333, `WorkStatBase` 0.75, `WorkStatDivisor` 200, `WorkCycleTimeFloor` 0.1, `WorkToolBonus` 1.15, `WorkRateMin` 0.1, `WorkRateMax` 20, `JobWatchdogSeconds` 25, `SourceExclusionSeconds` 60, `BuildersPerSite` 2
+- **`Pacing.Life.cs`** (74; hook `DemoLife()`): `HungerDecayPerHour` 20.0, `ThirstDecayPerHour` 30.0, `RestDecayPerHour` 12.0, `ResiliencePerLevel` 0.08, `ResilienceFloor` 0.45, `HealthRegenPerSecond` 0.002, `HealthRegenMinNeed` 50, `StarvationDamagePerMinute` 2.0, `DehydrationDamagePerMinute` 3.0, `NeedsCanKill` true, `DrinkThreshold` 35, `EatThreshold` 35, `HealThreshold` 40, `SleepThreshold` 20, `CargoKeepThirst` 15, `CargoKeepHunger` 15, `CargoKeepHealth` 20, `NeedRetrySeconds` 1, `NeedServing` 1, `BrewServing` 0.25, `WaterServingAfterBrew` 0.75, `DrinkRestorePerServing` 50, `EatRestorePerServing` 50, `HealRestorePerServing` 25, `SleepRecoveryPerSecond` 0.15, `SleepWakeRest` 95, `NeedDwellMin` 4, `NeedDwellMax` 6, `MetabolismMin` 0.85, `MetabolismMax` 1.15, `NeedThresholdJitter` 10, `NeedTripBackoffSeconds` 3, `IdleDwellMin` 8, `IdleDwellMax` 40, `NightSleepBias` 15, `IdleWanderIntervalSeconds` 20, `IdleWanderRadius` 4, `LeaderDirectSeconds` 10, `UpkeepTickSeconds` 60, `CompletedJobRetentionSeconds` 600, `RegrowthCheckSeconds` 60, `RegrownLogs` 40, `RegrownForage` 30, `CrewGroupSize` 15, `HuntCrewPerGroup` 6.0, `WaterCrewPerGroup` 2.0, `FoodReservePerCat` 6, `WaterReservePerCat` 8, `EmergencyStockPerCat` 1, `ScoutIntervalSeconds` 600, `ForesterStockTarget` 40, `ReplantIntervalSeconds` 600, `FibreStockTarget` 10, `LoremasterOfferingBlessingCap` 10, `LoremasterOfferingMaterialsMin` 30, `LoremasterOfferingMaterials` 5, `LoremasterOfferingWork` 30, `OfficerReserveMin` 2, `OfficerReservePerGroup` 2.0, `OfficerItemsPerCat` 0.5, `OfficerFoodPerCat` 8, `OfficerStockTarget` 32, `MouseFarmGrain` 1, `MouseFarmWorkSeconds` 600, `ResearchSkillSecondsPerPoint` 3600, `FarmHarvestCarry` 8, `FarmHaulSkillGain` 0.25, `FarmSkillSecondsPerPoint` 3600, `AccountingWaitSeconds` 60, `AccountingCountSeconds` 5, `SpoilageRate` 0.0002, `PreservesSpoilageRate` 0.00002, `EcologyTickSeconds` 60, `FishRegenPerHour` 0.5
+- **`Pacing.Population.cs`** (26; hook `DemoPopulation()`): `KittenUntilHours` 24, `ElderAgeHours` 240, `HonouredElderAgeHours` 288, `OldAgeDeathChance` 0.0002, `BreedingCheckSeconds` 3600, `BreedingAfterFoundingSeconds` 36 * 3600, `BreedingFoodPerCat` 2.5, `BreedingWaterPerCat` 2.5, `ParentMinAgeHours` 24, `ParentMaxAgeHours` 240, `BreedChanceBase` 0.001, `BreedBlessingStep` 0.02, `BreedBlessingCap` 0.5, `BreedBlessingWeight` 0.0007, `GestationSeconds` 18 * 3600, `KittenStatSpread` 16, `MigrationFirstAtSeconds` 30 * 3600, `MigrationIntervalSeconds` 12 * 3600, `MigrationFoodPerCat` 4, `MigrationWaterPerCat` 5, `MigrationPopulationCap` 200, `ProbationSeconds` 36 * 3600, `HousingPlanAfterSeconds` 6 * 3600, `HousingSpareBeds` 1, `HousingFoodPerCat` 3, `HousingWaterPerCat` 4
+- **`Pacing.Research.cs`** (21; hook `DemoResearch()`): `ResearchDivisor` 600, `LeaderStudyIntervalSeconds` 86400, `ElectionIntervalSeconds` 86400, `ElectionDurationSeconds` 1800, `FamilySourcesInputFactor` 0.9, `FamilySourcesOutputFactor` 1.1, `FamilyBulkDurationFactor` 0.9, `UpgradeSupplySpeedStep` 0.1, `UpgradeSupplySpeedFloor` 0.55, `UpgradeHuntStep` 0.1, `UpgradeHuntFloor` 0.45, `UpgradeBuildStep` 0.1, `UpgradeBuildFloor` 0.45, `UpgradeRitualStep` 0.12, `UpgradeRitualFloor` 0.4, `BoostSeconds` 10, `BoostSecondsPerClickPower` 2, `BoostFreePerMinute` 30, `BoostDecay` 0.95, `BoostDecayClicks` 10.0, `BoostMinSeconds` 1
+- **`Pacing.Threats.cs`** (44; hook `DemoThreats()`): `RaidCheckSeconds` 3600, `RaidGraceSeconds` 8 * 3600, `RaidMinCats` 20, `RaidMinWealth` 250, `RaidChance` 0.1, `DemoRaidAtSeconds` 0, `RaidWarningSeconds` 120, `RaidCanKill` true, `RaidSpeed` 0.5, `DefenderStrikePerSecond` 0.1, `RaiderStrikePerSecond` 0.03, `DefenderWeaponWearPerSecond` 0.005, `DefenderSkillSecondsPerPoint` 3600, `RaidLootShare` 0.3, `RaidLootMax` 20, `RaidBreachDamage` 20, `DungeonBaseThreat` 1.15, `DungeonBandThreat` 0.65, `DungeonFloorThreat` 0.85, `GuardianBaseHealth` 15, `GuardianFloorHealth` 9, `GuardianBandHealth` 8, `DungeonLootBase` 3, `DungeonLootSecondary` 2, `FloorRestockSeconds` 600, `ReadinessFightSkillFactor` 0.25, `ReadinessNeedNorm` 45, `ExpeditionMinHealth` 65, `ExpeditionMinNeed` 45, `ExpeditionRetreatHealth` 50, `ExpeditionRetreatNeed` 30, `ExpeditionGiveUpHealth` 40, `ExpeditionGiveUpNeed` 25, `ExpeditionDescendCargoLimit` 8, `DungeonRevealTiles` 4, `DungeonReplanSeconds` 1, `ExplorerStrikePerSecond` 1.8, `ExplorerSkillSecondsPerPoint` 300, `ExplorerWeaponWearPerSecond` 0.025, `CreatureStrikePerSecond` 0.45, `CreatureSpeed` 0.65, `CreatureLeashTiles` 12, `CreatureAggroTiles` 5, `CreatureReplanSeconds` 1
+- **`Pacing.Trade.cs`** (15; hook `DemoTrade()`): `TraderFirstAtSeconds` 3600, `TraderIntervalSeconds` 12 * 3600, `TraderWindowSeconds` 900, `TraderReplanSeconds` 10, `TraderSpeed` 0.8, `TraderPurse` 1000, `TraderStockBase` 20, `TraderStockSpread` 40, `TraderBuyPrice` 2, `TraderSellPricePerQuality` 4, `CaravanSpeed` 0.8, `VehicleSpeed` 1, `TransportSkillSecondsPerPoint` 3600, `LinearWorkPerTile` 30, `InfrastructureWork` 120
+- **`Pacing.World.cs`** (8; hook `DemoWorld()`): `CatBaseSpeed` 1.6, `RoadSpeedFactor` 1.75, `DirtSpeedFactor` 1.05, `MountainSpeedFactor` 0.4, `ForestSpeedFactor` 0.85, `OpenGroundSpeedFactor` 1, `WadingSpeedFactor` .55, `PathWearToDirt` 50
+- **`Pacing.cs`** (2): `Profile` ClassicProfile, `DayScale` 1
+
+Total: 247 public fields across the Pacing partials.
+
+#### Input router
+
+- `InputIntent` (dispatch order within a frame): `Escape`, `ToggleControl`, `TogglePause`,
+  `Speed1`, `Speed2`, `Speed3`, `FocusSelected`, `ZoomIn`, `ZoomOut`, `Home`, `LevelDown`,
+  `LevelUp`, `RotateLeft`, `RotateRight`, `Interact`, `RotatePlacement`, `PhotoMode`,
+  `ToggleFullscreen`.
+- `InputPriority`: `Modal` 100, `Popover` 90, `Placement` 80, `Control` 70, `Drawer` 60,
+  `Selection` 50, `World` 40, `Fallback` 0.
+- `PointerAction`: `PrimaryClick`, `SecondaryClick`, `PrimaryDragStart`, `PrimaryDrag`,
+  `PrimaryDragEnd`, `PrimaryPress`. `PointerInfo`: `Position`, `Delta`, `PressPosition`,
+  `ShiftHeld`, `CommandHeld`.
+- Router API: `InputRouter.Current`; `Bind(InputIntent, int, Func<bool>)` and
+  `BindPointer(PointerAction, int, Func<PointerInfo, bool>)` return `IDisposable`; a throwing
+  handler is logged and counts as handled; `Dispatch(InputIntent)`,
+  `DispatchPointer(PointerAction, PointerInfo)`, `Tick()`.
+- Continuous state (refreshed by `Tick`): `DevicesPresent`, `MoveAxis`, `MoveStepAxis`,
+  `MovePressed`, `PointerPosition`, `PointerDelta`, `ScrollZoom`, `PanDelta`, `PrimaryHeld`,
+  `SecondaryHeld`, `MiddleHeld`, `ShiftHeld`, `CommandHeld` (Cmd on macOS, Ctrl elsewhere). Set
+  before `Tick`: `PointerOverUi`, `TextFieldFocused`, `ControlMode`. In W1 `ForestView.TickInput`
+  bridges them from `ForestUI.PointerOverPanel`, `ForestUI.TextInputFocused` and direct control.
+
+Key table (`KeyMap.Intents`; Live = dispatched today):
+
+| Key | Intent | Context | Live |
+|---|---|---|---|
+| Escape | Escape | any | yes |
+| Tab | ToggleControl | any | yes |
+| Space | TogglePause | any | no |
+| 1 / 2 / 3 | Speed1 / Speed2 / Speed3 | any | no |
+| F | FocusSelected | any | no |
+| = and keypad + | ZoomIn | any | yes |
+| - and keypad - | ZoomOut | any | yes |
+| Home | Home | any | yes |
+| H | Home | any | no |
+| Page Down | LevelDown | any | yes |
+| [ | LevelDown | any | no |
+| Page Up | LevelUp | any | yes |
+| ] | LevelUp | any | no |
+| Q | RotateLeft | any | no |
+| E | RotateRight | management | no |
+| E | Interact | direct control | yes |
+| R | RotatePlacement | any | no |
+| P | PhotoMode | any | no |
+| Cmd+Enter | ToggleFullscreen | any | no |
+
+Movement keys: `KeyMap.MoveRight` D / Right, `MoveLeft` A / Left, `MoveUp` W / Up, `MoveDown`
+S / Down.
+
+Bindings in W1: Escape at `Control` leaves direct control and at `Drawer` closes the panel (both
+decline while a text field has focus); Tab at `Control` toggles direct control; Interact at
+`Control` attacks a creature or interacts with a pile; zoom, Home and level keys at `World` (management
+only); `PrimaryPress` at `Placement` places and at `World` picks a cat or building and opens the
+inspector.
+
+#### View hooks and call order
+
+Declared as `partial void` in `Pres/View/ForestView.cs`: `AwakeLighting()`,
+`UpdateLighting(float dt)`, `LevelChangedLighting(int level)`, `AwakeTerrain()`,
+`UpdateTerrain(float dt)`, `LevelChangedTerrain(int level)`, `AwakeProps()`,
+`UpdateProps(float dt)`, `LevelChangedProps(int level)`, `AwakeFx()`, `UpdateFx(float dt)`,
+`LateUpdateFx()`, `AwakeMarkers()`, `LateUpdateMarkers()`, `AwakeAtmosphere()`,
+`UpdateAtmosphere(float dt)`, `LateUpdateAtmosphere()`, `AwakeCloseUp()`, `LateUpdateCloseUp()`,
+`UpdateBuildingMotion(float dt)`. None is implemented at W1.
+
+- Awake: CreateCamera, CreateLights, CreateSelectionMarker, CreateInput, then the Awake hooks.
+- Update: TickInput (before the world guard), world guard, village switch and follow,
+  NotifyLevelChange, Reconcile every 0.2 s, AnimateCats, heartbeat, ApplyContinuousInput,
+  UpdateCamera, UpdateSelection, then the Update hooks (Lighting, Terrain, Props, Fx,
+  Atmosphere, BuildingMotion).
+- LateUpdate: world guard, then Fx, Markers, Atmosphere, CloseUp.
+- `dt` is `Time.unscaledDeltaTime`. Level hooks fire whenever `RenderedLevel` changes, including
+  the first world frame.
+- Reconcile order: TerrainTick, Buildings, Piles, Farms, Tiles, Boundary, Cats, CarriedCargo,
+  Movers (vehicles, caravans, trader, raiders, creatures), RenderDungeonPlaces, cleanup.
+- Other members: `ForestView.VisualName` (`"Visual"`), `VisualOf(GameObject)`,
+  `ApplyFogForCamera(bool)`, `TerrainRaycast(Ray, out Vector3)` (layer 8), internal
+  `TryGetEntity`, `CatTransforms()`, `WorldRoot`, `Zoom`, `CameraYaw`, `CameraStandoff`,
+  `HoveredSubject` (always `Subject.None` at W1), `ForceReconcile()`, `TickInput()`,
+  `ApplyContinuousInput()`, `UpdateCamera()`, `MakeGround()`, `groundCenter`, `groundRoot`,
+  `ReconcileCarriedCargo(Village, int)`, `ItemCargoAsset(string)`; `CatMotion.PawContact`
+  (`Action<string, Vector3>`, never raised at W1).
+
+#### UI mount slots
+
+| Slot | Mounted |
+|---|---|
+| `slot-chip` | VillageChip |
+| `slot-seal` | AttentionSeal and AttentionPopover |
+| `slot-pills` | ResourcePills |
+| `slot-dock` | Dock |
+| `slot-hint` | HintLine |
+| `slot-drawer` | legacy drawer (DrawerHost) |
+| `slot-card` | TetheredCard |
+| `slot-toasts` | Toasts |
+| `slot-mode` | ModeChip and BuildTray |
+| `slot-reins` | ReinsBar |
+| `slot-objective` | empty |
+| `slot-modal` | empty |
+
+The constants live in `UiSlots`. CatCard, BuildingCard, PileCard and LeaderLine are not mounted; they are W2-14's parts of TetheredCard.
+
+#### UI element names
+
+Format: `UiNames.Act(verb, ids...)` produces `act-<verb>-<id1>-<id2>...`.
+
+Chrome and layout:
+
+| Element | Name |
+|---|---|
+| Root | `forest-ui` |
+| Top bar | `hud-top` |
+| Brand | `hud-brand` |
+| Resources | `hud-resources` |
+| Resource chips | `resource-food`, `resource-water`, `resource-research`, `resource-blessings` |
+| Clock | `hud-clock` |
+| Speed buttons | `act-speed-0`, `act-speed-1`, `act-speed-4`, `act-speed-8` |
+| Attention seal | `seal` |
+| Navigation | `hud-nav`; entries `nav-<id lowercase>` |
+| Drawer | `drawer`, `act-back-drawer`, `act-close-drawer`, `drawer-scroll` |
+| Section bodies | `section-<id lowercase>` (inspect and overview included) |
+| Bottom bar | `hud-bottom`, `act-zoom-out`, `act-zoom-in`, `act-focus-village` |
+| Tethered card | `card-tethered`, button `act-inspect-card` |
+| Card stubs | `card-cat`, `card-building`, `card-pile` |
+
+Village section:
+
+- `act-join-<villageId>`, `field-village-name`, `act-found-village`
+- `field-server-address`, `act-connect-server`, `act-disconnect-server`, `act-save-world`
+- `act-vote-<catId>`, `act-sign-petition`
+
+Cats section: `act-inspect-<catId>`.
+
+Inspect section, cat:
+
+- Progress and cargo: `live-work-progress`, `carried-item-<itemId>`
+- Control: `act-return-<catId>`, `act-control-<catId>`, `act-collect-chest-<catId>`
+- Shared pickers: `choice-resource`, `field-amount`
+- Interactions: `act-pile-<pileId>`, `act-shrine-<catId>`, `act-eat-<catId>`, `act-drink-<catId>`, `act-rest-<catId>`
+- Preferences and equipment: `act-labor-<labor>` (Toggle), `act-unequip-<itemId>`
+- Other actions: `act-release-workplace-<catId>`, `act-boost-cat-<catId>`
+
+Inspect section, building:
+
+- Staffing: `choice-cat`, `act-assign-worker-<buildingId>`
+- Production: `choice-recipe`, `act-queue-add-<buildingId>`, `act-slot-add-<buildingId>-<catId>`
+- Queue controls: `act-queue-pause-<b>-<cat>`, `act-queue-resume-<b>-<cat>`
+- Entry controls: `act-queue-up|down|repeat|remove-<b>-<cat>-<index>`
+- Entries: `queue-entry-<b>-<cat>-<index>`. `<cat>` is empty for the station queue, which gives a double dash.
+
+Build section:
+
+- `placement-road`, `placement-bridge`, `act-expand-village`
+- `placement-<buildingKind>`
+- `placement-zone-gather`, `placement-zone-avoid`, `act-remove-zone-<id>`
+
+Work section:
+
+- Pickers and manual jobs: `choice-cat`, `act-job-<labor>`
+- Navigation: `act-open-stores`, `act-open-research-work`
+- Resource jobs: `act-quarry-resource`, `act-scout-resource`
+- Placements: `placement-farm-<crop>`, `placement-gather-spot`, `placement-fishing-spot`
+- Farms: `act-assign-farm-<id>`, `act-clear-farm-<id>`
+- Workplaces and jobs: `act-inspect-<buildingId>`, `act-boost-<jobId>`
+
+Stores section:
+
+- `placement-stockpile`, `placement-stockpile-filtered`
+- `act-haul-pile-<id>`, `act-remove-pile-<id>`
+- `act-equip-<itemId>`, `act-repair-<itemId>`
+
+Research section:
+
+- `act-research-view-cards`, `act-research-view-map`
+- `choice-research-category`, `field-search-studies`
+- `study-<id>`, `act-requires-<prereqId>`, `act-research-<id>`
+
+Officers section: `act-appoint-<role>`, `act-vacate-<role>`.
+
+Shrine section:
+
+- `choice-offering`
+- `act-offer-resource`, `act-offer-materials`, `act-offer-tithe`, `act-assign-ritual`
+- `act-upgrade-<key>`, `act-unlock-<studyId>`
+
+World section:
+
+- `act-view-depth-<n>` (0 is the surface)
+- `act-show-entrance-<dungeonId>`, `act-explore-<dungeonId>`
+- `act-follow-<catId>`, `act-recall-<catId>`
+
+Defense section: `act-train-warrior`, `act-defend-raid`.
+
+Trade section:
+
+- `act-buy-resource`, `choice-sale-item`, `act-sell-goods`
+- `field-recipient-village`, `choice-request-resource`, `field-request-amount`, `act-offer-exchange`
+- `act-accept-trade-<id>`, `act-cancel-trade-<id>`
+
+Routes section:
+
+- `choice-route-mode`, `placement-rail`, `placement-dock`, `placement-vehicle`
+- `choice-source-pile`, `choice-destination-pile`
+- `act-create-route`, `act-cancel-route-<id>`
+
+#### Scenario prefix-to-file map
+
+The same mapping is the comment at the top of `AcceptanceScenarios.cs`:
+
+```text
+Which file owns which case-name prefix (every name below is under regression. unless shown otherwise):
+  DungeonScenarios.cs          dungeons_*
+  SpatialScenarios.cs          world_levels_*
+  WorldGenerationScenarios.cs  world_generation_*
+  SeamScenarios.cs             seam.*
+  CoreScenarios.cs             continuous_* except continuous_storage_*
+  NeedsScenarios.cs            cargo_critical_need_*, preserved_food_*, emergency_staffed_water, medicine_and_brew_*
+  PopulationScenarios.cs       review_housing_skips_disconnected_*, pregnancy_beds_*, death_preserves_*, extinction_*,
+                               unhoused_migrant_*
+  HaulingScenarios.cs          continuous_storage_*, busy_cat_*, item_only_stockpile_*, exact_haul_*, review_scalar_haul_*,
+                               review_armor_*
+  ConstructionScenarios.cs     layout_*, review_expansion_*, review_fishing_placement_*, buildable_founding_*,
+                               communal_and_personal_enclosures, expansion_interruption_*
+  ProductionScenarios.cs       recipe.*, chain.*, production_expertise_*, accountant_*, mountain_research_*,
+                               station_capacity_*, repeat_queue_*, pause_preserves_*, officer_vacancy_*, selected_quarry_*,
+                               farm_worker_replacement
+  EffectScenarios.cs           catalog.*, building_effect.*, service_effect.*, resource_effect.*, legacy_upgrade.*,
+                               legacy_effect.*, resource_capacity_is_resource_specific
+  ControlScenarios.cs          direct_control_*, review_scaffold_preserves_*, review_new_building_preserves_*,
+                               review_new_job_preserves_*, review_resume_*, gather_and_avoid_zones, resource_targeted_scout
+  TransportScenarios.cs        capability.*, rail_transfers_*, review_rail_*, review_transport_*, shipping_*
+  GovernanceScenarios.cs       territory_*
+  DefenseScenarios.cs          undefended_raid_*, functional_weapon_*, review_land_mover_*
+  CampaignScenarios.cs         campaign.* (explicit in Unity, excluded by the runner unless --include-campaigns)
+  ScenarioKit.cs               no cases: Scenario plus the shared fixtures and assertions
+A new file names its cases <file prefix in snake_case>.<case> (job_robustness.* in JobRobustnessScenarios.cs) and
+needs no registration: any static *Scenarios class with a public static Cases() is discovered below.
+```

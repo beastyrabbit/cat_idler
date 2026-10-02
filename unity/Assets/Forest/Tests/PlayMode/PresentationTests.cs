@@ -219,7 +219,7 @@ namespace IdleCatForest.Tests
             var tile = game.CurrentWorld.Tiles.First(t => game.Selected.Known.Contains(t.Position) && t.Resource == "logs" && t.Amount > 0 && !t.Wall && !t.Road);
             yield return new WaitForSecondsRealtime(.25f);
             string name = "tile:" + tile.Position;
-            Assert.That(GameObject.Find(name).transform.Find("tree_oak"), Is.Not.Null);
+            Assert.That(GameObject.Find(name).transform.Find(ForestView.VisualName + "/tree_oak"), Is.Not.Null);
             tile.Road = true;
             yield return new WaitForSecondsRealtime(.25f);
             Assert.That(GameObject.Find(name).GetComponentsInChildren<Transform>().Any(t => t.name.StartsWith("world_road_", StringComparison.Ordinal)), Is.True, "A tile keeps its identity when its visible asset changes.");

@@ -11,7 +11,7 @@ namespace IdleCatForest.Simulation
         {
             if (v.Jobs.Any(j => j.Kind == kind && !j.Completed))
                 return;
-            var worker = v.Cats.Where(c => c.Alive && c.ControlledBy == "" && !IsDungeonExplorer(c) && c.Position.Level == 0 && c.AgeHours >= Pace.WorkingAgeHours && c.Migration != "arriving" && c.Migration != "departing" && !v.Jobs.Any(j => j.CatId == c.Id && !j.Completed && (j.Kind == "hunt" || j.Kind == "water")))
+            var worker = v.Cats.Where(c => c.Alive && c.ControlledBy == "" && !IsDungeonExplorer(c) && c.Position.Level == 0 && c.AgeHours >= Pace.WorkerMinAgeHours && c.Migration != "arriving" && c.Migration != "departing" && !v.Jobs.Any(j => j.CatId == c.Id && !j.Completed && (j.Kind == "hunt" || j.Kind == "water")))
                 .OrderByDescending(c => c.Health + c.Thirst + c.Hunger).ThenBy(c => c.Id, StringComparer.Ordinal).FirstOrDefault();
             if (worker == null)
                 return;

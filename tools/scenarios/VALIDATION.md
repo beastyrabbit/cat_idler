@@ -1,6 +1,6 @@
 # Acceptance evidence
 
-The executable suite and Unity EditMode tests share `AcceptanceScenarios.cs`. Results below came from the .NET executable on the development Mac. Unity Editor and packaged UI execution belong to the parent migration checks.
+The executable suite and Unity EditMode tests share the scenario files in `Tests/EditMode/Acceptance/` (entry point `AcceptanceScenarios.Cases()`). Results below came from the .NET executable on the development Mac. Unity Editor and packaged UI execution belong to the parent migration checks.
 
 The live-simulation revision passes all 689 noncampaign scenarios, including
 187 regressions, in 103.9515 seconds. Twenty-three new cases check 50-millisecond

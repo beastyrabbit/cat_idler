@@ -10,6 +10,25 @@ namespace IdleCatForest.Simulation
         public const string Research = "research";
         public const string Tithe = "tithe";
 
+        // In use as literals in Jobs/, Systems/ and the domain files (added at W1-INT for the freeze;
+        // call sites move to these constants in Wave 2). Birth, Death and Discovery below are in use too.
+        public const string Completed = "completed";
+        public const string Defense = "defense";
+        public const string Dungeon = "dungeon";
+        public const string Election = "election";
+        public const string Emergency = "emergency";
+        public const string Expansion = "expansion";
+        public const string Migration = "migration";
+        public const string Pregnancy = "pregnancy";
+        public const string Raid = "raid";
+        public const string RaidBreach = "raid_breach";
+        public const string RaidLoss = "raid_loss";
+        public const string Recovery = "recovery";
+        public const string RecoveryBlocked = "recovery_blocked";
+        public const string Trade = "trade";
+        public const string Trader = "trader";
+        public const string Upgrade = "upgrade";
+
         // Pre-declared for Wave 2.
         public const string Milestone = "milestone";
         public const string RaidWarning = "raid_warning";
