@@ -25,6 +25,20 @@ namespace IdleCatForest.Acceptance
                 var world = New(); var site = new DungeonSite { Id = "existing", Entrance = new Int2(500, 500) }; world.Dungeons.Add(site);
                 Require(!world.CanPrepareFoundingTerrain("other", site.Entrance, 6), "Founding can grade over an existing dungeon entrance and its stairs");
             });
+            yield return new Scenario("regression.world_generation_version_1_samples_unchanged", () =>
+            {
+                // Recorded before generation version 2 existed; version 1 worlds must never move.
+                var text = new System.Text.StringBuilder();
+                foreach (uint seed in new uint[] { 7, 41, 4242 })
+                {
+                    var w = New(seed);
+                    for (int z = -150; z <= 150; z += 3)
+                        for (int x = -150; x <= 150; x += 3)
+                            text.Append(Fingerprint(w.GenerateSurfaceTile(new Int2(x, z)))).Append(':').Append(w.GenerateSurfaceTile(new Int2(x, z)).FishCapacity).Append('\n');
+                }
+                string actual = Sha256(text.ToString());
+                Require(actual == Version1SampleHash, "Version 1 terrain samples changed: " + actual);
+            });
             yield return new Scenario("regression.world_generation_rejects_unsupported_version", () =>
             {
                 var world = World.Create(41); world.GenerationVersion = 99;
@@ -32,7 +46,13 @@ namespace IdleCatForest.Acceptance
             });
         }
 
+        const string Version1SampleHash = "5a8c602dbb4371f5a210a11072b1ab62631ce2cec3d25cfc353df5b310c83913";
         private static World New(uint seed = 41) => new World { Seed = seed, RandomState = 1234, GenerationVersion = 1 };
+        private static string Sha256(string value)
+        {
+            using (var sha = System.Security.Cryptography.SHA256.Create())
+                return string.Concat(sha.ComputeHash(System.Text.Encoding.UTF8.GetBytes(value)).Select(b => b.ToString("x2", System.Globalization.CultureInfo.InvariantCulture)));
+        }
         private static void Require(bool value, string message)
         {
             if (!value)
