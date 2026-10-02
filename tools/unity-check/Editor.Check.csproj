@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Mirrors IdleCatForest.Editor.asmdef: Editor-only, compiled against unity-4.8-api with the UnityEditor API. -->
+  <PropertyGroup>
+    <AssemblyName>IdleCatForest.Editor</AssemblyName>
+    <RootNamespace>IdleCatForest.Editor</RootNamespace>
+    <UnityCheckProfile>netfx</UnityCheckProfile>
+    <UnityCheckEngine>true</UnityCheckEngine>
+    <UnityCheckEditorApi>true</UnityCheckEditorApi>
+    <UnityCheckPipeline>true</UnityCheckPipeline>
+    <UnityCheckNewtonsoft>true</UnityCheckNewtonsoft>
+    <DefineConstants>$(DefineConstants);UNITY_EDITOR;UNITY_EDITOR_64;UNITY_EDITOR_OSX;UNITY_INCLUDE_TESTS</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="$(UnityCheckAssets)Editor/**/*.cs" />
+    <ProjectReference Include="Forest.Sim.Check.csproj" Private="false" />
+    <ProjectReference Include="Forest.Authority.Check.csproj" Private="false" />
+    <ProjectReference Include="Presentation.Check.csproj" Private="false" />
+  </ItemGroup>
+</Project>

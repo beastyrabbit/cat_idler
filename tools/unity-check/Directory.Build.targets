@@ -1,0 +1,54 @@
+<Project>
+  <!-- Reference sets per project flag. Paths follow the Unity-generated IDE projects for 6000.6.0f1. -->
+  <PropertyGroup>
+    <UnityCheckNeedsLibrary Condition="'$(UnityCheckNewtonsoft)' == 'true' Or '$(UnityCheckInputSystem)' == 'true' Or '$(UnityCheckPipeline)' == 'true' Or '$(UnityCheckTests)' == 'true'">true</UnityCheckNeedsLibrary>
+    <UnityCheckNetfx>$(UnityCheckScripting)/UnityReferenceAssemblies/unity-4.8-api</UnityCheckNetfx>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(UnityCheckProfile)' == 'netstandard'">
+    <Reference Include="$(UnityCheckScripting)/NetStandard/ref/2.1.0/netstandard.dll" Private="false" />
+    <Reference Include="$(UnityCheckScripting)/NetStandard/compat/2.1.0/shims/netstandard/*.dll" Private="false" />
+    <Reference Include="$(UnityCheckScripting)/NetStandard/compat/2.1.0/shims/netfx/*.dll" Private="false" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(UnityCheckProfile)' == 'netfx'">
+    <Reference Include="$(UnityCheckNetfx)/mscorlib.dll;$(UnityCheckNetfx)/System.dll;$(UnityCheckNetfx)/System.Core.dll;$(UnityCheckNetfx)/System.Runtime.Serialization.dll;$(UnityCheckNetfx)/System.Xml.dll;$(UnityCheckNetfx)/System.Xml.Linq.dll;$(UnityCheckNetfx)/System.Numerics.dll;$(UnityCheckNetfx)/System.Numerics.Vectors.dll;$(UnityCheckNetfx)/System.Net.Http.dll;$(UnityCheckNetfx)/System.IO.Compression.dll;$(UnityCheckNetfx)/Microsoft.CSharp.dll;$(UnityCheckNetfx)/System.Data.dll;$(UnityCheckNetfx)/System.Data.DataSetExtensions.dll;$(UnityCheckNetfx)/System.Drawing.dll;$(UnityCheckNetfx)/System.IO.Compression.FileSystem.dll;$(UnityCheckNetfx)/System.ComponentModel.Composition.dll;$(UnityCheckNetfx)/System.Transactions.dll" Private="false" />
+    <Reference Include="$(UnityCheckNetfx)/Facades/*.dll" Private="false" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(UnityCheckEngine)' == 'true'">
+    <Reference Include="$(UnityCheckManaged)/UnityEngine.dll;$(UnityCheckManaged)/UnityEngine.*Module.dll;$(UnityCheckManaged)/Unity.Scripting.dll" Private="false" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(UnityCheckEditorApi)' == 'true'">
+    <Reference Include="$(UnityCheckManaged)/UnityEditor.dll;$(UnityCheckManaged)/UnityEditor.*Module.dll;$(UnityCheckScripting)/Managed/UnityEditor.Graphs.dll" Private="false" />
+    <Reference Include="$(UnityCheckRoot)/PlaybackEngines/MacStandaloneSupport/UnityEditor.OSXStandalone.Extensions.dll" Condition="Exists('$(UnityCheckRoot)/PlaybackEngines/MacStandaloneSupport/UnityEditor.OSXStandalone.Extensions.dll')" Private="false" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(UnityCheckNewtonsoft)' == 'true'">
+    <Reference Include="$(UnityCheckLibrary)/PackageCache/com.unity.nuget.newtonsoft-json@*/Runtime/Newtonsoft.Json.dll" Private="false" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(UnityCheckInputSystem)' == 'true'">
+    <Reference Include="$(UnityCheckLibrary)/ScriptAssemblies/Unity.InputSystem.dll" Private="false" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(UnityCheckPipeline)' == 'true'">
+    <Reference Include="$(UnityCheckLibrary)/ScriptAssemblies/Unity.Pipeline.dll" Private="false" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(UnityCheckTests)' == 'true'">
+    <Reference Include="$(UnityCheckLibrary)/ScriptAssemblies/UnityEngine.TestRunner.dll" Private="false" />
+    <Reference Include="$(UnityCheckLibrary)/PackageCache/com.unity.ext.nunit@*/net472/unity-custom/nunit.framework.dll" Private="false" />
+  </ItemGroup>
+
+  <!-- Fail early with a readable message instead of hundreds of missing-type errors. -->
+  <Target Name="UnityCheckPreconditions" BeforeTargets="ResolveAssemblyReferences;CoreCompile">
+    <Error Condition="!Exists('$(UnityCheckScripting)/NetStandard/ref/2.1.0/netstandard.dll')"
+           Text="unity-check: Unity 6000.6.0f1 reference assemblies not found under '$(UnityCheckRoot)'. Install the editor or set FOREST_UNITY_ROOT." />
+    <Error Condition="'$(UnityCheckNeedsLibrary)' == 'true' And !Exists('$(UnityCheckLibrary)/ScriptAssemblies')"
+           Text="unity-check: '$(UnityCheckLibrary)/ScriptAssemblies' is missing. Clone an imported Library (bash tools/forest.sh worktree-init) or set FOREST_UNITY_LIBRARY." />
+    <Error Condition="'%(Reference.Identity)' != '' And $([System.String]::new('%(Reference.Identity)').EndsWith('.dll')) And !Exists('%(Reference.Identity)')"
+           Text="unity-check: reference assembly '%(Reference.Identity)' does not exist." />
+  </Target>
+</Project>

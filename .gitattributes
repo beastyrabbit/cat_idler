@@ -1,0 +1,19 @@
+# Unity metadata keeps Unity's own trailing-space form ("key: "); do not flag or strip it.
+*.meta -whitespace
+
+# Unity YAML: LF everywhere, merged with Unity's Smart Merge when it is configured:
+#   git config merge.unityyamlmerge.name "Unity SmartMerge"
+#   git config merge.unityyamlmerge.driver "'/Applications/Unity/Hub/Editor/6000.6.0f1/Unity.app/Contents/Helpers/UnityYAMLMerge' merge -p %O %B %A %A"
+# Without that configuration git falls back to its normal text merge.
+*.unity merge=unityyamlmerge eol=lf
+*.prefab merge=unityyamlmerge eol=lf
+*.asset merge=unityyamlmerge eol=lf
+
+# Binary assets: never diff, merge or convert line endings.
+*.fbx binary
+*.blend binary
+*.png binary
+*.wav binary
+*.ogg binary
+*.ttf binary
+*.otf binary

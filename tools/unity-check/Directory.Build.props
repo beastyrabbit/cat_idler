@@ -1,0 +1,45 @@
+<Project>
+  <!--
+    Unity-free compile gate. These projects mirror the Unity asmdefs and compile the same sources against
+    Unity's own reference assemblies, so C# errors show up without opening or importing Unity.
+    The goal is CS-error parity with the Unity compiler, not a usable binary.
+
+    FOREST_UNITY_ROOT     editor folder, default /Applications/Unity/Hub/Editor/6000.6.0f1
+    FOREST_UNITY_LIBRARY  imported Library of the project, default <this checkout>/unity/Library
+  -->
+  <PropertyGroup>
+    <UnityCheckRoot Condition="'$(FOREST_UNITY_ROOT)' != ''">$(FOREST_UNITY_ROOT)</UnityCheckRoot>
+    <UnityCheckRoot Condition="'$(UnityCheckRoot)' == ''">/Applications/Unity/Hub/Editor/6000.6.0f1</UnityCheckRoot>
+    <UnityCheckLibrary Condition="'$(FOREST_UNITY_LIBRARY)' != ''">$(FOREST_UNITY_LIBRARY)</UnityCheckLibrary>
+    <UnityCheckLibrary Condition="'$(UnityCheckLibrary)' == ''">$([MSBuild]::NormalizeDirectory('$(MSBuildThisFileDirectory)', '..', '..', 'unity', 'Library'))</UnityCheckLibrary>
+    <UnityCheckScripting>$(UnityCheckRoot)/Unity.app/Contents/Resources/Scripting</UnityCheckScripting>
+    <UnityCheckManaged>$(UnityCheckScripting)/Managed/UnityEngine</UnityCheckManaged>
+    <UnityCheckAssets>$([MSBuild]::NormalizeDirectory('$(MSBuildThisFileDirectory)', '..', '..', 'unity', 'Assets', 'Forest'))</UnityCheckAssets>
+    <!-- netstandard: Unity runtime assemblies (.NET Standard 2.1); netfx: Editor-only assemblies (unity-4.8-api). -->
+    <UnityCheckProfile Condition="'$(UnityCheckProfile)' == ''">netstandard</UnityCheckProfile>
+
+    <!-- Several projects share this folder; keep their restore and build outputs apart. -->
+    <BaseIntermediateOutputPath>obj/$(MSBuildProjectName)/</BaseIntermediateOutputPath>
+    <BaseOutputPath>bin/$(MSBuildProjectName)/</BaseOutputPath>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <LangVersion>9.0</LangVersion>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <EnableDefaultItems>false</EnableDefaultItems>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <ProduceReferenceAssembly>false</ProduceReferenceAssembly>
+    <DebugType>none</DebugType>
+    <NoStandardLibraries>true</NoStandardLibraries>
+    <NoStdLib>true</NoStdLib>
+    <NoConfig>true</NoConfig>
+    <DisableImplicitFrameworkReferences>true</DisableImplicitFrameworkReferences>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+    <!-- Unity-only analyser noise: serialized fields that look unused, nullable annotations without context,
+         obsolete Unity API notices and reference-unification chatter. Errors are never suppressed. -->
+    <NoWarn>$(NoWarn);0169;0414;0649;0618;8632;1701;1702;1705;USG0001;MSB3243;MSB3277;NU1701</NoWarn>
+    <MSBuildWarningsAsMessages>$(MSBuildWarningsAsMessages);MSB3277</MSBuildWarningsAsMessages>
+    <DefineConstants>UNITY_6000_6_0;UNITY_6000_6;UNITY_6000;UNITY_5_3_OR_NEWER;UNITY_2017_1_OR_NEWER;UNITY_2019_1_OR_NEWER;UNITY_2020_1_OR_NEWER;UNITY_2021_1_OR_NEWER;UNITY_2022_1_OR_NEWER;UNITY_2023_1_OR_NEWER;UNITY_6000_0_OR_NEWER;UNITY_6000_6_OR_NEWER;PLATFORM_ARCH_64;UNITY_64;PLATFORM_STANDALONE_OSX;PLATFORM_STANDALONE;UNITY_STANDALONE_OSX;UNITY_STANDALONE;ENABLE_INPUT_SYSTEM;ENABLE_MONO;NET_STANDARD_2_0;NET_STANDARD;NET_STANDARD_2_1;NETSTANDARD;NETSTANDARD2_1;CSHARP_7_OR_LATER;CSHARP_7_3_OR_NEWER</DefineConstants>
+  </PropertyGroup>
+</Project>
