@@ -9,9 +9,10 @@ namespace IdleCatForest.Simulation
         private const string ConstructionReserveBlock = "construction_reserve";
 
         /// <summary>
-        /// The first time a player-assigned worker is seen at a station with an empty queue, queue the
-        /// station's default recipe on repeat. Once per assignment, so a queue the player empties stays
-        /// empty; automated slots are queued by their officer or the Leader.
+        /// The first time a player-assigned worker is seen idle at a station with an empty queue, queue
+        /// the station's default recipe on repeat. Once per assignment: a slot first seen busy, queued or
+        /// automated is only marked, so a queue that empties later (or that the player empties) stays
+        /// empty. Automated slots are queued by their officer or the Leader.
         /// </summary>
         private void ApplyQueueDefault(Village v, Building b, WorkSlot slot)
         {
@@ -27,6 +28,15 @@ namespace IdleCatForest.Simulation
             }
             v.QueueDefaultsApplied.Add(key);
         }
+        /// <summary>Marks a staffed slot that is first seen with work, a queue or an automation owner, so it never gets a default.</summary>
+        private void MarkQueueSeen(Village v, Building b, WorkSlot slot, Cat c)
+        {
+            if (c.JobId == "" && slot.Queue.Count == 0 && slot.AutomatedBy == "")
+                return;
+            string key = QueueDefaultKey(b, slot);
+            if (!v.QueueDefaultsApplied.Contains(key))
+                v.QueueDefaultsApplied.Add(key);
+        }
 
         /// <summary>Staffed stations: scholars study, finished output is delivered, and the next queued recipe is funded and started.</summary>
         private void TickStations(Village v, double dt, bool planning)
@@ -35,6 +45,8 @@ namespace IdleCatForest.Simulation
                 foreach (var slot in b.Slots.ToArray())
                 {
                     var c = v.Cats.Find(c => c.Id == slot.CatId && c.Alive);
+                    if (planning && c != null)
+                        MarkQueueSeen(v, b, slot, c);
                     if (c == null || c.ControlledBy != "" || c.JobId != "" || c.Goal.StartsWith(GoalKey.NeedPrefix, StringComparison.Ordinal) || slot.Paused || b.Paused)
                         continue;
                     if (b.Kind == "research_hut" || b.Kind == "school")

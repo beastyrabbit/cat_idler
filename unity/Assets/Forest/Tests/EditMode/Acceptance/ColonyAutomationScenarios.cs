@@ -38,6 +38,7 @@ namespace IdleCatForest.Acceptance
             yield return new Scenario("colony_automation.officer_gates_preserves_on_food_surplus", OfficerGatesPreserves);
             yield return new Scenario("colony_automation.officer_staffs_worker_slots_by_labor", OfficerStaffsWorkerSlots);
             yield return new Scenario("colony_automation.assigned_station_queues_repeat_default", AssignedStationQueuesDefault);
+            yield return new Scenario("colony_automation.restored_busy_worker_gets_no_default", RestoredBusyWorkerGetsNoDefault);
             yield return new Scenario("colony_automation.emergency_spares_need_trips_and_late_work", EmergencySparesNeedTripsAndLateWork);
             yield return new Scenario("colony_automation.emergency_dry_run_keeps_work", EmergencyDryRunKeepsWork);
             yield return new Scenario("colony_automation.emergency_rate_limited", EmergencyRateLimited);
@@ -326,6 +327,24 @@ namespace IdleCatForest.Acceptance
             Act(w, v, new GameAction { Kind = "EditProductionQueue", BuildingId = cutter.Id, Edit = "remove", Index = 0 });
             w.Step(3);
             Check(slot.Queue.Count == 0, "A queue the player emptied was refilled");
+            Valid(w);
+        }
+
+        static void RestoredBusyWorkerGetsNoDefault()
+        {
+            var w = Fixture(out var v, out var c);
+            World.Add(v.Stockpiles[0].Goods, "logs", 50);
+            var cutter = Station(w, v, "wood_cutter");
+            Act(w, v, new GameAction { Kind = "AssignWorker", BuildingId = cutter.Id, CatId = c.Id });
+            Act(w, v, new GameAction { Kind = "EditProductionQueue", BuildingId = cutter.Id, Edit = "add", RecipeId = "logs_to_planks" });
+            w.Step(30);
+            var job = v.Jobs.Single(j => j.Kind == "production" && !j.Completed);
+            // A save written before queue defaults existed: a worker mid-batch whose queue is already empty.
+            Act(w, v, new GameAction { Kind = "EditProductionQueue", BuildingId = cutter.Id, Edit = "remove", Index = 0 });
+            v.QueueDefaultsApplied.Clear();
+            w.Step(900);
+            Check(job.Completed, "Restored batch did not finish");
+            Check(cutter.Slots.All(s => s.Queue.Count == 0) && !v.Jobs.Any(j => j.Kind == "production" && !j.Completed), "A worker first seen mid-batch got a default recipe after its queue ran out");
             Valid(w);
         }
 
