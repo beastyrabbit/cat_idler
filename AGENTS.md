@@ -1,6 +1,7 @@
 # Idle Cat Forest agent instructions
 
-Idle Cat Forest is a non-commercial forest colony game. Unity is the selected
+Idle Cat Forest is a forest colony game in development for Steam; the demo is free;
+pricing undecided. The demo brief is `docs/DEMO.md`. Unity is the selected
 engine. The active migration replaces the Rust/Bevy game with C# and Unity; see
 `docs/unity/ACCEPTANCE.md` for implementation and verification status.
 Historical Rust-only, TypeScript parity, flat-sprite and migration-card restrictions

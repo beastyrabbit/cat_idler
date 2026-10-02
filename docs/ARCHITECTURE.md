@@ -3,7 +3,7 @@
 Unity renders the forest and provides management and third-person cat control.
 The same C# simulation runs inside the native app or an independent shared-world
 server. The migration acceptance ledger is [unity/ACCEPTANCE.md](unity/ACCEPTANCE.md).
-The game is non-commercial.
+The game is in development for Steam; the demo is free; pricing undecided.
 
 ## Components
 
