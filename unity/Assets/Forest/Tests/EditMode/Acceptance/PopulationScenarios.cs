@@ -20,6 +20,148 @@ namespace IdleCatForest.Acceptance
             yield return new Scenario("regression.death_preserves_cargo_and_exact_items", DeathCargo);
             yield return new Scenario("regression.extinction_restores_atomic_founding", Extinction);
             yield return new Scenario("regression.unhoused_migrant_physically_leaves", MigrantDeparture);
+            yield return new Scenario("regression.population_breeding_pair_is_seeded_and_shares_a_den", BreedingPairSeeded);
+            yield return new Scenario("regression.population_breeding_pair_skips_migrants_and_kittens", BreedingPairResidents);
+            yield return new Scenario("regression.population_kitten_born_without_free_bed", KittenWithoutBed);
+            yield return new Scenario("regression.population_successors_exclude_kittens_and_migrants", OfficeSuccessors);
+        }
+
+        /// <summary>
+        /// A breeding fixture in the demo profile (its per-check chance makes a pregnancy likely within minutes):
+        /// founding beds plus one spare den, stock to spare, and the breeding window already open.
+        /// </summary>
+        static World BreedingFixture(int seed, out Village v)
+        {
+            var w = World.Create(seed);
+            v = w.Villages[0];
+            w.PacingProfile = Pacing.DemoProfile;
+            v.Buildings.RemoveAll(b => b.Kind != "den" && b.Kind != "shrine");
+            v.Stockpiles.RemoveRange(1, v.Stockpiles.Count - 1);
+            v.Stockpiles[0].Goods.Clear();
+            v.Stockpiles[0].Capacity = 100000;
+            World.Add(v.Stockpiles[0].Goods, "food", 1000);
+            World.Add(v.Stockpiles[0].Goods, "water", 1000);
+            foreach (var cat in v.Cats)
+            {
+                cat.ControlledBy = "fixture-held";
+                cat.ControlLeaseUntil = 10000000;
+            }
+            v.Buildings.Add(new Building { Id = w.Id("den"), Kind = "den", Position = new Int2(-4, 1), Completed = true });
+            v.FoundedAt = -1000000;
+            v.LastMigration = 0;
+            return w;
+        }
+
+        /// <summary>Steps upkeep ticks until a pregnancy starts; returns the mother or null.</summary>
+        static Cat StepUntilPregnant(World w, Village v, int maxTicks = 240)
+        {
+            for (int tick = 0; tick < maxTicks; tick++)
+            {
+                w.Step(60);
+                var mother = v.Cats.FirstOrDefault(c => c.PregnantUntil > 0);
+                if (mother != null)
+                    return mother;
+            }
+            return null;
+        }
+
+        static void BreedingPairSeeded()
+        {
+            var mothers = new HashSet<int>();
+            for (int seed = 1; seed <= 8; seed++)
+            {
+                var w = BreedingFixture(seed, out var v);
+                var mother = StepUntilPregnant(w, v);
+                Check(mother != null, "Seed " + seed + ": no pregnancy in the demo breeding window");
+                var mate = v.Cats.Find(c => c.Id == mother.PregnancyMateId);
+                Check(mate != null && mate != mother, "Seed " + seed + ": pregnancy has no distinct mate");
+                Check(mate.BedId != "" && mate.BedId == mother.BedId, "Seed " + seed + ": mate does not share the mother's den although den-mates exist");
+                mothers.Add(v.Cats.IndexOf(mother));
+                Valid(w);
+            }
+            Check(mothers.Count >= 3, "Mothers are not chosen by the seeded roll: list positions " + string.Join(",", mothers));
+        }
+
+        static void BreedingPairResidents()
+        {
+            for (int seed = 1; seed <= 4; seed++)
+            {
+                var w = BreedingFixture(seed, out var v);
+                // Walled in outside the fence, these wanderers stay "arriving" for the whole fixture.
+                var pen = new Int2(v.Center.X + 16, v.Center.Z + 16);
+                for (int dx = -1; dx <= 1; dx++)
+                    for (int dz = -1; dz <= 1; dz++)
+                        w.TileAt(new Int2(pen.X + dx, pen.Z + dz)).Wall = dx != 0 || dz != 0;
+                // Every founder but the last two becomes ineligible, so only a resident pair can breed.
+                var founders = v.Cats.ToArray();
+                for (int i = 0; i < founders.Length - 2; i++)
+                {
+                    var c = founders[i];
+                    if (i % 2 == 0)
+                    {
+                        c.Migration = "arriving";
+                        c.BedId = "";
+                        c.Position = pen;
+                        c.X = pen.X;
+                        c.Z = pen.Z;
+                    }
+                    else
+                        c.AgeHours = 1;
+                }
+                var mother = StepUntilPregnant(w, v);
+                Check(mother != null, "Seed " + seed + ": the resident pair never bred");
+                var mate = v.Cats.Find(c => c.Id == mother.PregnancyMateId);
+                foreach (var parent in new[] { mother, mate })
+                    Check(parent != null && parent.Migration == "resident" && parent.BedId != "" && parent.AgeHours >= 24, "Seed " + seed + ": a migrant or kitten was chosen as a parent (" + parent?.Name + ")");
+            }
+        }
+
+        static void KittenWithoutBed()
+        {
+            var w = Fixture(out var v, out var c);
+            var spare = new Building { Id = w.Id("den"), Kind = "den", Position = new Int2(-4, 1), Completed = true };
+            v.Buildings.Add(spare);
+            var mother = v.Cats[1];
+            mother.PregnantUntil = 30;
+            mother.PregnancyMateId = v.Cats[2].Id;
+            // The reserved den is lost before term: no free bed remains when the kitten is due.
+            v.Buildings.Remove(spare);
+            int before = v.Cats.Count;
+            w.Step(60);
+            var kitten = v.Cats.Skip(before).SingleOrDefault();
+            Check(kitten != null && kitten.Alive && kitten.AgeHours < 1, "A kitten at term without a free bed was not born");
+            Check(kitten.BedId == "" && mother.PregnantUntil < 0 && mother.PregnancyMateId == "", "Birth without a bed left the pregnancy open or invented a bed");
+            Check(kitten.ParentIds.Contains(mother.Id) && kitten.ParentIds.Contains(v.Cats[2].Id), "Bedless kitten lost its parents");
+            Check(v.Events.Any(e => e.Kind == "birth" && e.EntityId == kitten.Id), "Bedless birth was not announced");
+            Valid(w);
+            v.Buildings.Add(new Building { Id = w.Id("den"), Kind = "den", Position = new Int2(-4, 1), Completed = true });
+            w.Step(60);
+            Check(kitten.BedId != "" && kitten.Alive, "Housing did not give the bedless kitten a bed once one was free");
+            Valid(w);
+        }
+
+        static void OfficeSuccessors()
+        {
+            var w = Fixture(out var v, out var c);
+            // Ordinal ids that sort before every founder, so the old "first by id" rule would pick them.
+            var kitten = new Cat { Id = "0-kitten", Name = "Kitten", VillageId = v.Id, Position = v.Center, AgeHours = 2, ControlledBy = "fixture-held", ControlLeaseUntil = 10000000 };
+            var probationer = new Cat { Id = "0-probationer", Name = "Probationer", VillageId = v.Id, Position = v.Center, Migration = "probationary", ProbationUntil = 100000000, ControlledBy = "fixture-held", ControlLeaseUntil = 10000000 };
+            var arriving = new Cat { Id = "0-arriving", Name = "Arriving", VillageId = v.Id, Position = new Int2(v.Center.X, v.Center.Z + v.Radius + 3), Migration = "arriving" };
+            v.Cats.AddRange(new[] { kitten, probationer, arriving });
+            var holder = v.Cats.First(x => x.Id.StartsWith("cat-", StringComparison.Ordinal));
+            v.LeaderId = holder.Id;
+            v.Officers.Add(new Officer { Role = "steward", CatId = holder.Id });
+            holder.OfficerRole = "steward";
+            holder.Health = 0;
+            w.Step(1);
+            Check(!holder.Alive, "Fixture office holder did not die");
+            var leader = v.Cats.Find(x => x.Id == v.LeaderId);
+            var steward = v.Officers.SingleOrDefault(o => o.Role == "steward");
+            var officer = steward == null ? null : v.Cats.Find(x => x.Id == steward.CatId);
+            Check(leader != null && w.EligibleForOffice(leader), "Leader successor is not eligible: " + leader?.Name);
+            Check(officer != null && w.EligibleForOffice(officer) && officer.OfficerRole == "steward", "Officer successor is not eligible: " + officer?.Name);
+            foreach (var x in new[] { kitten, probationer, arriving })
+                Check(!w.EligibleForOffice(x), x.Name + " counts as eligible for office");
         }
         static void HousingConnectedSite(string mode)
         {

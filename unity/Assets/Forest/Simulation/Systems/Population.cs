@@ -7,6 +7,13 @@ namespace IdleCatForest.Simulation
     public partial class World
     {
         /// <summary>
+        /// Whether a cat may take over as leader or officer: a living, settled adult. Kittens and wanderers
+        /// (arriving, on probation or departing) never inherit an office.
+        /// </summary>
+        public bool EligibleForOffice(Cat c) => c != null && c.Alive && c.Migration == "resident" && c.AgeHours >= Pace.KittenUntilHours;
+        /// <summary>A settled resident with its own bed and of parenting age.</summary>
+        private bool EligibleParent(Cat c) => c.Alive && c.Migration == "resident" && c.BedId != "" && c.AgeHours >= Pace.ParentMinAgeHours && c.AgeHours < Pace.ParentMaxAgeHours;
+        /// <summary>
         /// Kills a cat and releases everything it held: work, cargo, items, bed and offices.
         /// <paramref name="cause"/> names the death in the village log ("needs", "old age", "dungeon").
         /// </summary>
@@ -29,7 +36,7 @@ namespace IdleCatForest.Simulation
             c.Equipment.Clear();
             foreach (var officer in v.Officers.Where(o => o.CatId == c.Id).ToArray())
             {
-                var successor = v.Cats.Where(x => x.Alive && x.Id != c.Id && x.OfficerRole == "").OrderBy(x => x.Id, StringComparer.Ordinal).FirstOrDefault();
+                var successor = v.Cats.Where(x => x.Id != c.Id && x.OfficerRole == "" && EligibleForOffice(x)).OrderBy(x => x.Id, StringComparer.Ordinal).FirstOrDefault();
                 if (successor == null)
                     v.Officers.Remove(officer);
                 else
@@ -39,7 +46,7 @@ namespace IdleCatForest.Simulation
                 }
             }
             if (v.LeaderId == c.Id)
-                v.LeaderId = v.Cats.Where(x => x.Alive).OrderBy(x => x.Id, StringComparer.Ordinal).FirstOrDefault()?.Id ?? "";
+                v.LeaderId = v.Cats.Where(EligibleForOffice).OrderBy(x => x.Id, StringComparer.Ordinal).FirstOrDefault()?.Id ?? "";
             Note(v, "death", c.Name + " died from " + cause, c.Id);
         }
         /// <summary>Refounding after extinction, housing, births, old age, breeding and migration, once per upkeep tick.</summary>
@@ -100,15 +107,14 @@ namespace IdleCatForest.Simulation
                         double maternal = Amount(c.Stats, stat.Resource), paternal = mate == null ? maternal : Amount(mate.Stats, stat.Resource);
                         stat.Amount = Math.Clamp((maternal + paternal) * 0.5 + (Roll() - 0.5) * Pace.KittenStatSpread, 0, 100);
                     }
+                    // The reserved bed normally waits for the kitten; if it was lost, housing finds one later.
                     var den = v.Buildings.Where(b => b.Completed && b.Kind == "den").FirstOrDefault(b => v.Cats.Count(x => x.Alive && x.BedId == b.Id) < DenCapacity(v));
                     if (den != null)
-                    {
                         kitten.BedId = den.Id;
-                        v.Cats.Add(kitten);
-                        c.PregnantUntil = -1;
-                        c.PregnancyMateId = "";
-                        Note(v, "birth", kitten.Name + " was born", kitten.Id);
-                    }
+                    v.Cats.Add(kitten);
+                    c.PregnantUntil = -1;
+                    c.PregnancyMateId = "";
+                    Note(v, "birth", kitten.Name + " was born", kitten.Id);
                 }
                 if (c.AgeHours >= (c.Id == v.LeaderId || c.OfficerRole == "loremaster" ? Pace.HonouredElderAgeHours : Pace.ElderAgeHours) && Roll() < Pace.OldAgeDeathChance / Service(v, "elder_corner", "elderProtection", 1))
                     Die(v, c, "old age");
@@ -118,17 +124,24 @@ namespace IdleCatForest.Simulation
                 int reservations = alive.Count(c => c.PregnantUntil > 0);
                 if (alive.Length + reservations < beds)
                 {
-                    var mother = alive.FirstOrDefault(c => c.AgeHours >= Pace.ParentMinAgeHours && c.AgeHours < Pace.ParentMaxAgeHours && c.PregnantUntil < 0);
-                    var mate = alive.FirstOrDefault(c => c != mother && c.AgeHours >= Pace.ParentMinAgeHours && c.AgeHours < Pace.ParentMaxAgeHours);
-                    if (mother != null && mate != null && Roll() < Pace.BreedChanceBase + Math.Min(Pace.BreedBlessingCap, v.Blessings * Pace.BreedBlessingStep) * Pace.BreedBlessingWeight)
+                    var parents = alive.Where(EligibleParent).ToArray();
+                    var mothers = parents.Where(c => c.PregnantUntil < 0).ToArray();
+                    // The chance is rolled before the pair is drawn, so a failed check costs one draw as before.
+                    if (mothers.Length > 0 && parents.Length > 1 && Roll() < Pace.BreedChanceBase + Math.Min(Pace.BreedBlessingCap, v.Blessings * Pace.BreedBlessingStep) * Pace.BreedBlessingWeight)
                     {
+                        var mother = mothers[RandomInt(mothers.Length)];
+                        var mates = parents.Where(c => c != mother && c.BedId == mother.BedId).ToArray();
+                        if (mates.Length == 0)
+                            mates = parents.Where(c => c != mother).ToArray();
+                        var mate = mates[RandomInt(mates.Length)];
                         mother.PregnantUntil = TimeSeconds + Pace.GestationSeconds;
                         mother.PregnancyMateId = mate.Id;
                         Note(v, "pregnancy", mother.Name + " reserved a kitten bed", mother.Id);
                     }
                 }
             }
-            if (TimeSeconds - v.FoundedAt >= Pace.MigrationFirstAtSeconds && TimeSeconds - v.LastMigration >= Pace.MigrationIntervalSeconds)
+            bool bedForMigrant = !Pace.MigrationRequiresFreeBed || alive.Length + alive.Count(c => c.PregnantUntil > 0) < beds;
+            if (TimeSeconds - v.FoundedAt >= Pace.MigrationFirstAtSeconds && TimeSeconds - v.LastMigration >= Pace.MigrationIntervalSeconds && bedForMigrant)
             {
                 v.LastMigration = TimeSeconds;
                 if (Total(v, "food") >= alive.Length * Pace.MigrationFoodPerCat && Total(v, "water") >= alive.Length * Pace.MigrationWaterPerCat && alive.Length < Pace.MigrationPopulationCap)
