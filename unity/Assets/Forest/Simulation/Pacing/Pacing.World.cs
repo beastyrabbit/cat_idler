@@ -15,7 +15,7 @@ namespace IdleCatForest.Simulation
         /// <summary>Footsteps that wear an untouched tile into a dirt path.</summary>
         public double PathWearToDirt = 50;
 
-        // Demo equals classic in Wave 1; W2-01 sets the demo values.
+        /// <summary>Demo equals classic: the demo shortens timers, not walking, so cats keep a readable pace.</summary>
         partial void DemoWorld()
         {
         }

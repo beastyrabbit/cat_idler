@@ -54,11 +54,42 @@ The founding Leader retains deficit-driven hunting, water fetching, and scouting
 | Loremaster | Research Hut | `research_hut` | Research labor and offerings |
 | Cloth Leader | Clothier | `textiles` | Fibre, Thread, Cloth and Leather stations |
 
-An office requires both prerequisites and a living appointed cat. Appointment gives no free productivity bonus. Automatic slots, farm assignments and jobs retain their responsible office. Removing an officer releases those workers and claims while preserving manual orders. Automatic queues choose funded recipes by stock deficit and leave workers available for survival work. The player can buy every affordable study; the living Leader may buy at most one per rolling day.
+An office requires both prerequisites and a living appointed cat. Appointment gives no free productivity bonus. Automatic slots, farm assignments and jobs retain their responsible office. Removing an officer releases those workers and claims while preserving manual orders. Automatic queues choose funded recipes by stock deficit and leave workers available for survival work. The player can buy every affordable study; the living Leader may buy at most one per rolling day in the classic profile (one per 10 minutes in the demo profile).
 
 Six legacy upgrades remain distinct from the research graph. Click Power, Supply Speed, Hunt Mastery, Build Mastery, Ritual Mastery and Resilience spend Blessings, with escalating base costs of 2, 3, 5, 5, 6 and 7. Their effects change actual boosts, work, yield and needs. Leadership elections and five-player removal petitions have separate saved ballots and deadlines.
 
-Breeding starts only after 36 game-hours, requires a reserved permanent bed, and takes 18 game-hours of gestation. Migration starts after 30 game-hours, checks every 12 hours, and gives an unhoused arrival 36 hours of probation after reaching the village. Ordinary old-age risk starts at 240 hours; Leaders and healers start at 288 hours. Extinction releases transient claims and restores a complete founding state with new identities only when its founding footprint avoids foreign property. A conflict leaves the state intact and records a recovery-blocked event.
+In the classic profile, breeding starts only after 36 game-hours, requires a reserved permanent bed, and takes 18 game-hours of gestation. Migration starts after 30 game-hours, checks every 12 hours, and gives an unhoused arrival 36 hours of probation after reaching the village. Ordinary old-age risk starts at 240 hours; Leaders and healers start at 288 hours. Extinction releases transient claims and restores a complete founding state with new identities only when its founding footprint avoids foreign property. A conflict leaves the state intact and records a recovery-blocked event.
+
+Both profiles draw the mother with the seeded roll from settled residents of parenting age who have a bed, and draw the mate from her den-mates when she has any. Wanderers, whether arriving, on probation or leaving, never become parents. A kitten due when no bed is free is still born, without a bed, and housing gives it one as soon as a bed frees up. When a Leader or officer dies, the office passes only to a settled adult. Kittens and wanderers never inherit it.
+
+## Pacing profiles
+
+Every pacing number lives in the `Pacing` partial classes under `Simulation/Pacing/`. A world's saved `PacingProfile` selects the table. `classic` keeps the numbers above for the mechanics scenarios, the campaigns and the server. `demo` is for new single-player worlds and compresses the timers to fit the 25 to 35 minute demo journey in `docs/DEMO.md`. The `demo_pacing.*` scenarios pin both tables field by field. The `demo_timing.*` scenarios, which only run with `--include-demo-timing`, measure the journey on seed 41 and print a `demo.curve` line.
+
+Durations in the table are simulated time, which is real time at 1×. `DayScale` changes only the clock the player reads: in the demo, one simulated minute shows as one game hour.
+
+| Knob | Classic | Demo | Why |
+| --- | --- | --- | --- |
+| `DayScale` | 1 | 60 | One game day lasts 24 real minutes at 1×, so the clock visibly ticks (D4). |
+| `HungerDecayPerHour`, `ThirstDecayPerHour`, `RestDecayPerHour` | 20, 30, 12 | 160, 240, 96 | Eating, drinking and napping show up within the first minutes, not after hours. |
+| `NeedServing`, `BrewServing`, `WaterServingAfterBrew` | 1, 0.25, 0.75 | 0.125, 0.03125, 0.09375 | A trip takes an eighth of the goods, so food and water per cat-hour stay at the classic rate. |
+| `EatRestorePerServing`, `DrinkRestorePerServing`, `HealRestorePerServing` | 50, 50, 25 | 400, 400, 200 | These count points per unit consumed. Each trip still restores the classic 50 (meal, drink) or 25 (herbs). |
+| `NeedsCanKill`, `NeedsHealthFloor` | true, 0 | false, 10 | No starvation deaths in the demo. Need damage stops at critical health (D16). |
+| `FishRegenPerHour` | 0.5 | 12 | A fished-out spot refills in about two hours. |
+| `BreedingAfterFoundingSeconds`, `BreedingCheckSeconds`, `BreedChanceBase` | 36 h, 1 h, 0.001 | 5 min, 1 min, 0.2 | The breeding window opens at minute 5. A pregnancy is likely by minute 10 to 12 once a bed is free. |
+| `GestationSeconds` | 18 h | 8 min | The first kitten arrives around minute 18 to 22. |
+| `MigrationFirstAtSeconds`, `MigrationIntervalSeconds` | 30 h, 12 h | 8 min, 6 min | A wanderer reaches the gate at minute 8, then another every 6 minutes. |
+| `MigrationRequiresFreeBed` | false | true | Wanderers come only while beds and food hold. A missing bed postpones the visit instead of using up the interval. |
+| `ProbationSeconds` | 36 h | 2 h | An unhoused wanderer stays for the whole session. |
+| `HousingPlanAfterSeconds` | 6 h | 10 min | The player places the first Den around minute 3 to 7. From minute 10, the Leader keeps housing one step ahead of growth. |
+| `ResearchDivisor` | 600 | 60 | One research point per scholar-minute. The first point arrives at about one minute. |
+| `LeaderStudyIntervalSeconds` | 24 h | 10 min | The Leader's own study keeps pace with a session. |
+| `ElectionIntervalSeconds` | 24 h | 100 years | Elections are hidden in the demo. |
+| `DemoRaidAtSeconds`, `RaidWarningSeconds` | off, 120 s | 15 min, 120 s | The scripted fox band is announced at minute 13 and attacks at minute 15 (D15). |
+| `RaidCanKill` | true | false | Losing a raid costs stored food, never a cat (D15, D16). |
+| `FloorRestockSeconds` | 10 min | 10 min | A cleared dungeon floor restocks within the session. |
+
+Every other knob is the same in both profiles. That covers aging (a demo kitten stays a kitten for the whole session), walking speeds, job work, yields, regrowth, the random raid trigger and the merchant, which the demo hides (D17). `TraderFirstAtSeconds` is not read yet. Wiring it into founding would move the first merchant visit for any classic village founded after time 0.
 
 ## Feature checks
 
@@ -89,7 +120,7 @@ tile and edge before advancing.
 | Accountant | The assigned cat returns to the tent, visits reachable piles, dwells to count and returns. Unreachable piles remain stale. Wire projections must not reveal exact uncounted quantities. |
 | Equipment | Tools, Weapons and Armor keep one ID through storage, equipment, damage, repair and trade. Armor production and unequipping honor Armor-only storage without scalar duplicates or changed condition. Broken equipment remains physical. Condition and quality affect real work or combat. |
 | Exploration | Scouts search by physical observation. Notes remain provisional until shrine return. Targeted scouting must not read a hidden resource before observation. |
-| Ecology | Finite source deposits deplete at pickup. Fishing uses a shared 24-fish habitat and replenishes 0.5 fish per game-hour. Replanting requires a depleted stump. Imported overlapping deposits keep separate quantities. |
+| Ecology | Finite source deposits deplete at pickup. Fishing uses a shared 24-fish habitat and replenishes 0.5 fish per game-hour (12 per simulated hour in the demo profile). Replanting requires a depleted stump. Imported overlapping deposits keep separate quantities. |
 | Research | Every building, recipe, resource and general modifier has a measurable runtime consumer. Retired capacity IDs receive their documented one-time migration refund. |
 | Shrine | New founding shrines occupy exactly 3×3 tiles with a complete road ring outside. Construction and avoid zones cannot block shrine access. Food, Herbs and Materials offerings travel there. Tithes and offerings use one spendable Blessing balance. Fertility changes when that balance changes. |
 | Defense | An undefended raid moves, harms the colony and takes finite goods. Warriors and exact equipment change combat. Each manual defense action deals one six-point hit. |

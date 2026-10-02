@@ -21,6 +21,11 @@ namespace IdleCatForest.Simulation
         public double DehydrationDamagePerMinute = 3.0;
         /// <summary>Pre-declared: whether empty needs can kill a cat.</summary>
         public bool NeedsCanKill = true;
+        /// <summary>
+        /// Pre-declared: the critical health that need damage stops at when <see cref="NeedsCanKill"/> is false.
+        /// Unused while needs can kill.
+        /// </summary>
+        public double NeedsHealthFloor = 0;
 
         // A need trip starts below these levels.
         public double DrinkThreshold = 35;
@@ -112,8 +117,31 @@ namespace IdleCatForest.Simulation
         public int EcologyTickSeconds = 60;
         public double FishRegenPerHour = 0.5;
 
+        /// <summary>
+        /// Demo: needs move about 8x faster so eating, drinking and napping show up within minutes. A serving
+        /// is an eighth of a unit and each unit restores 8x the points, so one trip restores what a classic
+        /// trip does (cats go 8x as often) while food and water used per cat and hour stay at the classic
+        /// rate and every stock target keeps its meaning.
+        /// </summary>
         partial void DemoLife()
         {
+            const double NeedSpeed = 8;
+            HungerDecayPerHour *= NeedSpeed;
+            ThirstDecayPerHour *= NeedSpeed;
+            RestDecayPerHour *= NeedSpeed;
+            NeedServing /= NeedSpeed;
+            BrewServing /= NeedSpeed;
+            WaterServingAfterBrew /= NeedSpeed;
+            // The *RestorePerServing knobs are points per unit consumed (Needs.cs multiplies them by the dose).
+            DrinkRestorePerServing *= NeedSpeed;
+            EatRestorePerServing *= NeedSpeed;
+            // Healing shares NeedServing, so one herb trip keeps healing 25 points.
+            HealRestorePerServing *= NeedSpeed;
+            // No starvation deaths in the demo (D16): need damage stops at critical health.
+            NeedsCanKill = false;
+            NeedsHealthFloor = 10;
+            // A fished-out spot refills in about two hours instead of two days.
+            FishRegenPerHour = 12;
         }
     }
 }

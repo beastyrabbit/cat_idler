@@ -34,8 +34,15 @@ namespace IdleCatForest.Simulation
         public double BoostDecayClicks = 10.0;
         public double BoostMinSeconds = 1;
 
+        /// <summary>
+        /// Demo: one research point per scholar-minute, the leader studies at most every 10 minutes, and
+        /// elections never come round (they are hidden in the demo).
+        /// </summary>
         partial void DemoResearch()
         {
+            ResearchDivisor = 60;
+            LeaderStudyIntervalSeconds = 10 * 60;
+            ElectionIntervalSeconds = 100 * 365 * 86400.0;
         }
     }
 }

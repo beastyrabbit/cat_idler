@@ -29,6 +29,11 @@ namespace IdleCatForest.Simulation
         public double LinearWorkPerTile = 30;
         public double InfrastructureWork = 120;
 
+        /// <summary>
+        /// Demo equals classic: the merchant is hidden in the demo and its simulation stays untouched (D17).
+        /// <see cref="TraderFirstAtSeconds"/> stays unread on purpose; wiring it into founding would move the
+        /// first visit of every classic village founded after time 0.
+        /// </summary>
         partial void DemoTrade()
         {
         }

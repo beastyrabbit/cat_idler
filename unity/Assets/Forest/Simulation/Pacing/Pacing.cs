@@ -43,5 +43,11 @@ namespace IdleCatForest.Simulation
         partial void DemoWorld();
         partial void DemoThreats();
         partial void DemoTrade();
+
+        // One game day is 24 real minutes at 1x (D4): the clock shows one game minute per real second.
+        partial void DemoCore()
+        {
+            DayScale = 60;
+        }
     }
 }
