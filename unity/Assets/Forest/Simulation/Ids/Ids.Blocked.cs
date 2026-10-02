@@ -30,5 +30,11 @@ namespace IdleCatForest.Simulation
         public const string MissingMaterial = "missing_material";
         public const string RouteBlocked = "route_blocked";
         public const string SourceExcluded = "source_excluded";
+
+        /// <summary>
+        /// True for either route code. Movement sets <see cref="BlockedRoute"/> today and Wave 2 code may set
+        /// <see cref="RouteBlocked"/>; readers test both through this helper so neither spelling is missed.
+        /// </summary>
+        public static bool IsRoute(string reason) => reason == BlockedRoute || reason == RouteBlocked;
     }
 }

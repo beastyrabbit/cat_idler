@@ -26,11 +26,6 @@ namespace IdleCatForest.Acceptance
             }
             yield return new Scenario("regression.review_expansion_rechecks_field", () => ExpansionFootprint("field", true));
             yield return new Scenario("regression.review_expansion_resumes_after_gather_removal", () => ExpansionFootprint("gather", true));
-            foreach (string site in new[] { "footprint", "entrance", "alternate_entrance", "gather" })
-            {
-                string placement = site;
-                yield return new Scenario("regression.review_expansion_reserves_" + placement, () => PendingExpansionPlacement(placement));
-            }
             foreach (string order in new[] { "field_first", "expansion_first", "alternate_route", "loaded_conflict" })
             {
                 string sequence = order;
@@ -41,33 +36,388 @@ namespace IdleCatForest.Acceptance
                 string sequence = order;
                 yield return new Scenario("regression.review_expansion_farm_edge_" + sequence, () => ExpansionFarmEdge(sequence));
             }
-            foreach (string shore in new[] { "road", "entrance", "pending_wall", "duplicate", "unmapped", "legal_owned", "legal_exterior" })
-            {
-                string placement = shore;
-                yield return new Scenario("regression.review_fishing_placement_" + placement, () => FishingPlacement(placement));
-            }
             foreach (bool rail in new[] { false, true })
             {
                 bool track = rail;
-                yield return new Scenario("regression.review_expansion_reserves_linear_" + (track ? "rail" : "road"), () => PendingExpansionLinear(track, true));
-                yield return new Scenario("regression.review_expansion_respects_linear_" + (track ? "rail" : "road"), () => PendingExpansionLinear(track, false));
+                yield return new Scenario("regression.review_expansion_respects_linear_" + (track ? "rail" : "road"), () => PlacementScenarios.PendingExpansionLinear(track, false));
             }
             yield return new Scenario("regression.layout_shrine_ring_reserved", ShrineRingReserved);
-            yield return new Scenario("regression.layout_pending_entrance_preserves_work", PendingEntrance);
             yield return new Scenario("regression.layout_new_building_uses_door", BuildingDoor);
             yield return new Scenario("regression.layout_isolated_road_cannot_extend", IsolatedRoad);
             yield return new Scenario("regression.layout_paid_road_opens_building", PaidBuildingRoad);
             yield return new Scenario("regression.layout_legacy_geometry_and_roads_preserved", LegacyLayout);
             yield return new Scenario("regression.layout_avoid_cannot_close_shrine_access", AvoidShrineAccess);
-            foreach (bool rail in new[] { false, true })
-            {
-                bool track = rail;
-                yield return new Scenario("regression.layout_pending_" + (track ? "rail" : "road") + "_reserves_footprint", () => PendingRoadFootprint(track, false));
-                yield return new Scenario("regression.layout_pending_" + (track ? "rail" : "road") + "_rechecks_footprint", () => PendingRoadFootprint(track, true));
-            }
             yield return new Scenario("regression.buildable_founding_services", BuildableServices);
             yield return new Scenario("regression.communal_and_personal_enclosures", Enclosures);
             yield return new Scenario("regression.expansion_interruption_preserves_perimeter", ExpansionInterruption);
+            yield return new Scenario("construction.demo_plan_queues_without_builder", DemoPlanQueuesWithoutBuilder);
+            yield return new Scenario("construction.demo_plan_queues_without_materials", DemoPlanQueuesWithoutMaterials);
+            yield return new Scenario("construction.classic_plan_names_missing_material", ClassicPlanNamesMaterial);
+            yield return new Scenario("construction.demo_cost_counts_player_built_only", DemoCostCountsPlayerBuilt);
+            foreach (bool demo in new[] { false, true })
+            {
+                bool profile = demo;
+                yield return new Scenario("construction.cancel_refunds_and_releases_" + (profile ? "demo" : "classic"), () => CancelConstruction(profile));
+            }
+            yield return new Scenario("construction.demolish_refunds_half_and_guards", Demolish);
+            yield return new Scenario("construction.demo_orphaned_scaffold_gets_a_new_job", DemoOrphanedScaffold);
+            yield return new Scenario("construction.demo_two_builders_share_a_site", DemoTwoBuilders);
+            yield return new Scenario("construction.demo_walls_and_roads_carry_full_loads", DemoFullLoads);
+            yield return new Scenario("construction.demo_build_rate_ignores_station_cycle_time", DemoBuildRate);
+            yield return new Scenario("construction.completion_logs_milestones_only", CompletionNotes);
+        }
+
+        /// <summary>Calls a private World member by name (rules the scenarios exercise before they are wired in).</summary>
+        internal static object Invoke(World w, string name, params object[] args)
+        {
+            var method = typeof(World).GetMethod(name, System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            Check(method != null, "World has no member " + name);
+            try
+            {
+                return method.Invoke(w, args);
+            }
+            catch (System.Reflection.TargetInvocationException e) when (e.InnerException != null)
+            {
+                throw e.InnerException;
+            }
+        }
+
+        /// <summary>
+        /// Applies CancelConstruction or Demolish through the router. Until W2-INT-a adds the two router cases
+        /// (ActionRouter belongs to W2-06) the router answers "Unknown action"; then the handler is called
+        /// directly. Remove the fallback once the cases are routed.
+        /// </summary>
+        internal static ActionResult Construct(World w, Village v, GameAction a)
+        {
+            var r = w.Apply(Context(v), a);
+            if (r.Success || !r.Error.StartsWith("Unknown action", StringComparison.Ordinal))
+                return r;
+            return (ActionResult)Invoke(w, a.Kind == "CancelConstruction" ? "HandleCancelConstruction" : "HandleDemolish", v, a);
+        }
+
+        /// <summary>The safety net W2-INT-a calls from TickVillage on planning ticks; scenarios call it directly.</summary>
+        static void SafetyNet(World w, Village v) => Invoke(w, "EnsureScaffoldJobs", v);
+
+        static World DemoFixture(out Village v, out Cat c)
+        {
+            var w = Fixture(out v, out c);
+            w.PacingProfile = "demo";
+            c.BuildingId = "";
+            return w;
+        }
+
+        static void DemoPlanQueuesWithoutBuilder()
+        {
+            var w = DemoFixture(out var v, out var c);
+            c.ControlledBy = "fixture-held";
+            c.ControlLeaseUntil = 10000000;
+            World.Add(v.Stockpiles[0].Goods, "planks", 4);
+            World.Add(v.Stockpiles[0].Goods, "blocks", 2);
+            var result = w.Apply(Context(v), new GameAction { Kind = "PlanBuilding", Name = "wood_cutter", Position = new Int2(-5, 1) });
+            Check(result.Success && result.Code == ResultCode.Queued && result.Args["reason"] == Blocked.WorkerRequired, "A plan without a free builder was not queued: " + result.Code + " " + result.Error);
+            var site = v.Buildings.Single(b => b.Id == result.EntityId);
+            var job = v.Jobs.Single(j => j.TargetId == site.Id);
+            Check(!site.Completed && job.CatId == "" && !job.Completed && job.BlockedReason == Blocked.WorkerRequired, "Queued plan has no visible unowned build job");
+            Check(w.Reservations.Where(r => r.OwnerId == site.Id).Sum(r => r.Amount) == 6, "Queued plan did not hold its bill");
+            c.ControlledBy = "";
+            for (int tick = 0; tick < 600 && !site.Completed; tick++)
+                w.Step(1);
+            Check(site.Completed && job.Completed && job.CatId == c.Id, "A freed builder did not pick up the queued plan");
+            Near(Goods(w, v, "planks"), 0, "Queued plan changed its timber bill");
+            Valid(w);
+        }
+
+        static void DemoPlanQueuesWithoutMaterials()
+        {
+            var w = DemoFixture(out var v, out var c);
+            World.Add(v.Stockpiles[0].Goods, "planks", 3);
+            var result = w.Apply(Context(v), new GameAction { Kind = "PlanBuilding", Name = "wood_cutter", Position = new Int2(-5, 1) });
+            Check(result.Success && result.Code == ResultCode.Queued && result.Args["reason"] == Blocked.MissingScaffoldInput, "A plan without materials was not queued: " + result.Code + " " + result.Error);
+            var site = v.Buildings.Single(b => b.Id == result.EntityId);
+            Check(site.BlockedReason == Blocked.MissingScaffoldInput && !v.Jobs.Any(j => j.TargetId == site.Id && !j.Completed) && c.JobId == "", "A site waiting for materials took a builder");
+            Check(w.Reservations.Where(r => r.OwnerId == site.Id && r.Resource == "planks").Sum(r => r.Amount) == 3, "A waiting site did not claim the materials that exist");
+            w.Step(5);
+            SafetyNet(w, v);
+            Check(!v.Jobs.Any(j => j.TargetId == site.Id && !j.Completed), "A site short of materials started work");
+            World.Add(v.Stockpiles[0].Goods, "planks", 1);
+            World.Add(v.Stockpiles[0].Goods, "blocks", 2);
+            SafetyNet(w, v);
+            var job = v.Jobs.Single(j => j.TargetId == site.Id && !j.Completed);
+            Check(job.CatId == c.Id && site.BlockedReason == "", "Arriving materials did not start the waiting site with the free builder");
+            for (int tick = 0; tick < 600 && !site.Completed; tick++)
+                w.Step(1);
+            Check(site.Completed, "The waiting site did not complete once materials arrived");
+            Near(Goods(w, v, "planks"), 0, "Waiting site changed its timber bill");
+            Near(Goods(w, v, "blocks"), 0, "Waiting site changed its block bill");
+            Valid(w);
+        }
+
+        static void ClassicPlanNamesMaterial()
+        {
+            var w = Fixture(out var v, out var c);
+            c.BuildingId = "";
+            World.Add(v.Stockpiles[0].Goods, "planks", 1);
+            int buildings = v.Buildings.Count;
+            var result = w.Apply(Context(v), new GameAction { Kind = "PlanBuilding", Name = "wood_cutter", Position = new Int2(-5, 1), CatId = c.Id });
+            Check(!result.Success && result.Code == ResultCode.MissingMaterial && result.Args["resource"] == "planks" && result.Args["need"] == "4" && result.Args["have"] == "1", "Classic plan did not name the missing material: " + result.Code + " " + result.Error);
+            Check(v.Buildings.Count == buildings && w.Reservations.Count == 0, "A refused classic plan left a scaffold or claims");
+            World.Add(v.Stockpiles[0].Goods, "planks", 3);
+            World.Add(v.Stockpiles[0].Goods, "blocks", 2);
+            c.ControlledBy = "fixture-held";
+            var busy = w.Apply(Context(v), new GameAction { Kind = "PlanBuilding", Name = "wood_cutter", Position = new Int2(-5, 1) });
+            Check(!busy.Success && busy.Code == PlacementCode.BuilderBusy, "Classic plan without a builder was not refused as today");
+        }
+
+        static void DemoCostCountsPlayerBuilt()
+        {
+            foreach (bool demo in new[] { false, true })
+            {
+                var w = World.Create(41);
+                if (demo)
+                    w.PacingProfile = "demo";
+                var v = w.Villages[0];
+                Check(v.Buildings.Count(b => b.Kind == "den") == 6, "Fixture must start with six founding dens");
+                var first = w.BuildCost(v, "den");
+                Check(World.Amount(first.Inputs, "planks") == (demo ? 4 : 16) && World.Amount(first.Inputs, "blocks") == (demo ? 2 : 8), "Den price counted the wrong buildings: " + string.Join(",", first.Inputs.Select(s => s.Resource + ":" + s.Amount)));
+                if (!demo)
+                    continue;
+                var check = w.CheckPlacement(v, "den", new Int2(-1, -6));
+                Check(World.Amount(check.Cost, "planks") == 4, "The placement check showed a different price than BuildCost");
+                var result = w.Apply(Context(v), new GameAction { Kind = "PlanBuilding", Name = "den", Position = check.Ok ? new Int2(-1, -6) : FirstLegalDen(w, v) });
+                Check(result.Success, "Demo den plan failed: " + result.Code);
+                var second = w.BuildCost(v, "den");
+                Check(World.Amount(second.Inputs, "planks") == 6 && World.Amount(second.Inputs, "blocks") == 3, "The second player den did not cost more than the first");
+                foreach (var pile in v.Stockpiles)
+                    pile.Goods.RemoveAll(s => s.Resource == "planks" || s.Resource == "lumber");
+                var shortage = w.Shortfalls(v, w.BuildCost(v, "den").Inputs).Single();
+                Check(shortage.Resource == "planks" && shortage.Need == 6 && shortage.Have == 0, "Missing material was not named with need and have");
+            }
+        }
+
+        static Int2 FirstLegalDen(World w, Village v)
+        {
+            for (int z = -9; z <= 9; z++)
+                for (int x = -9; x <= 9; x++)
+                    if (w.CheckPlacement(v, "den", new Int2(x, z)).Ok)
+                        return new Int2(x, z);
+            throw new InvalidOperationException("No legal den site in the founding layout");
+        }
+
+        static void CancelConstruction(bool demo)
+        {
+            var w = Fixture(out var v, out var c);
+            if (demo)
+                w.PacingProfile = "demo";
+            c.BuildingId = "";
+            World.Add(v.Stockpiles[0].Goods, "planks", 10);
+            World.Add(v.Stockpiles[0].Goods, "blocks", 10);
+            double planks = Goods(w, v, "planks"), blocks = Goods(w, v, "blocks");
+            var at = new Int2(-5, 1);
+            var planned = Act(w, v, new GameAction { Kind = "PlanBuilding", Name = "wood_cutter", Position = at, CatId = c.Id });
+            var site = v.Buildings.Single(b => b.Id == planned.EntityId);
+            var job = v.Jobs.Single(j => j.TargetId == site.Id);
+            for (int tick = 0; tick < 400 && (site.Inputs.Count == 0 || c.Cargo.Count == 0); tick++)
+                w.Step(0.25);
+            Check(site.Inputs.Count > 0 || c.Cargo.Count > 0, "Fixture must cancel while materials are staged or carried");
+            var result = Construct(w, v, new GameAction { Kind = "CancelConstruction", TargetId = site.Id });
+            Check(result.Success && result.Code == ResultCode.Cancelled, "Cancel construction failed: " + result.Code + " " + result.Error);
+            Check(!v.Buildings.Contains(site) && job.Completed && c.JobId == "" && c.Cargo.Count == 0 && w.Reservations.Count == 0, "Cancel left the scaffold, the job, the builder or claims");
+            Near(Goods(w, v, "planks"), planks, "Cancel lost or created planks");
+            Near(Goods(w, v, "blocks"), blocks, "Cancel lost or created blocks");
+            Near(World.Amount(v.Stockpiles[0].Goods, "planks"), planks, "Cancel did not return the planks to storage");
+            Check(w.CheckPlacement(v, "wood_cutter", at).Ok, "The cancelled site is still blocked");
+            var again = Construct(w, v, new GameAction { Kind = "CancelConstruction", TargetId = site.Id });
+            Check(!again.Success && again.Code == ResultCode.UnknownTarget, "A second cancel did not report the unknown site");
+            var den = v.Buildings.First(b => b.Kind == "den");
+            Check(Construct(w, v, new GameAction { Kind = "CancelConstruction", TargetId = den.Id }).Code == PlacementCode.NotUnderConstruction, "A finished building could be cancelled");
+            Valid(w);
+        }
+
+        static void Demolish()
+        {
+            var w = Fixture(out var v, out var c);
+            c.BuildingId = "";
+            var shrine = v.Buildings.Single(b => b.Kind == "shrine");
+            Check(Construct(w, v, new GameAction { Kind = "Demolish", TargetId = shrine.Id }).Code == PlacementCode.ProtectedBuilding, "The shrine could be demolished");
+            var homeDen = v.Buildings.First(b => b.Kind == "den" && v.Cats.Any(x => x.BedId == b.Id));
+            Check(Construct(w, v, new GameAction { Kind = "Demolish", TargetId = homeDen.Id }).Code == PlacementCode.OccupiedDen, "An occupied den could be demolished");
+            World.Add(v.Stockpiles[0].Goods, "planks", 4);
+            World.Add(v.Stockpiles[0].Goods, "blocks", 2);
+            var at = new Int2(-5, 1);
+            var id = Act(w, v, new GameAction { Kind = "PlanBuilding", Name = "food_storage", Position = at, CatId = c.Id }).EntityId;
+            var store = v.Buildings.Single(b => b.Id == id);
+            Check(Construct(w, v, new GameAction { Kind = "Demolish", TargetId = store.Id }).Code == PlacementCode.NotComplete, "A scaffold could be demolished instead of cancelled");
+            for (int tick = 0; tick < 600 && !store.Completed; tick++)
+                w.Step(1);
+            Check(store.Completed, "Fixture food store did not complete");
+            var container = v.Stockpiles.Single(s => s.ManagedBy == store.Id);
+            World.Add(container.Goods, "food", 5);
+            double food = Goods(w, v, "food");
+            var result = Construct(w, v, new GameAction { Kind = "Demolish", TargetId = store.Id });
+            Check(result.Success && result.Code == ResultCode.Demolished && result.Args["planks"] == "2" && result.Args["blocks"] == "1", "Demolish did not return half the bill: " + result.Code + " " + result.Error);
+            Check(!v.Buildings.Contains(store) && container.Kind == "spill" && container.ManagedBy == "", "Demolish left the building or lost its stored goods");
+            Near(Goods(w, v, "food"), food, "Demolish destroyed stored food");
+            Near(Goods(w, v, "planks"), 2, "Demolish refund is not half the planks");
+            Near(Goods(w, v, "blocks"), 1, "Demolish refund is not half the blocks");
+            Check(w.CheckPlacement(v, "food_storage", at).Code != PlacementCode.Occupied || v.Stockpiles.Any(s => s.Kind == "spill" && s.Position.Equals(at)), "Demolished footprint is still occupied by the building");
+            Valid(w);
+        }
+
+        static void DemoOrphanedScaffold()
+        {
+            var w = DemoFixture(out var v, out var c);
+            World.Add(v.Stockpiles[0].Goods, "planks", 4);
+            World.Add(v.Stockpiles[0].Goods, "blocks", 2);
+            var id = Act(w, v, new GameAction { Kind = "PlanBuilding", Name = "wood_cutter", Position = new Int2(-5, 1), CatId = c.Id }).EntityId;
+            var site = v.Buildings.Single(b => b.Id == id);
+            w.Step(2);
+            Act(w, v, new GameAction { Kind = "EnterCat", CatId = c.Id });
+            Act(w, v, new GameAction { Kind = "LeaveCat", CatId = c.Id });
+            c.BuildingId = "";
+            Check(!site.Completed && c.JobId == "", "Fixture must leave the scaffold without its builder");
+            SafetyNet(w, v);
+            var active = v.Jobs.Where(j => j.TargetId == site.Id && !j.Completed).ToList();
+            Check(active.Count == 1, "The safety net did not give the orphaned scaffold exactly one build job: " + active.Count);
+            SafetyNet(w, v);
+            Check(v.Jobs.Count(j => j.TargetId == site.Id && !j.Completed) == 1, "The safety net duplicated a build job");
+            for (int tick = 0; tick < 600 && !site.Completed; tick++)
+            {
+                w.Step(1);
+                SafetyNet(w, v);
+            }
+            Check(site.Completed, "The orphaned scaffold never completed");
+            Near(Goods(w, v, "planks"), 0, "Orphan recovery changed the timber bill");
+            Near(Goods(w, v, "blocks"), 0, "Orphan recovery changed the block bill");
+            Check(w.Reservations.Count == 0, "Recovered scaffold kept claims");
+            Valid(w);
+        }
+
+        static double BuildTime(bool helper, out int peakBuilders)
+        {
+            var w = DemoFixture(out var v, out var c);
+            var second = v.Cats[1];
+            second.ControlledBy = "";
+            second.BuildingId = helper ? "" : "fixture-held";
+            World.Add(v.Stockpiles[0].Goods, "planks", 4);
+            World.Add(v.Stockpiles[0].Goods, "blocks", 2);
+            var id = Act(w, v, new GameAction { Kind = "PlanBuilding", Name = "wood_cutter", Position = new Int2(-5, 1), CatId = c.Id }).EntityId;
+            var site = v.Buildings.Single(b => b.Id == id);
+            peakBuilders = 0;
+            for (int tick = 0; tick < 1200 && !site.Completed; tick++)
+            {
+                w.Step(0.5);
+                if ((tick & 1) == 1)
+                    SafetyNet(w, v);
+                peakBuilders = Math.Max(peakBuilders, v.Jobs.Count(j => j.TargetId == site.Id && !j.Completed && j.CatId != ""));
+            }
+            Check(site.Completed, "Fixture site did not complete");
+            Near(Goods(w, v, "planks"), 0, "Shared site changed its timber bill");
+            Near(Goods(w, v, "blocks"), 0, "Shared site changed its block bill");
+            Check(v.Jobs.All(j => j.TargetId != site.Id || j.Completed) && w.Reservations.Count == 0 && v.Cats.All(x => x.Cargo.Count == 0), "Shared site left work, claims or cargo behind");
+            Valid(w);
+            return w.TimeSeconds;
+        }
+
+        static void DemoTwoBuilders()
+        {
+            double alone = BuildTime(false, out int single), shared = BuildTime(true, out int pair);
+            Check(single == 1 && pair == 2, "Builders per site: alone=" + single + " shared=" + pair);
+            Check(shared < alone, "A second builder did not speed up the site: alone=" + alone + " shared=" + shared);
+        }
+
+        static void DemoFullLoads()
+        {
+            foreach (bool demo in new[] { false, true })
+            {
+                var w = Fixture(out var v, out var c);
+                if (demo)
+                    w.PacingProfile = "demo";
+                c.BuildingId = "";
+                PrepareExpansion(w, v);
+                World.Add(v.Stockpiles[0].Goods, "materials", 1000);
+                string expansionId = Act(w, v, new GameAction { Kind = "RequestJob", Name = "expand", CatId = c.Id }).EntityId;
+                var expansion = v.Jobs.Single(j => j.Id == expansionId);
+                double firstLoad = 0;
+                for (int tick = 0; tick < 4000 && firstLoad == 0; tick++)
+                {
+                    w.Step(0.25);
+                    if (expansion.Phase == "working")
+                        firstLoad = World.Amount(c.Cargo, "materials");
+                }
+                Check(firstLoad == (demo ? 8 : 1), (demo ? "Demo" : "Classic") + " wall builder carried " + firstLoad + " per trip");
+                for (int tick = 0; tick < 12000 && !expansion.Completed; tick++)
+                    w.Step(1);
+                Check(expansion.Completed && expansion.Path.All(p => w.TileAt(p).Wall), "Expansion with full loads did not complete every segment");
+                Near(Goods(w, v, "materials"), 1000 - expansion.Path.Count, "Full loads changed the wall bill");
+                Valid(w);
+            }
+            foreach (bool demo in new[] { false, true })
+            {
+                var w = Fixture(out var v, out var c);
+                if (demo)
+                    w.PacingProfile = "demo";
+                c.BuildingId = "";
+                foreach (var tile in w.Tiles.Where(t => t.Position.X <= -3 && t.Position.Z <= 0))
+                    tile.Road = false;
+                World.Add(v.Stockpiles[0].Goods, "materials", 4);
+                string roadId = Act(w, v, new GameAction { Kind = "BuildRoad", Position = new Int2(-3, -2), End = new Int2(-6, -2), CatId = c.Id }).EntityId;
+                var road = v.Jobs.Single(j => j.Id == roadId);
+                double firstLoad = 0;
+                for (int tick = 0; tick < 4000 && firstLoad == 0; tick++)
+                {
+                    w.Step(0.25);
+                    if (road.Phase == "working")
+                        firstLoad = World.Amount(c.Cargo, "materials");
+                }
+                Check(firstLoad == (demo ? 4 : 1), (demo ? "Demo" : "Classic") + " road builder carried " + firstLoad + " per trip");
+                for (int tick = 0; tick < 600 && !road.Completed; tick++)
+                    w.Step(1);
+                Check(road.Completed && road.Path.All(p => w.TileAt(p).Road), "Road with full loads did not pave every tile");
+                Near(Goods(w, v, "materials"), 0, "Full loads changed the road bill");
+                Valid(w);
+            }
+        }
+
+        static void DemoBuildRate()
+        {
+            foreach (bool demo in new[] { false, true })
+            {
+                double Rate(bool owned)
+                {
+                    var w = StudyFixture("workshop_timing", owned, out var v, out var c);
+                    if (demo)
+                        w.PacingProfile = "demo";
+                    return (double)Invoke(w, "WorkRate", v, c, "build", "workshop");
+                }
+                double without = Rate(false), with = Rate(true);
+                if (demo)
+                    Near(with, without, "A workshop production upgrade changed how fast workshops are built");
+                else
+                    Check(with > without, "Classic build rate no longer follows the station cycle time (today's rule)");
+            }
+        }
+
+        static void CompletionNotes()
+        {
+            var w = Fixture(out var v, out var c);
+            c.BuildingId = "";
+            World.Add(v.Stockpiles[0].Goods, "planks", 4);
+            World.Add(v.Stockpiles[0].Goods, "blocks", 2);
+            var id = Act(w, v, new GameAction { Kind = "PlanBuilding", Name = "wood_cutter", Position = new Int2(-5, 1), CatId = c.Id }).EntityId;
+            for (int tick = 0; tick < 600 && !v.Buildings.Single(b => b.Id == id).Completed; tick++)
+                w.Step(1);
+            Check(v.Events.Count(e => e.Kind == EventKind.BuildingCompleted && e.EntityId == id) == 1, "Building completion was not logged once as a milestone");
+            int before = v.Events.Count;
+            Invoke(w, "NoteJobCompleted", v, c, new Job { Id = "road-job", Kind = JobKind.Road });
+            Invoke(w, "NoteJobCompleted", v, c, new Job { Id = "offering-job", Kind = JobKind.Offering });
+            Invoke(w, "NoteJobCompleted", v, c, new Job { Id = "haul-job", Kind = JobKind.Haul });
+            Invoke(w, "NoteJobCompleted", v, c, new Job { Id = "hunt-job", Kind = JobKind.Hunt });
+            Invoke(w, "NoteJobCompleted", v, c, new Job { Id = "build-job", Kind = JobKind.Build });
+            var logged = v.Events.Skip(before).ToList();
+            Check(logged.Count == 2 && logged.All(e => e.Kind == EventKind.Completed) && logged[0].EntityId == "road-job" && logged[1].EntityId == "offering-job", "Routine jobs were logged or milestone jobs were not: " + string.Join(",", logged.Select(e => e.EntityId)));
+            Invoke(w, "NoteScoutReport", v, c, 12);
+            var report = v.Events.Last();
+            Check(report.Kind == EventKind.Discovery && report.EntityId == c.Id && report.Text == c.Name + " mapped 12 tiles", "Scout report does not say how many tiles were mapped: " + report.Text);
         }
         static HashSet<Int2> LayoutRoads(World w, Village v)
         {
@@ -267,74 +617,6 @@ namespace IdleCatForest.Acceptance
                 Check(w.Reservations.Count == 0, "Completed expansion retained claims");
                 Valid(w);
             }
-        }
-        static void PendingExpansionPlacement(string site)
-        {
-            var w = Fixture(out var v, out var c);
-            c.BuildingId = "";
-            PrepareExpansion(w, v);
-            World.Add(v.Stockpiles[0].Goods, "materials", 1000);
-            World.Add(v.Stockpiles[0].Goods, "planks", 4);
-            World.Add(v.Stockpiles[0].Goods, "blocks", 2);
-            v.Research = Catalog.Research.Select(n => n.Id).ToList();
-            int outer = v.Radius + 2;
-            bool doorway = site == "entrance" || site == "alternate_entrance";
-            int row = site == "alternate_entrance" ? 2 : 1;
-            var at = new Int2(outer + (doorway ? 1 : 0), row);
-            var blockedEntry = new Int2(outer, row);
-            var alternate = new Int2(outer + 3, row);
-            for (int x = outer; x <= outer + 3; x++)
-                for (int z = 0; z <= row + 1; z++)
-                {
-                    var p = new Int2(x, z);
-                    var tile = w.TileAt(p);
-                    tile.Wall = tile.Water = tile.Mountain = tile.Road = false;
-                    tile.ClaimId = "";
-                    if (!v.Known.Contains(p))
-                        v.Known.Add(p);
-                }
-            for (int x = v.Radius; x <= outer; x++)
-                w.TileAt(new Int2(x, 0)).Road = true;
-            if (doorway)
-                for (int z = 1; z <= row; z++)
-                    w.TileAt(new Int2(outer, z)).Road = true;
-            if (site == "alternate_entrance")
-            {
-                for (int x = outer + 1; x <= alternate.X; x++)
-                    w.TileAt(new Int2(x, 0)).Road = true;
-                for (int z = 1; z <= row; z++)
-                    w.TileAt(new Int2(alternate.X, z)).Road = true;
-                Check(w.BuildingEntrance(v, new Building { Position = at }).Equals(blockedEntry), "Fixture must prefer the doorway that expansion reserves");
-            }
-            var planned = Act(w, v, new GameAction { Kind = "RequestJob", Name = "expand", CatId = c.Id });
-            var expansion = v.Jobs.Single(j => j.Id == planned.EntityId);
-            var builder = v.Cats[1];
-            builder.ControlledBy = "";
-            int claims = w.Reservations.Count, buildings = v.Buildings.Count, piles = v.Stockpiles.Count, jobs = v.Jobs.Count;
-            double materials = Goods(w, v, "materials"), timber = Goods(w, v, "planks"), blocks = Goods(w, v, "blocks");
-            var action = site == "gather" ? new GameAction { Kind = "DesignateGatherSpot", Resource = "logs", Position = at, End = at } : new GameAction { Kind = "PlanBuilding", Name = "field", Position = at, CatId = builder.Id };
-            var result = w.Apply(Context(v), action);
-            if (site == "alternate_entrance")
-            {
-                Check(result.Success, "Reserved first doorway prevented selection of another connected entrance");
-                var field = v.Buildings.Single(b => b.Id == result.EntityId);
-                Check(field.Entrance.Equals(alternate) && !expansion.Path.Contains(field.Entrance), "Field chose the reserved expansion wall instead of the alternate entrance");
-                for (int tick = 0; tick < 12000 && (!expansion.Completed || !field.Completed); tick++)
-                    w.Step(1);
-                Check(field.Completed && expansion.Completed && w.Path(v.Center, field.Position, v) != null, "Field with an alternate doorway did not remain reachable through completed expansion");
-                Near(Goods(w, v, "materials"), 1000 - expansion.Path.Count, "Concurrent expansion changed its exact material bill");
-                Near(Goods(w, v, "planks"), 0, "Concurrent Field changed its timber bill");
-                Near(Goods(w, v, "blocks"), 0, "Concurrent Field changed its block bill");
-            }
-            else
-            {
-                Check(!result.Success, "Public " + site + " placement occupied a pending expansion wall");
-                Check(v.Buildings.Count == buildings && v.Stockpiles.Count == piles && v.Jobs.Count == jobs && w.Reservations.Count == claims, "Rejected placement changed structures, work or claims");
-                Near(Goods(w, v, "materials"), materials, "Rejected placement consumed expansion materials");
-                Near(Goods(w, v, "planks"), timber, "Rejected placement consumed timber");
-                Near(Goods(w, v, "blocks"), blocks, "Rejected placement consumed blocks");
-            }
-            Valid(w);
         }
         static void ExpansionRoadConnection(string order)
         {
@@ -543,79 +825,6 @@ namespace IdleCatForest.Acceptance
             Check(w.Reservations.Count == 0, "Completed farm-edge expansion retained claims");
             Valid(w);
         }
-        static void FishingPlacement(string placement)
-        {
-            var w = Fixture(out var v, out var c);
-            c.BuildingId = "";
-            PrepareExpansion(w, v);
-            World.Add(v.Stockpiles[0].Goods, "materials", 1000);
-            var at = placement == "road" ? new Int2(2, 1) : placement == "entrance" ? v.Buildings.First(b => b.Kind == "den").Entrance : placement == "pending_wall" ? new Int2(v.Radius + 2, 1) : placement == "legal_owned" ? new Int2(4, -5) : new Int2(12, 5);
-            var tile = w.TileAt(at);
-            tile.Wall = tile.Water = tile.Mountain = false;
-            if (placement != "road" && placement != "entrance")
-                tile.Road = tile.Rail = false;
-            if (!v.Known.Contains(at))
-                v.Known.Add(at);
-            if (placement == "unmapped")
-                v.Known.Remove(at);
-            var water = w.TileAt(new Int2(at.X + 1, at.Z));
-            water.Wall = water.Mountain = false;
-            water.Water = true;
-            water.Resource = "fish";
-            water.Amount = water.FishCapacity = 24;
-            if (placement == "pending_wall")
-                Act(w, v, new GameAction { Kind = "RequestJob", Name = "expand", CatId = c.Id });
-            var action = new GameAction { Kind = "DesignateFishingSpot", Position = at, End = at };
-            if (placement == "duplicate")
-                Act(w, v, action);
-            int piles = v.Stockpiles.Count, jobs = v.Jobs.Count, claims = w.Reservations.Count;
-            string terrain = TerrainState(tile);
-            double materials = Goods(w, v, "materials");
-            var result = w.Apply(Context(v), action);
-            bool legal = placement == "legal_owned" || placement == "legal_exterior";
-            if (legal)
-            {
-                Check(result.Success, "Legal " + placement + " fishing shore was rejected: " + result.Error);
-                Check(v.Stockpiles.Count == piles + 1 && v.Stockpiles.Single(p => p.Id == result.EntityId).Kind == "fishing", "Legal fishing designation did not create its physical shore pile");
-            }
-            else
-            {
-                Check(!result.Success, "Fishing designation accepted " + placement + " shore");
-                Check(v.Stockpiles.Count == piles && v.Jobs.Count == jobs && w.Reservations.Count == claims, "Rejected fishing designation changed piles, work or claims");
-            }
-            Check(TerrainState(tile) == terrain, "Fishing designation changed its underlying terrain");
-            Near(Goods(w, v, "materials"), materials, "Fishing designation changed held materials");
-            Valid(w);
-        }
-        static void PendingExpansionLinear(bool rail, bool expansionFirst)
-        {
-            var w = Fixture(out var v, out var c);
-            c.BuildingId = "";
-            PrepareExpansion(w, v);
-            World.Add(v.Stockpiles[0].Goods, "materials", 1000);
-            World.Add(v.Stockpiles[0].Goods, "metal", 10);
-            v.Research = Catalog.Research.Select(n => n.Id).ToList();
-            int outer = v.Radius + 2;
-            var at = new Int2(outer, 1);
-            var tile = w.TileAt(at);
-            tile.Road = tile.Rail = false;
-            w.TileAt(new Int2(outer, 0)).Road = true;
-            var wall = new GameAction { Kind = "RequestJob", Name = "expand", CatId = c.Id };
-            var line = new GameAction { Kind = rail ? "DesignateRail" : "BuildRoad", Position = at, End = at, CatId = c.Id };
-            Act(w, v, expansionFirst ? wall : line);
-            var builder = v.Cats[1];
-            builder.ControlledBy = "";
-            int jobs = v.Jobs.Count, claims = w.Reservations.Count;
-            double materials = Goods(w, v, "materials"), metal = Goods(w, v, "metal");
-            var second = expansionFirst ? line : wall;
-            second.CatId = builder.Id;
-            var result = w.Apply(Context(v), second);
-            Check(!result.Success, expansionFirst ? "Linear infrastructure accepted a reserved expansion wall" : "Expansion accepted a reserved linear infrastructure path");
-            Check(v.Jobs.Count == jobs && w.Reservations.Count == claims && !tile.Road && !tile.Rail, "Rejected linear work changed jobs, claims or terrain");
-            Near(Goods(w, v, "materials"), materials, "Rejected road consumed expansion materials");
-            Near(Goods(w, v, "metal"), metal, "Rejected rail consumed metal");
-            Valid(w);
-        }
         static void ShrineRingReserved()
         {
             var w = Fixture(out var v, out var c);
@@ -623,29 +832,6 @@ namespace IdleCatForest.Acceptance
             World.Add(v.Stockpiles[0].Goods, "planks", 100);
             World.Add(v.Stockpiles[0].Goods, "blocks", 100);
             Check(!w.Apply(Context(v), new GameAction { Kind = "PlanBuilding", Name = "wood_cutter", Position = new Int2(-3, -3), CatId = c.Id }).Success, "Construction occupied the shrine's required road ring");
-        }
-        static void PendingEntrance()
-        {
-            var w = Fixture(out var v, out var c);
-            c.BuildingId = "";
-            World.Add(v.Stockpiles[0].Goods, "planks", 100);
-            World.Add(v.Stockpiles[0].Goods, "blocks", 100);
-            var id = Act(w, v, new GameAction { Kind = "PlanBuilding", Name = "wood_cutter", Position = new Int2(-5, 1), CatId = c.Id }).EntityId;
-            var building = v.Buildings.Single(b => b.Id == id);
-            var entrance = w.BuildingEntrance(v, building);
-            Check(entrance.HasValue, "Test scaffold has no connected entry");
-            var tile = w.TileAt(entrance.Value);
-            tile.Road = false;
-            var job = v.Jobs.Single(j => j.TargetId == id);
-            double goods = Goods(w, v, "planks"), progress = building.Progress;
-            string claims = string.Join("|", w.Reservations.Select(r => r.OwnerId + ":" + r.Amount));
-            w.Step(3);
-            Check(job.BlockedReason == "building_entrance_disconnected" && !job.Completed && building.Progress == progress, "Scaffold progressed without its connected entrance");
-            Near(Goods(w, v, "planks"), goods, "Blocked entry consumed construction goods");
-            Check(string.Join("|", w.Reservations.Select(r => r.OwnerId + ":" + r.Amount)) == claims, "Blocked entry changed held claims");
-            tile.Road = true;
-            w.Step(600);
-            Check(building.Completed && job.Completed, "Repairing the existing road did not resume the same scaffold");
         }
         static void BuildingDoor()
         {
@@ -731,48 +917,6 @@ namespace IdleCatForest.Acceptance
             var v = w.Villages[0];
             foreach (var at in new[] { v.Center, new Int2(v.Center.X, v.Center.Z + 2), v.Buildings.First(b => b.HasEntrance).Entrance })
                 Check(!w.Apply(Context(v), new GameAction { Kind = "CreateZone", Resource = "avoid", Position = at, End = at }).Success, "Avoid zone severed shrine or building access");
-        }
-        static void PendingRoadFootprint(bool rail, bool changed)
-        {
-            var w = Fixture(out var v, out var c);
-            c.BuildingId = "";
-            v.Research = Catalog.Research.Select(n => n.Id).ToList();
-            var builder = v.Cats[1];
-            builder.ControlledBy = "";
-            builder.BuildingId = "";
-            string resource = rail ? "metal" : "materials";
-            World.Add(v.Stockpiles[0].Goods, resource, 2);
-            World.Add(v.Stockpiles[0].Goods, "planks", 4);
-            World.Add(v.Stockpiles[0].Goods, "blocks", 2);
-            var at = new Int2(-5, 1);
-            var roadId = Act(w, v, new GameAction { Kind = rail ? "DesignateRail" : "BuildRoad", Position = at, End = new Int2(-4, 1), CatId = c.Id }).EntityId;
-            var job = v.Jobs.Single(j => j.Id == roadId);
-            int count = v.Buildings.Count;
-            double goods = Goods(w, v, resource), timber = Goods(w, v, "planks");
-            var claims = string.Join("|", w.Reservations.Select(r => r.OwnerId + ":" + r.Resource + ":" + r.Amount));
-            if (!changed)
-            {
-                var result = w.Apply(Context(v), new GameAction { Kind = "PlanBuilding", Name = "wood_cutter", Position = at, CatId = builder.Id });
-                Check(!result.Success, "Second builder occupied a reserved " + job.Kind + " path before paving completed");
-                Check(v.Buildings.Count == count && builder.JobId == "" && claims == string.Join("|", w.Reservations.Select(r => r.OwnerId + ":" + r.Resource + ":" + r.Amount)), "Rejected footprint changed ownership or claims");
-                Near(Goods(w, v, resource), goods, "Rejected footprint consumed road inputs");
-                Near(Goods(w, v, "planks"), timber, "Rejected footprint consumed timber");
-                return;
-            }
-            builder.ControlledBy = "fixture-held";
-            // Explicit imported-state fault: old saves can contain work under a later structure.
-            var blocking = new Building { Id = "imported-overlap", Kind = "den", Position = at, Completed = true };
-            v.Buildings.Add(blocking);
-            w.Step(3);
-            Check(job.BlockedReason == "infrastructure_footprint_blocked" && !job.Completed && job.Progress == 0 && job.PathIndex == 0, "Pending " + job.Kind + " advanced through an occupied footprint");
-            Check(claims == string.Join("|", w.Reservations.Select(r => r.OwnerId + ":" + r.Resource + ":" + r.Amount)), "Blocked infrastructure changed held input claims");
-            Near(Goods(w, v, resource), goods, "Blocked infrastructure consumed inputs");
-            v.Buildings.Remove(blocking);
-            for (int tick = 0; tick < 600 && !job.Completed; tick++)
-                w.Step(1);
-            Check(job.Completed && job.Path.All(p => rail ? w.TileAt(p).Rail : w.TileAt(p).Road), "Cleared footprint did not resume the same infrastructure work");
-            Near(Goods(w, v, resource), 0, "Resumed infrastructure did not consume exact finite inputs");
-            Valid(w);
         }
         static void BuildableServices()
         {

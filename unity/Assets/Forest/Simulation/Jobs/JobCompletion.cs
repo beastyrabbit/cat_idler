@@ -123,15 +123,53 @@ namespace IdleCatForest.Simulation
             }
         }
 
+        /// <summary>
+        /// Commissions the building, finishes every builder's share of the work and logs the milestone. A fellow
+        /// builder still carrying materials (only possible after a fault) leaves them in a spill at its feet.
+        /// </summary>
         private void CompleteJobBuild(Village v, Cat c, Job j, Building b)
         {
             b.Inputs.Clear();
             Commission(v, b);
             Release(b.Id);
+            b.BlockedReason = "";
+            foreach (var other in ScaffoldJobs(v, b).Where(o => o.Id != j.Id).ToArray())
+            {
+                var helper = v.Cats.Find(x => x.Id == other.CatId && other.CatId != "");
+                Release(other.Id + ":resume");
+                if (helper == null)
+                {
+                    other.Completed = true;
+                    Release(other.Id);
+                    continue;
+                }
+                if (helper.Cargo.Count > 0)
+                    Spill(v, helper.Position, helper.Cargo);
+                Finish(v, helper, other);
+            }
             Finish(v, c, j);
+            Note(v, EventKind.BuildingCompleted, c.Name + " completed " + b.Kind, b.Id);
         }
 
-        /// <summary>Road and rail are paved tile by tile, so finishing the last tile only ends the job.</summary>
+        /// <summary>
+        /// The completion log line for a finished job, written only for milestone work: roads and rails, offerings
+        /// and crafted items. Buildings and expansions log their own milestone events; routine gathering, hauling
+        /// and production stay out of the log. <c>Finish</c> calls this in place of its unconditional note.
+        /// </summary>
+        private void NoteJobCompleted(Village v, Cat c, Job j)
+        {
+            bool milestone = j.Kind == JobKind.Road || j.Kind == JobKind.Rail || j.Kind == JobKind.Offering || j.Kind == JobKind.Production && RecipeOf(j.RecipeId)?.ItemKind is string item && item != "";
+            if (milestone)
+                Note(v, EventKind.Completed, c.Name + " completed " + j.Kind, j.Id);
+        }
+
+        /// <summary>
+        /// A scout's report on returning: how many tiles it added to the village map, logged as a discovery about
+        /// the scout ("Hazel mapped 12 tiles"), not as research.
+        /// </summary>
+        private void NoteScoutReport(Village v, Cat c, int mappedTiles) => Note(v, EventKind.Discovery, c.Name + " mapped " + mappedTiles + " tiles", c.Id);
+
+        /// <summary>Road and rail are paved tile by tile, so finishing the last tile only ends the job (Finish logs it).</summary>
         private void CompleteJobPaving(Village v, Cat c, Job j) => Finish(v, c, j);
 
         private void CompleteJobInfrastructure(Village v, Cat c, Job j)

@@ -11,7 +11,9 @@ namespace IdleCatForest.Simulation
             string stat = labor == "hunt" || labor == "fishing" ? "hunting" : labor == "research" ? "medicine" : labor == "scout" ? "vision" : labor == "fight" ? "attack" : "building";
             rate *= Pace.WorkStatBase + Math.Clamp(Amount(c.Stats, stat), 0, 100) / Pace.WorkStatDivisor;
             rate *= Catalog.Effect(v, labor == "research" ? "researchRate" : labor == "build" ? "constructionSpeed" : "productionRate", 1);
-            if (!string.IsNullOrEmpty(station))
+            // A station's cycle_time speeds its recipes. Construction passes the building kind too, but in demo
+            // worlds a production upgrade must not change how fast that building is built.
+            if (!string.IsNullOrEmpty(station) && !(labor == "build" && DemoConstruction))
                 rate /= Math.Max(Pace.WorkCycleTimeFloor, Catalog.BuildingEffect(v, station, "cycle_time", 1));
             if (v.Items.Any(i => c.Equipment.Contains(i.Id) && i.Kind == "tool" && i.Condition > 0))
                 rate *= Pace.WorkToolBonus;

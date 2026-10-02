@@ -84,18 +84,26 @@ namespace IdleCatForest.Simulation
 
         /// <summary>
         /// Construction of a planned building: resolves the scaffold, collects its bill of materials, then
-        /// accumulates build progress until the building is commissioned.
+        /// accumulates build progress until the building is commissioned. Several builders may share a site:
+        /// each adds its own work rate, and materials already carried by a fellow builder count toward the bill.
         /// </summary>
         private void TickJobBuild(Village v, Cat c, Job j, bool planning, double dt)
         {
             var b = v.Buildings.Find(x => x.Id == j.TargetId) ?? (planning ? ResolveScaffold(v, c, j) : null);
             if (b == null)
                 return;
+            if (b.Completed)
+            {
+                // A fellow builder commissioned the site; this share of the work is done.
+                Finish(v, c, j);
+                return;
+            }
             if (b.Required.All(s => Amount(b.Inputs, s.Resource) >= s.Amount))
             {
                 if (!Move(c, b.Position, dt))
                     return;
                 j.Phase = JobPhase.Working;
+                ClearScaffoldShortage(j, b);
                 b.Progress += SpendActorTime(c) * WorkRate(v, c, "build", b.Kind);
                 if (b.Progress + 1e-9 >= b.RequiredWork)
                     CompleteJobBuild(v, c, j, b);
@@ -110,18 +118,60 @@ namespace IdleCatForest.Simulation
                 c.Cargo.Clear();
                 return;
             }
+            bool shortage = false;
             foreach (var input in b.Required)
             {
-                double held = Reservations.Where(r => r.OwnerId == b.Id && r.Resource == input.Resource).Sum(r => r.Amount);
-                double need = input.Amount - Amount(b.Inputs, input.Resource) - held;
-                if (need > 1e-8 && !Reserve(v, b.Id, input.Resource, need))
+                double need = input.Amount - ScaffoldSecured(v, b, input.Resource);
+                if (need <= 1e-8 || Reserve(v, b.Id, input.Resource, need))
+                    continue;
+                if (!DemoConstruction)
                 {
                     j.BlockedReason = Blocked.MissingScaffoldInput;
                     return;
                 }
+                // Demo: stage what exists now and come back for the rest.
+                ReserveUpTo(v, b.Id, input.Resource, need);
+                shortage = true;
             }
+            if (shortage && !Reservations.Any(r => r.OwnerId == b.Id))
+            {
+                // Nothing left to fetch: hand the site back to the safety net instead of standing idle on it.
+                b.BlockedReason = Blocked.MissingScaffoldInput;
+                j.Completed = true;
+                j.CatId = "";
+                j.BlockedReason = Blocked.MissingScaffoldInput;
+                Release(j.Id);
+                c.JobId = "";
+                c.Path.Clear();
+                c.Goal = GoalKey.Idle;
+                c.BlockedReason = "";
+                return;
+            }
+            if (!shortage)
+                ClearScaffoldShortage(j, b);
             PickupClaim(v, c, b.Id, j, dt);
         }
+
+        private static void ClearScaffoldShortage(Job j, Building b)
+        {
+            if (j.BlockedReason == Blocked.MissingScaffoldInput)
+                j.BlockedReason = "";
+            if (b.BlockedReason == Blocked.MissingScaffoldInput)
+                b.BlockedReason = "";
+        }
+
+        /// <summary>
+        /// Materials a wall or road builder takes per trip: one in classic worlds; in demo worlds a full load,
+        /// limited by what is staged and by the segments left.
+        /// </summary>
+        private double SegmentLoad(Village v, Job j, string resource)
+        {
+            double staged = Math.Floor(Amount(j.Local, resource) + 1e-9);
+            return DemoConstruction ? Math.Max(1, Math.Min(Math.Min(CarryCapacity(v, resource), j.Path.Count - j.PathIndex), staged)) : 1;
+        }
+
+        /// <summary>Wall and road work speed: the builder's work rate in demo worlds, flat in classic worlds.</summary>
+        private double SegmentRate(Village v, Cat c) => DemoConstruction ? WorkRate(v, c, "build", "") : 1;
 
         /// <summary>A restored legacy wall project: one tile of work at the job position, then claim it.</summary>
         private void WorkLegacyExpansion(Village v, Cat c, Job j, double dt)
@@ -134,8 +184,10 @@ namespace IdleCatForest.Simulation
         }
 
         /// <summary>
-        /// Builds the expansion ring one wall segment at a time: fetch one unit of materials, walk to a work
-        /// stand beside the segment, work the segment, advance. Completes when every segment stands.
+        /// Builds the expansion ring one wall segment at a time: take materials from the staging point (one unit
+        /// in classic worlds, a full load in demo worlds), walk to a work stand beside the segment, work it,
+        /// advance, and keep building consecutive segments until the load is used. Completes when every segment
+        /// stands.
         /// </summary>
         private void WorkExpansionWall(Village v, Cat c, Job j, bool planning, double dt)
         {
@@ -168,16 +220,17 @@ namespace IdleCatForest.Simulation
                     j.BlockedReason = Blocked.WallMaterialsMissing;
                     return;
                 }
-                Add(j.Local, "materials", -1);
-                Add(c.Cargo, "materials", 1);
+                double load = SegmentLoad(v, j, "materials");
+                Add(j.Local, "materials", -load);
+                Add(c.Cargo, "materials", load);
             }
             if (!Move(c, j.WorkStand, dt))
             {
-                if (c.BlockedReason == Blocked.BlockedRoute)
+                if (Blocked.IsRoute(c.BlockedReason))
                     j.HasWorkStand = false;
                 return;
             }
-            j.Progress += SpendActorTime(c);
+            j.Progress += SpendActorTime(c) * SegmentRate(v, c);
             if (j.Progress + 1e-9 < Pace.WallSegmentWork)
                 return;
             j.Progress = 0;
@@ -186,7 +239,10 @@ namespace IdleCatForest.Simulation
             j.PathIndex++;
         }
 
-        /// <summary>Paves a road or rail one tile at a time, carrying one unit of the paving input per tile.</summary>
+        /// <summary>
+        /// Paves a road or rail one tile at a time from the staging point at the first tile: one unit of the
+        /// paving input per trip in classic worlds, a full load paving consecutive tiles in demo worlds.
+        /// </summary>
         private void WorkPaving(Village v, Cat c, Job j, double dt)
         {
             if (j.PathIndex >= j.Path.Count)
@@ -204,12 +260,13 @@ namespace IdleCatForest.Simulation
                     j.BlockedReason = Blocked.PavingInputMissing;
                     return;
                 }
-                Add(j.Local, j.Resource, -1);
-                Add(c.Cargo, j.Resource, 1);
+                double load = SegmentLoad(v, j, j.Resource);
+                Add(j.Local, j.Resource, -load);
+                Add(c.Cargo, j.Resource, load);
             }
             if (!Move(c, target, dt))
                 return;
-            j.Progress += SpendActorTime(c);
+            j.Progress += SpendActorTime(c) * SegmentRate(v, c);
             if (j.Progress + 1e-9 < Pace.PavingSegmentWork)
                 return;
             j.Progress = 0;
