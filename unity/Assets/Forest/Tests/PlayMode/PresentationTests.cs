@@ -22,16 +22,15 @@ namespace IdleCatForest.Tests
                 Assert.That(asset, Is.Not.Null, name);
                 Assert.That(asset.GetComponentsInChildren<MeshFilter>().Sum(m => m.sharedMesh.vertexCount), Is.GreaterThan(30), name);
             }
+            foreach (var resource in Simulation.Catalog.Resources)
+            {
+                var cargo = Resources.Load<GameObject>("ForestArt/cargo_" + resource);
+                Assert.That(cargo, Is.Not.Null, "cargo_" + resource);
+                Assert.That(cargo.GetComponentsInChildren<MeshFilter>().Sum(m => m.sharedMesh.vertexCount), Is.GreaterThan(30), "cargo_" + resource);
+            }
             var cat = Resources.Load<GameObject>("ForestArt/cat"); Assert.That(cat, Is.Not.Null);
             foreach (var part in new[] { "Head", "Tail", "PawFrontLeft", "PawFrontRight", "PawBackLeft", "PawBackRight" })
                 Assert.That(cat.GetComponentsInChildren<Transform>().Any(t => t.name == part), Is.True, part);
-        }
-
-        [Test]
-        public void AllManagementCategoriesAreReachableInNormalUi()
-        {
-            foreach (var section in new[] { "Village", "Cats", "Build", "Work", "Stores", "Research", "Officers", "Shrine", "Defense", "Trade", "Routes", "Events" })
-                CollectionAssert.Contains(ForestUI.Sections, section);
         }
     }
 
@@ -60,6 +59,21 @@ namespace IdleCatForest.Tests
             if (directory != null && Directory.Exists(directory)) Directory.Delete(directory, true);
         }
 
+        [Test]
+        public void EveryNavigationEntryOpensItsSection()
+        {
+            foreach (var section in new[] { "Village", "Cats", "Build", "Work", "Stores", "Research", "Officers", "Shrine", "Defense", "Trade", "Routes", "Events" })
+                CollectionAssert.Contains(ForestUI.Sections, section, "Every management category keeps a navigation entry.");
+            foreach (var section in ForestUI.Sections)
+            {
+                UiTestKit.Click(game, UiNames.Nav(section));
+                Assert.That(game.UI.OpenSection, Is.EqualTo(section));
+                Assert.That(UiTestKit.Find<VisualElement>(game, UiNames.Drawer).style.display.value, Is.EqualTo(DisplayStyle.Flex), section + " opens the drawer.");
+                Assert.That(UiTestKit.Find<VisualElement>(game, UiNames.Section(section)), Is.Not.Null, section + " builds its own panel.");
+                Assert.That(UiTestKit.Button(game, UiNames.Nav(section)).ClassListContains("active"), Is.True, section + " is marked active.");
+            }
+        }
+
         [UnityTest]
         public IEnumerator LocalLiveSimulationConsumesOneFiftyMillisecondStep()
         {
@@ -78,14 +92,11 @@ namespace IdleCatForest.Tests
             var job = new Job { Id = "live-inspector-job", Kind = "woodcut", Phase = "working", CatId = cat.Id, Position = cat.Position, Progress = 1, RequiredWork = 20 };
             game.Selected.Jobs.Add(job); cat.JobId = job.Id;
             game.View.InspectCat(cat.Id); game.UI.OpenPanel("Inspect");
-            var root = game.GetComponent<UIDocument>().rootVisualElement;
-            var progress = root.Q<ProgressBar>("live-work-progress");
+            var progress = UiTestKit.Find<ProgressBar>(game, UiNames.WorkProgress);
             Assert.That(progress, Is.Not.Null, "Working cats need a live progress meter.");
-            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
-            typeof(ForestUI).GetField("nextRefresh", flags).SetValue(game.UI, float.MaxValue);
             job.Progress = 1.05;
-            typeof(ForestUI).GetMethod("Update", flags).Invoke(game.UI, null);
-            Assert.That(root.Q<ProgressBar>("live-work-progress"), Is.SameAs(progress), "Live progress must not rebuild controls or reset interaction.");
+            UiTestKit.Tick(game);
+            Assert.That(UiTestKit.Find<ProgressBar>(game, UiNames.WorkProgress), Is.SameAs(progress), "Live progress must not rebuild controls or reset interaction.");
             Assert.That(progress.value, Is.EqualTo(1.05f).Within(1e-5));
             yield break;
         }
@@ -226,14 +237,14 @@ namespace IdleCatForest.Tests
             yield return new WaitForSecondsRealtime(.25f);
             Assert.That(GameObject.Find("cargo:" + cat.Id), Is.Null, "A reserved item is still at its source before pickup.");
             game.View.InspectCat(cat.Id); game.UI.OpenPanel("Inspect");
-            Assert.That(game.GetComponent<UIDocument>().rootVisualElement.Query<Label>().ToList().Any(label => label.text.StartsWith("Carried item:", StringComparison.Ordinal)), Is.False);
+            Assert.That(UiTestKit.WithPrefix<Label>(game, CarriedItem), Is.Empty);
             job.Phase = "output_delivery";
             yield return new WaitForSecondsRealtime(.25f);
             var cargo = GameObject.Find("cargo:" + cat.Id);
             Assert.That(cargo, Is.Not.Null, "Finished exact goods must visibly travel with their carrier.");
             Assert.That(cargo.GetComponentsInChildren<MeshFilter>().Sum(m => m.sharedMesh.vertexCount), Is.GreaterThan(30), "Carried goods use authored geometry.");
             game.View.InspectCat(cat.Id); game.UI.OpenPanel("Inspect");
-            Assert.That(game.GetComponent<UIDocument>().rootVisualElement.Query<Label>().ToList().Any(label => label.text.StartsWith("Carried item:", StringComparison.Ordinal) && label.text.Contains(item.Id)), Is.True, "Inspection must identify the same carried exact item.");
+            Assert.That(UiTestKit.WithPrefix<Label>(game, CarriedItem).Select(label => label.name), Is.EqualTo(new[] { CarriedItem + item.Id }), "Inspection must identify the same carried exact item.");
             var before = cargo.transform.position;
             cat.X += 1;
             yield return new WaitForSecondsRealtime(.25f);
@@ -242,8 +253,10 @@ namespace IdleCatForest.Tests
             yield return new WaitForSecondsRealtime(.25f);
             Assert.That(GameObject.Find("cargo:" + cat.Id), Is.Null, "Delivered items cannot remain on the cat.");
             game.UI.OpenPanel("Inspect");
-            Assert.That(game.GetComponent<UIDocument>().rootVisualElement.Query<Label>().ToList().Any(label => label.text.StartsWith("Carried item:", StringComparison.Ordinal)), Is.False);
+            Assert.That(UiTestKit.WithPrefix<Label>(game, CarriedItem), Is.Empty);
         }
+
+        private const string CarriedItem = "carried-item-";
 
         [UnityTest]
         public IEnumerator InspectButtonControlsTheSameCatAndRestoresManagement()
@@ -252,13 +265,13 @@ namespace IdleCatForest.Tests
             cat.Cargo.Add(new Simulation.Stack("food", 1));
             game.View.InspectCat(cat.Id);
             game.UI.OpenPanel("Inspect");
-            Submit("Control this cat · Tab");
+            UiTestKit.Click(game, UiNames.Act("control", cat.Id));
             yield return null;
             Assert.That(game.View.ControlledCat, Is.SameAs(cat));
             Assert.That(game.View.Camera.orthographic, Is.False);
             Assert.That(cat.Cargo.Single(s => s.Resource == "food").Amount, Is.EqualTo(1));
             game.UI.OpenPanel("Inspect");
-            Submit("Return to management");
+            UiTestKit.Click(game, UiNames.Act("return", cat.Id));
             yield return null;
             Assert.That(cat.ControlledBy, Is.Empty);
             Assert.That(game.View.Camera.orthographic, Is.True);
@@ -271,22 +284,22 @@ namespace IdleCatForest.Tests
             var study = Catalog.Research.First(n => n.Prerequisites.Count == 0 && !game.Selected.Research.Contains(n.Id));
             game.Selected.ResearchPoints = study.Cost + 17;
             game.UI.OpenPanel("Research");
-            Submit("Research " + study.Name);
+            UiTestKit.Click(game, UiNames.Act("research", study.Id));
             yield return null;
             CollectionAssert.Contains(game.Selected.Research, study.Id);
             Assert.That(game.Selected.ResearchPoints, Is.EqualTo(17).Within(.000001));
-            Submit("Dependency map");
+            UiTestKit.Click(game, UiNames.Act("research-view", "map"));
             yield return null;
-            var maps = game.GetComponent<UIDocument>().rootVisualElement.Query<ScrollView>().ToList();
+            var maps = UiTestKit.Root(game).Query<ScrollView>().ToList();
             Assert.That(maps.Any(view => view.mode == ScrollViewMode.VerticalAndHorizontal), Is.True);
-            Assert.That(game.GetComponent<UIDocument>().rootVisualElement.Query<Button>().ToList().Any(button => button.text.StartsWith("Requires ", StringComparison.Ordinal)), Is.True);
+            Assert.That(UiTestKit.WithPrefix<Button>(game, UiNames.Act("requires") + "-"), Is.Not.Empty);
         }
 
         [UnityTest]
         public IEnumerator ManualLoggingButtonCreatesSupportedPhysicalWork()
         {
             game.UI.OpenPanel("Work");
-            Submit("woodcut");
+            UiTestKit.Click(game, UiNames.Act("job", "woodcut"));
             yield return null;
             Assert.That(game.Selected.Jobs.Any(j=>j.Kind=="logs"&&!j.Completed),Is.True,game.LastAction);
         }
@@ -303,7 +316,7 @@ namespace IdleCatForest.Tests
             game.Selected.Buildings[game.Selected.Buildings.IndexOf(station)]=restored;
             game.View.InspectBuilding(station.Id);game.UI.OpenPanel("Inspect");
             yield return null;
-            Assert.That(game.GetComponent<UIDocument>().rootVisualElement.Query<Label>().ToList().Any(label=>label.text=="1. logs to planks"),Is.False,"A stale building queue must not hide the real empty first-slot queue.");
+            Assert.That(UiTestKit.WithPrefix<VisualElement>(game, "queue-entry-"),Is.Empty,"A stale building queue must not hide the real empty first-slot queue.");
         }
 
         [UnityTest]
@@ -316,12 +329,6 @@ namespace IdleCatForest.Tests
             Assert.That(cat.ControlledBy,Is.EqualTo(game.PlayerId),"Heartbeat must follow simulation speed.");
         }
 
-        private void Submit(string text)
-        {
-            var button = game.GetComponent<UIDocument>().rootVisualElement.Query<Button>().ToList().Single(b => b.text == text);
-            using (var submit = NavigationSubmitEvent.GetPooled()) { submit.target = button; button.SendEvent(submit); }
-        }
-
         [UnityTest]
         public IEnumerator MerchantSellingControlsTransferTheSelectedStoredItem()
         {
@@ -329,7 +336,7 @@ namespace IdleCatForest.Tests
             game.Selected.Items.Add(item);
             game.Selected.Trader.Phase = "trading"; game.Selected.Trader.Coins = 100;
             double coins = game.Selected.Coins;
-            game.UI.OpenPanel("Trade"); Submit("Sell goods");
+            game.UI.OpenPanel("Trade"); UiTestKit.Click(game, UiNames.Act("sell", "goods"));
             yield return null;
             Assert.That(game.Selected.Trader.Items.Contains(item), Is.True, game.LastAction);
             Assert.That(game.Selected.Items.Contains(item), Is.False);
@@ -340,18 +347,21 @@ namespace IdleCatForest.Tests
         public IEnumerator VillagePanelTracksAuthoritativeSelectionChanges()
         {
             game.UI.OpenPanel("Village");
+            string before = game.SelectedVillageId;
             Assert.That(game.Send(new GameAction { Kind = "FoundVillage", Name = "New Grove" }).Result.Success, Is.True);
+            Assert.That(game.SelectedVillageId, Is.Not.EqualTo(before), "Founding selects the new village.");
+            Assert.That(UiTestKit.FindFirst<Button>(game, UiNames.Act("join", game.SelectedVillageId)), Is.Null, "The open panel was built before the new village existed.");
             yield return new WaitForSecondsRealtime(.6f);
-            var buttons = game.GetComponent<UIDocument>().rootVisualElement.Query<Button>().ToList();
-            Assert.That(buttons.Any(b => b.text == "New Grove · selected"), Is.True, "Network-driven selection changes must refresh the open panel.");
+            Assert.That(game.Selected.Name, Is.EqualTo("New Grove"));
+            Assert.That(UiTestKit.FindFirst<Button>(game, UiNames.Act("join", game.SelectedVillageId)), Is.Not.Null, "Network-driven selection changes must refresh the open panel.");
         }
 
         [UnityTest]
         public IEnumerator WorkBoostControlsTargetTheDisplayedJob()
         {
-            game.UI.OpenPanel("Work"); Submit("woodcut");
+            game.UI.OpenPanel("Work"); UiTestKit.Click(game, UiNames.Act("job", "woodcut"));
             var job = game.Selected.Jobs.Single(j => j.Kind == "logs" && !j.Completed);
-            Submit("Boost logs · " + job.Id);
+            UiTestKit.Click(game, UiNames.Act("boost", job.Id));
             yield return null;
             Assert.That(job.BoostCount, Is.EqualTo(1), game.LastAction);
         }
@@ -359,11 +369,11 @@ namespace IdleCatForest.Tests
         [UnityTest]
         public IEnumerator StockpileDesignationRetainsBothSelectedCorners()
         {
-            game.UI.OpenPanel("Stores"); Submit("Designate general stockpile");
-            var place = typeof(ForestUI).GetMethod("Place", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
-            place.Invoke(game.UI, new object[] { new Int2(-2, -6) });
+            game.UI.OpenPanel("Stores"); UiTestKit.Click(game, UiNames.Placement("stockpile"));
+            UiTestKit.PlaceAt(game, new Int2(-2, -6));
             Assert.That(game.UI.HasPlacement, Is.True, "The first click chooses the first corner.");
-            place.Invoke(game.UI, new object[] { new Int2(-1, -5) });
+            UiTestKit.PlaceAt(game, new Int2(-1, -5));
+            Assert.That(game.UI.HasPlacement, Is.False, "The second click finishes the placement.");
             yield return null;
             Assert.That(game.LastAction, Does.Contain("accepted"));
             var pile = game.Selected.Stockpiles.Single(p => p.Position.Equals(new Int2(-2, -6)));
@@ -371,13 +381,13 @@ namespace IdleCatForest.Tests
         }
 
         [UnityTest]
-        public IEnumerator AllBlessingUnlocksHaveReachableControls()
+        public IEnumerator ShrineOffersABlessingUnlockForEachOfItsStudies()
         {
             game.Selected.Research.Clear(); game.UI.OpenPanel("Shrine");
             yield return null;
-            var buttons = game.GetComponent<UIDocument>().rootVisualElement.Query<Button>().ToList();
-            foreach (var study in Catalog.Research.Take(24))
-                Assert.That(buttons.Any(b => b.text.StartsWith("Blessing: " + study.Name + " · ", StringComparison.Ordinal)), Is.True, study.Id);
+            Assert.That(UiTestKit.WithPrefix<Button>(game, UiNames.Act("unlock") + "-"), Has.Count.EqualTo(ShrineSection.BlessingStudyCount));
+            foreach (var study in Catalog.Research.Take(ShrineSection.BlessingStudyCount))
+                Assert.That(UiTestKit.FindFirst<Button>(game, UiNames.Act("unlock", study.Id)), Is.Not.Null, study.Id);
         }
 
         [UnityTest]
@@ -388,8 +398,7 @@ namespace IdleCatForest.Tests
             station.Slots.Add(new WorkSlot { CatId = "", Queue = new System.Collections.Generic.List<QueueEntry> { new QueueEntry { RecipeId = "logs_to_planks" } } });
             game.View.InspectBuilding(station.Id); game.UI.OpenPanel("Inspect");
             yield return null;
-            var buttons = game.GetComponent<UIDocument>().rootVisualElement.Query<Button>().ToList();
-            Assert.That(buttons.Count(b => b.text == "Remove"), Is.EqualTo(0), "An unstaffed secondary queue cannot route edits to the first slot.");
+            Assert.That(UiTestKit.WithPrefix<Button>(game, UiNames.Act("queue-remove") + "-"), Is.Empty, "An unstaffed secondary queue cannot route edits to the first slot.");
         }
     }
 }
