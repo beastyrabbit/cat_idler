@@ -16,11 +16,16 @@ namespace IdleCatForest.Authority
                 throw new InvalidDataException("Stored identity is invalid. It has not been replaced.");
             return new SessionCredential { SessionId = stored.SessionId, Sig = stored.Sig, PlayerId = SessionAuthority.PlayerId(stored.SessionId) };
         }
+        /// <summary>Concurrent action continuations may renew the same credential; their read-modify-write must not interleave.</summary>
+        private static readonly object WriteLock = new object();
         public static void Save(string path, SessionCredential credential, string selectedVillageId = "")
         {
-            var stored = File.Exists(path) ? WireJson.Decode<StoredCredential>(File.ReadAllText(path)) : new StoredCredential();
-            stored.SessionId = credential.SessionId; stored.Sig = credential.Sig; stored.SelectedColonyId = selectedVillageId;
-            AtomicFile.Write(path, WireJson.Encode(stored));
+            lock (WriteLock)
+            {
+                var stored = File.Exists(path) ? WireJson.Decode<StoredCredential>(File.ReadAllText(path)) : new StoredCredential();
+                stored.SessionId = credential.SessionId; stored.Sig = credential.Sig; stored.SelectedColonyId = selectedVillageId;
+                AtomicFile.Write(path, WireJson.Encode(stored));
+            }
         }
         /// <summary>Imports the maintained Rust native bearer without printing or changing its source.</summary>
         public static void ImportLegacy(string source, string destination)

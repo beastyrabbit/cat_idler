@@ -70,7 +70,7 @@ Test("versioned save roundtrip preserves exact cargo and fails closed on corrupt
         Check(File.ReadAllText(path) == original, "refused overwrite still changed source");
         File.WriteAllText(path, original.Replace("2.25", "9.25"));
         try { SaveStore.Load<SaveFixture>(path); throw new Exception("corrupt save accepted"); }
-        catch (InvalidDataException) { }
+        catch (SaveException error) when (error.Code == SaveFailure.Damaged) { }
     }
     finally { Directory.Delete(directory, true); }
 });
@@ -687,6 +687,8 @@ Test("exact crafted haul survives claimed pickup and full-storage restarts", () 
 });
 ImportScenarios.Run(Test, Check);
 WorldGenerationTests.Run(Test, Check);
+PersistenceTests.Run(Test, Check);
+PersistenceTests.RunContracts(Test, Check);
 if (Environment.GetEnvironmentVariable("FOREST_IMPORTED_WORLD") is string importedWorld)
     Test("external synthetic SQLite world resumes deterministically", () =>
     {

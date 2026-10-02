@@ -1,6 +1,8 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using IdleCatForest.Simulation;
 
 namespace IdleCatForest.Authority
@@ -11,34 +13,123 @@ namespace IdleCatForest.Authority
         public string SelectedVillageId = "";
     }
 
-    /// <summary>The same single-writer authority is used by the embedded game and the shared host.</summary>
+    /// <summary>
+    /// The same single-writer authority is used by the embedded game and the shared host. The shared host signs
+    /// expiring bearer sessions; the embedded game (<see cref="OpenLocal"/>) has one stable local player and no bearer.
+    /// </summary>
     public sealed class AuthorityRuntime : IDisposable
     {
         public readonly object Sync = new object();
         public World World { get; private set; }
+        public string SavePath => path;
+        /// <summary>True when this session created the world rather than loading it.</summary>
+        public bool Created { get; }
+        /// <summary>What opening tolerated: skipped unknown save members and simulation invariant failures.</summary>
+        public IReadOnlyList<string> LoadWarnings => loadWarnings;
         private readonly string path;
         private readonly SessionAuthority sessions;
         private readonly FileStream writerLease;
+        private readonly List<string> loadWarnings = new List<string>();
+        private readonly object writeGate = new object();
+        private bool sessionBackupTaken, invalidCopyAttempted;
+        private volatile WrittenPayload lastGood;
         private long projectionSequence;
+        private int released;
+        /// <summary>Lock files whose lease this process holds.</summary>
+        private static readonly HashSet<string> HeldLeases = new HashSet<string>(StringComparer.Ordinal);
 
-        public AuthorityRuntime(string path, int seed, string injectedSecret = null, bool requireNew = false)
+        public AuthorityRuntime(string path, int seed, string injectedSecret = null, bool requireNew = false) : this(path, seed, requireNew, false, injectedSecret)
+        {
+            try { if (Created) WriteNew(); }
+            catch { ReleaseLease(); throw; }
+        }
+
+        /// <summary>Opens the embedded game's world. It never signs, verifies or expires bearer sessions and ignores <c>SESSION_HMAC_SECRET</c>.</summary>
+        internal static AuthorityRuntime OpenLocal(string path, int seed, bool requireNew) => new AuthorityRuntime(path, seed, requireNew, true, null);
+
+        private AuthorityRuntime(string path, int seed, bool requireNew, bool local, string injectedSecret)
         {
             this.path = Path.GetFullPath(path);
             Directory.CreateDirectory(Path.GetDirectoryName(this.path));
-            writerLease = new FileStream(this.path + ".lock", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+            writerLease = AcquireLease(this.path + ".lock");
             try
             {
-                if (requireNew && File.Exists(this.path)) throw new IOException("A world already exists at this path. Choose a new save path.");
-                sessions = new SessionAuthority(CredentialStore.Key(this.path + ".identity", injectedSecret));
-                World = File.Exists(this.path) ? SaveStore.Load<World>(this.path) : World.Create(seed, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
-                ValidateWorld(World);
-                if (!File.Exists(this.path)) SaveStore.Save(this.path, World, true);
+                Backups.RemoveStaleTemporaries(this.path);
+                var exists = File.Exists(this.path);
+                if (requireNew && exists) throw new SaveException(SaveFailure.AlreadyExists, "A world already exists at this path. Choose a new save path.");
+                if (!exists && Backups.Recoverable(this.path).Count > 0)
+                    throw new SaveException(SaveFailure.MissingSaveWithBackup, "The save is missing but a backup of it exists. Nothing new was created; restore the backup or choose a new save path.");
+                if (!local) sessions = new SessionAuthority(CredentialStore.Key(this.path + ".identity", injectedSecret));
+                if (exists)
+                {
+                    World = SaveStore.Load<World>(this.path, out var report);
+                    foreach (var member in report.DroppedMembers) loadWarnings.Add("Skipped unknown save member " + member);
+                    lastGood = new WrittenPayload(report.Payload, report.FromVersion);
+                }
+                else
+                {
+                    World = World.Create(seed, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+                    Created = true;
+                }
+                try { ValidateStructure(World); }
+                catch (InvalidDataException error) { throw new SaveException(SaveFailure.InvalidOwnership, error.Message + " The original was left untouched.", error); }
+                foreach (var failure in World.Validate()) loadWarnings.Add("Simulation invariant: " + failure);
             }
-            catch { writerLease.Dispose(); throw; }
+            catch { ReleaseLease(); throw; }
+        }
+
+        /// <summary>
+        /// Opens the save's lock file exclusively and, where the runtime supports it, also takes a byte-range lock,
+        /// which the IL2CPP player enforces across processes. No P/Invoke and no <c>flock</c>. Leases this process
+        /// already holds are refused before the file is touched: IL2CPP opens and then closes a descriptor when its
+        /// in-process sharing check fails, and closing any descriptor of the file drops the process's byte-range lock.
+        /// </summary>
+        private static FileStream AcquireLease(string lockPath)
+        {
+            lock (HeldLeases) if (!HeldLeases.Add(lockPath)) throw AlreadyRunning(null);
+            try
+            {
+                FileStream lease;
+                try { lease = new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }
+                catch (IOException error) when (error.GetType() == typeof(IOException)) { throw AlreadyRunning(error); }
+                try { LockFirstByte(lease); }
+                catch (PlatformNotSupportedException) { } // .NET on macOS: the FileShare.None open above already holds a whole-file lock.
+                catch (IOException error) { lease.Dispose(); throw AlreadyRunning(error); }
+                return lease;
+            }
+            catch { lock (HeldLeases) HeldLeases.Remove(lockPath); throw; }
+        }
+        private void ReleaseLease()
+        {
+            if (Interlocked.Exchange(ref released, 1) != 0) return;
+            writerLease.Dispose();
+            lock (HeldLeases) HeldLeases.Remove(path + ".lock");
+        }
+#pragma warning disable CA1416 // Guarded by the PlatformNotSupportedException handler in AcquireLease.
+        private static void LockFirstByte(FileStream lease) => lease.Lock(0, 1);
+#pragma warning restore CA1416
+        private static SaveException AlreadyRunning(Exception inner)
+            => new SaveException(SaveFailure.AlreadyRunning, "This world is already open in another window of Idle Cat Forest.", inner);
+
+        /// <summary>The embedded game's identity: the stored local player, else the world's first player, else a new one.</summary>
+        internal ConnectionIdentity ConnectLocal(string storedPlayerId)
+        {
+            lock (Sync)
+            {
+                var id = !string.IsNullOrEmpty(storedPlayerId) ? storedPlayerId
+                    : World.Players.Count > 0 ? World.Players[0].Id : "player_" + SessionAuthority.RandomHex(8);
+                var player = World.Players.FirstOrDefault(candidate => candidate.Id == id) ?? new Player { Id = id, SelectedVillageId = CommunalId() };
+                // Players[0] is the local owner of an embedded world, so ownership survives a missing identity folder.
+                World.Players.Remove(player);
+                World.Players.Insert(0, player);
+                var selected = World.Villages.FirstOrDefault(village => village.Id == player.SelectedVillageId && CanControl(village, id));
+                return new ConnectionIdentity { Credential = new SessionCredential { PlayerId = id }, SelectedVillageId = selected == null ? CommunalId() : selected.Id };
+            }
         }
 
         public ConnectionIdentity Connect(SessionCredential credential, long now)
         {
+            if (sessions == null) throw new InvalidOperationException("The embedded authority has no bearer sessions.");
             lock (Sync)
             {
                 SessionCredential signed;
@@ -62,7 +153,7 @@ namespace IdleCatForest.Authority
 
         public bool Authenticate(ConnectionIdentity connection, string sessionId, string signature, long now)
         {
-            return connection != null && connection.Credential != null && connection.Credential.SessionId == sessionId
+            return sessions != null && connection != null && connection.Credential != null && connection.Credential.SessionId == sessionId
                 && sessions.Verify(sessions.Restore(sessionId, signature), now);
         }
 
@@ -99,8 +190,85 @@ namespace IdleCatForest.Authority
             if (seconds < 0 || double.IsNaN(seconds) || double.IsInfinity(seconds)) throw new ArgumentOutOfRangeException(nameof(seconds));
             lock (Sync) World.Step(seconds);
         }
-        public void Save() { lock (Sync) { ValidateWorld(World); SaveStore.Save(path, World); } }
-        public void Dispose() { writerLease.Dispose(); }
+        /// <summary>Snapshots and writes the world on the calling thread.</summary>
+        public SaveResult Save() => Write(Snapshot());
+
+        /// <summary>
+        /// Encodes the world for a save and lists the simulation invariants it breaks. Call on the thread that steps the
+        /// world; the encode is the only part of a save that must see a consistent world.
+        /// </summary>
+        public SaveSnapshot Snapshot()
+        {
+            lock (Sync)
+            {
+                var clock = System.Diagnostics.Stopwatch.StartNew();
+                var failures = World.Validate();
+                var structure = "";
+                try { ValidateStructure(World); }
+                catch (InvalidDataException error) { structure = error.Message; failures.Insert(0, structure); }
+                return new SaveSnapshot(SaveStore.Encode(World), failures, World.TimeSeconds, clock.Elapsed.TotalMilliseconds, structure);
+            }
+        }
+
+        /// <summary>
+        /// Writes a snapshot; safe on a background thread, and writes never overlap. Before the session's first write
+        /// over a loaded world it copies that world to the session backup. A snapshot that breaks simulation invariants
+        /// is still written, and the first such snapshot of a session is also kept as an invalid copy for diagnosis.
+        /// A snapshot with broken ownership structure could not be reopened, so it only gets the invalid copy and the
+        /// save keeps its last good contents (<see cref="SaveFailure.InvalidOwnership"/>).
+        /// </summary>
+        public SaveResult Write(SaveSnapshot snapshot) => Write(snapshot, false);
+
+        private SaveResult Write(SaveSnapshot snapshot, bool requireNew)
+        {
+            if (snapshot == null) throw new ArgumentNullException(nameof(snapshot));
+            lock (writeGate)
+            {
+                var clock = System.Diagnostics.Stopwatch.StartNew();
+                var result = new SaveResult();
+                if (!Created && !sessionBackupTaken && File.Exists(path))
+                {
+                    result.BackupPath = Backups.TakeSessionSnapshot(path);
+                    sessionBackupTaken = true;
+                }
+                if (snapshot.Failures.Count > 0 && !invalidCopyAttempted)
+                {
+                    invalidCopyAttempted = true;
+                    var copy = Backups.InvalidCopyPath(path, DateTime.UtcNow);
+                    try { SaveStore.Write(copy, snapshot.Payload, true); result.InvalidCopyPath = copy; }
+                    catch (IOException) { } // The diagnostic copy never blocks the save itself.
+                }
+                if (snapshot.StructureError.Length > 0)
+                    throw new SaveException(SaveFailure.InvalidOwnership, snapshot.StructureError + " The last good save was kept.");
+                result.Bytes = SaveStore.Write(path, snapshot.Payload, requireNew);
+                lastGood = new WrittenPayload(snapshot.Payload, SaveStore.Version);
+                result.WriteMilliseconds = clock.Elapsed.TotalMilliseconds;
+                return result;
+            }
+        }
+
+        /// <summary>Writes a world this session created; fails rather than replace an existing file.</summary>
+        internal SaveResult WriteNew() => Write(Snapshot(), true);
+
+        /// <summary>Replaces the live world with the last payload this session loaded or wrote. False if there is none or it no longer decodes.</summary>
+        internal bool RestoreLastGood()
+        {
+            var good = lastGood;
+            if (good == null) return false;
+            World restored;
+            try
+            {
+                restored = SaveStore.DecodePayload<World>(good.Payload, good.Version, out _);
+                ValidateStructure(restored);
+            }
+            catch (IOException) { return false; }
+            catch (InvalidDataException) { return false; }
+            catch (InvalidOperationException) { return false; }
+            lock (Sync) World = restored;
+            return true;
+        }
+
+        public void Dispose() => ReleaseLease();
 
         public WorldFrame Project(ConnectionIdentity connection)
         {
@@ -193,14 +361,28 @@ namespace IdleCatForest.Authority
             if (Math.Abs((long)action.Position.X) > 1000000 || Math.Abs((long)action.Position.Z) > 1000000 || Math.Abs((long)action.End.X) > 1000000 || Math.Abs((long)action.End.Z) > 1000000) return false;
             return new[] { action.TargetId, action.CatId, action.BuildingId, action.Resource, action.RecipeId, action.NodeId, action.Role, action.Name, action.OtherResource, action.OtherVillageId, action.Edit, action.Labor, action.Mode }.All(value => value != null && value.Length <= 256);
         }
+        /// <summary>Structural ownership checks and every simulation invariant; throws on the first problem.</summary>
         public static void ValidateWorld(World world)
+        {
+            ValidateStructure(world);
+            var failures = world.Validate();
+            if (failures.Count > 0) throw new InvalidDataException("Saved world violates simulation invariants: " + string.Join("; ", failures));
+        }
+
+        /// <summary>The ownership structure an authority cannot run without. Simulation invariants are checked separately and never block a save or an open.</summary>
+        public static void ValidateStructure(World world)
         {
             if (world == null || world.Villages == null || world.Villages.Count(village => village.Communal) != 1) throw new InvalidDataException("A saved world must contain exactly one communal village.");
             if (world.Villages.Any(village => village.Communal && !string.IsNullOrEmpty(village.OwnerId))) throw new InvalidDataException("The communal village cannot have a private owner.");
             if (world.Villages.Where(village => !village.Communal).GroupBy(village => village.OwnerId).Any(group => string.IsNullOrEmpty(group.Key) || group.Count() > 1)) throw new InvalidDataException("Personal village ownership is invalid.");
             if (world.Villages.GroupBy(village => village.Id).Any(group => group.Count() != 1)) throw new InvalidDataException("Village identities are not unique.");
-            var failures = world.Validate();
-            if (failures.Count > 0) throw new InvalidDataException("Saved world violates simulation invariants: " + string.Join("; ", failures));
+        }
+
+        private sealed class WrittenPayload
+        {
+            public readonly string Payload;
+            public readonly int Version;
+            public WrittenPayload(string payload, int version) { Payload = payload; Version = version; }
         }
     }
 }

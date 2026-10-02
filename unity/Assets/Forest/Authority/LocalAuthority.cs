@@ -1,35 +1,65 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using IdleCatForest.Simulation;
 
 namespace IdleCatForest.Authority
 {
+    /// <summary>
+    /// The embedded single-player authority. Local play has no expiring bearer: the local player id is stored in the
+    /// world (its first player), so a long break, a clock change, <c>SESSION_HMAC_SECRET</c> or a missing
+    /// <c>.identity</c> folder never locks a player out of their own world. An imported native credential at
+    /// <c>&lt;save&gt;.identity/session.json</c> still names the owner, without checking its signature or age.
+    /// </summary>
     public sealed class LocalAuthority : IDisposable
     {
         private readonly AuthorityRuntime runtime;
         private readonly ConnectionIdentity connection;
+        private readonly List<string> loadWarnings = new List<string>();
         public World World => runtime.World;
+        /// <summary>Carries only <see cref="SessionCredential.PlayerId"/>; local play has no session or signature.</summary>
         public SessionCredential Credential => connection.Credential;
+        public string PlayerId => connection.Credential.PlayerId;
         public string SelectedVillageId => connection.SelectedVillageId;
+        public string SavePath => runtime.SavePath;
+        /// <summary>True when this session created the world.</summary>
+        public bool Created => runtime.Created;
+        /// <summary>What opening tolerated; the presentation logs these once.</summary>
+        public IReadOnlyList<string> LoadWarnings => loadWarnings;
+
         public LocalAuthority(string path, int seed) : this(path, seed, false) { }
         private LocalAuthority(string path, int seed, bool requireNew)
         {
-            runtime = new AuthorityRuntime(path, seed, Environment.GetEnvironmentVariable("SESSION_HMAC_SECRET"), requireNew);
+            runtime = AuthorityRuntime.OpenLocal(path, seed, requireNew);
             try
             {
-                var credentialPath = Path.GetFullPath(path) + ".identity/session.json";
-                connection = runtime.Connect(CredentialStore.Load(credentialPath), DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
-                CredentialStore.Save(credentialPath, connection.Credential, connection.SelectedVillageId);
-                runtime.Save();
+                loadWarnings.AddRange(runtime.LoadWarnings);
+                connection = runtime.ConnectLocal(StoredPlayerId(Path.Combine(runtime.SavePath + ".identity", "session.json")));
+                if (runtime.Created) runtime.WriteNew();
             }
             catch { runtime.Dispose(); throw; }
         }
         public static LocalAuthority CreateNew(string path, int seed) => new LocalAuthority(path, seed, true);
         public ActionResult Apply(GameAction action) => runtime.Apply(connection, action);
         public void Advance(double seconds) => runtime.Advance(seconds);
+        /// <summary>Snapshots and writes on the calling thread.</summary>
         public void Save() => runtime.Save();
-        /// <summary>Reloads the last successfully written world. Stub until W2-11: never restores and returns false.</summary>
-        public bool RestoreLastGood() => false;
+        /// <summary>Main-thread half of a background save: validates and encodes the world.</summary>
+        public SaveSnapshot Snapshot() => runtime.Snapshot();
+        /// <summary>Background half of a save: backup, invalid copy and the atomic write. Writes never overlap.</summary>
+        public SaveResult Write(SaveSnapshot snapshot) => runtime.Write(snapshot);
+        /// <summary>Replaces the live world with the last payload this session loaded or wrote. True on success.</summary>
+        public bool RestoreLastGood() => runtime.RestoreLastGood();
         public void Dispose() => runtime.Dispose();
+
+        private string StoredPlayerId(string credentialPath)
+        {
+            try { return CredentialStore.Load(credentialPath)?.PlayerId ?? ""; }
+            catch (Exception error) when (error is IOException || error is InvalidDataException || error is UnauthorizedAccessException || error is Newtonsoft.Json.JsonException)
+            {
+                loadWarnings.Add("Ignored unreadable local identity file; the world's own owner was used.");
+                return "";
+            }
+        }
     }
 }
