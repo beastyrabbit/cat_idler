@@ -1,8 +1,9 @@
 # Idle Cat Forest
 
-A non-commercial forest colony game. Cats gather, carry, build, learn, rest and
-raise kittens while you decide how the village develops. Specialist officers
-gradually take over work that begins under manual control.
+A forest colony game in development for Steam; the demo is free; pricing undecided.
+Cats gather, carry, build, learn, rest and raise kittens while you decide how the
+village develops. Specialist officers gradually take over work that begins under
+manual control. The demo brief is [docs/DEMO.md](docs/DEMO.md).
 
 The game runs in Unity with a C# simulation and an Apple Silicon macOS application.
 The [migration acceptance ledger](docs/unity/ACCEPTANCE.md) records gameplay,

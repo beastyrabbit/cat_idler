@@ -2,7 +2,8 @@
 
 **"An idle version of Dwarf Fortress, played by cats, in a forest."**
 
-Idle Cat Forest is developed and distributed solely as a non-commercial game project.
+Idle Cat Forest is a forest colony game in development for Steam; the demo is free;
+pricing undecided. The current demo scope is in [DEMO.md](DEMO.md).
 
 ## Pillars
 1. **Readable 3D places.** An orthographic management camera shows the forest's
