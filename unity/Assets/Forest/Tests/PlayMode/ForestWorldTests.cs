@@ -2,7 +2,6 @@ using System;
 using System.Collections;
 using System.IO;
 using System.Linq;
-using System.Reflection;
 using IdleCatForest.Presentation;
 using IdleCatForest.Simulation;
 using NUnit.Framework;
@@ -73,11 +72,10 @@ namespace IdleCatForest.Tests
                 var p = new Int2(water.Position.X + x, water.Position.Z + z);
                 world.TileAt(p); if (!game.Selected.Known.Contains(p)) game.Selected.Known.Add(p);
             }
-            var view = typeof(ForestView); const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
-            view.GetField("groundCenter", flags).SetValue(game.View, water.Position);
+            game.View.groundCenter = water.Position;
             int tiles = world.Tiles.Count;
-            view.GetMethod("MakeGround", flags).Invoke(game.View, null); yield return null;
-            var terrain = (Transform)view.GetField("groundRoot", flags).GetValue(game.View);
+            game.View.MakeGround(); yield return null;
+            var terrain = game.View.groundRoot;
             var bed = terrain.Find("Ground 11").GetComponent<MeshFilter>().sharedMesh;
             var surface = terrain.Find("Ground 1").GetComponent<MeshFilter>().sharedMesh;
             Assert.That(surface.bounds.max.y - bed.bounds.min.y, Is.GreaterThan(.5));
