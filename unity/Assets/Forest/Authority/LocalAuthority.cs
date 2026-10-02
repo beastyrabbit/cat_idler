@@ -28,6 +28,8 @@ namespace IdleCatForest.Authority
         public ActionResult Apply(GameAction action) => runtime.Apply(connection, action);
         public void Advance(double seconds) => runtime.Advance(seconds);
         public void Save() => runtime.Save();
+        /// <summary>Reloads the last successfully written world. Stub until W2-11: never restores and returns false.</summary>
+        public bool RestoreLastGood() => false;
         public void Dispose() => runtime.Dispose();
     }
 }
