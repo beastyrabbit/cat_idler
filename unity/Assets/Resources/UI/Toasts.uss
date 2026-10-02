@@ -1,0 +1,53 @@
+/*
+ * Toast stack (W2-16): top right under the resource pills, newest on top. Alerts carry a red stripe
+ * and stay until dismissed; news carries a blue one and leaves after six seconds.
+ */
+
+.toasts { position: absolute; width: 340px; flex-direction: column; }
+
+.toast {
+    flex-direction: row;
+    align-items: stretch;
+    margin: 0 0 8px 0;
+    border-width: 1px;
+    border-radius: 14px;
+    border-color: var(--edge, rgba(255, 255, 255, 0.14));
+    background-color: rgba(12, 22, 16, 0.93);
+    overflow: hidden;
+    opacity: 0;
+    translate: 28px 0;
+    transition-property: opacity, translate;
+    transition-duration: 200ms, 240ms;
+    transition-timing-function: ease-out;
+}
+.toast--in { opacity: 1; translate: 0 0; }
+.toast--out { opacity: 0; translate: 0 0; }
+.reduced-motion .toast { translate: 0 0; transition-duration: 0s, 0s; }
+
+.toast--alert { border-color: rgba(255, 107, 87, 0.55); background-color: rgba(30, 18, 14, 0.94); }
+.toast--clickable:hover { border-color: rgba(255, 209, 102, 0.6); }
+
+.toast__stripe { width: 4px; flex-shrink: 0; background-color: var(--info, rgb(124, 198, 230)); }
+.toast--alert .toast__stripe { background-color: var(--bad, rgb(255, 107, 87)); }
+
+.toast__text { flex-grow: 1; flex-shrink: 1; padding: 10px 12px 11px 12px; }
+.toast__title { margin: 0; padding: 0; font-size: 13px; -unity-font-style: bold; color: var(--ink, rgb(238, 243, 234)); white-space: normal; }
+.toast--alert .toast__title { color: rgb(255, 196, 184); }
+.toast__body { margin: 2px 0 0 0; padding: 0; font-size: 11.5px; color: var(--dim, rgb(169, 184, 168)); white-space: normal; }
+
+.toast__close {
+    width: 28px;
+    height: 28px;
+    min-height: 28px;
+    flex-shrink: 0;
+    margin: 7px 7px 0 0;
+    padding: 0;
+    align-items: center;
+    justify-content: center;
+    border-width: 0;
+    border-radius: 8px;
+    background-color: rgba(0, 0, 0, 0);
+    color: var(--dim, rgb(169, 184, 168));
+}
+.toast__close:hover { color: var(--ink, rgb(238, 243, 234)); background-color: rgba(255, 255, 255, 0.10); }
+.toast__close > .glyph { width: 14px; height: 14px; }

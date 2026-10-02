@@ -41,11 +41,30 @@ namespace IdleCatForest.Presentation
 
         public static Label Text(VisualElement parent, string text, string cls = "body") => Label(parent, text, cls);
 
+        /// <summary>A button; a non-empty <paramref name="tooltip"/> shows as the runtime glass tooltip.</summary>
         public static Button Button(VisualElement parent, string text, Action click, string tooltip = "")
         {
-            var b = new Button(click) { text = text, tooltip = tooltip };
+            var b = new Button(click) { text = text };
+            Tooltip.Attach(b, tooltip);
             parent.Add(b);
             return b;
+        }
+
+        /// <summary>Sets text only when it differs, so a refresh does not dirty the layout of unchanged labels.</summary>
+        public static void SetText(this TextElement element, string text)
+        {
+            text = text ?? "";
+            if (element != null && element.text != text) element.text = text;
+        }
+
+        /// <summary>Shows or hides an element, writing the style only on change.</summary>
+        public static void SetVisible(this VisualElement element, bool visible)
+        {
+            if (element == null) return;
+            var display = visible ? DisplayStyle.Flex : DisplayStyle.None;
+            var current = element.style.display;
+            if (current.keyword == StyleKeyword.Undefined && current.value == display) return;
+            element.style.display = display;
         }
 
         public static TextField Field(VisualElement parent, string label, string value)

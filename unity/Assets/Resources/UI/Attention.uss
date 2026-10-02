@@ -1,0 +1,175 @@
+/*
+ * Attention seal and popover (W2-16, GUIDE section 5.2; .seal and .pop in glass.css).
+ * UI Toolkit has no backdrop blur, so glass uses the section 3 fallback colours.
+ */
+
+.seal-host { position: absolute; }
+
+.seal {
+    flex-direction: row;
+    align-items: center;
+    min-height: 0;
+    margin: 0;
+    padding: 8px 13px 8px 11px;
+    border-width: 1px;
+    border-radius: 999px;
+    border-color: var(--edge, rgba(255, 255, 255, 0.14));
+    background-color: rgba(12, 22, 16, 0.86);
+    color: var(--ink, rgb(238, 243, 234));
+    font-size: 15px;
+    -unity-font-style: bold;
+    overflow: visible;
+}
+.seal:hover { background-color: rgba(20, 34, 25, 0.92); border-color: rgba(255, 209, 102, 0.55); }
+.seal:active { background-color: rgba(255, 209, 102, 0.18); border-color: var(--sun, rgb(255, 209, 102)); }
+.seal--open, .seal--open:hover { background-color: rgba(255, 209, 102, 0.18); border-color: var(--sun, rgb(255, 209, 102)); }
+
+.seal__bell { width: 20px; height: 20px; margin-right: 8px; color: var(--dim, rgb(169, 184, 168)); }
+.seal__bell > .glyph { width: 20px; height: 20px; }
+.seal--open .seal__bell { color: var(--sun, rgb(255, 209, 102)); }
+.seal--urgent .seal__bell { color: var(--ink, rgb(238, 243, 234)); }
+
+.seal__dot {
+    position: absolute;
+    top: -3px;
+    right: -4px;
+    width: 9px;
+    height: 9px;
+    border-width: 2px;
+    border-radius: 5px;
+    border-color: rgb(16, 24, 20);
+    background-color: var(--bad, rgb(255, 107, 87));
+    transition-property: scale;
+    transition-duration: 200ms;
+    transition-timing-function: ease-out;
+}
+.seal__dot--pulse { scale: 1.9 1.9; }
+.reduced-motion .seal__dot { transition-duration: 0s; }
+
+.seal__count { margin: 0; padding: 0; font-size: 15px; -unity-font-style: bold; color: var(--ink, rgb(238, 243, 234)); }
+.seal--empty .seal__count { color: var(--dim, rgb(169, 184, 168)); }
+.seal--open .seal__count { color: var(--sun, rgb(255, 209, 102)); }
+.seal__label { margin: 0 0 0 6px; padding: 0; font-size: 11.5px; -unity-font-style: bold; color: var(--dim, rgb(169, 184, 168)); }
+.compact .seal__label { display: none; }
+
+/* The hover label, like a dock label; below the seal because the seal sits at the top edge. */
+.seal__tip {
+    position: absolute;
+    top: 46px;
+    left: 0;
+    display: none;
+    margin: 0;
+    padding: 3px 8px;
+    border-radius: 6px;
+    background-color: rgba(10, 19, 14, 0.95);
+    border-width: 1px;
+    border-color: var(--edge, rgba(255, 255, 255, 0.14));
+    color: var(--ink, rgb(238, 243, 234));
+    font-size: 10px;
+    -unity-font-style: bold;
+    letter-spacing: 1.2px;
+    white-space: nowrap;
+}
+.seal:hover > .seal__tip { display: flex; }
+.seal--open > .seal__tip, .seal--open:hover > .seal__tip { display: none; }
+
+/* Popover */
+.pop {
+    position: absolute;
+    width: 470px;
+    padding: 14px;
+    border-width: 1px;
+    border-radius: 16px;
+    border-color: var(--edge, rgba(255, 255, 255, 0.14));
+    background-color: rgba(12, 22, 16, 0.94);
+    opacity: 0;
+    translate: 0 -6px;
+    transition-property: opacity, translate;
+    transition-duration: 140ms, 160ms;
+    transition-timing-function: ease-out;
+}
+.pop--shown { opacity: 1; translate: 0 0; }
+.reduced-motion .pop { transition-duration: 0s, 0s; }
+
+.pop__caret {
+    position: absolute;
+    top: -7px;
+    left: 20px;
+    width: 12px;
+    height: 12px;
+    rotate: 45deg;
+    border-left-width: 1px;
+    border-top-width: 1px;
+    border-color: var(--edge, rgba(255, 255, 255, 0.14));
+    background-color: rgba(12, 22, 16, 0.94);
+}
+
+.pop__header { flex-direction: row; align-items: flex-end; padding-bottom: 10px; border-bottom-width: 1px; border-bottom-color: var(--line, rgba(255, 255, 255, 0.09)); }
+.pop__title { margin: 0 8px 0 0; padding: 0; font-size: 15px; -unity-font-style: bold; color: var(--ink, rgb(238, 243, 234)); }
+.pop__subtitle { flex-grow: 1; margin: 0; padding: 0 0 1px 0; font-size: 11.5px; -unity-font-style: bold; color: var(--dim, rgb(169, 184, 168)); }
+.pop__key {
+    margin: 0;
+    padding: 2px 6px;
+    border-width: 1px;
+    border-radius: 6px;
+    border-color: var(--edge, rgba(255, 255, 255, 0.14));
+    background-color: var(--fill, rgba(255, 255, 255, 0.08));
+    color: var(--dim, rgb(169, 184, 168));
+    font-size: 10px;
+    -unity-font-style: bold;
+}
+
+.pop-row {
+    flex-direction: row;
+    align-items: center;
+    padding: 10px 0;
+    border-bottom-width: 1px;
+    border-bottom-color: var(--line, rgba(255, 255, 255, 0.09));
+    transition-property: opacity;
+    transition-duration: 150ms;
+}
+.pop-row--leaving { opacity: 0; }
+.reduced-motion .pop-row { transition-duration: 0s; }
+
+.pop-row__dot { width: 8px; height: 8px; flex-shrink: 0; margin: 0 12px 0 1px; border-radius: 4px; background-color: var(--info, rgb(124, 198, 230)); }
+.pop-row__dot--danger { background-color: var(--bad, rgb(255, 107, 87)); }
+.pop-row__dot--warning { background-color: var(--sun, rgb(255, 209, 102)); }
+.pop-row__dot--info { background-color: var(--info, rgb(124, 198, 230)); }
+
+.pop-row__text { flex-grow: 1; flex-shrink: 1; margin-right: 10px; }
+.pop-row__title { margin: 0; padding: 0; font-size: 13px; -unity-font-style: bold; color: var(--ink, rgb(238, 243, 234)); white-space: normal; }
+.pop-row__cause { margin: 2px 0 0 0; padding: 0; font-size: 11.5px; color: var(--dim, rgb(169, 184, 168)); white-space: normal; }
+
+.pop-row__acts { flex-direction: row; align-items: center; flex-shrink: 0; }
+.pop-row__act { margin: 0 5px 0 0; padding: 6px 10px; font-size: 11.5px; max-width: 200px; }
+.pop-row__pin {
+    width: 30px;
+    height: 30px;
+    min-height: 30px;
+    margin: 0;
+    padding: 0;
+    align-items: center;
+    justify-content: center;
+    border-width: 1px;
+    border-radius: 9px;
+    border-color: var(--edge, rgba(255, 255, 255, 0.14));
+    background-color: rgba(0, 0, 0, 0);
+    color: var(--dim, rgb(169, 184, 168));
+}
+.pop-row__pin:hover { color: var(--sun, rgb(255, 209, 102)); border-color: var(--sun, rgb(255, 209, 102)); background-color: rgba(255, 209, 102, 0.10); }
+.pop-row__pin:active { background-color: rgba(255, 209, 102, 0.22); }
+.pop-row__pin > .glyph { width: 15px; height: 15px; }
+
+.pop__more {
+    min-height: 0;
+    margin: 8px 0 0 0;
+    padding: 6px 0;
+    border-width: 0;
+    background-color: rgba(0, 0, 0, 0);
+    color: var(--dim, rgb(169, 184, 168));
+    font-size: 11.5px;
+    -unity-font-style: bold;
+    -unity-text-align: middle-left;
+}
+.pop__more:hover { color: var(--sun, rgb(255, 209, 102)); background-color: rgba(0, 0, 0, 0); }
+.pop__empty { margin: 0; padding: 12px 0 2px 0; font-size: 12.5px; color: var(--dim, rgb(169, 184, 168)); white-space: normal; }
