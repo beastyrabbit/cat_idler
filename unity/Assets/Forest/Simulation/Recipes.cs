@@ -4,8 +4,9 @@ namespace IdleCatForest.Simulation
     {
         /// <summary>
         /// The recipe the simulation uses for seconds, inputs and outputs. Every simulation
-        /// lookup goes through here so a pacing profile can override recipes in one place.
+        /// lookup goes through here: classic worlds get the catalog recipe itself, demo worlds
+        /// get <see cref="DemoContent"/>'s override (and the demo-only recipes).
         /// </summary>
-        public Recipe RecipeOf(string id) => Catalog.Recipe(id);
+        public Recipe RecipeOf(string id) => DemoContent.Recipe(this, id);
     }
 }
