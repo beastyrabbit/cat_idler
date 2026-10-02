@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Mirrors IdleCatForest.Simulation.asmdef: noEngineReferences, .NET Standard 2.1 only. -->
+  <PropertyGroup>
+    <AssemblyName>IdleCatForest.Simulation</AssemblyName>
+    <RootNamespace>IdleCatForest.Simulation</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="$(UnityCheckAssets)Simulation/**/*.cs" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,18 @@
+[
+  { "wait": 3 },
+  "focusVillage",
+  { "speed": 4 },
+  { "wait": 5 },
+  { "speed": 1 },
+  { "selectCat": "firstWorking" },
+  { "open": "Inspect" },
+  { "wait": 2 },
+  { "shot": "inspector-cat" },
+  "close",
+  { "selectBuilding": "research_hut" },
+  { "open": "Inspect" },
+  { "wait": 2 },
+  { "shot": "inspector-building" },
+  "close",
+  "quit"
+]

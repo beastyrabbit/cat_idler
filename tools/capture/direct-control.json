@@ -1,0 +1,15 @@
+[
+  { "wait": 3 },
+  "focusVillage",
+  { "speed": 4 },
+  { "wait": 5 },
+  { "speed": 1 },
+  { "selectCat": "firstWorking" },
+  { "act": { "Kind": "EnterCatControl", "CatId": "$selectedCat" } },
+  { "wait": 3 },
+  { "shot": "direct-control" },
+  { "act": { "Kind": "LeaveCatControl", "CatId": "$selectedCat" } },
+  { "wait": 3 },
+  { "shot": "direct-control-left" },
+  "quit"
+]

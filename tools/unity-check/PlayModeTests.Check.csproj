@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Mirrors IdleCatForest.PlayModeTests.asmdef (TestAssemblies, defineConstraints UNITY_INCLUDE_TESTS). -->
+  <PropertyGroup>
+    <AssemblyName>IdleCatForest.PlayModeTests</AssemblyName>
+    <RootNamespace>IdleCatForest.PlayModeTests</RootNamespace>
+    <UnityCheckEngine>true</UnityCheckEngine>
+    <UnityCheckInputSystem>true</UnityCheckInputSystem>
+    <UnityCheckNewtonsoft>true</UnityCheckNewtonsoft>
+    <UnityCheckTests>true</UnityCheckTests>
+    <DefineConstants>$(DefineConstants);UNITY_EDITOR;UNITY_EDITOR_64;UNITY_EDITOR_OSX;UNITY_INCLUDE_TESTS</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="$(UnityCheckAssets)Tests/PlayMode/**/*.cs" />
+    <ProjectReference Include="Forest.Sim.Check.csproj" Private="false" />
+    <ProjectReference Include="Forest.Authority.Check.csproj" Private="false" />
+    <ProjectReference Include="Presentation.Check.csproj" Private="false" />
+  </ItemGroup>
+</Project>

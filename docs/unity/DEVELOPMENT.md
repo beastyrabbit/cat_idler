@@ -87,25 +87,175 @@ Remote clients require `wss`, while loopback `ws` is supported for local testing
 See `PERSISTENCE.md` for identity, permissions, save and legacy-import details.
 
 Run the smallest focused scenario during implementation. After implementation,
-close this project's Editor before running batch Unity tests:
+close this project's Editor and hold a Unity slot (see below) before running batch
+Unity tests:
 
 ```sh
 bash tools/forest.sh edit-test
 bash tools/forest.sh play-test
 ```
 
-Unity test reports go to ignored `artifacts/tests`. A process exit alone is not a
-pass: inspect test totals, failures, runtime errors and generated reports. Tests
-never contact paid AI services or production worlds.
+`edit-test` runs the `IdleCatForest.Acceptance.Tests` and
+`IdleCatForest.Simulation.Tests` assemblies and excludes the `Campaign` category
+(plus, until campaign cases carry that category, names containing `.campaign.`).
+`--filter <regex>` narrows it further. Unity test reports go to
+`$FOREST_ARTIFACTS/tests/$FOREST_RUN_ID/` (`editmode.xml`, `editmode.log`,
+`playmode.xml`). A process exit alone is not a pass: inspect test totals,
+failures, runtime errors and generated reports. Tests never contact paid AI
+services or production worlds.
+
+## Scenario runner
+
+The rendering-free scenarios compile every `.cs` file under
+`unity/Assets/Forest/Tests/EditMode/Acceptance/` except the NUnit adapter
+`AcceptanceTests.cs`, together with the simulation sources.
+
+```sh
+dotnet run --project tools/scenarios -c Release -- --jobs=0
+dotnet run --project tools/scenarios -c Release -- --jobs=0 --filter=regression.
+dotnet run --project tools/scenarios -c Release -- --jobs=0 --include-campaigns --filter=campaign.
+```
+
+| Option | Meaning |
+|---|---|
+| `--jobs=N` | Run N cases at once; `0` uses every processor. Default `1` (serial). |
+| `--filter=TEXT`, `--filter TEXT` | Case-insensitive substring of the case name. |
+| `--include-campaigns` | Also select names starting with `campaign.` (about 31 min serially). |
+| `--include-demo-timing` | Also select names starting with `demo_timing.`. |
+| `--exclude-campaigns` | Accepted for old scripts; campaigns are excluded by default. |
+| `--list` | Print the selected names and exit. |
+| `--junit=PATH` | Also write a JUnit XML report. |
+
+Output is buffered per case and printed sorted by name, followed by
+`selected=N passed=N failed=N elapsed_ms=N`. A failure prints the exception type,
+message and top five stack frames. Exit codes: `0` all passed, `1` a case failed,
+`2` unknown or malformed argument, `3` nothing matched the selection.
+
+## Parallel work: compile gate, worktrees and Unity slots
+
+### Compile gate without Unity
+
+```sh
+bash tools/forest.sh check
+```
+
+`check` builds `tools/unity-check/UnityCheck.slnx`: SDK projects that mirror the
+asmdefs (`IdleCatForest.Simulation`, `IdleCatForest.Authority`,
+`IdleCatForest.Presentation`, `IdleCatForest.Editor` and
+`IdleCatForest.PlayModeTests`) and compile the same sources with C# 9 against
+Unity's reference assemblies. It prints `check: ok` or the CS errors and exits
+nonzero on failure. Run it before taking a Unity slot. It needs the installed
+editor and an imported `unity/Library` (for the Input System, Pipeline, test
+runner, NUnit and Newtonsoft assemblies), but never starts Unity:
+
+- `FOREST_UNITY_ROOT` overrides the editor folder
+  (default `/Applications/Unity/Hub/Editor/6000.6.0f1`).
+- `FOREST_UNITY_LIBRARY` overrides the Library folder (default `unity/Library`).
+
+Presentation is checked as the player compiles it (no `UNITY_EDITOR`); Editor and
+PlayMode tests are checked with the editor defines, and Editor against Unity's
+`unity-4.8-api` profile. These projects are not in `IdleCatForest.slnx`, because
+the solution build must stay green on machines and CI runners without Unity.
+
+### Package worktrees
+
+```sh
+bash tools/forest.sh worktree-init <package-id> [base=demo-polish]
+```
+
+This creates (or reuses) the git worktree
+`<main checkout>-worktrees/<package-id>` on branch `demo/<package-id>` from
+`base`, then APFS-clones the main checkout's `unity/Library` into it with
+`cp -c -R`, so `check` and batch Unity commands work without a cold import. The
+main checkout is resolved from `git rev-parse --git-common-dir`; `FOREST_WORKTREES`
+overrides the parent folder.
+
+### Unity slots
+
+At most three batch Unity instances run at once on this machine. Each slot is a
+`mkdir` lock in `<main checkout>/artifacts/unity-slots/slot-{1,2,3}` with an
+`owner` file recording the package id, worktree path, acquiring pid and time.
+
+```sh
+bash tools/forest.sh unity-slot acquire <package-id>   # waits until a slot is free
+bash tools/forest.sh unity-slot status
+bash tools/forest.sh unity-slot release <package-id>
+```
+
+`acquire` polls every 15 s (`FOREST_SLOT_POLL`) for up to 2 h
+(`FOREST_SLOT_TIMEOUT`) and is a no-op when the id already holds a slot. `status`
+reports slots held for more than 3 h as stale and notes when the acquiring shell
+has exited; stale slots are never taken over automatically. Release a slot as soon
+as the Unity run ends and hold it at most 45 minutes at a time.
+
+`setup`, `edit-test`, `play-test`, `build`, `capture`, `inspect` and `performance`
+refuse to run unless this worktree holds a slot. In the main checkout they also
+require `FOREST_INTEGRATOR=1`: that project belongs to the wave integrator.
+
+### Output locations
+
+`FOREST_ARTIFACTS` defaults to `<main checkout>/artifacts`, and `FOREST_RUN_ID`
+to `<yyyymmdd-hhmmss>-<pid>`. Test reports go to
+`$FOREST_ARTIFACTS/tests/$FOREST_RUN_ID/`, and players to
+`$FOREST_ARTIFACTS/macos/<worktree name>/$FOREST_RUN_ID/Idle Cat Forest.app`.
+
+## Scripted captures
+
+```sh
+bash tools/forest.sh capture tools/capture/overview.json --out <dir> \
+  [--fixture fresh|founding30|expanded150|demo35] [--seed N] [--size 2400x1500] [--rebuild]
+```
+
+`capture` needs a held slot. It reuses this worktree's newest player (or builds
+one when none exists or `--rebuild` is given), creates the fixture save in a fresh
+temporary directory and runs the player windowed at `--size` with
+`--forest-save <temp>/world.json --forest-capture-script <script> --forest-capture-out <dir>`.
+It waits up to 10 minutes for the player to quit, then deletes the temporary save.
+
+- `fresh` (default) creates a new world from `--seed` (default 4242).
+- `founding30` and `expanded150` come from `tools/presentation-fixture` (fixed seed 41).
+- `demo35` is reserved; it fails with a message until W4-04 adds it.
+
+The output folder receives one PNG per `shot`, `capture-log.txt` (one line per
+step with real and simulated time and the result) and `player.log`. The player
+exits `0` when every step succeeded, `1` when a step failed and `2` when the
+script is unreadable or contains an unknown step.
+
+A script is a JSON array. A step is either a bare string or an object with one
+property:
+
+| Step | Effect |
+|---|---|
+| `{"wait": 2.5}` | Wait real seconds; the simulation keeps running at the current speed. |
+| `{"speed": 4}` | `ForestGame.SetSpeed`. |
+| `"focusVillage"` | Frame the selected village (`ForestView.FocusVillage`). |
+| `{"zoom": -3}` | `ForestView.ZoomBy(steps)`; positive zooms in. `100` reaches the closest zoom (3.5), `-100` the farthest (36). |
+| `{"level": -1}` | `ForestView.ViewLevel(n)`; `0` is the surface. |
+| `{"selectCat": "firstWorking"}` | Select a cat by id, `first` (first living cat) or `firstWorking` (falls back to the first living cat). |
+| `{"selectBuilding": "research_hut"}` | Select a building by id or by kind. |
+| `{"open": "Cats"}` | `ForestUI.OpenPanel(section)`, for example `Cats`, `Research` or `Inspect`. |
+| `"close"` | `ForestUI.ClosePanel()`. |
+| `{"act": {"Kind": "EnterCatControl", "CatId": "$selectedCat"}}` | Send a `GameAction` through `ForestGame.Act`. The string values `$selectedCat` and `$selectedBuilding` stand for the driver's last selection. |
+| `{"shot": "name"}` | Save the composited frame, UI included, as `name.png`. |
+| `"quit"` | Stop the script and quit the player. The player also quits at the end of the script. |
+
+Standard scripts live in `tools/capture/`: `overview.json`, `cats-drawer.json`,
+`inspector.json`, `direct-control.json`, `underground.json`, `zoom-range.json`
+(zoom 3.5, 14 and 36) and `edge.json` (farthest zoom). The driver is
+`unity/Assets/Forest/Presentation/Capture/CaptureDriver.cs`; it is inert unless
+`--forest-capture-script` is on the command line and uses only public game members.
 
 ## Build native macOS
 
-With this project's Editor closed:
+With this project's Editor closed and a Unity slot held:
 
 ```sh
 bash tools/forest.sh build
-open 'artifacts/macos/Idle Cat Forest.app'
 ```
+
+The command prints the player path,
+`$FOREST_ARTIFACTS/macos/<worktree name>/$FOREST_RUN_ID/Idle Cat Forest.app`;
+open that path.
 
 The build targets Apple Silicon with IL2CPP. Build products and compiler caches
 are ignored. The packaged app accepts `--forest-save <new-or-existing-path>`,
@@ -120,7 +270,7 @@ buildings in those saves still require a road connection to the actual shrine.
 Use a separate unused path to try the new layout without replacing progress:
 
 ```sh
-open -n 'artifacts/macos/Idle Cat Forest.app' --args --forest-save "$PWD/artifacts/playtest/world.json" --forest-seed 41
+open -n "<player path printed by build>" --args --forest-save "$PWD/artifacts/playtest/world.json" --forest-seed 41
 ```
 
 The same path resumes the same world on subsequent launches. On Retina Macs,

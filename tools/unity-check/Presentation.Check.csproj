@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Mirrors IdleCatForest.Presentation.asmdef as compiled into the player (no UNITY_EDITOR, no UnityEditor API). -->
+  <PropertyGroup>
+    <AssemblyName>IdleCatForest.Presentation</AssemblyName>
+    <RootNamespace>IdleCatForest.Presentation</RootNamespace>
+    <UnityCheckEngine>true</UnityCheckEngine>
+    <UnityCheckInputSystem>true</UnityCheckInputSystem>
+    <UnityCheckNewtonsoft>true</UnityCheckNewtonsoft>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="$(UnityCheckAssets)Presentation/**/*.cs" />
+    <ProjectReference Include="Forest.Sim.Check.csproj" Private="false" />
+    <ProjectReference Include="Forest.Authority.Check.csproj" Private="false" />
+  </ItemGroup>
+</Project>

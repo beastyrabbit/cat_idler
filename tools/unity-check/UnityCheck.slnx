@@ -1,0 +1,7 @@
+<Solution>
+  <Project Path="Forest.Sim.Check.csproj" />
+  <Project Path="Forest.Authority.Check.csproj" />
+  <Project Path="Presentation.Check.csproj" />
+  <Project Path="Editor.Check.csproj" />
+  <Project Path="PlayModeTests.Check.csproj" />
+</Solution>

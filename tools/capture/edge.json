@@ -1,0 +1,8 @@
+[
+  { "wait": 3 },
+  "focusVillage",
+  { "zoom": -100 },
+  { "wait": 3 },
+  { "shot": "edge-max-zoom-out" },
+  "quit"
+]

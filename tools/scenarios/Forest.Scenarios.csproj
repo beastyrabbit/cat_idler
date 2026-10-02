@@ -1,8 +1,9 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework><EnableDefaultCompileItems>false</EnableDefaultCompileItems><LangVersion>9.0</LangVersion></PropertyGroup>
+  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework><EnableDefaultCompileItems>false</EnableDefaultCompileItems><LangVersion>9.0</LangVersion><ImplicitUsings>disable</ImplicitUsings><ServerGarbageCollector>true</ServerGarbageCollector></PropertyGroup>
   <ItemGroup>
     <Compile Include="../../unity/Assets/Forest/Simulation/**/*.cs" />
-    <Compile Include="../../unity/Assets/Forest/Tests/EditMode/Acceptance/*Scenarios.cs" />
+    <!-- Every Acceptance source except the NUnit adapter, so shared helpers such as ScenarioKit.cs compile here too. -->
+    <Compile Include="../../unity/Assets/Forest/Tests/EditMode/Acceptance/**/*.cs" Exclude="../../unity/Assets/Forest/Tests/EditMode/Acceptance/AcceptanceTests.cs" />
     <Compile Include="Program.cs" />
   </ItemGroup>
 </Project>

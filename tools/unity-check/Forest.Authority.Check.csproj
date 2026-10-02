@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Mirrors IdleCatForest.Authority.asmdef: Simulation plus the precompiled Newtonsoft.Json, no engine references. -->
+  <PropertyGroup>
+    <AssemblyName>IdleCatForest.Authority</AssemblyName>
+    <RootNamespace>IdleCatForest.Authority</RootNamespace>
+    <UnityCheckNewtonsoft>true</UnityCheckNewtonsoft>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="$(UnityCheckAssets)Authority/**/*.cs" />
+    <ProjectReference Include="Forest.Sim.Check.csproj" Private="false" />
+  </ItemGroup>
+</Project>

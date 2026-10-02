@@ -1,0 +1,14 @@
+[
+  { "wait": 3 },
+  "focusVillage",
+  { "zoom": 100 },
+  { "wait": 2 },
+  { "shot": "zoom-3_5" },
+  { "zoom": -11.5524530094 },
+  { "wait": 2 },
+  { "shot": "zoom-14" },
+  { "zoom": -100 },
+  { "wait": 2 },
+  { "shot": "zoom-36" },
+  "quit"
+]

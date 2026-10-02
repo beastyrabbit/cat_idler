@@ -8,8 +8,11 @@ pre-commit:
       run: dotnet format whitespace IdleCatForest.slnx --no-restore --verify-no-changes
 
 pre-push:
+  piped: true
   commands:
-    csharp-build:
+    1_csharp-build:
       run: dotnet build IdleCatForest.slnx --no-restore -warnaserror
-    focused-scenarios:
-      run: dotnet tools/scenarios/bin/Debug/net10.0/Forest.Scenarios.dll --exclude-campaigns
+    2_scenarios:
+      run: dotnet run --project tools/scenarios -c Release -- --jobs=0
+    3_server-tests:
+      run: bash tools/forest.sh server-test

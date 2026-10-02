@@ -1,0 +1,10 @@
+[
+  { "wait": 3 },
+  "focusVillage",
+  { "level": -1 },
+  { "wait": 3 },
+  { "shot": "underground-depth-1" },
+  { "level": 0 },
+  { "wait": 1 },
+  "quit"
+]
