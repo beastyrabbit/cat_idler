@@ -1,0 +1,18 @@
+{
+  "world_road_straight": 0,
+  "world_road_corner": 164,
+  "world_road_junction": 328,
+  "world_road_cross": 492,
+  "world_road_end": 656,
+  "world_dungeon_entrance": 820,
+  "world_dungeon_wall": 820,
+  "world_dungeon_pillar": 820,
+  "world_dungeon_stairs": 820,
+  "world_dungeon_floor": 820,
+  "world_tree_pine": 920,
+  "world_tree_birch": 920,
+  "world_reeds": 920,
+  "world_mushrooms": 920,
+  "world_crystals": 920,
+  "world_cave_beetle": 920
+}

@@ -18,6 +18,14 @@ Run these commands from the repository root:
 /opt/homebrew/bin/blender --background --python-exit-code 1 --python source-art/build_forest.py -- --skip-render
 /opt/homebrew/bin/blender --background --python-exit-code 1 --python source-art/verify_fbx.py
 /opt/homebrew/bin/blender --background --python-exit-code 1 --python source-art/render_previews.py
+
+# Useful flags
+/opt/homebrew/bin/blender --background --python-exit-code 1 --python source-art/build_forest.py -- --only den,cat
+/opt/homebrew/bin/blender --background --python-exit-code 1 --python source-art/build_forest.py -- --manifests-only
+/opt/homebrew/bin/blender --background --python-exit-code 1 --python source-art/verify_fbx.py -- --only den,cat --no-write
+/opt/homebrew/bin/blender --background --python-exit-code 1 --python source-art/build_world.py -- --preview
+python3 source-art/tools/geometry_hash.py --write <hashes.json>
+python3 source-art/tools/geometry_hash.py --compare <hashes.json>
 ```
 
 Omit `--skip-render` from the first command to generate a catalog and cat portrait as part of the build. Blender itself is only needed to edit or regenerate art. Unity loads the committed FBX files under `unity/Assets/Resources/ForestArt` without starting Blender.
@@ -83,3 +91,49 @@ The 32 cargo assets use the prefix `cargo_` followed by the maintained carrying 
 All geometry, materials and modeling scripts were authored for this repository during the Unity migration. No purchased, downloaded or AI image-generation assets were used. Blender exports are original project artwork and add no third-party asset license obligations. Blender is licensed under GPL; its license does not apply to artwork created with it. Distribution of this artwork follows the repository owner's project terms. This directory grants no separate license to third parties.
 
 `verify_fbx.py` reimports every exported model in Blender and fails if triangle counts, mesh counts, finite coordinates, scale, orientation, bounds, material assignments or cat articulation names change. The resulting `verification.json` records the checked inventory. This check complements Unity's import and scene validation; it does not replace testing the management and cat-control views in the running game.
+
+## Modular build layout
+
+The old kit is split into `kit/cat.py`, `kit/nature.py`, `kit/buildings_homes.py`,
+`kit/buildings_craft.py`, `kit/props.py` and `kit/cargo.py`. Shared geometry,
+materials, registration and export helpers live in `kit/helpers.py`. Building
+shape helpers live in `kit/buildings_shared.py`, which has no `BUILDERS` table.
+Each asset
+module exports a `BUILDERS` dictionary. `build_forest.py` discovers every
+non-underscore `kit/*.py` in filename order. `helpers.py` and `__init__.py` are
+helper-only files. Duplicate names fail with both module names. The committed
+canonical order keeps existing gallery and manifest order; new names append after
+that order in module and registration order.
+
+World assets use the same pattern in `world/roads.py`, `world/dungeon.py`,
+`world/plants.py` and `world/creatures.py`, with world-only code in
+`world/helpers.py`. World names must start with `world_`; old-kit names may not.
+Adding a module with a `BUILDERS` dictionary is enough for discovery. The build scripts keep export, record measurement, gallery and preview orchestration.
+`build_forest.py` and `verify_fbx.py` share the old-kit FBX reimport checker;
+`build_world.py` and mixed verification keep the world-specific `build_world.verify` checks.
+
+Each asset gets its own deterministic random stream. The stream starts at the
+measured Mersenne Twister word offset in `kit/rng_offsets.json` and
+`world/rng_offsets.json`. New assets use a stable name-derived stream.
+Builders must draw through `helpers.rng()` (or the world helper's `rng()`) so
+adding draws to one asset cannot move another asset. Do not import `RNG`; the
+helpers rebind that stream for every asset.
+
+Use `--only` to rebuild selected FBX files without writing a blend, manifest or
+verification file. Existing `.meta` files are preserved; a missing one is copied
+from `den.fbx.meta` and assigned UUID5 metadata. Use `--manifests-only` to rebuild
+source records and verify the FBX files already on disk. `--skip-render` omits old
+kit previews. World builds also support `--verify-only`, `--preview-dir DIR` and
+`--preview`; preview directories must be outside the repository.
+
+Selected builds write a fresh record and FBX SHA-256 to
+`artifacts/art-build/records/<name>.json`. `verify_fbx.py --only a,b` uses a
+matching record when present and otherwise uses the committed manifest. Add
+`--no-write` to leave `verification.json` untouched. The plain-Python
+`tools/geometry_hash.py` fingerprints vertices, faces, materials, transforms,
+bounds, triangle counts and vertex counts without Blender.
+
+Every FBX meta file follows Unity's canonical layout from `den.fbx.meta`,
+including its eight `key: ` lines with trailing spaces. Non-canonical metadata
+causes Unity to dirty the file on import, so new metadata always comes from that
+template and existing metadata is never rewritten.
