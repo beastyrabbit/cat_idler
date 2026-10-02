@@ -4,20 +4,46 @@ using NUnit.Framework;
 
 public class SimulationTests
 {
-    [Test] public void FreshFoundingHasExactFiniteBedsAndSupplies()
+    // Invariants rather than counts: founding numbers and the authored catalog may be retuned.
+    [Test] public void FreshFoundingHousesEveryCatWithFiniteSupplies()
     {
         var w=World.Create(7); var v=w.Villages.Single();
-        Assert.That(v.Cats.Count(c=>c.Alive),Is.EqualTo(30));
-        Assert.That(v.Buildings.Count(b=>b.Kind=="den"&&b.Completed),Is.EqualTo(6));
-        Assert.That(w.Total(v,"food"),Is.EqualTo(100));
-        Assert.That(w.Total(v,"water"),Is.EqualTo(200));
+        var living=v.Cats.Where(c=>c.Alive).ToList();
+        var dens=v.Buildings.Where(b=>b.Kind=="den"&&b.Completed).ToList();
+        Assert.That(living,Is.Not.Empty);
+        Assert.That(dens.Count*w.DenCapacity(v),Is.GreaterThanOrEqualTo(living.Count),"beds for every founding cat");
+        foreach(var c in living) Assert.That(dens.Any(d=>d.Id==c.BedId),Is.True,c.Name+" has no founding bed");
+        foreach(var den in dens) Assert.That(living.Count(c=>c.BedId==den.Id),Is.LessThanOrEqualTo(w.DenCapacity(v)),den.Id+" is overbooked");
+        Assert.That(w.Total(v,"food"),Is.GreaterThan(0));
+        Assert.That(w.Total(v,"water"),Is.GreaterThan(0));
+        Assert.That(World.Finite(w.Total(v,"food"))&&World.Finite(w.Total(v,"water")),Is.True);
         Assert.That(w.Total(v,"thread"),Is.Zero);
     }
-    [Test] public void CompleteMaintainedCatalogHasNoMissingEntitlements()
+    [Test] public void AuthoredCatalogHasNoMissingEntitlements()
     {
-        Assert.That(Catalog.Recipes.Count,Is.EqualTo(108));
-        Assert.That(Catalog.Research.Count,Is.EqualTo(487));
-        foreach(var r in Catalog.Recipes) Assert.That(r.Founding||Catalog.Research.Any(n=>n.Payloads.Any(p=>p.Kind=="unlock_recipe"&&p.Id==r.Id)),Is.True,r.Id);
+        Assert.That(Catalog.Recipes,Is.Not.Empty);
+        Assert.That(Catalog.Research,Is.Not.Empty);
+        Assert.That(Catalog.Recipes.Select(r=>r.Id).Distinct().Count(),Is.EqualTo(Catalog.Recipes.Count),"recipe ids are unique");
+        Assert.That(Catalog.Research.Select(n=>n.Id).Distinct().Count(),Is.EqualTo(Catalog.Research.Count),"study ids are unique");
+        foreach(var r in Catalog.Recipes)
+        {
+            Assert.That(r.Founding||Catalog.Research.Any(n=>n.Payloads.Any(p=>p.Kind=="unlock_recipe"&&p.Id==r.Id)),Is.True,r.Id+" has no unlock");
+            Assert.That(Catalog.Buildings.Contains(r.Building),Is.True,r.Id+" names an unknown station");
+            Assert.That(r.Seconds,Is.GreaterThan(0),r.Id);
+            Assert.That(r.Inputs.All(s=>s.Amount>0)&&r.Outputs.All(s=>s.Amount>0),Is.True,r.Id+" has an empty stack");
+            Assert.That(r.Outputs.Count>0||r.ItemKind!="",Is.True,r.Id+" makes nothing");
+        }
+        foreach(var n in Catalog.Research)
+        {
+            Assert.That(n.Cost,Is.GreaterThan(0),n.Id);
+            foreach(var p in n.Prerequisites) Assert.That(Catalog.Study(p),Is.Not.Null,n.Id+" requires unknown "+p);
+            foreach(var p in n.Payloads.Where(p=>p.Kind=="unlock_recipe")) Assert.That(Catalog.Recipe(p.Id),Is.Not.Null,n.Id+" unlocks unknown recipe "+p.Id);
+        }
+        // Acyclic: repeatedly owning every study whose prerequisites are owned reaches the whole tree.
+        var owned=new System.Collections.Generic.HashSet<string>();
+        bool progress=true;
+        while(progress){progress=false;foreach(var n in Catalog.Research.Where(n=>!owned.Contains(n.Id)&&n.Prerequisites.All(owned.Contains))){owned.Add(n.Id);progress=true;}}
+        Assert.That(owned.Count,Is.EqualTo(Catalog.Research.Count),"cyclic or unreachable studies: "+string.Join(",",Catalog.Research.Where(n=>!owned.Contains(n.Id)).Select(n=>n.Id)));
     }
     [Test] public void ForeignVillageAndDirectControlAreRejected()
     {
