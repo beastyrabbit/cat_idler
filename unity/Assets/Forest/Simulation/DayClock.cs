@@ -33,5 +33,11 @@ namespace IdleCatForest.Simulation
             double hour = DayFraction(world) * 24;
             return hour >= NightStartHour || hour < NightEndHour;
         }
+
+        /// <summary>
+        /// How far a cat's sleep threshold rises now: <c>NightSleepBias</c> at night, 0 by day, so tired
+        /// cats bed down together at dusk.
+        /// </summary>
+        public static double SleepThresholdBias(World world) => IsNight(world) ? world.Pace.NightSleepBias : 0;
     }
 }
