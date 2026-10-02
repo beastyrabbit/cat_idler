@@ -156,8 +156,9 @@ namespace IdleCatForest.Acceptance
             v.Research = Catalog.Research.Select(n => n.Id).ToList();
             World.Add(v.Stockpiles[0].Goods, "logs", 100);
             World.Add(v.Stockpiles[0].Goods, "stone", 100);
-            var station = Station(w, v, "wood_cutter");
-            Station(w, v, "sawmill");
+            // The Forester's own station. A wood cutter is a founding station that the Leader runs while
+            // the office is vacant (colony_automation.leader_takes_over_vacant_founding_station).
+            var station = Station(w, v, "sawmill");
             Act(w, v, new GameAction { Kind = "AssignOfficer", Role = "forester", CatId = c.Id });
             w.Step(12);
             var slot = station.Slots.FirstOrDefault(s => s.CatId != "");
