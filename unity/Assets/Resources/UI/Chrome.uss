@@ -1,0 +1,520 @@
+/*
+ * Glass Clearing chrome (docs/ui-redesign/mockups/glass.css, GUIDE §4 and §5): village chip, resource
+ * pills, dock and hint line on a full-bleed map. Reference sizes are the 1920 × 1080 column; `.compact`
+ * is the 1280 × 720 column (panel width 1100 to 1599) and `.narrow` the window below 1100 points.
+ * Values come from UI/Tokens.uss.
+ */
+
+/* ---- Shared resets for chrome controls ------------------------------------------------------------ */
+.chip Label, .res Label, .dock Label, .hint Label {
+    padding: 0;
+    margin: 0;
+}
+
+.chip Button, .res Button, .dock Button {
+    margin: 0;
+    padding: 0;
+    min-height: 0;
+    min-width: 0;
+    border-width: 0;
+    background-color: rgba(0, 0, 0, 0);
+    background-image: none;
+    color: var(--ink);
+    white-space: nowrap;
+}
+
+.ic {
+    flex-shrink: 0;
+    -unity-background-scale-mode: scale-to-fit;
+}
+
+/* ---- Village chip (top left) ---------------------------------------------------------------------- */
+.chip {
+    position: absolute;
+    left: var(--margin);
+    top: var(--chip-top);
+    flex-direction: row;
+    align-items: center;
+    padding: 8px 16px 8px 14px;
+}
+
+.chip-text {
+    flex-direction: column;
+    flex-shrink: 1;
+    margin-right: 14px;
+}
+
+.chip-name {
+    -unity-font-definition: url("Fonts/InstrumentSerif-Italic.ttf");
+    -unity-font-style: normal;
+    font-size: var(--size-name);
+    height: 28px;
+    color: var(--ink);
+    -unity-text-align: middle-left;
+    white-space: nowrap;
+}
+
+.chip-line {
+    flex-direction: row;
+    align-items: center;
+    height: 15px;
+    margin-top: 1px;
+}
+
+.chip .chip-small {
+    -unity-font-definition: url("Fonts/Manrope-SemiBold.ttf");
+    font-size: var(--size-caption);
+    color: var(--dim);
+    white-space: nowrap;
+    margin-right: 4px;
+}
+
+.chip .chip-idle {
+    -unity-font-definition: url("Fonts/Manrope-ExtraBold.ttf");
+    font-size: var(--size-caption);
+    color: var(--sun);
+    height: 15px;
+    margin-right: 4px;
+}
+
+.chip .chip-idle:hover {
+    color: var(--ink);
+    background-color: rgba(0, 0, 0, 0);
+}
+
+.chip .chip-paused {
+    -unity-font-definition: url("Fonts/Manrope-ExtraBold.ttf");
+    color: var(--sun);
+}
+
+.seg {
+    flex-direction: row;
+    align-items: center;
+    flex-shrink: 0;
+    background-color: var(--well);
+    border-radius: var(--radius-button);
+    padding: 3px;
+}
+
+.chip .seg-btn {
+    -unity-font-definition: url("Fonts/Manrope-ExtraBold.ttf");
+    font-size: var(--size-button);
+    color: var(--dim);
+    height: 26px;
+    min-width: 32px;
+    padding: 0 10px;
+    margin: 0 1px;
+    border-radius: 8px;
+    -unity-text-align: middle-center;
+    align-items: center;
+    justify-content: center;
+    transition-property: background-color, color;
+    transition-duration: 0.12s;
+}
+
+.chip .seg-btn:hover {
+    color: var(--ink);
+    background-color: var(--fill);
+}
+
+.chip .seg-btn.on {
+    background-color: var(--sun);
+    color: var(--sun-ink);
+}
+
+.seg-icon {
+    width: 12px;
+    height: 12px;
+    -unity-background-image-tint-color: var(--dim);
+}
+
+.seg-btn:hover .seg-icon {
+    -unity-background-image-tint-color: var(--ink);
+}
+
+.seg-btn.on .seg-icon {
+    -unity-background-image-tint-color: var(--sun-ink);
+}
+
+.chip .seg-btn:disabled {
+    opacity: 0.45;
+}
+
+.compact .chip {
+    padding: 6px 12px 6px 10px;
+}
+
+.compact .chip-text {
+    margin-right: 10px;
+}
+
+.compact .chip-name {
+    font-size: 21px;
+    height: 24px;
+}
+
+.compact .chip-line {
+    height: 15px;
+}
+
+.compact .chip .chip-small, .compact .chip .chip-idle {
+    font-size: 11px;
+}
+
+.compact .chip .seg-btn {
+    height: 22px;
+    min-width: 26px;
+    padding: 0 7px;
+    font-size: 11px;
+}
+
+.chip .gone {
+    display: none;
+}
+
+/* Below 1100 points the census hides and the segment shows pause and the current speed only. */
+.narrow .chip-census, .narrow .chip .chip-idle {
+    display: none;
+}
+
+.narrow .chip .seg-btn.not-current {
+    display: none;
+}
+
+/* ---- Resource pills (top right) ------------------------------------------------------------------- */
+.res {
+    position: absolute;
+    right: var(--margin);
+    top: var(--chip-top);
+    flex-direction: row;
+    align-items: flex-start;
+}
+
+.res .pill {
+    flex-direction: row;
+    align-items: center;
+    height: 38px;
+    padding: 0 12px 0 10px;
+    margin-left: 8px;
+    border-width: 1px;
+    border-color: var(--edge);
+    border-radius: 19px;
+    background-color: var(--glass);
+    overflow: visible;
+    transition-property: border-color;
+    transition-duration: 0.6s;
+}
+
+.res .pill:hover {
+    border-color: rgba(255, 255, 255, 0.09);
+}
+
+.res .pill.flash {
+    border-color: var(--sun);
+    transition-duration: 0s;
+}
+
+.pill-icon {
+    width: 18px;
+    height: 18px;
+    flex-shrink: 0;
+    margin-right: 8px;
+    -unity-background-scale-mode: scale-to-fit;
+    -unity-background-image-tint-color: var(--ink);
+}
+
+.res .pill-count {
+    -unity-font-definition: url("Fonts/Manrope-ExtraBold.ttf");
+    font-size: var(--size-count);
+    color: var(--ink);
+    white-space: nowrap;
+}
+
+.pill-check {
+    width: 12px;
+    height: 12px;
+    margin-left: 6px;
+    -unity-background-image-tint-color: var(--ok);
+}
+
+.res .pill-unit {
+    -unity-font-definition: url("Fonts/Manrope-Bold.ttf");
+    font-size: 11px;
+    color: var(--dim);
+    margin-left: 6px;
+    white-space: nowrap;
+}
+
+.res.gone, .res .gone {
+    display: none;
+}
+
+.res .pill.stale .pill-count {
+    color: var(--dim);
+}
+
+.res .pill.stale .pill-unit {
+    -unity-font-definition: url("Fonts/Manrope-ExtraBold.ttf");
+    color: var(--sun);
+}
+
+.res .pill.estimate .pill-count {
+    color: var(--sun);
+}
+
+.res .pill-delta {
+    position: absolute;
+    top: 40px;
+    left: 0;
+    right: 0;
+    -unity-font-definition: url("Fonts/Manrope-ExtraBold.ttf");
+    font-size: 12px;
+    color: var(--ok);
+    -unity-text-align: middle-center;
+    text-shadow: 0 1px 2px var(--shadow-text);
+    opacity: 0;
+}
+
+.res .pill-delta.down {
+    color: var(--dim);
+}
+
+.res .pill-delta.show {
+    opacity: 1;
+    translate: 0 0;
+}
+
+.res .pill-delta.fade {
+    opacity: 0;
+    translate: 0 -8px;
+    transition-property: opacity, translate;
+    transition-duration: 1.2s, 1.2s;
+    transition-timing-function: ease-out;
+}
+
+.compact .res .pill {
+    height: 30px;
+    padding: 0 9px 0 7px;
+    margin-left: 5px;
+    border-radius: 15px;
+}
+
+.compact .pill-icon {
+    width: 15px;
+    height: 15px;
+    margin-right: 5px;
+}
+
+.compact .res .pill-count {
+    font-size: 13px;
+}
+
+.compact .res .pill-unit {
+    margin-left: 4px;
+}
+
+.compact .pill-check {
+    width: 11px;
+    height: 11px;
+    margin-left: 4px;
+}
+
+.compact .res .pill-delta {
+    top: 32px;
+}
+
+/* Below 1100 points: icon and number only; research and blessings move to the Overview drawer. */
+.narrow .pill-research, .narrow .pill-blessings, .narrow .res .pill-unit {
+    display: none;
+}
+
+/* ---- Dock (bottom centre) ------------------------------------------------------------------------- */
+.dock-row {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: var(--margin);
+    flex-direction: row;
+    justify-content: center;
+}
+
+.dock {
+    flex-direction: row;
+    align-items: center;
+    flex-shrink: 0;
+    padding: 8px;
+    border-radius: var(--radius-dock);
+}
+
+.dock .dk {
+    width: 52px;
+    height: 52px;
+    margin: 0 2px;
+    border-radius: var(--radius-cell);
+    border-width: 1px;
+    border-color: rgba(0, 0, 0, 0);
+    align-items: center;
+    justify-content: center;
+    overflow: visible;
+    transition-property: background-color, border-color;
+    transition-duration: 0.12s;
+}
+
+.dock .dk:hover {
+    background-color: var(--fill);
+}
+
+.dock .dk.on {
+    background-color: var(--sun-tint);
+    border-color: var(--sun);
+}
+
+.dk-icon {
+    width: 22px;
+    height: 22px;
+    -unity-background-image-tint-color: var(--dim);
+    color: var(--dim);
+}
+
+.dk:hover .dk-icon {
+    -unity-background-image-tint-color: var(--ink);
+}
+
+.dk.on .dk-icon {
+    -unity-background-image-tint-color: var(--sun);
+    color: var(--sun);
+}
+
+.dock .dk-label {
+    display: none;
+    position: absolute;
+    top: -34px;
+    left: 50%;
+    translate: -50% 0;
+    padding: 3px 8px;
+    border-width: 1px;
+    border-color: var(--edge);
+    border-radius: 8px;
+    background-color: var(--glass2);
+    -unity-font-definition: url("Fonts/Manrope-ExtraBold.ttf");
+    font-size: 10.5px;
+    letter-spacing: 0.4px;
+    color: var(--ink);
+    white-space: nowrap;
+}
+
+.dock .dk.on .dk-label, .dock .dk.hov .dk-label {
+    display: flex;
+}
+
+.dock .dk-badge {
+    position: absolute;
+    top: 3px;
+    right: 4px;
+    width: 16px;
+    height: 16px;
+    border-radius: 8px;
+    background-color: var(--bad);
+    color: #ffffff;
+    -unity-font-definition: url("Fonts/Manrope-ExtraBold.ttf");
+    font-size: 10px;
+    -unity-text-align: middle-center;
+}
+
+.dock-sep {
+    width: 1px;
+    height: 30px;
+    margin: 0 4px;
+    background-color: var(--line);
+}
+
+.compact .dock {
+    padding: 6px;
+}
+
+.compact .dock .dk {
+    width: 42px;
+    height: 42px;
+    margin: 0 1px;
+    border-radius: 11px;
+}
+
+.compact .dk-icon {
+    width: 19px;
+    height: 19px;
+}
+
+.compact .dock .dk-label {
+    top: -32px;
+}
+
+.narrow .dock .dk {
+    width: 36px;
+    height: 36px;
+    border-radius: 10px;
+}
+
+.narrow .dk-icon {
+    width: 17px;
+    height: 17px;
+}
+
+.narrow .dock-sep {
+    height: 24px;
+    margin: 0 2px;
+}
+
+.narrow .dock .dk-badge {
+    top: 1px;
+    right: 1px;
+    width: 14px;
+    height: 14px;
+    border-radius: 7px;
+    font-size: 9px;
+}
+
+/* ---- Hint line (bottom left) ---------------------------------------------------------------------- */
+.hint {
+    position: absolute;
+    left: var(--margin);
+    bottom: 24px;
+    max-width: 30%;
+    padding: 4px 10px;
+    border-radius: 12px;
+    background-color: var(--glass-hint);
+}
+
+.hint .hint-text {
+    -unity-font-definition: url("Fonts/Manrope-Bold.ttf");
+    font-size: var(--size-caption);
+    color: rgba(255, 255, 255, 0.72);
+    white-space: normal;
+}
+
+.hint.bad .hint-text {
+    color: var(--bad);
+}
+
+.hint.empty {
+    display: none;
+}
+
+.compact .hint {
+    bottom: 16px;
+}
+
+/* When the window leaves no room beside the dock, the line sits above it instead. */
+.hint.above-dock {
+    max-width: 60%;
+}
+
+/* ---- Modes ---------------------------------------------------------------------------------------- */
+/* Direct control (GUIDE §5.9): the dock, the resources and the drawer retreat; chip, seal and hint stay. */
+.direct-control .res, .direct-control .dock-row, .direct-control .sheet, .direct-control .drawer-dim {
+    display: none;
+}
+
+/* ---- Reduced motion ------------------------------------------------------------------------------- */
+.reduced-motion .pill, .reduced-motion .dk, .reduced-motion .seg-btn, .reduced-motion .pill-delta {
+    transition-duration: 0s;
+}
