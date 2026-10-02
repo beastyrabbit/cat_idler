@@ -111,7 +111,7 @@ namespace IdleCatForest.Simulation
             if (Dungeons.Any(d => d.Id == id))
                 return;
             uint shape = Hash(Seed + ":" + entrance.X + ":" + entrance.Z + ":dungeon");
-            var site = new DungeonSite { Id = id, Name = distanceBand == 0 ? "Root Hollow" : "Deepstone Vault", Theme = distanceBand == 0 ? "root_cavern" : "stone_vault", Entrance = entrance, Depth = depth, Threat = 1.15 + distanceBand * 0.65, BaseElevation = TileAt(entrance).Elevation };
+            var site = new DungeonSite { Id = id, Name = distanceBand == 0 ? "Root Hollow" : "Deepstone Vault", Theme = distanceBand == 0 ? "root_cavern" : "stone_vault", Entrance = entrance, Depth = depth, Threat = Pace.DungeonBaseThreat + distanceBand * Pace.DungeonBandThreat, BaseElevation = TileAt(entrance).Elevation };
             site.RumoredBy.Add(villageId);
             Int2 upper = entrance;
             for (int index = 0; index < depth; index++)
@@ -119,7 +119,7 @@ namespace IdleCatForest.Simulation
                 int level = -index - 1;
                 int direction = index % 2 == 0 ? 1 : -1;
                 var spawn = new Int2(upper.X + direction * 4, upper.Z, level);
-                var floor = new DungeonFloor { Level = level, Spawn = spawn, Threat = site.Threat + index * 0.85, Elevation = site.BaseElevation + level * 4 };
+                var floor = new DungeonFloor { Level = level, Spawn = spawn, Threat = site.Threat + index * Pace.DungeonFloorThreat, Elevation = site.BaseElevation + level * 4 };
                 var stair = new DungeonStair { From = upper, To = spawn };
                 for (int step = 1; step <= 4; step++)
                     stair.Opening.Add(new Int2(upper.X + direction * step, upper.Z, upper.Level));
@@ -142,11 +142,11 @@ namespace IdleCatForest.Simulation
                 Room(spawn.X + direction * 11, spawn.Z + bend, 2);
                 floor.LootPosition = new Int2(spawn.X + direction * 12, spawn.Z + bend + 1, level);
                 floor.Cells = cells.OrderBy(p => p.Z).ThenBy(p => p.X).ToList();
-                floor.Loot.Add(new Stack(index == 0 ? "ore" : "gem", 3 + index));
-                floor.Loot.Add(new Stack(index == 0 ? "herbs" : "stone", 2));
+                floor.Loot.Add(new Stack(index == 0 ? "ore" : "gem", Pace.DungeonLootBase + index));
+                floor.Loot.Add(new Stack(index == 0 ? "herbs" : "stone", Pace.DungeonLootSecondary));
                 site.Floors.Add(floor);
                 var guard = new Int2(spawn.X + direction * 10, spawn.Z + bend - 1, level);
-                Creatures.Add(new DungeonCreature { Id = id + ":guardian:" + index, SiteId = id, Position = guard, Home = guard, X = guard.X, Z = guard.Z, Health = 15 + index * 9 + distanceBand * 8, MaxHealth = 15 + index * 9 + distanceBand * 8, Power = floor.Threat, Kind = index == 0 ? "cave_beetle" : "stone_guardian" });
+                Creatures.Add(new DungeonCreature { Id = id + ":guardian:" + index, SiteId = id, Position = guard, Home = guard, X = guard.X, Z = guard.Z, Health = Pace.GuardianBaseHealth + index * Pace.GuardianFloorHealth + distanceBand * Pace.GuardianBandHealth, MaxHealth = Pace.GuardianBaseHealth + index * Pace.GuardianFloorHealth + distanceBand * Pace.GuardianBandHealth, Power = floor.Threat, Kind = index == 0 ? "cave_beetle" : "stone_guardian" });
                 upper = new Int2(spawn.X + direction * 13, spawn.Z + bend, level);
             }
             Dungeons.Add(site);
@@ -212,18 +212,18 @@ namespace IdleCatForest.Simulation
             cat.DungeonNextPlanAt = 0;
         }
 
-        public double DungeonReadiness(Village village, Cat cat) => cat == null ? 0 : EquipmentPower(village, cat, "weapon") * (1 + Amount(cat.Skills, "fight") * 0.25) * Math.Clamp(cat.Health / 100, 0, 1) * Math.Min(1, Math.Min(cat.Hunger, Math.Min(cat.Thirst, cat.Rest)) / 45);
+        public double DungeonReadiness(Village village, Cat cat) => cat == null ? 0 : EquipmentPower(village, cat, "weapon") * (1 + Amount(cat.Skills, "fight") * Pace.ReadinessFightSkillFactor) * Math.Clamp(cat.Health / 100, 0, 1) * Math.Min(1, Math.Min(cat.Hunger, Math.Min(cat.Thirst, cat.Rest)) / Pace.ReadinessNeedNorm);
 
         public ActionResult ExploreDungeon(Village village, Cat cat, string siteId)
         {
             var site = Dungeons.Find(d => d.Id == siteId && d.RumoredBy.Contains(village.Id));
-            if (cat == null || !cat.Alive || !village.Cats.Contains(cat) || cat.ControlledBy != "" || cat.AgeHours < 12 || cat.Migration == "arriving" || cat.Migration == "departing")
+            if (cat == null || !cat.Alive || !village.Cats.Contains(cat) || cat.ControlledBy != "" || cat.AgeHours < Pace.WorkingAgeHours || cat.Migration == "arriving" || cat.Migration == "departing")
                 return ActionResult.Fail("Choose a living adult cat in this village and release direct control");
             if (site == null)
                 return ActionResult.Fail("No known dungeon entrance");
             if (IsDungeonExplorer(cat))
                 return ActionResult.Fail("Recall the current expedition first");
-            if (DungeonReadiness(village, cat) < site.Threat || cat.Health < 65 || cat.Hunger < 45 || cat.Thirst < 45 || cat.Rest < 45)
+            if (DungeonReadiness(village, cat) < site.Threat || cat.Health < Pace.ExpeditionMinHealth || cat.Hunger < Pace.ExpeditionMinNeed || cat.Thirst < Pace.ExpeditionMinNeed || cat.Rest < Pace.ExpeditionMinNeed)
                 return ActionResult.Fail("Dungeon risk exceeds this cat's health, needs, fighting skill and equipment");
             if (Path(cat.Position, site.Entrance, village) == null)
                 return ActionResult.Fail("The dungeon entrance has no accessible surface route");
@@ -234,7 +234,7 @@ namespace IdleCatForest.Simulation
             cat.DungeonPhase = "exploring";
             cat.DungeonFloorIndex = 0;
             cat.BlockedReason = "";
-            cat.Goal = "exploring dungeon";
+            cat.Goal = GoalKey.ExploringDungeon;
             Note(village, "dungeon", cat.Name + " set out for " + site.Name, cat.Id);
             return ActionResult.Ok(cat.Id);
         }
@@ -245,7 +245,7 @@ namespace IdleCatForest.Simulation
                 return ActionResult.Fail("Choose a living explorer in this village");
             cat.DungeonPhase = "returning";
             cat.DungeonTargetId = "";
-            cat.Goal = "returning from dungeon";
+            cat.Goal = GoalKey.ReturningFromDungeon;
             return ActionResult.Ok(cat.Id);
         }
 
@@ -267,7 +267,7 @@ namespace IdleCatForest.Simulation
             cat.DungeonPhase = "returning";
             cat.DungeonTargetId = "";
             cat.BlockedReason = reason;
-            cat.Goal = "returning from dungeon";
+            cat.Goal = GoalKey.ReturningFromDungeon;
         }
 
         public void TickDungeons(double dt, bool planning)
@@ -286,7 +286,7 @@ namespace IdleCatForest.Simulation
                         cat.DungeonPhase = cat.ControlledBy == "" ? "returning" : "manual";
                     }
                     if (planning)
-                        foreach (var cell in site.Floors.SelectMany(f => f.Cells).Where(p => p.Level == cat.Position.Level && Int2.Distance(p, cat.Position) <= 4))
+                        foreach (var cell in site.Floors.SelectMany(f => f.Cells).Where(p => p.Level == cat.Position.Level && Int2.Distance(p, cat.Position) <= Pace.DungeonRevealTiles))
                             if (!village.Known.Contains(cell))
                                 village.Known.Add(cell);
                     if (cat.ControlledBy != "")
@@ -296,7 +296,7 @@ namespace IdleCatForest.Simulation
                             FightDungeon(village, cat, target);
                         continue;
                     }
-                    if (cat.DungeonPhase == "manual" || cat.Health < 50 || cat.Hunger < 30 || cat.Thirst < 30 || cat.Rest < 30)
+                    if (cat.DungeonPhase == "manual" || cat.Health < Pace.ExpeditionRetreatHealth || cat.Hunger < Pace.ExpeditionRetreatNeed || cat.Thirst < Pace.ExpeditionRetreatNeed || cat.Rest < Pace.ExpeditionRetreatNeed)
                         RetreatDungeon(cat, "expedition_return_for_safety");
                     if (cat.DungeonPhase == "returning" || cat.DungeonPhase == "unloading")
                     {
@@ -312,7 +312,7 @@ namespace IdleCatForest.Simulation
                     }
                     if (cat.Position.Level != floor.Level)
                     {
-                        cat.Goal = "descending dungeon stairs";
+                        cat.Goal = GoalKey.DescendingDungeonStairs;
                         var stair = site.Stairs.FirstOrDefault(s => s.From.Equals(cat.Position) && s.To.Level == floor.Level);
                         if (stair != null)
                         {
@@ -328,7 +328,7 @@ namespace IdleCatForest.Simulation
                     }
                     if (enemy != null)
                     {
-                        cat.Goal = "fighting dungeon guardian";
+                        cat.Goal = GoalKey.FightingDungeonGuardian;
                         if (InDungeonCombatRange(cat, enemy))
                             FightDungeon(village, cat, enemy);
                         else
@@ -337,7 +337,7 @@ namespace IdleCatForest.Simulation
                             RetreatDungeon(cat, "expedition_guardian_unreachable");
                         continue;
                     }
-                    cat.Goal = "collecting dungeon supplies";
+                    cat.Goal = GoalKey.CollectingDungeonSupplies;
                     if (!Move(cat, floor.LootPosition, dt))
                         continue;
                     // Goods move once from this authoritative chest into this cat's cargo.
@@ -347,7 +347,7 @@ namespace IdleCatForest.Simulation
                         Add(cat.Cargo, stack.Resource, take);
                         Add(floor.Loot, stack.Resource, -take);
                     }
-                    if (cat.DungeonFloorIndex + 1 < site.Floors.Count && DungeonReadiness(village, cat) >= site.Floors[cat.DungeonFloorIndex + 1].Threat && cat.Cargo.Sum(s => s.Amount) < 8)
+                    if (cat.DungeonFloorIndex + 1 < site.Floors.Count && DungeonReadiness(village, cat) >= site.Floors[cat.DungeonFloorIndex + 1].Threat && cat.Cargo.Sum(s => s.Amount) < Pace.ExpeditionDescendCargoLimit)
                     {
                         cat.DungeonFloorIndex++;
                         cat.Path.Clear();
@@ -364,10 +364,10 @@ namespace IdleCatForest.Simulation
             double seconds = SpendActorTime(cat);
             if (seconds <= 0)
                 return;
-            creature.Health = Math.Max(0, creature.Health - seconds * 1.8 * EquipmentPower(village, cat, "weapon") * (1 + Amount(cat.Skills, "fight") * 0.25) * Catalog.Effect(village, "combatPower", 1) * Catalog.Effect(village, "combatPowerMult", 1));
-            Add(cat.Skills, "fight", seconds / 300);
+            creature.Health = Math.Max(0, creature.Health - seconds * Pace.ExplorerStrikePerSecond * EquipmentPower(village, cat, "weapon") * (1 + Amount(cat.Skills, "fight") * Pace.ReadinessFightSkillFactor) * Catalog.Effect(village, "combatPower", 1) * Catalog.Effect(village, "combatPowerMult", 1));
+            GainSkill(cat, "fight", seconds / Pace.ExplorerSkillSecondsPerPoint);
             foreach (var item in village.Items.Where(i => cat.Equipment.Contains(i.Id)))
-                item.Condition = Math.Max(0, item.Condition - seconds * 0.025);
+                item.Condition = Math.Max(0, item.Condition - seconds * Pace.ExplorerWeaponWearPerSecond);
             if (creature.Health <= 0)
             {
                 creature.TargetCatId = "";
@@ -379,14 +379,14 @@ namespace IdleCatForest.Simulation
         private void TickDungeonCreature(DungeonCreature creature, double dt, bool planning)
         {
             var target = Cat(creature.TargetCatId);
-            if (target == null || !target.Alive || target.Position.Level != creature.Position.Level || Int2.Distance(target.Position, creature.Home) > 12)
+            if (target == null || !target.Alive || target.Position.Level != creature.Position.Level || Int2.Distance(target.Position, creature.Home) > Pace.CreatureLeashTiles)
             {
                 target = null;
                 creature.TargetCatId = "";
                 if (TimeSeconds + 1e-9 >= creature.NextPlanningAt)
                 {
-                    creature.NextPlanningAt = Math.Floor(TimeSeconds) + 1;
-                    target = Villages.SelectMany(v => v.Cats).Where(c => c.Alive && c.Position.Level == creature.Position.Level && Int2.Distance(c.Position, creature.Position) <= 5).OrderBy(c => Int2.Distance(c.Position, creature.Position)).ThenBy(c => c.Id, StringComparer.Ordinal).FirstOrDefault();
+                    creature.NextPlanningAt = Math.Floor(TimeSeconds) + Pace.CreatureReplanSeconds;
+                    target = Villages.SelectMany(v => v.Cats).Where(c => c.Alive && c.Position.Level == creature.Position.Level && Int2.Distance(c.Position, creature.Position) <= Pace.CreatureAggroTiles).OrderBy(c => Int2.Distance(c.Position, creature.Position)).ThenBy(c => c.Id, StringComparer.Ordinal).FirstOrDefault();
                 }
                 if (target != null)
                     creature.TargetCatId = target.Id;
@@ -396,7 +396,7 @@ namespace IdleCatForest.Simulation
             if (InDungeonCombatRange(target, creature))
             {
                 var village = Village(target.VillageId);
-                target.Health = Math.Max(0, target.Health - dt * 0.45 * creature.Power / Math.Max(1, EquipmentPower(village, target, "armor") * Catalog.Effect(village, "defensePower", 1) * Catalog.Effect(village, "defenseMult", 1)));
+                target.Health = Math.Max(0, target.Health - dt * Pace.CreatureStrikePerSecond * creature.Power / Math.Max(1, EquipmentPower(village, target, "armor") * Catalog.Effect(village, "defensePower", 1) * Catalog.Effect(village, "defenseMult", 1)));
                 if (target.Health <= 0)
                     Die(village, target, "dungeon");
                 return;
@@ -406,17 +406,17 @@ namespace IdleCatForest.Simulation
             {
                 if (!AtTravelPoint(creature.X, creature.Z, creature.Position))
                 {
-                    AdvanceTraveler(ref creature.X, ref creature.Z, creature.Position, 0.65, dt);
+                    AdvanceTraveler(ref creature.X, ref creature.Z, creature.Position, Pace.CreatureSpeed, dt);
                     return;
                 }
                 if (TimeSeconds + 1e-9 < creature.NextPlanningAt)
                     return;
-                creature.NextPlanningAt = Math.Floor(TimeSeconds) + 1;
+                creature.NextPlanningAt = Math.Floor(TimeSeconds) + Pace.CreatureReplanSeconds;
                 creature.Path = Path(creature.Position, target.Position) ?? new List<Int2>();
                 if (creature.Path.Any(p => p.Level != creature.Position.Level))
                     creature.Path.Clear();
             }
-            if (creature.Path.Count > 0 && Walkable(creature.Path[0]) && Crossable(creature.Position, creature.Path[0]) && AdvanceTraveler(ref creature.X, ref creature.Z, creature.Path[0], 0.65, dt))
+            if (creature.Path.Count > 0 && Walkable(creature.Path[0]) && Crossable(creature.Position, creature.Path[0]) && AdvanceTraveler(ref creature.X, ref creature.Z, creature.Path[0], Pace.CreatureSpeed, dt))
             {
                 creature.Position = creature.Path[0];
                 creature.Path.RemoveAt(0);
@@ -435,7 +435,7 @@ namespace IdleCatForest.Simulation
             if (cat.Cargo.Count == 0)
             {
                 CancelDungeon(cat);
-                cat.Goal = "idle";
+                cat.Goal = GoalKey.Idle;
                 cat.BlockedReason = "";
                 Note(village, "dungeon", cat.Name + " returned from the dungeon", cat.Id);
                 return;
@@ -449,18 +449,18 @@ namespace IdleCatForest.Simulation
             {
                 if (TimeSeconds + 1e-9 < cat.DungeonNextPlanAt)
                     return;
-                cat.DungeonNextPlanAt = Math.Floor(TimeSeconds) + 1;
+                cat.DungeonNextPlanAt = Math.Floor(TimeSeconds) + Pace.DungeonReplanSeconds;
                 store = village.Stockpiles.Where(Accepts).OrderBy(p => Int2.Distance(cat.Position, p.Position)).FirstOrDefault(p => Path(cat.Position, p.Position, village) != null);
                 cat.DungeonStorageId = store?.Id ?? "";
             }
             if (store == null)
             {
                 cat.BlockedReason = "expedition_storage_required";
-                if (cat.Health < 40 || cat.Hunger < 25 || cat.Thirst < 25 || cat.Rest < 25)
+                if (cat.Health < Pace.ExpeditionGiveUpHealth || cat.Hunger < Pace.ExpeditionGiveUpNeed || cat.Thirst < Pace.ExpeditionGiveUpNeed || cat.Rest < Pace.ExpeditionGiveUpNeed)
                 {
                     Spill(village, cat.Position, cat.Cargo);
                     CancelDungeon(cat);
-                    cat.Goal = "idle";
+                    cat.Goal = GoalKey.Idle;
                     Note(village, "dungeon", cat.Name + " left recovered supplies beside the full storage and sought care", cat.Id);
                 }
                 return;

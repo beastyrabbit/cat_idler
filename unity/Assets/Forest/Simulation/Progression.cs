@@ -36,13 +36,13 @@ namespace IdleCatForest.Simulation
         private double UpgradeWorkRate(Village v, string labor)
         {
             if (labor == "fetch_water")
-                return 1 / Math.Max(0.55, 1 - UpgradeLevel(v, "supply_speed") * 0.1);
+                return 1 / Math.Max(Pace.UpgradeSupplySpeedFloor, 1 - UpgradeLevel(v, "supply_speed") * Pace.UpgradeSupplySpeedStep);
             if (labor == "hunt")
-                return 1 / Math.Max(0.45, 1 - UpgradeLevel(v, "hunt_mastery") * 0.1);
+                return 1 / Math.Max(Pace.UpgradeHuntFloor, 1 - UpgradeLevel(v, "hunt_mastery") * Pace.UpgradeHuntStep);
             if (labor == "build")
-                return 1 / Math.Max(0.45, 1 - UpgradeLevel(v, "build_mastery") * 0.1);
+                return 1 / Math.Max(Pace.UpgradeBuildFloor, 1 - UpgradeLevel(v, "build_mastery") * Pace.UpgradeBuildStep);
             if (labor == "ritual")
-                return 1 / Math.Max(0.4, 1 - UpgradeLevel(v, "ritual_mastery") * 0.12);
+                return 1 / Math.Max(Pace.UpgradeRitualFloor, 1 - UpgradeLevel(v, "ritual_mastery") * Pace.UpgradeRitualStep);
             return 1;
         }
         private ActionResult BoostJob(Village v, Job job)
@@ -56,9 +56,9 @@ namespace IdleCatForest.Simulation
                 v.BoostsUsed = 0;
             }
             v.BoostsUsed++;
-            double seconds = 10 + UpgradeLevel(v, "click_power") * 2;
-            if (v.BoostsUsed > 30)
-                seconds = Math.Max(1, Math.Floor(seconds * Math.Pow(0.95, (v.BoostsUsed - 30) / 10.0)));
+            double seconds = Pace.BoostSeconds + UpgradeLevel(v, "click_power") * Pace.BoostSecondsPerClickPower;
+            if (v.BoostsUsed > Pace.BoostFreePerMinute)
+                seconds = Math.Max(Pace.BoostMinSeconds, Math.Floor(seconds * Math.Pow(Pace.BoostDecay, (v.BoostsUsed - Pace.BoostFreePerMinute) / Pace.BoostDecayClicks)));
             var building = job.Kind == "build" ? v.Buildings.Find(b => b.Id == job.TargetId) : null;
             if (building != null)
                 building.RequiredWork = Math.Max(building.Progress + 1, building.RequiredWork - seconds);
@@ -86,9 +86,9 @@ namespace IdleCatForest.Simulation
         }
         private static bool FamilyOwned(Village v, Recipe recipe, string stage) => Catalog.Owns(v, "unlock_resource", RecipeFamily(recipe) + "_" + stage);
         // Exact goods stay whole identities. Output studies improve material efficiency instead of minting fractional items.
-        public double RecipeInput(Village v, Recipe recipe, double amount) => amount * (recipe.ItemKind != "" && FamilyOwned(v, recipe, "sources") ? 0.9 : 1) / (recipe.ItemKind != "" ? Math.Max(1, Catalog.BuildingEffect(v, recipe.Building, "output", 1)) : 1);
-        public double RecipeOutput(Village v, Recipe recipe, double amount) => amount * (recipe.ItemKind == "" && FamilyOwned(v, recipe, "sources") ? 1.1 : 1) * Catalog.BuildingEffect(v, recipe.Building, "output", 1);
-        public double RecipeDuration(Village v, Recipe recipe) => recipe.Seconds * (FamilyOwned(v, recipe, "bulk") ? 0.9 : 1);
+        public double RecipeInput(Village v, Recipe recipe, double amount) => amount * (recipe.ItemKind != "" && FamilyOwned(v, recipe, "sources") ? Pace.FamilySourcesInputFactor : 1) / (recipe.ItemKind != "" ? Math.Max(1, Catalog.BuildingEffect(v, recipe.Building, "output", 1)) : 1);
+        public double RecipeOutput(Village v, Recipe recipe, double amount) => amount * (recipe.ItemKind == "" && FamilyOwned(v, recipe, "sources") ? Pace.FamilySourcesOutputFactor : 1) * Catalog.BuildingEffect(v, recipe.Building, "output", 1);
+        public double RecipeDuration(Village v, Recipe recipe) => recipe.Seconds * (FamilyOwned(v, recipe, "bulk") ? Pace.FamilyBulkDurationFactor : 1);
         private static bool Completed(Village v, string kind) => v.Buildings.Any(b => b.Kind == kind && b.Completed);
         public int DenCapacity(Village v) => Math.Max(5, (int)Catalog.Effect(v, "housingPerDen", 5));
         public double CarryCapacity(Village v, string resource = "") => Math.Clamp(Catalog.Effect(v, "haulCapacity", 8) + (resource == "water" ? Catalog.Effect(v, "waterCarryCapacity", 0) : 0), 8, 64);
@@ -137,7 +137,7 @@ namespace IdleCatForest.Simulation
                 foreach (var s in pile.Goods.Where(s => new[] { "food", "fish", "herbs", "grain", "flour", "preserves", "brew" }.Contains(s.Resource)).ToArray())
                 {
                     double held = Reservations.Where(r => r.PileId == pile.Id && r.Resource == s.Resource).Sum(r => r.Amount);
-                    double rate = s.Resource == "preserves" ? 0.00002 : 0.0002;
+                    double rate = s.Resource == "preserves" ? Pace.PreservesSpoilageRate : Pace.SpoilageRate;
                     double resistance = Catalog.Effect(v, "spoilageResistance", 1) * Service(v, "food_storage", "foodStorekeeping", 1);
                     double loss = Math.Max(0, s.Amount - held) * rate / resistance;
                     if (loss > 0)
@@ -164,12 +164,12 @@ namespace IdleCatForest.Simulation
         }
         private void Ecology()
         {
-            if ((long)TimeSeconds % 60 != 0)
+            if ((long)TimeSeconds % Pace.EcologyTickSeconds != 0)
                 return;
             foreach (var tile in Tiles.Where(t => t.Water && t.FishCapacity > 0))
             {
                 double elapsed = Math.Max(0, TimeSeconds - tile.FishReplenishedAt);
-                SetFish(tile, Math.Min(tile.FishCapacity, FishStock(tile) + elapsed / 3600 * 0.5));
+                SetFish(tile, Math.Min(tile.FishCapacity, FishStock(tile) + elapsed / 3600 * Pace.FishRegenPerHour));
                 tile.FishReplenishedAt = TimeSeconds;
             }
         }

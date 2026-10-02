@@ -44,8 +44,8 @@ namespace IdleCatForest.Simulation
         private double RecipeDeficit(Village v, Recipe r)
         {
             if (r.ItemKind != "")
-                return Math.Max(0, v.Cats.Count(c => c.Alive) * 0.5 - v.Items.Count(i => i.Kind == r.ItemKind && i.Material == r.Material && i.Condition > 0));
-            return r.Outputs.Count == 0 ? 0 : r.Outputs.Max(s => Math.Max(0, (s.Resource == "food" ? v.Cats.Count(c => c.Alive) * 8 : 32) - Total(v, s.Resource)));
+                return Math.Max(0, v.Cats.Count(c => c.Alive) * Pace.OfficerItemsPerCat - v.Items.Count(i => i.Kind == r.ItemKind && i.Material == r.Material && i.Condition > 0));
+            return r.Outputs.Count == 0 ? 0 : r.Outputs.Max(s => Math.Max(0, (s.Resource == "food" ? v.Cats.Count(c => c.Alive) * Pace.OfficerFoodPerCat : Pace.OfficerStockTarget) - Total(v, s.Resource)));
         }
         private void StaffOfficers(Village v)
         {
@@ -55,7 +55,7 @@ namespace IdleCatForest.Simulation
                 bool productive = Catalog.Recipes.Any(r => r.Building == b.Kind) || new[] { "research_hut", "school", "accounting_tent", "mouse_farm" }.Contains(b.Kind);
                 if (!productive || !HasOfficer(v, officer))
                     continue;
-                int reserve = Math.Max(2, (int)Math.Ceiling(v.Cats.Count(c => c.Alive) * 2.0 / 15));
+                int reserve = Math.Max(Pace.OfficerReserveMin, (int)Math.Ceiling(v.Cats.Count(c => c.Alive) * Pace.OfficerReservePerGroup / Pace.CrewGroupSize));
                 if (!b.Slots.Any(s => s.CatId != "") && v.Cats.Count(c => c.Alive && c.JobId == "" && c.BuildingId == "" && c.ControlledBy == "") > reserve)
                 {
                     var worker = AvailableCat(v, "process");
@@ -74,7 +74,7 @@ namespace IdleCatForest.Simulation
         private void PlanHousing(Village v)
         {
             int adults = v.Cats.Count(c => c.Alive), beds = v.Buildings.Count(b => b.Kind == "den" && b.Completed) * DenCapacity(v);
-            if (TimeSeconds - v.FoundedAt < 6 * 3600 || beds - adults - v.Cats.Count(c => c.PregnantUntil >= 0) > 1 || Total(v, "food") < adults * 3 || Total(v, "water") < adults * 4 || v.Buildings.Any(b => b.Kind == "den" && !b.Completed))
+            if (TimeSeconds - v.FoundedAt < Pace.HousingPlanAfterSeconds || beds - adults - v.Cats.Count(c => c.PregnantUntil >= 0) > Pace.HousingSpareBeds || Total(v, "food") < adults * Pace.HousingFoodPerCat || Total(v, "water") < adults * Pace.HousingWaterPerCat || v.Buildings.Any(b => b.Kind == "den" && !b.Completed))
                 return;
             foreach (var p in v.Known.OrderBy(p => Int2.Distance(v.Center, p)).ThenBy(p => p.Z).ThenBy(p => p.X))
                 if (FreeSite(v, p, 2, 2) && FreeBuildingEntrance(v, p).HasValue)
