@@ -1,41 +1,75 @@
-"""Reimport each FBX and verify exported geometry against the Blender manifest."""
+"""Reimport and verify old-kit and world-kit FBX exports."""
 
+import argparse
+import hashlib
 import json
-import math
+import sys
 from pathlib import Path
 
-import bpy
-from mathutils import Vector
 
+sys.dont_write_bytecode = True
 
 ROOT = Path(__file__).resolve().parents[1]
-manifest = json.loads((ROOT / "source-art/asset-manifest.json").read_text())
-results = []
-for name, expected in manifest["assets"].items():
-    bpy.ops.object.select_all(action="SELECT")
-    bpy.ops.object.delete(use_global=False)
-    bpy.ops.import_scene.fbx(filepath=str(ROOT / "unity/Assets/Resources/ForestArt" / (name + ".fbx")))
-    bpy.context.view_layer.update()
-    meshes = [obj for obj in bpy.context.scene.objects if obj.type == "MESH"]
-    assert len(meshes) == expected["mesh_count"], (name, "mesh count")
-    triangles = sum(sum(len(face.vertices) - 2 for face in obj.data.polygons) for obj in meshes)
-    assert triangles == expected["triangles"], (name, triangles, expected["triangles"])
-    verts = [obj.matrix_world @ vert.co for obj in meshes for vert in obj.data.vertices]
-    assert all(math.isfinite(value) for vert in verts for value in vert), (name, "invalid coordinate")
-    actual = [[min(v[i] for v in verts) for i in range(3)], [max(v[i] for v in verts) for i in range(3)]]
-    assert all(abs(actual[a][i] - expected["bounds_blender"][a][i]) < 0.001
-               for a in range(2) for i in range(3)), (name, "changed orientation, pivot or size", actual)
-    assert all(len(obj.data.materials) > 0 and all(mat is not None for mat in obj.data.materials)
-               for obj in meshes), (name, "missing material")
-    if name == "cat":
-        assert {obj.name for obj in meshes} == set(expected["parts"]), "Cat articulation names changed"
-        head = bpy.data.objects["Head"]
-        assert head.location.y < 0 and head.location.z > 0.5, "Cat front/pivot convention changed"
-        assert all(abs(obj.matrix_world.determinant()) > 0.99 for obj in meshes), "Cat scaling changed"
-    results.append({"asset": name, "triangles": triangles, "mesh_count": len(meshes), "passed": True})
-report = {"blender": bpy.app.version_string, "asset_count": len(results), "passed": True,
-          "checks": ["FBX reimport", "triangle preservation", "mesh count", "finite vertices", "meter scale",
-                     "orientation and bounds", "material assignment", "cat articulation names and pivots"],
-          "results": results}
-(ROOT / "source-art/verification.json").write_text(json.dumps(report, indent=2) + "\n")
-print("FOREST_ART_VERIFIED " + str(len(results)) + " FBX assets")
+ART = ROOT / "source-art"
+EXPORT = ROOT / "unity/Assets/Resources/ForestArt"
+
+
+def parse_args():
+    """Parse arguments passed after Blender's ``--`` separator."""
+    arguments = sys.argv[sys.argv.index("--") + 1 :] if "--" in sys.argv else []
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--only")
+    parser.add_argument("--no-write", action="store_true")
+    return parser.parse_args(arguments)
+
+
+def _load_expected(name):
+    old = json.loads((ART / "asset-manifest.json").read_text())
+    world = json.loads((ART / "world-asset-manifest.json").read_text())
+    manifest = world if name.startswith("world_") else old
+    expected = manifest.get("assets", {}).get(name)
+    record_path = ROOT / "artifacts/art-build/records" / f"{name}.json"
+    if record_path.exists():
+        record = json.loads(record_path.read_text())
+        path = EXPORT / f"{name}.fbx"
+        if hashlib.sha256(path.read_bytes()).hexdigest() == record.get("sha256"):
+            expected = record
+    if expected is None:
+        raise RuntimeError(f"No manifest or current build record for {name}; run the build with --only {name}")
+    return expected
+
+
+def verify(names, write_report):
+    """Verify old-kit names through the shared temporary-scene checker."""
+    if str(ART) not in sys.path:
+        sys.path.insert(0, str(ART))
+    from tools import fbx_checks
+
+    expected = {name: _load_expected(name) for name in names}
+    report_path = ART / "verification.json" if write_report else None
+    return fbx_checks.verify_existing(names, expected, EXPORT, report_path=report_path)
+
+
+def main():
+    options = parse_args()
+    manifest = json.loads((ART / "asset-manifest.json").read_text())
+    if options.only:
+        names = [name for name in options.only.split(",") if name]
+    else:
+        names = list(manifest["assets"])
+    world_names = [name for name in names if name.startswith("world_")]
+    old_names = [name for name in names if not name.startswith("world_")]
+    if world_names:
+        if str(ART) not in sys.path:
+            sys.path.insert(0, str(ART))
+        import build_world
+
+        world_records = {name: _load_expected(name) for name in world_names}
+        build_world.reset()
+        build_world.verify({"assets": world_records})
+    results = verify(old_names, write_report=not options.no_write and not options.only)
+    print(f"FOREST_ART_VERIFIED {len(results) + len(world_names)} FBX assets")
+
+
+if __name__ == "__main__":
+    main()

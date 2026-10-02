@@ -1,10 +1,11 @@
 # Forest world kit
 
-`build_world.py` authors 16 independent assets. It safely imports the geometry helpers and warm timber, muted stone and moss palette from `build_forest.py`; it never calls the old kit's builder. All geometry is original project artwork, with no textures, downloaded models, paid services or new asset license obligations. Distribution follows the repository owner's project terms.
+`build_world.py` authors 16 independent assets. World builders import shared geometry and
+palette helpers from `kit/helpers.py`; they never call an old-kit builder. All geometry is original project artwork, with no textures, downloaded models, paid services or new asset license obligations. Distribution follows the repository owner's project terms.
 
 ## Build status
 
-Blender 5.2.1 LTS generated and reimported all 16 assets successfully. The kit contains 16 meshes, 10,145 triangles, 6,256 vertices and 20 shared materials. The FBX files total 561,632 bytes. `world_kit.blend` retains editable geometry and `world-asset-manifest.json` records measured bounds and individual checks. Unity imported the kit and built the ARM64 player. Native checks covered joined roads, the entrance, physical stair descent, cutaway chambers and lake depths in management and direct control. The 30/150-cat measurements are in `docs/unity/PERFORMANCE.md`.
+Blender 5.2.1 LTS generated and reimported all 16 assets successfully. The kit contains 16 meshes, 10,145 triangles, 6,256 vertices and 20 shared materials. The build measures the FBX byte total from the files on disk. `world_kit.blend` retains editable geometry and `world-asset-manifest.json` records measured bounds and individual checks. Unity imported the kit and built the ARM64 player. Native checks covered joined roads, the entrance, physical stair descent, cutaway chambers and lake depths in management and direct control. The 30/150-cat measurements are in `docs/unity/PERFORMANCE.md`.
 
 ## Rebuild and inspect
 
@@ -53,3 +54,39 @@ The entrance check samples a clear opening 1.64 m wide and 2.55 m high. Dungeon 
 The generated manifest records measured dimensions in both coordinate systems, origin pivots, triangles, vertices, editable part counts, shared materials, GUIDs and actual FBX reimport results.
 
 Reimport validation checks FBX axis metadata and meter units, finite vertices, triangle counts, one mesh per export, source bounds, pivots, unit transforms, palette names and colors. Asset checks cover all road ports and absent ports, paving width and height, exact modular bounds, entrance clearance rays, every stair tread height and the beetle footprint. Blender verification complements the parent's Unity import and camera checks.
+
+## Modular builders and command flags
+
+World builders live in `world/roads.py`, `world/dungeon.py`, `world/plants.py`
+and `world/creatures.py`; `world/helpers.py` holds clipping, prisms, Voronoi
+cells, grass, crowns, contract utilities and shared geometry imports. Every
+module exposes `BUILDERS`. `build_world.py` discovers non-underscore modules in
+filename order, rejects duplicate names, and keeps the historical roads,
+dungeons, vegetation and beetle order. Helper-only modules do not need a
+`BUILDERS` dictionary. Export, record measurement, gallery and preview orchestration stay in the build
+script. `build_world.py` owns the world-specific FBX checks; `verify_fbx.py` uses
+those checks for world assets and the shared old-kit checker for old-kit assets.
+
+`world/roads.py` uses one `road_tile(name, kind)` implementation. Its five
+builders only select the port set, so each tile keeps its original named random
+stream. World builders draw through the helper `rng()` accessor.
+
+Each world asset has an independent seeded stream. Measured offsets are stored in
+`world/rng_offsets.json` and loaded once by the shared helper. New assets get a stable
+name-derived stream. Use the helper `rng()` only inside the asset that owns it.
+
+`--only a,b` exports selected files, creates only missing canonical `.meta` files
+and writes records under `artifacts/art-build/records`. It never writes the blend
+or manifests. `--manifests-only` rebuilds source records while checking existing
+FBX files. `--verify-only` checks the committed world exports. `--preview-dir DIR`
+renders into a directory outside the repository; `--preview` chooses a temporary
+outside path and prints it. `verify_fbx.py --only ... --no-write` checks a mixed
+old/world selection without rewriting verification output.
+
+Run `python3 source-art/tools/geometry_hash.py --compare <baseline.json>` to
+compare all 98 assets. The tool is independent of Blender and reports geometry
+hashes even though Blender FBX object IDs can change between processes.
+
+All FBX metadata uses the exact Unity layout of `den.fbx.meta`, including the
+eight `key: ` lines with trailing spaces. New metadata is copied from that
+canonical template. Existing metadata is never rewritten.

@@ -32,9 +32,14 @@ render("cat", (2.1, -3.4, 1.8), (0, 0, 0.65), 2.25, 1100, 1000)
 for coll in bpy.data.collections:
     if coll.name != "Preview only - not exported":
         coll.hide_render = True
-for name, pos in {"cat": (0, -1.5, 0), "sawmill": (-2.25, 1.2, 0),
-                  "clothier": (2.25, 1.2, 0), "tree_oak": (-4.5, 3.3, 0),
-                  "tree_pine": (4.8, 3.6, 0), "cargo_logs": (0, -1.47, 0.67)}.items():
+for name, pos in {
+    "cat": (0, -1.5, 0),
+    "sawmill": (-2.25, 1.2, 0),
+    "clothier": (2.25, 1.2, 0),
+    "tree_oak": (-4.5, 3.3, 0),
+    "tree_pine": (4.8, 3.6, 0),
+    "cargo_logs": (0, -1.47, 0.67),
+}.items():
     bpy.data.collections[name].hide_render = False
     bpy.data.objects[name].location = pos
 render("workplaces", (8, -12, 12), (0, 1.1, 0.9), 12)
@@ -42,9 +47,13 @@ render("cat_control", (2.8, -6, 2.6), (0, 0, 1.0), 7.4)
 for coll in bpy.data.collections:
     if coll.name != "Preview only - not exported":
         coll.hide_render = True
-for name, pos in {"shrine": (0, 0, 0), "den": (-3.6, 1.8, 0),
-                  "tree_oak": (3.7, 2.5, 0), "cat": (0.4, -2.3, 0),
-                  "gate": (3.4, -1.25, 0)}.items():
+for name, pos in {
+    "shrine": (0, 0, 0),
+    "den": (-3.6, 1.8, 0),
+    "tree_oak": (3.7, 2.5, 0),
+    "cat": (0.4, -2.3, 0),
+    "gate": (3.4, -1.25, 0),
+}.items():
     bpy.data.collections[name].hide_render = False
     bpy.data.objects[name].location = pos
 render("sanctuary", (7.5, -10, 11), (-0.15, 0.2, 0.7), 11.5, 1600, 1300)
