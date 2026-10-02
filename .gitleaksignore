@@ -1,0 +1,6 @@
+# Reviewed gitleaks findings that stay in history (one fingerprint per line).
+#
+# OpenRouter API key committed in ce4789e and removed in 4aff7f3. History is not
+# rewritten (decision D12), so the key is still public and the owner must rotate
+# it. Ignoring this one fingerprint keeps the scan green; any other leak still fails.
+ce4789e759afc87f860579ad26c29d16d112c16f:scripts/generate_isometric_assets.py:generic-api-key:70
