@@ -34,6 +34,17 @@ namespace IdleCatForest.Acceptance
             yield return new Scenario("founding.demo_colony_seeds_001_050", () => DemoColonySeeds("001-050", Enumerable.Range(1, 50)));
             yield return new Scenario("founding.demo_colony_seeds_051_100", () => DemoColonySeeds("051-100", Enumerable.Range(51, 50)));
             yield return new Scenario("founding.demo_colony_seeds_101_149_and_4242", () => DemoColonySeeds("101-149+4242", Enumerable.Range(101, 49).Concat(new[] { 4242 })));
+            yield return new Scenario("founding.demo_seed_frames_river_forest_and_hills", () =>
+            {
+                var stats = CheckDemoColony(World.DemoSeed);
+                var w = World.CreateColony(World.DemoSeed, "", Pacing.DemoProfile, 0);
+                var v = w.Villages.Single();
+                var river = v.Known.Select(w.GetTile).Where(t => t.Water && t.Biome == "river").ToList();
+                Check(river.Count > 0 && river.Min(t => Ring(v, t.Position)) <= v.Radius + 5, "The demo seed no longer runs a river close past the fence");
+                Check(stats.Logs >= 800 && stats.Highland >= 150 && stats.Landmarks >= 10, "The demo seed lost its forest, hills or landmark: " + stats);
+                Console.WriteLine("Demo seed: " + stats);
+            });
+            yield return new Scenario("founding.demo_colony_expansion_completes", ExpansionCompletes);
             yield return new Scenario("founding.colony_blueprint_varies_and_connects", BlueprintVariesAndConnects);
             yield return new Scenario("founding.colony_refounds_after_extinction", RefoundsAfterExtinction);
         }
@@ -189,6 +200,32 @@ namespace IdleCatForest.Acceptance
             }
             Check(layouts.Count >= 4, "Only " + layouts.Count + " distinct colony layouts across 12 seeds");
             Check(moved, "Every colony repeats the classic blueprint");
+        }
+
+        /// <summary>The first expansion of a fresh demo colony builds its wall ring on untouched natural ground.</summary>
+        private static void ExpansionCompletes()
+        {
+            var w = World.CreateColony(World.DemoSeed, "", Pacing.DemoProfile, 0);
+            var v = w.Villages.Single();
+            var builder = v.Cats[1];
+            // Only the builder acts, so the case measures the wall ring rather than colony upkeep.
+            foreach (var other in v.Cats.Where(c => c != builder))
+            {
+                other.ControlledBy = "fixture-held";
+                other.ControlLeaseUntil = 10000000;
+            }
+            int radius = v.Radius;
+            var ring = v.Known.Where(p => Ring(v, p) == radius + 2).ToList();
+            var before = ring.ToDictionary(p => p, p => w.GetTile(p).Elevation);
+            var job = w.Apply(Context(v), new GameAction { Kind = "RequestJob", Name = "expand", CatId = builder.Id });
+            Check(job.Success, "Fresh demo colony cannot expand: " + job.Error);
+            var expansion = v.Jobs.Single(j => j.Id == job.EntityId);
+            for (int tick = 0; tick < 20000 && !expansion.Completed; tick++)
+                w.Step(1);
+            Check(expansion.Completed && v.Radius == radius + 2, "The first expansion did not complete");
+            Check(ring.All(p => w.GetTile(p).Wall || w.GetTile(p).Road || p.X == v.Center.X || p.Z == v.Center.Z), "The new wall ring has gaps");
+            Check(ring.All(p => w.GetTile(p).Elevation == before[p]), "Expansion regraded the ground it walled");
+            Check(w.Path(new Int2(v.Center.X, v.Center.Z - 2), new Int2(v.Center.X, v.Center.Z - radius - 4), v) != null, "The south gate is not passable after expansion");
         }
 
         private static void RefoundsAfterExtinction()

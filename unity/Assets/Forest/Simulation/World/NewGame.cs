@@ -8,6 +8,11 @@ namespace IdleCatForest.Simulation
     public partial class World
     {
         public const string DefaultColonyName = "Mosslight";
+        /// <summary>
+        /// The curated demo start: a river runs 3 tiles past the east fence, dense forest closes in from
+        /// the west and south, and a ridged highland with rock outcrops rises to the north-west.
+        /// </summary>
+        public const int DemoSeed = 16;
         public const int MaxColonyNameLength = 48;
         /// <summary>Chebyshev radius of the natural ring a version 2 founding reveals around its centre.</summary>
         public const int ColonyRevealRadius = 34;

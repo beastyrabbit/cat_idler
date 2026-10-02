@@ -283,7 +283,7 @@ namespace IdleCatForest.Simulation
         private void PlaceStarterDeposits(Village v, HashSet<Int2> reach)
         {
             var chosen = new HashSet<Int2>();
-            uint Order(Int2 p) => Hash(Seed + ":deposit:" + p.X + ":" + p.Z);
+            uint Order(Int2 p) => SurfaceHash(p.X, p.Z, 701);
             long Euclid(Int2 p) => (long)(p.X - v.Center.X) * (p.X - v.Center.X) + (long)(p.Z - v.Center.Z) * (p.Z - v.Center.Z);
             foreach (string resource in StarterResources)
             {
@@ -314,7 +314,7 @@ namespace IdleCatForest.Simulation
         private void PlaceFoundingPond(Village v, HashSet<Int2> reach)
         {
             var sites = v.Known.Where(p => Ring(v.Center, p) == v.Radius + 3 && StarterSite(v, reach, p) && Array.IndexOf(StarterResources, GetTile(p).Resource) < 0)
-                .OrderBy(p => Hash(Seed + ":pond:" + p.X + ":" + p.Z)).Take(1).ToList();
+                .OrderBy(p => SurfaceHash(p.X, p.Z, 709)).Take(1).ToList();
             foreach (var site in sites)
             {
                 var t = GetTile(site);

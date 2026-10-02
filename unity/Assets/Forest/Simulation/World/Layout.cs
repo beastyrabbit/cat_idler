@@ -178,7 +178,7 @@ namespace IdleCatForest.Simulation
             int outer = Math.Max(3, v.Radius - 2);
             return LayoutReach(v.Radius, rects).Where(p => Math.Max(Math.Abs(p.X), Math.Abs(p.Z)) <= outer)
                 .Select(p => new Int2(v.Center.X + p.X, v.Center.Z + p.Z))
-                .OrderBy(p => RoadSurface(GetTile(p)) ? 1 : 0).ThenBy(p => Hash(Seed + ":" + v.Id + ":plaza:" + p.X + ":" + p.Z)).ThenBy(p => p.Z).ThenBy(p => p.X).ToList();
+                .OrderBy(p => RoadSurface(GetTile(p)) ? 1 : 0).ThenBy(p => SurfaceHash(p.X, p.Z, 719u ^ Hash(v.Id))).ThenBy(p => p.Z).ThenBy(p => p.X).ToList();
         }
 
         private bool ShrineRing(Village v, Int2 p) => v.Buildings.Any(b => b.Kind == "shrine" && Contains(new Int2(b.Position.X - 1, b.Position.Z - 1), b.Width + 2, b.Depth + 2, p) && !Contains(b.Position, b.Width, b.Depth, p));
