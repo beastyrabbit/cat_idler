@@ -67,7 +67,9 @@ namespace IdleCatForest.Editor
             EditorBuildSettings.scenes = new[] { new EditorBuildSettingsScene(ScenePath, true) };
             AssetDatabase.SaveAssets();
             string sceneResult = created ? "Forest scene created" : added ? "ForestGame added to the existing Forest scene" : "Forest scene kept unchanged";
-            return sceneResult + "; Apple Silicon IL2CPP player configured.";
+            string result = sceneResult + "; Apple Silicon IL2CPP player configured.";
+            Debug.Log("forest_setup: " + result);
+            return result;
         }
 
         private static void PrepareResources()
