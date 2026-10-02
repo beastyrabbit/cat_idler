@@ -37,6 +37,7 @@ namespace IdleCatForest.Presentation
         private IDisposable escape, worldPress;
         private VisualElement trickleRoot;
         private bool open;
+        private int rowLimit = MaxRows;
 
         public AttentionPopover(UiContext ctx)
         {
@@ -86,6 +87,7 @@ namespace IdleCatForest.Presentation
             if (ctx?.State != null) ctx.State.Changed += OnStateChanged;
             RegisterCallback<AttachToPanelEvent>(_ => HookRoot());
             RegisterCallback<DetachFromPanelEvent>(_ => UnhookRoot());
+            RegisterCallback<GeometryChangedEvent>(_ => FitRows());
         }
 
         public UiContext Context { get; }
@@ -101,7 +103,7 @@ namespace IdleCatForest.Presentation
         {
             var items = Order(AttentionFeed.Items(Context));
             TrackSolved(items);
-            shown = items.Take(MaxRows).ToList();
+            shown = items.Take(rowLimit).ToList();
             if (!open) return;
             rows.Refresh();
             for (int i = 0; i < rows.Keys.Count; i++)
@@ -125,6 +127,7 @@ namespace IdleCatForest.Presentation
             }
             if (open) return;
             open = true;
+            rowLimit = MaxRows;
             style.display = DisplayStyle.Flex;
             BringToFront();
             Refresh();
@@ -362,10 +365,20 @@ namespace IdleCatForest.Presentation
             float margin = HudLayout.EdgeMargin(Context);
             float width = Mathf.Min(Width, root.layout.width - 2 * margin);
             if (!Mathf.Approximately(style.width.value.value, width)) style.width = width;
-            float left = Mathf.Clamp(HudLayout.PopoverLeft(Context, sealRect.x), margin, Mathf.Max(margin, root.layout.width - width - margin));
+            float left = HudLayout.PopoverLeft(Context, sealRect, width);
             HudLayout.Place(this, left, sealRect.yMax + 10);
             float caretLeft = Mathf.Clamp(sealRect.center.x - left - 6, 16, width - 28);
             if (!Mathf.Approximately(caret.style.left.value.value, caretLeft)) caret.style.left = caretLeft;
+        }
+
+        // On a short window, drop rows (they move into "N more") until the popover ends above the bottom margin.
+        private void FitRows()
+        {
+            var root = HudLayout.Root(Context);
+            if (!open || root == null || float.IsNaN(layout.yMax) || float.IsNaN(root.layout.height)) return;
+            if (layout.yMax <= root.layout.height - HudLayout.EdgeMargin(Context) || shown.Count <= 1) return;
+            rowLimit = shown.Count - 1;
+            schedule.Execute(Refresh);
         }
 
         // ---- click outside ---------------------------------------------------------------------

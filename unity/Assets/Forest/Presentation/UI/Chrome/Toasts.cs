@@ -118,8 +118,8 @@ namespace IdleCatForest.Presentation
                 queue.RemoveAt(0);
                 Show(next, now);
             }
-            // Make room for an alert by retiring the oldest notable toast.
-            if (queue.Count > 0 && Classify(queue[0].Kind) == ToastSeverity.Alert)
+            // Make room for an alert, or on a short window for the stack itself, by retiring the oldest notable toast.
+            if (queue.Count > 0 && Classify(queue[0].Kind) == ToastSeverity.Alert || Overflowing())
             {
                 var oldest = live.LastOrDefault(t => !t.Leaving && !t.Sticky);
                 if (oldest != null) Dismiss(oldest);
@@ -128,6 +128,13 @@ namespace IdleCatForest.Presentation
         }
 
         private int LiveCount() => live.Count(t => !t.Leaving);
+
+        private bool Overflowing()
+        {
+            var root = HudLayout.Root(Context);
+            if (root == null || LiveCount() <= 1 || float.IsNaN(layout.yMax) || float.IsNaN(root.layout.height)) return false;
+            return layout.yMax > root.layout.height - HudLayout.EdgeMargin(Context);
+        }
 
         // A long backlog (a catch-up, a busy minute) becomes the alerts plus one summary toast.
         private void Collapse(Village village)
@@ -167,7 +174,7 @@ namespace IdleCatForest.Presentation
             text.AddToClassList("toast__text");
             var title = new Label(overflow ? HudCopy.ToastOverflow(-(int)e.Seq) : HudCopy.ToastTitle(e.Kind)) { pickingMode = PickingMode.Ignore };
             title.AddToClassList("toast__title");
-            var body = new Label(e.Text ?? "") { pickingMode = PickingMode.Ignore };
+            var body = new Label(UiText.Pretty(e.Text ?? "")) { pickingMode = PickingMode.Ignore };
             body.AddToClassList("toast__body");
             text.Add(title);
             if (!string.IsNullOrEmpty(e.Text)) text.Add(body);

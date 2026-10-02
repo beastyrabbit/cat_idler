@@ -102,7 +102,7 @@
     border-width: 1px;
     border-radius: 10px;
     border-color: var(--edge, rgba(255, 255, 255, 0.14));
-    background-color: rgba(10, 19, 14, 0.95);
+    background-color: rgba(10, 19, 14, 0.97);
     color: var(--ink, rgb(238, 243, 234));
     font-size: 12px;
     white-space: normal;

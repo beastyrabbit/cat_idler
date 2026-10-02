@@ -50,17 +50,60 @@ namespace IdleCatForest.Presentation
             return true;
         }
 
-        /// <summary>The seal's top-left corner.</summary>
-        public static Vector2 SealOrigin(UiContext ctx)
+        /// <summary>
+        /// The legacy top bar's seal button while it exists, in root coordinates. The new seal covers it, so
+        /// the player sees and clicks one seal until W2-13 removes the old bar.
+        /// </summary>
+        public static bool TryLegacySeal(UiContext ctx, out Rect rect)
         {
-            if (TryMounted(ctx, UiSlots.Chip, out var chip)) return new Vector2(chip.xMax + Gap, chip.y);
-            float margin = EdgeMargin(ctx);
-            if (TryLegacyTop(ctx, out var legacy)) return new Vector2(legacy.x, legacy.yMax + Gap);
-            return new Vector2(margin, Compact(ctx) ? CompactMargin : 18);
+            rect = default;
+            var old = LegacySeal(ctx);
+            if (old == null || old.resolvedStyle.display == DisplayStyle.None || float.IsNaN(old.worldBound.width) || old.worldBound.width < 1) return false;
+            rect = Root(ctx).WorldToLocal(old.worldBound);
+            return true;
         }
 
-        /// <summary>The left edge popovers align to: the chip's, else the seal's own.</summary>
-        public static float PopoverLeft(UiContext ctx, float sealLeft) => TryMounted(ctx, UiSlots.Chip, out var chip) ? chip.x : sealLeft;
+        /// <summary>The legacy top bar's seal button (class <c>attention-seal</c>), or null once it is gone.</summary>
+        public static Button LegacySeal(UiContext ctx) => Root(ctx)?.Q<Button>(className: LegacySealClass);
+
+        private const string LegacySealClass = "attention-seal";
+
+        /// <summary>
+        /// Retires the legacy seal while it still exists: renamed to <c>seal-legacy</c> so <see cref="UiNames.Seal"/>
+        /// names exactly one element, hidden and click-through so the new seal on top of it is the only one.
+        /// A no-op once W2-13 removes the legacy top bar.
+        /// </summary>
+        public static void RetireLegacySeal(UiContext ctx)
+        {
+            var old = LegacySeal(ctx);
+            if (old == null) return;
+            old.name = "seal-legacy";
+            old.pickingMode = PickingMode.Ignore;
+            old.style.visibility = Visibility.Hidden;
+        }
+
+        /// <summary>The seal's top-left corner for a seal of <paramref name="size"/>.</summary>
+        public static Vector2 SealOrigin(UiContext ctx, Vector2 size)
+        {
+            if (TryMounted(ctx, UiSlots.Chip, out var chip)) return new Vector2(chip.xMax + Gap, chip.y);
+            if (float.IsNaN(size.x)) size = Vector2.zero;
+            if (TryLegacySeal(ctx, out var old)) return new Vector2(old.xMax - size.x, old.center.y - size.y * .5f);
+            if (TryLegacyTop(ctx, out var legacy)) return new Vector2(legacy.x, legacy.yMax + Gap);
+            return new Vector2(EdgeMargin(ctx), Compact(ctx) ? CompactMargin : 18);
+        }
+
+        /// <summary>
+        /// The popover's left edge: aligned with the chip, else with the seal on its side of the window
+        /// (left-aligned on the left half, right-aligned on the right half), kept inside the margins.
+        /// </summary>
+        public static float PopoverLeft(UiContext ctx, Rect seal, float width)
+        {
+            var root = Root(ctx);
+            float rootWidth = root == null || float.IsNaN(root.layout.width) ? seal.xMax + width : root.layout.width;
+            float margin = EdgeMargin(ctx);
+            float left = TryMounted(ctx, UiSlots.Chip, out var chip) ? chip.x : seal.center.x < rootWidth * .5f ? seal.x : seal.xMax - width;
+            return Mathf.Clamp(left, margin, Mathf.Max(margin, rootWidth - width - margin));
+        }
 
         /// <summary>The top of the toast stack on the right: under the pills, else under the legacy bar.</summary>
         public static float ToastTop(UiContext ctx)

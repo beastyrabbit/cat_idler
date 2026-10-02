@@ -12,7 +12,7 @@
     border-width: 1px;
     border-radius: 14px;
     border-color: var(--edge, rgba(255, 255, 255, 0.14));
-    background-color: rgba(12, 22, 16, 0.93);
+    background-color: rgba(12, 22, 16, 0.97);
     overflow: hidden;
     opacity: 0;
     translate: 28px 0;
@@ -24,7 +24,7 @@
 .toast--out { opacity: 0; translate: 0 0; }
 .reduced-motion .toast { translate: 0 0; transition-duration: 0s, 0s; }
 
-.toast--alert { border-color: rgba(255, 107, 87, 0.55); background-color: rgba(30, 18, 14, 0.94); }
+.toast--alert { border-color: rgba(255, 107, 87, 0.55); background-color: rgba(30, 18, 14, 0.97); }
 .toast--clickable:hover { border-color: rgba(255, 209, 102, 0.6); }
 
 .toast__stripe { width: 4px; flex-shrink: 0; background-color: var(--info, rgb(124, 198, 230)); }

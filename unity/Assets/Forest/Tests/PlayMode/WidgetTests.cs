@@ -302,8 +302,14 @@ namespace IdleCatForest.Tests
                 Assert.That(game.UI.State.PopoverOpen, Is.True);
                 Assert.That(Popover.IsOpen, Is.True);
                 Assert.That(Popover.resolvedStyle.display, Is.EqualTo(DisplayStyle.Flex));
-                Assert.That(Popover.Rows.Count, Is.EqualTo(Math.Min(AttentionPopover.MaxRows, expected.Count)));
-                Assert.That(Popover.Shown.Select(i => i.Id), Is.EqualTo(expected.Take(AttentionPopover.MaxRows).Select(i => i.Id)), "Rows are not most urgent first.");
+                UiTestKit.Refresh(game);
+                // A short test window may move rows into "N more"; the rows shown are still the most urgent.
+                int rows = Popover.Shown.Count;
+                Assert.That(rows, Is.InRange(1, Math.Min(AttentionPopover.MaxRows, expected.Count)));
+                Assert.That(Popover.Rows.Count, Is.EqualTo(rows));
+                Assert.That(Popover.Shown.Select(i => i.Id), Is.EqualTo(expected.Take(rows).Select(i => i.Id)), "Rows are not most urgent first.");
+                var more = Popover.Q<Button>(UiNames.Act("attention", "more"));
+                Assert.That(more.resolvedStyle.display == DisplayStyle.Flex || more.style.display == DisplayStyle.Flex, Is.EqualTo(expected.Count > rows), "Hidden items need the \"N more\" row.");
                 var actions = Popover.Rows.Keys.Select(k => Popover.Rows.RowOf(k).Q<ActionButton>()).ToList();
                 Assert.That(actions.Count(a => a.Primary), Is.EqualTo(1), "Exactly one row action is the primary.");
                 Assert.That(actions[0].Primary, Is.True, "The primary action belongs to the first row.");

@@ -57,7 +57,10 @@ namespace IdleCatForest.Presentation
 
             WidgetStyles.Use(this, WidgetStyles.Widgets, WidgetStyles.Attention);
             if (ctx?.State != null) ctx.State.Changed += SyncOpen;
+            // This seal replaces the legacy top-bar seal it sits on.
+            HudLayout.RetireLegacySeal(ctx);
             RegisterCallback<AttachToPanelEvent>(_ => schedule.Execute(Place));
+            RegisterCallback<GeometryChangedEvent>(_ => Place());
         }
 
         public UiContext Context { get; }
@@ -114,7 +117,7 @@ namespace IdleCatForest.Presentation
         private void Place()
         {
             if (panel == null) return;
-            var origin = HudLayout.SealOrigin(Context);
+            var origin = HudLayout.SealOrigin(Context, layout.size);
             HudLayout.Place(this, origin.x, origin.y);
         }
     }
