@@ -2,7 +2,6 @@ using System;
 using System.Collections;
 using System.IO;
 using System.Linq;
-using System.Reflection;
 using IdleCatForest.Presentation;
 using IdleCatForest.Simulation;
 using NUnit.Framework;
@@ -20,7 +19,6 @@ namespace IdleCatForest.Tests
         private string directory;
         private Mouse mouse;
         private Keyboard keyboard;
-        private const BindingFlags Private = BindingFlags.NonPublic | BindingFlags.Instance;
 
         [UnitySetUp]
         public IEnumerator StartIsolatedWorld()
@@ -57,8 +55,8 @@ namespace IdleCatForest.Tests
             InputSystem.Update();
             Assert.That(mouse.scroll.ReadValue().y, Is.EqualTo(1f), "Exercise the normalized Input System value.");
             Assert.That(game.UI.PointerOverPanel, Is.False, "The test pointer must be over the game world.");
-            typeof(ForestView).GetMethod("ReadInput", Private).Invoke(game.View, null);
-            typeof(ForestView).GetMethod("UpdateCamera", Private).Invoke(game.View, null);
+            game.View.TickInput(); game.View.ApplyContinuousInput();
+            game.View.UpdateCamera();
             Assert.That(game.View.Camera.orthographicSize, Is.LessThan(initial * .95f), "One normalized wheel step should visibly zoom on the next frame.");
             Assert.That(Vector3.Distance(before, GroundAt(cursor)), Is.LessThan(.03f), "The world point under the cursor must stay under the cursor while zooming.");
         }
@@ -66,30 +64,27 @@ namespace IdleCatForest.Tests
         [Test]
         public void ZoomButtonsAreReversibleAndRespectCloseAndWideLimits()
         {
-            var zoomBy = typeof(ForestView).GetMethod("ZoomBy");
-            Assert.That(zoomBy, Is.Not.Null, "Management needs an accessible alternative to mouse-wheel input.");
-            var zoom = typeof(ForestView).GetField("zoom", Private);
-            float initial = (float)zoom.GetValue(game.View);
-            zoomBy.Invoke(game.View, new object[] { 1f });
-            Assert.That((float)zoom.GetValue(game.View), Is.LessThan(initial * .95f));
-            zoomBy.Invoke(game.View, new object[] { -1f });
-            Assert.That((float)zoom.GetValue(game.View), Is.EqualTo(initial).Within(.001f));
-            zoomBy.Invoke(game.View, new object[] { 1000f });
-            Assert.That((float)zoom.GetValue(game.View), Is.InRange(3f, 5f));
-            zoomBy.Invoke(game.View, new object[] { -1000f });
-            Assert.That((float)zoom.GetValue(game.View), Is.InRange(30f, 42f));
+            // ZoomBy is public: management needs an accessible alternative to mouse-wheel input.
+            float initial = game.View.Zoom;
+            game.View.ZoomBy(1f);
+            Assert.That(game.View.Zoom, Is.LessThan(initial * .95f));
+            game.View.ZoomBy(-1f);
+            Assert.That(game.View.Zoom, Is.EqualTo(initial).Within(.001f));
+            game.View.ZoomBy(1000f);
+            Assert.That(game.View.Zoom, Is.InRange(3f, 5f));
+            game.View.ZoomBy(-1000f);
+            Assert.That(game.View.Zoom, Is.InRange(30f, 42f));
         }
 
         [Test]
         public void FootTrafficDoesNotTurnIntoPavingOrHideUncollectedResources()
         {
-            var tileAsset = typeof(ForestView).GetMethod("TileAsset", Private);
             var tile = new Tile { Dirt = true, Resource = "logs", Amount = 200 };
-            Assert.That(tileAsset.Invoke(game.View, new object[] { tile }), Is.EqualTo("tree_oak"), "Walking past a tree must not replace it with a paved road.");
+            Assert.That(game.View.TileAsset(tile), Is.EqualTo("tree_oak"), "Walking past a tree must not replace it with a paved road.");
             tile.Resource = ""; tile.Amount = 0;
-            Assert.That(tileAsset.Invoke(game.View, new object[] { tile }), Is.EqualTo(""), "Worn earth belongs to the terrain. Only built roads get stone paving.");
+            Assert.That(game.View.TileAsset(tile), Is.EqualTo(""), "Worn earth belongs to the terrain. Only built roads get stone paving.");
             tile.Road = true;
-            Assert.That(tileAsset.Invoke(game.View, new object[] { tile }), Is.EqualTo("road"));
+            Assert.That(game.View.TileAsset(tile), Is.EqualTo("road"));
         }
 
         [UnityTest]
@@ -115,7 +110,7 @@ namespace IdleCatForest.Tests
             game.View.enabled = false;
             var building = game.Selected.Buildings.First(b => b.Kind == "den");
             building.HasEntrance = false;
-            typeof(ForestView).GetMethod("Reconcile", Private).Invoke(game.View, null);
+            game.View.ForceReconcile();
             yield return null;
             Assert.That(GameObject.Find("entrance:" + building.Id), Is.Null, "Legacy buildings have no stored doorway; presentation must not guess one by searching the road network every frame.");
         }
@@ -138,7 +133,7 @@ namespace IdleCatForest.Tests
             foreach (var element in game.GetComponent<UIDocument>().rootVisualElement.Query<VisualElement>().ToList()) element.RemoveFromClassList("interactive");
             var building = game.Selected.Buildings.First(b => b.Kind == "wood_cutter");
             var center = new Vector3(building.Position.X + (building.Width - 1) * .5f, 0, building.Position.Z + (building.Depth - 1) * .5f);
-            typeof(ForestView).GetMethod("UpdateCamera", Private).Invoke(game.View, null);
+            game.View.UpdateCamera();
             Vector2 cursor = game.View.Camera.WorldToScreenPoint(center);
             // Target the player's Dynamic buffer; a batch Editor can default to its separate Editor buffer.
             InputState.Change(mouse.position, cursor, InputUpdateType.Dynamic);
@@ -150,11 +145,11 @@ namespace IdleCatForest.Tests
             }
             Assert.That(mouse.leftButton.wasPressedThisFrame, Is.True, "The synthetic mouse must deliver a fresh click.");
             Assert.That(game.UI.PointerOverPanel || game.UI.TextInputFocused || game.UI.HasPlacement, Is.False, "The click must reach world selection.");
-            typeof(ForestView).GetMethod("ReadInput", Private).Invoke(game.View, null);
+            game.View.TickInput();
             Assert.That(game.View.SelectedBuilding, Is.SameAs(building), "Clicked tile: " + game.View.CursorTile + "; intended center: " + center);
             Assert.That(game.UI.OpenSection, Is.EqualTo("Inspect"));
             yield return null; yield return null;
-            typeof(ForestView).GetMethod("UpdateCamera", Private).Invoke(game.View, null);
+            game.View.UpdateCamera();
             var screen = game.View.Camera.WorldToViewportPoint(center);
             Assert.That(screen.x, Is.GreaterThan(game.UI.WorldLeftFraction + .03f), "A world click must keep the inspected building clear of the drawer.");
             Assert.That(screen.y, Is.InRange(.3f, .7f));
@@ -176,16 +171,15 @@ namespace IdleCatForest.Tests
             // its public expansion and recovery. The renderer must not predict its next step.
             var trade = new TradeOffer { Id = "rendered-blocked-caravan", FromVillageId = village.Id, ToVillageId = "snapshot-destination", Status = "outbound", X = before.X, Z = before.Z, Offered = new IdleCatForest.Simulation.Stack("logs", 8), Requested = new IdleCatForest.Simulation.Stack("stone", 5) };
             trade.Path.Add(next); trade.Path.Add(new Int2(11, 2)); world.TradeOffers.Add(trade);
-            var reconcile = typeof(ForestView).GetMethod("Reconcile", Private);
             Assert.That(world.Crossable(before, next), Is.False);
-            reconcile.Invoke(game.View, null); yield return null;
+            game.View.ForceReconcile(); yield return null;
             var cart = GameObject.Find("trade:" + trade.Id);
             Assert.That(cart, Is.Not.Null);
             Assert.That(cart.transform.position, Is.EqualTo(new Vector3(11, 0, 0)), "A stopped caravan must remain on the near side of its blocked edge.");
-            trade.Status = "returning"; reconcile.Invoke(game.View, null);
+            trade.Status = "returning"; game.View.ForceReconcile();
             Assert.That(cart.transform.position, Is.EqualTo(new Vector3(11, 0, 0)), "Returning cargo uses its actual position too.");
             village.BoundaryEdges.Clear(); trade.X = next.X; trade.Z = next.Z; trade.PathIndex = 1;
-            reconcile.Invoke(game.View, null); yield return null;
+            game.View.ForceReconcile(); yield return null;
             Assert.That(GameObject.Find("trade:" + trade.Id), Is.SameAs(cart));
             Assert.That(cart.transform.position, Is.EqualTo(new Vector3(11, 0, 1)), "The next snapshot moves the same cart to the reached tile, not its following waypoint.");
             Assert.That(trade.Offered.Amount, Is.EqualTo(8)); Assert.That(trade.Requested.Amount, Is.EqualTo(5));
@@ -202,9 +196,16 @@ namespace IdleCatForest.Tests
             {
                 game.CurrentWorld.Tiles.Add(new Tile { Position = p, Wall = p.X != 2, Road = p.X == 2 }); game.Selected.Known.Add(p);
             }
-            typeof(ForestView).GetMethod("Reconcile", Private).Invoke(game.View, null);
+            game.View.ForceReconcile();
             yield return null;
-            var world = (Transform)typeof(ForestView).GetField("worldRoot", Private).GetValue(game.View);
+            var world = game.View.WorldRoot;
+            foreach (Transform entity in world)
+            {
+                Assert.That(entity.childCount, Is.EqualTo(1), entity.name + " keeps its model under a single visual child");
+                Assert.That(ForestView.VisualOf(entity.gameObject), Is.SameAs(entity.GetChild(0)), entity.name);
+                Assert.That(entity.GetChild(0).name, Is.EqualTo(ForestView.VisualName));
+            }
+            Assert.That(world.Cast<Transform>().Any(e => e.name.StartsWith("gate:") && e.Find(ForestView.VisualName + "/gate") != null), Is.True, "The model sits under the visual child, named by its asset");
             foreach (Transform entity in world)
                 if (entity.name.StartsWith("tile:") || entity.name.StartsWith("fence:") || entity.name.StartsWith("gate:"))
                     foreach (var filter in entity.GetComponentsInChildren<MeshFilter>())
