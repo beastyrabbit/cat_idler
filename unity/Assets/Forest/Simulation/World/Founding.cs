@@ -121,7 +121,7 @@ namespace IdleCatForest.Simulation
             int scale = communal ? 2 : 1;
             foreach (var entry in FoundingBlueprint(communal))
                 v.Buildings.Add(new Building { Id = Id(entry.Kind), Kind = entry.Kind, Position = new Int2(center.X + entry.X, center.Z + entry.Z), Completed = true, ConstructionConsumed = true });
-            var pile = FoundingStore(v, new Int2(center.X + (communal ? -4 : 3), center.Z + (communal ? -4 : -2)));
+            FoundingStore(v, new Int2(center.X + (communal ? -4 : 3), center.Z + (communal ? -4 : -2)));
             foreach (var building in v.Buildings.Where(b => b.Kind != "den" && b.Kind != "shrine"))
                 Commission(v, building);
             foreach (var building in v.Buildings.Where(b => b.Kind != "shrine"))
@@ -161,10 +161,11 @@ namespace IdleCatForest.Simulation
             }
             v.LeaderId = v.Cats[0].Id;
         }
+
         // ---- Version 2 founding --------------------------------------------------------------
 
         /// <summary>The starter resources every founding provides as one 200-unit deposit (food: three).</summary>
-        public static readonly string[] StarterResources = { "logs", "stone", "food", "fibre", "ore", "clay", "sand", "gem" };
+        private static readonly string[] StarterResources = { "logs", "stone", "food", "fibre", "ore", "clay", "sand", "gem" };
         private const int StarterFoodDeposits = 3;
         private static int Ring(Int2 center, Int2 p) => Math.Max(Math.Abs(p.X - center.X), Math.Abs(p.Z - center.Z));
 
