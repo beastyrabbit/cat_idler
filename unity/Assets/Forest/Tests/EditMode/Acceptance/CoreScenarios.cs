@@ -177,7 +177,10 @@ namespace IdleCatForest.Acceptance
             w.Step(5);
             Check(other.Hunger < otherHunger && w.IsolatedFaults().Count == 1, "The faulting village did not resume cleanly");
             Check(home.Events.Count(e => e.Kind == EventKind.Error) == 1, "A single fault logged more than one error");
-            Valid(w);
+            // Not Valid(w): it may assert that no fault was isolated. Its invariant checks still hold here.
+            Check(w.Validate().Count == 0, string.Join("; ", w.Validate()));
+            Check(w.Reservations.All(r => w.Villages.Any(x => x.Jobs.Any(j => !j.Completed && (j.Id == r.OwnerId || j.Id + ":resume" == r.OwnerId)) || x.Buildings.Any(b => !b.Completed && b.Id == r.OwnerId))), "Fault recovery left a claim without a live owner");
+            Check(home.Cats.Concat(personal.Cats).All(cat => cat.Cargo.All(s => World.Finite(s.Amount) && s.Amount >= 0)), "Fault recovery kept corrupt cargo");
         }
         static void FaultWithoutActor()
         {
