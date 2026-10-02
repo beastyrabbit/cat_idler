@@ -26,7 +26,216 @@ namespace IdleCatForest.Acceptance
             yield return new Scenario("regression.review_resume_rail_preserves_controlled_food", () => ControlledResumeCargo("rail"));
             yield return new Scenario("regression.review_resume_expansion_preserves_controlled_food", () => ControlledResumeCargo("expand"));
             yield return new Scenario("regression.direct_control_flood_cannot_advance_time", ControlFlood);
+            yield return new Scenario("regression.direct_control_held_direction_chains_tiles", HeldDirection);
+            yield return new Scenario("regression.direct_control_reversal_turns_back_mid_edge", MidEdgeReversal);
+            yield return new Scenario("regression.direct_control_diagonal_needs_open_corners", DiagonalCorners);
+            yield return new Scenario("regression.direct_control_moves_on_real_time", RealTimeControl);
+            yield return new Scenario("regression.direct_control_lease_expiry_clears_intent", LeaseExpiry);
+            yield return new Scenario("regression.direct_control_chest_reach_is_adjacent", ChestReach);
+            yield return new Scenario("regression.direct_control_interact_folds_needs", InteractFolds);
+            yield return new Scenario("regression.direct_control_pile_reach_covers_footprint", PileReach);
         }
+
+        /// <summary>A flat, open grass meadow around the fixture cat (x 0..7, z 0..5) with nothing built on it.</summary>
+        static World Meadow(out Village v, out Cat c)
+        {
+            var w = Fixture(out v, out c);
+            c.BuildingId = "";
+            v.Buildings.RemoveAll(b => b.Kind != "shrine" && b.Position.X <= 8 && b.Position.X + b.Width >= 0 && b.Position.Z <= 6 && b.Position.Z + b.Depth >= 0);
+            for (int x = 0; x <= 7; x++)
+                for (int z = 0; z <= 5; z++)
+                {
+                    var tile = w.TileAt(new Int2(x, z));
+                    tile.Road = tile.Dirt = tile.Water = tile.Wall = tile.Mountain = tile.Rail = tile.Bridge = false;
+                    tile.Biome = "grass";
+                    tile.Elevation = 0;
+                }
+            v.BoundaryEdges.RemoveAll(e => e.From.X >= 0 && e.From.X <= 7 && e.From.Z >= 0 && e.From.Z <= 5);
+            c.Y = 0;
+            c.HasHeight = true;
+            Act(w, v, new GameAction { Kind = "EnterCat", CatId = c.Id });
+            return w;
+        }
+        static void Move(World w, Village v, Cat c, int x, int z) => Act(w, v, new GameAction { Kind = "MoveCat", CatId = c.Id, Position = new Int2(x, z) });
+        static void HeldDirection()
+        {
+            var w = Meadow(out var v, out var c);
+            Move(w, v, c, 1, 0);
+            Check(c.ControlDirection.Equals(new Int2(1, 0)), "MoveCat must store the held direction");
+            double last = c.X;
+            for (int tick = 0; tick < 40; tick++)
+            {
+                // The client re-sends the held key every 0.1 s.
+                if (tick % 2 == 1)
+                    Move(w, v, c, 1, 0);
+                w.Step(World.SimulationStepSeconds);
+                Check(c.X > last + 1e-9, "A held direction must keep the cat moving through tile centres (tick " + tick + " x=" + c.X + ")");
+                last = c.X;
+            }
+            Check(c.X - 1 > 2.5, "Two seconds of a held key must cover several tiles, moved " + (c.X - 1));
+            Check(Math.Abs(c.Z - 2) < 1e-9, "A held east key must not drift");
+            Act(w, v, new GameAction { Kind = "StopCat", CatId = c.Id });
+            Check(c.ControlDirection.Equals(default(Int2)), "StopCat clears the held direction");
+            w.Step(1);
+            Check(c.Path.Count == 0 && Math.Abs(c.X - Math.Round(c.X)) < 1e-9 && c.Position.X == (int)Math.Round(c.X), "StopCat lets the cat finish its edge and stand on a tile");
+            double rest = c.X;
+            w.Step(1);
+            Near(c.X, rest, "A stopped cat stays put");
+            Move(w, v, c, -1, 0);
+            w.Step(3);
+            Check(c.ControlDirection.Equals(default(Int2)) && c.Path.Count == 0 && rest - c.X >= 1 && rest - c.X < 2.5, "A hold that is not refreshed (a missed key release) lapses and the cat stands, moved " + (rest - c.X));
+        }
+        static void MidEdgeReversal()
+        {
+            var w = Meadow(out var v, out var c);
+            Move(w, v, c, 1, 0);
+            w.Step(0.3);
+            Check(c.X > 1.2 && c.X < 2 && c.Position.X == 1, "Fixture must be mid-edge");
+            double x = c.X;
+            Move(w, v, c, -1, 0);
+            w.Step(World.SimulationStepSeconds);
+            Check(c.X < x, "Reversing mid-edge must turn back at once, not finish the edge first");
+            w.Step(2);
+            Check(c.X < 1, "The cat keeps walking west after turning back");
+        }
+        static void DiagonalCorners()
+        {
+            var w = Meadow(out var v, out var c);
+            Move(w, v, c, 1, 1);
+            Act(w, v, new GameAction { Kind = "StopCat", CatId = c.Id });
+            w.Step(2);
+            Check(c.Position.Equals(new Int2(2, 3)) && Math.Abs(c.X - 2) < 1e-9 && Math.Abs(c.Z - 3) < 1e-9, "An open diagonal is one straight step, at " + c.Position);
+            w.TileAt(new Int2(3, 3)).Wall = true;
+            var cut = w.Apply(Context(v), new GameAction { Kind = "MoveCat", CatId = c.Id, Position = new Int2(1, -1) });
+            Check(!cut.Success && cut.Code == ResultCode.BlockedRoute, "A diagonal must not cut a walled corner, got " + cut.Code);
+            var straight = w.Apply(Context(v), new GameAction { Kind = "MoveCat", CatId = c.Id, Position = new Int2(1, 0) });
+            Check(!straight.Success && straight.Code == ResultCode.BlockedRoute && c.ControlDirection.Equals(default(Int2)), "Walking into a wall refuses and holds nothing");
+            var wild = w.Apply(Context(v), new GameAction { Kind = "MoveCat", CatId = c.Id, Position = new Int2(2, 0) });
+            Check(!wild.Success && wild.Code == ResultCode.InvalidDirection, "Steps are single tiles");
+        }
+        static void RealTimeControl()
+        {
+            double Walked(double scale, double seconds)
+            {
+                var w = Meadow(out var v, out var c);
+                w.ControlTimeScale = scale;
+                // The client holds the key for `seconds` of real time, re-sending every 0.1 s.
+                for (int i = 0; i < Math.Round(seconds / 0.1); i++)
+                {
+                    Move(w, v, c, 1, 0);
+                    // At 0x the game does not step; stepping anyway proves the rule lives in the simulation.
+                    w.Step(0.1 * (scale > 0 ? scale : 1));
+                }
+                return c.X - 1;
+            }
+            double normal = Walked(1, 1);
+            Check(normal > 1.2, "The fixture must walk well over a tile in one held second at 1x, walked " + normal);
+            Near(Walked(4, 1), normal, "At 4x a steered cat still walks at real-time pace", 1e-6);
+            Near(Walked(2, 1), normal, "At 2x a steered cat still walks at real-time pace", 1e-6);
+            Near(Walked(0, 1), 0, "At 0x a steered cat does not move");
+        }
+        static void LeaseExpiry()
+        {
+            var w = Meadow(out var v, out var c);
+            Move(w, v, c, 0, 1);
+            Check(!c.ControlDirection.Equals(default(Int2)), "MoveCat must hold the direction");
+            w.Step(31);
+            Check(c.ControlledBy == "" && c.ControlDirection.Equals(default(Int2)), "Lease expiry releases the cat and its held direction");
+            Act(w, v, new GameAction { Kind = "EnterCat", CatId = c.Id });
+            double z = c.Z;
+            w.Step(1);
+            Near(c.Z, z, "A new lease starts without a stale direction");
+        }
+        static void ChestReach()
+        {
+            var w = World.Create(41);
+            var v = w.Villages[0];
+            var c = v.Cats[0];
+            v.Cats.RemoveAll(x => x.Id != c.Id);
+            var floor = w.Dungeons[0].Floors[0];
+            var beside = floor.Cells.First(p => Int2.Distance(p, floor.LootPosition) == 1 && w.Walkable(v, p));
+            Act(w, v, new GameAction { Kind = "EnterCat", CatId = c.Id });
+            c.Position = beside;
+            c.X = beside.X + (floor.LootPosition.X - beside.X) * 0.3;
+            c.Z = beside.Z + (floor.LootPosition.Z - beside.Z) * 0.3;
+            c.Y = w.WalkHeight(beside);
+            c.HasHeight = true;
+            double finite = floor.Loot.Sum(s => s.Amount);
+            Check(finite > 0, "Fixture chest must hold loot");
+            var r = w.Apply(Context(v), new GameAction { Kind = "InteractCat", CatId = c.Id });
+            Check(r.Success && r.Code == ResultCode.Collected, "A cat beside the chest, still settling, must collect it: " + r.Code + " " + r.Error);
+            Near(c.Cargo.Sum(s => s.Amount) + floor.Loot.Sum(s => s.Amount), finite, "Collection conserves the chest");
+            Check(c.Cargo.Count > 0, "Collection moved loot into cargo");
+            c.Position = new Int2(floor.LootPosition.X + 3, floor.LootPosition.Z, floor.LootPosition.Level);
+            var far = w.Apply(Context(v), new GameAction { Kind = "InteractCat", CatId = c.Id });
+            Check(!far.Success && far.Code == ResultCode.NothingInReach, "A distant chest is out of reach");
+        }
+        static void InteractFolds()
+        {
+            var w = Fixture(out var v, out var c);
+            c.BuildingId = "";
+            Act(w, v, new GameAction { Kind = "EnterCat", CatId = c.Id });
+            var atShrine = new Int2(v.Center.X + 1, v.Center.Z);
+            c.Position = atShrine;
+            c.X = atShrine.X;
+            c.Z = atShrine.Z;
+            c.Hunger = 20;
+            c.Thirst = 100;
+            c.Cargo.Add(new Stack("food", 1));
+            var ate = w.Apply(Context(v), new GameAction { Kind = "InteractCat", CatId = c.Id });
+            Check(ate.Code == ResultCode.Ate && c.Hunger > 60 && c.Cargo.Count == 0, "E at the shrine with food in cargo and an empty belly eats: " + ate.Code);
+            c.Thirst = 20;
+            c.Cargo.Add(new Stack("water", 1));
+            var drank = w.Apply(Context(v), new GameAction { Kind = "InteractCat", CatId = c.Id });
+            Check(drank.Code == ResultCode.Drank && c.Thirst > 60, "E at the shrine with water and thirst drinks: " + drank.Code);
+            var hungry = w.Apply(Context(v), new GameAction { Kind = "InteractCat", CatId = c.Id, Mode = "eat" });
+            Check(hungry.Code == ResultCode.NeedFoodInCargo, "Eating without food says what to carry: " + hungry.Code);
+            var den = v.Buildings.First(b => b.Kind == "den" && b.Completed);
+            c.BedId = den.Id;
+            var away = new Int2(den.Position.X + 20, den.Position.Z + 20);
+            c.Position = away;
+            c.X = away.X;
+            c.Z = away.Z;
+            var noBed = w.Apply(Context(v), new GameAction { Kind = "InteractCat", CatId = c.Id, Mode = "rest" });
+            Check(noBed.Code == ResultCode.OutOfReach, "Resting away from the bed says to walk there: " + noBed.Code);
+            var thirsty = w.Apply(Context(v), new GameAction { Kind = "InteractCat", CatId = c.Id, Mode = "drink" });
+            Check(thirsty.Code == ResultCode.GoToShrine, "Drinking away from the shrine says where to go: " + thirsty.Code);
+            var beside = new Int2(den.Position.X - 1, den.Position.Z);
+            c.Position = beside;
+            c.X = beside.X;
+            c.Z = beside.Z;
+            c.Rest = 30;
+            var rest = w.Apply(Context(v), new GameAction { Kind = "InteractCat", CatId = c.Id });
+            Check(rest.Code == ResultCode.Resting && c.Goal == GoalKey.PlayerRest, "E beside the cat's own den rests: " + rest.Code);
+            c.BedId = "";
+            var nobody = w.Apply(Context(v), new GameAction { Kind = "InteractCat", CatId = c.Id, Mode = "rest" });
+            Check(nobody.Code == ResultCode.NoReservedBed, "A cat without a bed is told so: " + nobody.Code);
+        }
+        static void PileReach()
+        {
+            var w = Fixture(out var v, out var c);
+            c.BuildingId = "";
+            var pile = v.Stockpiles[0];
+            pile.Position = new Int2(3, 2);
+            pile.Width = pile.Depth = 4;
+            Act(w, v, new GameAction { Kind = "EnterCat", CatId = c.Id });
+            var inside = new Int2(5, 4);
+            c.Position = inside;
+            c.X = inside.X;
+            c.Z = inside.Z;
+            Check(w.InReach(inside, pile) && w.InReach(new Int2(7, 4), pile) && w.InReach(new Int2(7, 6), pile) && !w.InReach(new Int2(8, 4), pile) && !w.InReach(new Int2(7, 7), pile) && !w.InReach(new Int2(5, 4, -1), pile), "Reach is the footprint plus the ring of tiles touching it, on its level");
+            var take = w.Apply(Context(v), new GameAction { Kind = "InteractCat", CatId = c.Id, TargetId = pile.Id, Resource = "food", Amount = 3 });
+            Check(take.Code == ResultCode.Taken && World.Amount(c.Cargo, "food") == 3, "A cat inside a large pile reaches it: " + take.Code + " " + take.Error);
+            var put = w.Apply(Context(v), new GameAction { Kind = "InteractCat", CatId = c.Id, TargetId = pile.Id });
+            Check(put.Code == ResultCode.Deposited && c.Cargo.Count == 0, "Carrying cargo deposits it: " + put.Code);
+            var plenty = w.Apply(Context(v), new GameAction { Kind = "InteractCat", CatId = c.Id, TargetId = pile.Id, Resource = "", Amount = 100 });
+            Check(plenty.Code == ResultCode.Taken && c.Cargo.Count == 1 && World.Amount(c.Cargo, "food") == w.CarryCapacity(v, "food"), "An empty resource takes a full load of the most plentiful good");
+            c.Cargo.Clear();
+            c.Position = new Int2(12, 12);
+            var far = w.Apply(Context(v), new GameAction { Kind = "InteractCat", CatId = c.Id, TargetId = pile.Id, Resource = "food" });
+            Check(far.Code == ResultCode.OutOfReach && TargetArg(far) == pile.Id, "A distant pile is out of reach and named");
+        }
+        static string TargetArg(ActionResult r) => r.Args != null && r.Args.TryGetValue(ResultArg.Target, out var value) ? value : null;
         static void RouteControl()
         {
             var w = Fixture(out var v, out var c);
