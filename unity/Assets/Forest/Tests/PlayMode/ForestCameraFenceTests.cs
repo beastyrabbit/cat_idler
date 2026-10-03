@@ -484,16 +484,16 @@ namespace IdleCatForest.Tests
                 Assert.That(ForestView.VisualOf(entity.gameObject), Is.SameAs(entity.GetChild(0)), entity.name);
                 Assert.That(entity.GetChild(0).name, Is.EqualTo(ForestView.VisualName));
             }
-            Assert.That(world.Cast<Transform>().Any(e => e.name.StartsWith("gate:") && e.Find(ForestView.VisualName + "/gate") != null), Is.True, "The model sits under the visual child, named by its asset");
-            foreach (Transform entity in world)
-                if (entity.name.StartsWith("tile:") || entity.name.StartsWith("fence:") || entity.name.StartsWith("gate:"))
-                    foreach (var filter in entity.GetComponentsInChildren<MeshFilter>())
-                        filter.gameObject.AddComponent<MeshCollider>().sharedMesh = filter.sharedMesh;
+            // Fences and gates are instanced static props (W2-20): ask the view what it draws and ray-test collider proxies of it.
+            Assert.That(game.View.TryGetStaticProp(new Int2(2, 0), out var gateAsset) ? gateAsset : "", Is.EqualTo("gate"), "The road between the fence arms is drawn as a gate");
+            var proxies = new GameObject("Static prop colliders").transform;
+            Assert.That(game.View.BuildStaticPropColliders(proxies, asset => asset == "fence_post" || asset == "fence_rail" || asset == "gate"), Is.GreaterThan(0));
             Physics.SyncTransforms();
             foreach (var p in new[] { new Vector3(.3f, 3, 0), new Vector3(.7f, 3, 0), new Vector3(0, 3, .3f), new Vector3(0, 3, .7f) })
                 Assert.That(Physics.Raycast(p, Vector3.down, 2.95f), Is.True, "Visible fence rails must meet through the corner at " + p);
             Assert.That(Physics.Raycast(new Vector3(2, .45f, -1), Vector3.forward, 2), Is.False, "The gate needs a visibly clear passage at cat height.");
             Assert.That(world.GetComponentsInChildren<Transform>().Any(t => t.name.StartsWith("MISSING ASSET")), Is.False);
+            UnityEngine.Object.Destroy(proxies.gameObject);
         }
 
         /// <summary>Lets the enabled view run for about a second, long enough for every eased camera move.</summary>

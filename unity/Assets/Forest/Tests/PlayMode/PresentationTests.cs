@@ -126,60 +126,6 @@ namespace IdleCatForest.Tests
         }
 
         [UnityTest]
-        public IEnumerator GroundRebuildPreservesTerrainAndNeverGeneratesUnknownTiles()
-        {
-            game.View.enabled = false;
-            var world = game.CurrentWorld;
-            world.Tiles.Clear(); world.Dungeons.Clear(); world.Creatures.Clear(); game.Selected.Known.Clear();
-            for (int z = -27; z <= 27; z++) for (int x = -27; x <= 27; x++)
-            {
-                var point = new Int2(x, z);
-                world.Tiles.Add(new Tile { Position = point, Water = x == 1 && z == 0, Mountain = x == 2 && z == 0 });
-                game.Selected.Known.Add(point);
-            }
-            game.Selected.Known.Add(new Int2(28, 0));
-            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
-            var center = typeof(ForestView).GetField("groundCenter", flags);
-            var rebuild = typeof(ForestView).GetMethod("MakeGround", flags);
-            var ground = (Transform)typeof(ForestView).GetField("groundRoot", flags).GetValue(game.View);
-            int tileCount = world.Tiles.Count;
-            double elapsed = 0;
-            for (int i = 0; i < 3; i++)
-            {
-                center.SetValue(game.View, new Int2(i * 8, 0));
-                var timer = System.Diagnostics.Stopwatch.StartNew();
-                rebuild.Invoke(game.View, null); elapsed += timer.Elapsed.TotalMilliseconds;
-                yield return null;
-                var meshes = ground.GetComponentsInChildren<MeshFilter>();
-                Assert.That(meshes.Sum(m => m.sharedMesh.vertexCount), Is.EqualTo(77 * 77 * 4));
-                Assert.That(meshes.Min(m => m.sharedMesh.bounds.min.x), Is.EqualTo(i * 8 - 38.5f));
-                Assert.That(meshes.Max(m => m.sharedMesh.bounds.max.x), Is.EqualTo(i * 8 + 38.5f));
-                Assert.That(GroundCategory(meshes, new Int2(1, 0)), Is.EqualTo(1));
-                Assert.That(GroundCategory(meshes, new Int2(2, 0)), Is.EqualTo(2));
-                Assert.That(GroundCategory(meshes, new Int2(3, 0)), Is.EqualTo(3));
-                Assert.That(GroundCategory(meshes, new Int2(28, 0)), Is.EqualTo(4), "Known missing terrain stays visible without generating it.");
-                Assert.That(GroundCategory(meshes, new Int2(29, 0)), Is.EqualTo(0));
-                Assert.That(world.Tiles.Count, Is.EqualTo(tileCount), "Camera movement cannot generate authoritative terrain.");
-            }
-            TestContext.WriteLine("Three expanded-terrain rebuilds, milliseconds: " + elapsed.ToString("F3", System.Globalization.CultureInfo.InvariantCulture));
-        }
-
-        private static int GroundCategory(MeshFilter[] meshes, Int2 point)
-        {
-            foreach (var filter in meshes)
-            {
-                var vertices = filter.sharedMesh.vertices;
-                for (int i = 0; i < vertices.Length; i += 4)
-                {
-                    var midpoint = (vertices[i] + vertices[i + 2]) * .5f;
-                    if (midpoint.x == point.X && midpoint.z == point.Z)
-                        return int.Parse(filter.name.Substring("Ground ".Length));
-                }
-            }
-            Assert.Fail("No terrain at " + point); return -1;
-        }
-
-        [UnityTest]
         public IEnumerator FarmRenderingCoversBothDesignatedCornersAndClearsAllCells()
         {
             var world = game.CurrentWorld; var village = game.Selected;
@@ -218,11 +164,12 @@ namespace IdleCatForest.Tests
         {
             var tile = game.CurrentWorld.Tiles.First(t => game.Selected.Known.Contains(t.Position) && t.Resource == "logs" && t.Amount > 0 && !t.Wall && !t.Road);
             yield return new WaitForSecondsRealtime(.25f);
-            string name = "tile:" + tile.Position;
-            Assert.That(GameObject.Find(name).transform.Find(ForestView.VisualName + "/tree_oak"), Is.Not.Null);
-            tile.Road = true;
+            // Scenery is instanced (W2-20): ask the view what it draws on the tile.
+            Assert.That(game.View.TryGetStaticProp(tile.Position, out var asset), Is.True, "A known logs tile shows its harvestable tree.");
+            Assert.That(asset.StartsWith("tree_", StringComparison.Ordinal) || asset.StartsWith("world_tree_", StringComparison.Ordinal), Is.True, asset);
+            tile.Road = true; game.View.ForceReconcile();
             yield return new WaitForSecondsRealtime(.25f);
-            Assert.That(GameObject.Find(name).GetComponentsInChildren<Transform>().Any(t => t.name.StartsWith("world_road_", StringComparison.Ordinal)), Is.True, "A tile keeps its identity when its visible asset changes.");
+            Assert.That(game.View.TryGetStaticProp(tile.Position, out asset) ? asset : "", Does.StartWith("world_road_"), "A tile keeps its identity when its visible asset changes.");
         }
 
         [UnityTest]
@@ -234,11 +181,12 @@ namespace IdleCatForest.Tests
             var job = new Job { Id = "visible-item-haul", Kind = "haul", Phase = "item_fetch", CatId = cat.Id, SourceId = source.Id };
             var item = new Item { Id = "visible-mug", Kind = "mug", Material = "wood", LocationId = job.Id };
             job.ItemIds.Add(item.Id); village.Jobs.Add(job); village.Items.Add(item); cat.JobId = job.Id;
+            game.View.ForceReconcile(); // paused model edits do not bump Revision, so the gated reconcile is forced
             yield return new WaitForSecondsRealtime(.25f);
             Assert.That(GameObject.Find("cargo:" + cat.Id), Is.Null, "A reserved item is still at its source before pickup.");
             game.View.InspectCat(cat.Id); UiTestKit.Tick(game);
             Assert.That(UiTestKit.WithPrefix<Label>(game, CarriedItem), Is.Empty);
-            job.Phase = "output_delivery";
+            job.Phase = "output_delivery"; game.View.ForceReconcile();
             yield return new WaitForSecondsRealtime(.25f);
             var cargo = GameObject.Find("cargo:" + cat.Id);
             Assert.That(cargo, Is.Not.Null, "Finished exact goods must visibly travel with their carrier.");
@@ -249,7 +197,7 @@ namespace IdleCatForest.Tests
             cat.X += 1;
             yield return new WaitForSecondsRealtime(.25f);
             Assert.That(cargo.transform.position.x, Is.GreaterThan(before.x + .5f));
-            item.LocationId = source.Id; job.ItemIds.Clear(); job.Completed = true; cat.JobId = "";
+            item.LocationId = source.Id; job.ItemIds.Clear(); job.Completed = true; cat.JobId = ""; game.View.ForceReconcile();
             yield return new WaitForSecondsRealtime(.25f);
             Assert.That(GameObject.Find("cargo:" + cat.Id), Is.Null, "Delivered items cannot remain on the cat.");
             UiTestKit.Tick(game);

@@ -40,8 +40,14 @@ namespace IdleCatForest.Presentation
         {
             touched.Add(id);
             if (entityAssets.TryGetValue(id, out var previous) && previous != asset)
-            { Destroy(entities[id]); entities.Remove(id); entityAssets.Remove(id); }
-            if (!entities.TryGetValue(id, out var go))
+                ReleaseEntity(id);
+            if (!entities.TryGetValue(id, out var go) && TryTakePooled(id, asset, out go))
+            {
+                // Cargo, pile goods and work markers come back from the pool (W2-20) instead of being re-instantiated.
+                go.transform.position = position;
+                entities[id] = go; entityAssets[id] = asset;
+            }
+            else if (go == null)
             {
                 if (!models.TryGetValue(asset, out var model)) { model = Resources.Load<GameObject>("ForestArt/" + asset); models[asset] = model; }
                 go = new GameObject(id); go.transform.SetParent(worldRoot); go.transform.position = position;
@@ -81,7 +87,7 @@ namespace IdleCatForest.Presentation
         }
 
         private static void Tint(GameObject go, Material material) { foreach (var r in go.GetComponentsInChildren<Renderer>()) r.sharedMaterial = material; }
-        private void ClearWorld() { foreach (var go in entities.Values) Destroy(go); entities.Clear(); entityAssets.Clear(); terrainSignature = -1; SelectedCatId = ""; SelectedBuildingId = ""; }
+        private void ClearWorld() { foreach (var go in entities.Values) Destroy(go); entities.Clear(); entityAssets.Clear(); foreach (var pool in entityPool.Values) foreach (var pooled in pool) if (pooled != null) Destroy(pooled); entityPool.Clear(); terrainSignature = -1; SelectedCatId = ""; SelectedBuildingId = ""; }
         private Vector3 At(Int2 p) => new Vector3(p.X, (float)Game.CurrentWorld.WalkHeight(p), p.Z);
         private Vector3 Position(Cat c) => new Vector3((float)c.X, (float)(c.HasHeight ? c.Y : Game.CurrentWorld.WalkHeight(c.Position)), (float)c.Z);
     }

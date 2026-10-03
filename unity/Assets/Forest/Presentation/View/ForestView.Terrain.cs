@@ -29,7 +29,7 @@ namespace IdleCatForest.Presentation
         private const int TerrainChecksPerTick = 6;
         private const int GroundCenterReach = 38;
         private const int MaxWindowChunks = 14;
-        private const float WindowMarginTiles = 6;
+        private const float TerrainMarginTiles = 6;
         // ClearWorld and ViewLevel write terrainSignature to request a full refresh; TerrainTick restores this value.
         private const int TerrainSignatureCurrent = 1;
 
@@ -316,8 +316,8 @@ namespace IdleCatForest.Presentation
             reach.height = FloorDiv(groundCenter.Z + GroundCenterReach, TerrainChunkSize) - reach.y + 1;
             if (Camera != null && WorldSkirt.TryFootprint(Camera, baseY - 3, baseY + 5, 150, out var footprint))
             {
-                int xMin = FloorDiv(Mathf.FloorToInt(footprint.xMin - WindowMarginTiles), TerrainChunkSize), xMax = FloorDiv(Mathf.CeilToInt(footprint.xMax + WindowMarginTiles), TerrainChunkSize);
-                int zMin = FloorDiv(Mathf.FloorToInt(footprint.yMin - WindowMarginTiles), TerrainChunkSize), zMax = FloorDiv(Mathf.CeilToInt(footprint.yMax + WindowMarginTiles), TerrainChunkSize);
+                int xMin = FloorDiv(Mathf.FloorToInt(footprint.xMin - TerrainMarginTiles), TerrainChunkSize), xMax = FloorDiv(Mathf.CeilToInt(footprint.xMax + TerrainMarginTiles), TerrainChunkSize);
+                int zMin = FloorDiv(Mathf.FloorToInt(footprint.yMin - TerrainMarginTiles), TerrainChunkSize), zMax = FloorDiv(Mathf.CeilToInt(footprint.yMax + TerrainMarginTiles), TerrainChunkSize);
                 // A runaway footprint (a ray grazing the horizon) is trimmed around the frustum centre.
                 int cx = FloorDiv(Mathf.RoundToInt(footprint.center.x), TerrainChunkSize), cz = FloorDiv(Mathf.RoundToInt(footprint.center.y), TerrainChunkSize);
                 int half = MaxWindowChunks / 2;
