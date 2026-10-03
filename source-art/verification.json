@@ -1,6 +1,6 @@
 {
   "blender": "5.2.1 LTS",
-  "asset_count": 82,
+  "asset_count": 83,
   "passed": true,
   "checks": [
     "FBX reimport",
@@ -15,8 +15,8 @@
   "results": [
     {
       "asset": "cat",
-      "triangles": 2572,
-      "mesh_count": 7,
+      "triangles": 2622,
+      "mesh_count": 19,
       "passed": true
     },
     {
@@ -153,8 +153,8 @@
     },
     {
       "asset": "workshop",
-      "triangles": 5020,
-      "mesh_count": 1,
+      "triangles": 4940,
+      "mesh_count": 2,
       "passed": true
     },
     {
@@ -165,13 +165,13 @@
     },
     {
       "asset": "smithy",
-      "triangles": 4180,
-      "mesh_count": 1,
+      "triangles": 4760,
+      "mesh_count": 3,
       "passed": true
     },
     {
       "asset": "barracks",
-      "triangles": 4328,
+      "triangles": 4716,
       "mesh_count": 1,
       "passed": true
     },
@@ -183,26 +183,26 @@
     },
     {
       "asset": "wood_cutter",
-      "triangles": 4684,
-      "mesh_count": 1,
+      "triangles": 4312,
+      "mesh_count": 2,
       "passed": true
     },
     {
       "asset": "stone_prep",
-      "triangles": 4064,
+      "triangles": 3688,
       "mesh_count": 1,
       "passed": true
     },
     {
       "asset": "woodworking",
-      "triangles": 4224,
+      "triangles": 4276,
       "mesh_count": 1,
       "passed": true
     },
     {
       "asset": "clothier",
-      "triangles": 5056,
-      "mesh_count": 1,
+      "triangles": 4676,
+      "mesh_count": 2,
       "passed": true
     },
     {
@@ -231,8 +231,8 @@
     },
     {
       "asset": "sawmill",
-      "triangles": 5056,
-      "mesh_count": 1,
+      "triangles": 4672,
+      "mesh_count": 3,
       "passed": true
     },
     {
@@ -503,6 +503,12 @@
       "asset": "cargo_armor",
       "triangles": 176,
       "mesh_count": 1,
+      "passed": true
+    },
+    {
+      "asset": "cat_kitten",
+      "triangles": 1864,
+      "mesh_count": 19,
       "passed": true
     }
   ]

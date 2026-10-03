@@ -1,11 +1,11 @@
 # Forest world kit
 
-`build_world.py` authors 16 independent assets. World builders import shared geometry and
+`build_world.py` authors 42 independent assets. World builders import shared geometry and
 palette helpers from `kit/helpers.py`; they never call an old-kit builder. All geometry is original project artwork, with no textures, downloaded models, paid services or new asset license obligations. Distribution follows the repository owner's project terms.
 
 ## Build status
 
-Blender 5.2.1 LTS generated and reimported all 16 assets successfully. The kit contains 16 meshes, 10,145 triangles, 6,256 vertices and 20 shared materials. The build measures the FBX byte total from the files on disk. `world_kit.blend` retains editable geometry and `world-asset-manifest.json` records measured bounds and individual checks. Unity imported the kit and built the ARM64 player. Native checks covered joined roads, the entrance, physical stair descent, cutaway chambers and lake depths in management and direct control. The 30/150-cat measurements are in `docs/unity/PERFORMANCE.md`.
+Blender 5.2.1 LTS generated and reimported all 42 assets successfully. The kit contains 60 meshes, 23,030 triangles, 13,691 vertices and 31 shared materials. Articulated assets list their parts and pivots in `world-asset-manifest.json`; every other world asset is one joined mesh. The build measures the FBX byte total from the files on disk. `world_kit.blend` retains editable geometry and `world-asset-manifest.json` records measured bounds and individual checks. Unity imported the kit and built the ARM64 player. Native checks covered joined roads, the entrance, physical stair descent, cutaway chambers and lake depths in management and direct control. The 30/150-cat measurements are in `docs/unity/PERFORMANCE.md`.
 
 ## Rebuild and inspect
 
@@ -84,7 +84,7 @@ outside path and prints it. `verify_fbx.py --only ... --no-write` checks a mixed
 old/world selection without rewriting verification output.
 
 Run `python3 source-art/tools/geometry_hash.py --compare <baseline.json>` to
-compare all 98 assets. The tool is independent of Blender and reports geometry
+compare all 125 assets. The tool is independent of Blender and reports geometry
 hashes even though Blender FBX object IDs can change between processes.
 
 All FBX metadata uses the exact Unity layout of `den.fbx.meta`, including the

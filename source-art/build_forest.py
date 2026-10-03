@@ -77,7 +77,7 @@ def _write_record(name, entry, path):
         "triangles": entry["triangles"],
         "bounds_blender": entry["bounds_blender"],
         "mesh_count": len(entry["meshes"]),
-        "parts": [obj.name for obj in entry["meshes"]],
+        "parts": [re.sub(r"\.\d{3}$", "", obj.name) for obj in entry["meshes"]],
         "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
     }
     (records / f"{name}.json").write_text(json.dumps(record, indent=2) + "\n")
@@ -106,6 +106,8 @@ def main():
     if options.only:
         for name in selected:
             helpers.export_one(name, helpers.ASSETS[name])
+            _meta(name)
+            _write_record(name, helpers.ASSETS[name], EXPORT / f"{name}.fbx")
         print(f"FOREST_ART_ONLY {len(selected)} assets")
         return
     if options.manifests_only:
@@ -114,7 +116,7 @@ def main():
             entry = helpers.ASSETS[name]
             expected[name] = dict(entry)
             expected[name]["mesh_count"] = len(entry["meshes"])
-            expected[name]["parts"] = [obj.name for obj in entry["meshes"]]
+            expected[name]["parts"] = [re.sub(r"\.\d{3}$", "", obj.name) for obj in entry["meshes"]]
         results = fbx_checks.verify_existing(selected, expected, EXPORT)
         helpers.export_and_save(True, export=False)
         fbx_checks.write_verification(results, ART / "verification.json")

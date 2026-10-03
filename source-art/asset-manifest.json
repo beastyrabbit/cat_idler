@@ -45,30 +45,42 @@
   },
   "assets": {
     "cat": {
-      "description": "Sculpted ginger cat with head, tail and four paw pivots for procedural animation",
-      "vertices": 1406,
-      "triangles": 2572,
+      "description": "Articulated storybook cat with smooth capsule joints, surface coat masks and carry sockets",
+      "vertices": 1383,
+      "triangles": 2622,
       "bounds_blender": [
         [
-          -0.3911,
-          -0.7508,
-          0.0
+          -0.4003,
+          -0.792,
+          0.003
         ],
         [
-          0.3911,
-          0.8031,
-          1.34
+          0.4003,
+          0.7402,
+          1.37
         ]
       ],
-      "mesh_count": 7,
+      "mesh_count": 19,
       "parts": [
         "Body",
         "Head",
+        "EarL",
+        "EarR",
+        "Jaw",
+        "EyelidL",
+        "EyelidR",
         "Tail",
+        "Tail_1",
+        "Tail_2",
+        "Tail_3",
         "PawFrontLeft",
+        "LegFrontLeftLower",
         "PawBackLeft",
+        "LegBackLeftLower",
         "PawFrontRight",
-        "PawBackRight"
+        "LegFrontRightLower",
+        "PawBackRight",
+        "LegBackRightLower"
       ]
     },
     "tree_oak": {
@@ -534,24 +546,25 @@
       ]
     },
     "workshop": {
-      "description": "Cutaway colony workshop",
-      "vertices": 2736,
-      "triangles": 5020,
+      "description": "Workshop: open slate lean-to with grindstone, vise and tool wall",
+      "vertices": 2720,
+      "triangles": 4940,
       "bounds_blender": [
         [
-          -1.6825,
-          -1.7,
+          -1.64,
+          -1.605,
           0.0
         ],
         [
-          1.6825,
-          1.52,
-          2.62
+          1.64,
+          1.505,
+          3.29
         ]
       ],
-      "mesh_count": 1,
+      "mesh_count": 2,
       "parts": [
-        "workshop_mesh"
+        "workshop_mesh",
+        "Grindstone"
       ]
     },
     "field": {
@@ -576,40 +589,42 @@
       ]
     },
     "smithy": {
-      "description": "Cutaway colony smithy",
-      "vertices": 2280,
-      "triangles": 4180,
+      "description": "Smithy: rear stone hearth, coursed chimney, bellows and ember bed",
+      "vertices": 2612,
+      "triangles": 4760,
       "bounds_blender": [
         [
-          -1.6825,
-          -1.7,
+          -1.64,
+          -1.605,
           0.0
         ],
         [
-          1.6825,
-          1.52,
-          2.62
+          1.64,
+          1.51,
+          3.69
         ]
       ],
-      "mesh_count": 1,
+      "mesh_count": 3,
       "parts": [
-        "smithy_mesh"
+        "smithy_mesh",
+        "ForgeGlow",
+        "Bellows"
       ]
     },
     "barracks": {
-      "description": "Cutaway colony barracks",
-      "vertices": 2356,
-      "triangles": 4328,
+      "description": "Barracks: rear slate gable, crossed spear ridge, shields and training dummies",
+      "vertices": 2588,
+      "triangles": 4716,
       "bounds_blender": [
         [
-          -1.6825,
-          -1.7,
+          -1.64,
+          -1.605,
           0.0
         ],
         [
-          1.6825,
-          1.52,
-          2.62
+          1.64,
+          1.51,
+          3.68
         ]
       ],
       "mesh_count": 1,
@@ -639,40 +654,41 @@
       ]
     },
     "wood_cutter": {
-      "description": "Cutaway colony wood cutter",
-      "vertices": 2570,
-      "triangles": 4684,
+      "description": "Wood cutter: rear sideways slate lean-to, cordwood stack and buried axe",
+      "vertices": 2408,
+      "triangles": 4312,
       "bounds_blender": [
         [
-          -1.6825,
-          -1.7,
+          -1.64,
+          -1.605,
           0.0
         ],
         [
-          1.6825,
-          1.52,
-          2.62
+          1.64,
+          1.45,
+          2.705
         ]
       ],
-      "mesh_count": 1,
+      "mesh_count": 2,
       "parts": [
-        "wood_cutter_mesh"
+        "wood_cutter_mesh",
+        "Axe"
       ]
     },
     "stone_prep": {
-      "description": "Cutaway colony stone prep",
-      "vertices": 2220,
-      "triangles": 4064,
+      "description": "Stone prep: roofless derrick, hanging dressed block and stepped mason pile",
+      "vertices": 2016,
+      "triangles": 3688,
       "bounds_blender": [
         [
-          -1.6825,
-          -1.7,
+          -1.64,
+          -1.605,
           0.0
         ],
         [
-          1.6825,
-          1.52,
-          2.62
+          1.64,
+          1.4025,
+          3.05
         ]
       ],
       "mesh_count": 1,
@@ -681,19 +697,19 @@
       ]
     },
     "woodworking": {
-      "description": "Cutaway colony woodworking",
-      "vertices": 2304,
-      "triangles": 4224,
+      "description": "Woodworking: steep rear-open A-frame, planing bench and large drying rack",
+      "vertices": 2360,
+      "triangles": 4276,
       "bounds_blender": [
         [
-          -1.6825,
-          -1.7,
+          -1.64,
+          -1.605,
           0.0
         ],
         [
-          1.6825,
-          1.52,
-          2.62
+          1.64,
+          1.46,
+          2.795
         ]
       ],
       "mesh_count": 1,
@@ -702,24 +718,25 @@
       ]
     },
     "clothier": {
-      "description": "Cutaway colony clothier",
-      "vertices": 2756,
-      "triangles": 5056,
+      "description": "Clothier: rear slate gable, upright loom and colourful ridge cloth bolts",
+      "vertices": 2576,
+      "triangles": 4676,
       "bounds_blender": [
         [
-          -1.6825,
-          -1.7,
+          -1.64,
+          -1.605,
           0.0
         ],
         [
-          1.6825,
-          1.52,
-          2.62
+          1.64,
+          1.51,
+          2.82
         ]
       ],
-      "mesh_count": 1,
+      "mesh_count": 2,
       "parts": [
-        "clothier_mesh"
+        "clothier_mesh",
+        "Loom"
       ]
     },
     "tannery": {
@@ -807,24 +824,26 @@
       ]
     },
     "sawmill": {
-      "description": "Cutaway colony sawmill",
-      "vertices": 2758,
-      "triangles": 5056,
+      "description": "Sawmill: rear slate lean-to, vertical frame saw and large drive wheel",
+      "vertices": 2582,
+      "triangles": 4672,
       "bounds_blender": [
         [
-          -1.6825,
-          -1.7,
+          -1.64,
+          -1.605,
           0.0
         ],
         [
-          1.91,
-          1.52,
-          2.62
+          1.64,
+          1.505,
+          4.0
         ]
       ],
-      "mesh_count": 1,
+      "mesh_count": 3,
       "parts": [
-        "sawmill_mesh"
+        "sawmill_mesh",
+        "Saw",
+        "Wheel"
       ]
     },
     "school": {
@@ -1770,6 +1789,45 @@
       "mesh_count": 1,
       "parts": [
         "cargo_armor_mesh"
+      ]
+    },
+    "cat_kitten": {
+      "description": "Unmistakable round-proportioned kitten with closed capsule joints and coat masks",
+      "vertices": 998,
+      "triangles": 1864,
+      "bounds_blender": [
+        [
+          -0.4106,
+          -0.8284,
+          -0.0076
+        ],
+        [
+          0.4106,
+          0.6855,
+          1.4472
+        ]
+      ],
+      "mesh_count": 19,
+      "parts": [
+        "Body",
+        "Head",
+        "EarL",
+        "EarR",
+        "Jaw",
+        "EyelidL",
+        "EyelidR",
+        "Tail",
+        "Tail_1",
+        "Tail_2",
+        "Tail_3",
+        "PawFrontLeft",
+        "LegFrontLeftLower",
+        "PawBackLeft",
+        "LegBackLeftLower",
+        "PawFrontRight",
+        "LegFrontRightLower",
+        "PawBackRight",
+        "LegBackRightLower"
       ]
     }
   }

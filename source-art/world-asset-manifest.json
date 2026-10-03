@@ -618,7 +618,7 @@
       }
     },
     "world_dungeon_entrance": {
-      "description": "Open rock arch with warm timber posts and knee braces",
+      "description": "Moss-topped rock arch set into a coal-dark Root Hollow mound",
       "contract": {
         "width_m": 3,
         "height_m": 3.5,
@@ -630,34 +630,53 @@
           0,
           0
         ],
-        "naturalScale": true
+        "mound_m": [
+          3.0,
+          3.0,
+          3.35
+        ],
+        "recess_depth_m": 1.2,
+        "light_anchors_unity": [
+          [
+            -1.08,
+            1.45,
+            1.25
+          ],
+          [
+            1.08,
+            1.45,
+            1.25
+          ]
+        ],
+        "naturalScale": true,
+        "upward_face_check": true
       },
-      "vertices": 524,
-      "triangles": 936,
+      "vertices": 1148,
+      "triangles": 1930,
       "mesh_count": 1,
-      "editable_part_count": 28,
+      "editable_part_count": 90,
       "bounds_blender": [
         [
           -1.5,
-          -0.69,
-          -0.0
+          -1.470312,
+          -0.24
         ],
         [
           1.5,
-          0.48,
+          1.527395,
           3.5
         ]
       ],
       "bounds_unity": [
         [
           -1.5,
-          -0.0,
-          -0.48
+          -0.24,
+          -1.527395
         ],
         [
           1.5,
           3.5,
-          0.69
+          1.470312
         ]
       ],
       "pivot_unity": [
@@ -667,50 +686,49 @@
       ],
       "materials": [
         "Forest_bark",
-        "Forest_iron",
-        "Forest_pine",
-        "Forest_stone",
-        "Forest_stone_light",
-        "Forest_wood"
+        "Forest_coal",
+        "Forest_ember",
+        "Forest_moss",
+        "Forest_stone"
       ],
       "dimensions_unity_m": [
         3.0,
-        3.5,
-        1.17
+        3.74,
+        2.997707
       ],
       "guid": "87b0c2fc48f655e9a1c683c45ef311b7",
       "verification": {
         "passed": true,
-        "triangles": 936,
+        "triangles": 1930,
         "mesh_count": 1,
         "bounds_blender": [
           [
             -1.5,
-            -0.69,
-            -0.0
+            -1.470312,
+            -0.24
           ],
           [
             1.5,
-            0.480001,
+            1.527396,
             3.5
           ]
         ],
         "bounds_unity": [
           [
             -1.5,
-            -0.0,
-            -0.480001
+            -0.24,
+            -1.527396
           ],
           [
             1.5,
             3.5,
-            0.69
+            1.470312
           ]
         ],
         "dimensions_unity_m": [
           3.0,
-          3.5,
-          1.170001
+          3.74,
+          2.997708
         ],
         "pivot_unity": [
           0.0,
@@ -730,9 +748,9 @@
           "UnitScaleFactor": 100.0
         },
         "contract_checks": [
-          "3 m width",
-          "3.5 m height",
-          "nine rays pass through the real opening"
+          "measured X/Z footprint matches mound_m within 0.02 m and overall maximum height is within 0.20 m of mound_m[2]",
+          "3.5 m arch height",
+          "nine rays reach coal back plane"
         ]
       }
     },
@@ -990,10 +1008,10 @@
         ],
         "naturalScale": true
       },
-      "vertices": 448,
-      "triangles": 320,
+      "vertices": 384,
+      "triangles": 516,
       "mesh_count": 1,
-      "editable_part_count": 16,
+      "editable_part_count": 48,
       "bounds_blender": [
         [
           -0.5,
@@ -1036,13 +1054,13 @@
       "guid": "3feadc639aee5ec2aed2c771af906645",
       "verification": {
         "passed": true,
-        "triangles": 320,
+        "triangles": 516,
         "mesh_count": 1,
         "bounds_blender": [
           [
             -0.5,
             -4.0,
-            -3.999999
+            -4.0
           ],
           [
             0.5,
@@ -1053,7 +1071,7 @@
         "bounds_unity": [
           [
             -0.5,
-            -3.999999,
+            -4.0,
             -0.0
           ],
           [
@@ -1064,7 +1082,7 @@
         ],
         "dimensions_unity_m": [
           1.0,
-          3.999999,
+          4.0,
           4.0
         ],
         "pivot_unity": [
@@ -1085,11 +1103,10 @@
           "UnitScaleFactor": 100.0
         },
         "contract_checks": [
-          "16 actual horizontal treads",
-          "4 m run along Unity +Z",
-          "4 m descent",
-          "top stair origin",
-          "1 m width"
+          "envelope bounds",
+          "16 solid tread tops",
+          "5 x 5 downward tread rays",
+          "recessed slate joints"
         ]
       }
     },
@@ -1765,45 +1782,56 @@
       }
     },
     "world_cave_beetle": {
-      "description": "Six-legged cave enemy with split armored shell, amber eyes and hooked jaws",
+      "description": "Split teal shell cave beetle with copper ridges, hooked jaws and six articulated legs",
       "contract": {
         "width_m": 0.9,
         "length_m": 1.25,
+        "height_m": 0.6,
+        "parts": [
+          "Shell",
+          "Jaws",
+          "Leg_FrontLeft",
+          "Leg_MiddleLeft",
+          "Leg_BackLeft",
+          "Leg_FrontRight",
+          "Leg_MiddleRight",
+          "Leg_BackRight"
+        ],
         "forward_unity": "+Z",
-        "rig": "static",
         "pivot_unity": [
           0,
           0,
           0
         ],
-        "naturalScale": true
+        "naturalScale": true,
+        "upward_face_check": true
       },
-      "vertices": 708,
-      "triangles": 1292,
-      "mesh_count": 1,
-      "editable_part_count": 31,
+      "vertices": 478,
+      "triangles": 856,
+      "mesh_count": 8,
+      "editable_part_count": 8,
       "bounds_blender": [
         [
-          -0.45,
-          -0.625,
+          -0.449995,
+          -0.741992,
           0.0
         ],
         [
-          0.45,
-          0.625,
-          0.50297
+          0.449995,
+          0.508,
+          0.594132
         ]
       ],
       "bounds_unity": [
         [
-          -0.45,
+          -0.449995,
           0.0,
-          -0.625
+          -0.508
         ],
         [
-          0.45,
-          0.50297,
-          0.625
+          0.449995,
+          0.594132,
+          0.741992
         ]
       ],
       "pivot_unity": [
@@ -1812,51 +1840,424 @@
         0
       ],
       "materials": [
-        "Forest_bark",
         "Forest_coal",
         "Forest_copper",
         "Forest_ember",
-        "Forest_slate",
-        "Forest_teal"
+        "Forest_teal",
+        "Forest_teal_light"
+      ],
+      "parts": [
+        "Shell",
+        "Jaws",
+        "Leg_FrontLeft",
+        "Leg_MiddleLeft",
+        "Leg_BackLeft",
+        "Leg_FrontRight",
+        "Leg_MiddleRight",
+        "Leg_BackRight"
+      ],
+      "pivots_blender": [
+        [
+          0.0,
+          0.019999999552965164,
+          0.3400000035762787
+        ],
+        [
+          0.0,
+          -0.5400000214576721,
+          0.27000001072883606
+        ],
+        [
+          -0.25999999046325684,
+          -0.27000001072883606,
+          0.2800000011920929
+        ],
+        [
+          -0.25999999046325684,
+          0.029999999329447746,
+          0.2800000011920929
+        ],
+        [
+          -0.25999999046325684,
+          0.3199999928474426,
+          0.2800000011920929
+        ],
+        [
+          0.25999999046325684,
+          -0.27000001072883606,
+          0.2800000011920929
+        ],
+        [
+          0.25999999046325684,
+          0.029999999329447746,
+          0.2800000011920929
+        ],
+        [
+          0.25999999046325684,
+          0.3199999928474426,
+          0.2800000011920929
+        ]
+      ],
+      "pivots_unity": [
+        [
+          0.0,
+          0.3400000035762787,
+          -0.019999999552965164
+        ],
+        [
+          0.0,
+          0.27000001072883606,
+          0.5400000214576721
+        ],
+        [
+          -0.25999999046325684,
+          0.2800000011920929,
+          0.27000001072883606
+        ],
+        [
+          -0.25999999046325684,
+          0.2800000011920929,
+          -0.029999999329447746
+        ],
+        [
+          -0.25999999046325684,
+          0.2800000011920929,
+          -0.3199999928474426
+        ],
+        [
+          0.25999999046325684,
+          0.2800000011920929,
+          0.27000001072883606
+        ],
+        [
+          0.25999999046325684,
+          0.2800000011920929,
+          -0.029999999329447746
+        ],
+        [
+          0.25999999046325684,
+          0.2800000011920929,
+          -0.3199999928474426
+        ]
       ],
       "dimensions_unity_m": [
-        0.9,
-        0.50297,
-        1.25
+        0.89999,
+        0.594132,
+        1.249992
       ],
       "guid": "69157d83f36e50b299cc5ae4273b309d",
       "verification": {
         "passed": true,
-        "triangles": 1292,
-        "mesh_count": 1,
+        "triangles": 856,
+        "mesh_count": 8,
         "bounds_blender": [
           [
-            -0.45,
-            -0.625,
+            -0.449995,
+            -0.741992,
             0.0
           ],
           [
-            0.45,
-            0.625,
-            0.50297
+            0.449995,
+            0.508,
+            0.594132
           ]
         ],
         "bounds_unity": [
           [
-            -0.45,
+            -0.449995,
             0.0,
-            -0.625
+            -0.508
           ],
           [
-            0.45,
-            0.50297,
-            0.625
+            0.449995,
+            0.594132,
+            0.741992
           ]
         ],
         "dimensions_unity_m": [
-          0.9,
-          0.50297,
-          1.25
+          0.89999,
+          0.594132,
+          1.249992
+        ],
+        "pivot_unity": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "fbx_axes": {
+          "UpAxis": 1,
+          "UpAxisSign": 1,
+          "FrontAxis": 2,
+          "FrontAxisSign": 1,
+          "UnitScaleFactor": 100.0
+        },
+        "contract_checks": [
+          "eight articulated beetle parts",
+          "0.9 m width",
+          "1.25 m length",
+          "threat height"
+        ],
+        "parts": [
+          "Jaws",
+          "Leg_BackLeft",
+          "Leg_BackRight",
+          "Leg_FrontLeft",
+          "Leg_FrontRight",
+          "Leg_MiddleLeft",
+          "Leg_MiddleRight",
+          "Shell"
+        ],
+        "pivots_unity": [
+          [
+            0.0,
+            0.2700001001358032,
+            0.5399999618530273
+          ],
+          [
+            -0.25999999046325684,
+            0.2799999415874481,
+            -0.3200000524520874
+          ],
+          [
+            0.25999999046325684,
+            0.2799999415874481,
+            -0.3200000524520874
+          ],
+          [
+            -0.25999999046325684,
+            0.2800000309944153,
+            0.2699999511241913
+          ],
+          [
+            0.25999999046325684,
+            0.2800000309944153,
+            0.2699999511241913
+          ],
+          [
+            -0.25999999046325684,
+            0.2800000011920929,
+            -0.030000044032931328
+          ],
+          [
+            0.25999999046325684,
+            0.2800000011920929,
+            -0.030000044032931328
+          ],
+          [
+            0.0,
+            0.3400000035762787,
+            -0.02000005543231964
+          ]
+        ]
+      }
+    },
+    "world_elder_scarf": {
+      "description": "Berry elder scarf measured snug to the neck, with cream band, knot and two tails",
+      "contract": {
+        "attach_to": "cat/Body/Head",
+        "local_pose": "identity",
+        "units": "adult cat source units",
+        "naturalScale": true,
+        "pivot": [
+          0,
+          0,
+          0
+        ]
+      },
+      "vertices": 102,
+      "triangles": 176,
+      "mesh_count": 1,
+      "editable_part_count": 8,
+      "bounds_blender": [
+        [
+          -0.348766,
+          -0.425,
+          -0.597
+        ],
+        [
+          0.348766,
+          0.227091,
+          0.180116
+        ]
+      ],
+      "bounds_unity": [
+        [
+          -0.348766,
+          -0.597,
+          -0.227091
+        ],
+        [
+          0.348766,
+          0.180116,
+          0.425
+        ]
+      ],
+      "pivot_unity": [
+        0,
+        0,
+        0
+      ],
+      "materials": [
+        "Forest_berry",
+        "Forest_cream"
+      ],
+      "dimensions_unity_m": [
+        0.697532,
+        0.777116,
+        0.652091
+      ],
+      "guid": "01b02c5cbaa3554a9dee2feb31c4ad08",
+      "verification": {
+        "passed": true,
+        "triangles": 176,
+        "mesh_count": 1,
+        "bounds_blender": [
+          [
+            -0.348766,
+            -0.425,
+            -0.597
+          ],
+          [
+            0.348766,
+            0.227091,
+            0.180116
+          ]
+        ],
+        "bounds_unity": [
+          [
+            -0.348766,
+            -0.597,
+            -0.227091
+          ],
+          [
+            0.348766,
+            0.180116,
+            0.425
+          ]
+        ],
+        "dimensions_unity_m": [
+          0.697532,
+          0.777116,
+          0.652091
+        ],
+        "pivot_unity": [
+          0.0,
+          0.0,
+          -0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "fbx_axes": {
+          "UpAxis": 1,
+          "UpAxisSign": 1,
+          "FrontAxis": 2,
+          "FrontAxisSign": 1,
+          "UnitScaleFactor": 100.0
+        },
+        "contract_checks": []
+      }
+    },
+    "world_construction_site_0": {
+      "description": "Cleared irregular earth plot with stakes, berry marker and timber supplies",
+      "contract": {
+        "footprint_m": [
+          1.84,
+          1.84
+        ],
+        "pivot_unity": [
+          0,
+          0,
+          0
+        ],
+        "stage": 0,
+        "naturalScale": true
+      },
+      "vertices": 750,
+      "triangles": 1360,
+      "mesh_count": 1,
+      "editable_part_count": 35,
+      "bounds_blender": [
+        [
+          -0.89282,
+          -0.7925,
+          -0.018
+        ],
+        [
+          0.86804,
+          0.796001,
+          1.2
+        ]
+      ],
+      "bounds_unity": [
+        [
+          -0.89282,
+          -0.018,
+          -0.796001
+        ],
+        [
+          0.86804,
+          1.2,
+          0.7925
+        ]
+      ],
+      "pivot_unity": [
+        0,
+        0,
+        0
+      ],
+      "materials": [
+        "Forest_berry",
+        "Forest_earth",
+        "Forest_endgrain",
+        "Forest_stone_light",
+        "Forest_wood"
+      ],
+      "dimensions_unity_m": [
+        1.76086,
+        1.218,
+        1.588501
+      ],
+      "guid": "1075193ca1a85b458a5335be64796e30",
+      "verification": {
+        "passed": true,
+        "triangles": 1360,
+        "mesh_count": 1,
+        "bounds_blender": [
+          [
+            -0.89282,
+            -0.7925,
+            -0.018
+          ],
+          [
+            0.86804,
+            0.796001,
+            1.2
+          ]
+        ],
+        "bounds_unity": [
+          [
+            -0.89282,
+            -0.018,
+            -0.796001
+          ],
+          [
+            0.86804,
+            1.2,
+            0.7925
+          ]
+        ],
+        "dimensions_unity_m": [
+          1.76086,
+          1.218,
+          1.588501
         ],
         "pivot_unity": [
           0.0,
@@ -1876,16 +2277,3196 @@
           "UnitScaleFactor": 100.0
         },
         "contract_checks": [
-          "0.9 m width",
-          "1.25 m length",
-          "ground pivot"
+          "footprint",
+          "height",
+          "ground contact",
+          "upward-face rule"
+        ]
+      }
+    },
+    "world_construction_site_1": {
+      "description": "Continuous stone foundation and timber frame with a leaning scaffold ladder",
+      "contract": {
+        "footprint_m": [
+          1.84,
+          1.84
+        ],
+        "pivot_unity": [
+          0,
+          0,
+          0
+        ],
+        "stage": 1,
+        "naturalScale": true
+      },
+      "vertices": 558,
+      "triangles": 936,
+      "mesh_count": 1,
+      "editable_part_count": 45,
+      "bounds_blender": [
+        [
+          -0.871524,
+          -0.92,
+          -0.018
+        ],
+        [
+          0.870295,
+          0.86427,
+          1.53
+        ]
+      ],
+      "bounds_unity": [
+        [
+          -0.871524,
+          -0.018,
+          -0.86427
+        ],
+        [
+          0.870295,
+          1.53,
+          0.92
+        ]
+      ],
+      "pivot_unity": [
+        0,
+        0,
+        0
+      ],
+      "materials": [
+        "Forest_berry",
+        "Forest_earth",
+        "Forest_endgrain",
+        "Forest_stone_light",
+        "Forest_wood"
+      ],
+      "dimensions_unity_m": [
+        1.741819,
+        1.548,
+        1.78427
+      ],
+      "guid": "a39711ca3226513789facd9f75dff61b",
+      "verification": {
+        "passed": true,
+        "triangles": 936,
+        "mesh_count": 1,
+        "bounds_blender": [
+          [
+            -0.871524,
+            -0.92,
+            -0.018
+          ],
+          [
+            0.870295,
+            0.86427,
+            1.53
+          ]
+        ],
+        "bounds_unity": [
+          [
+            -0.871524,
+            -0.018,
+            -0.86427
+          ],
+          [
+            0.870295,
+            1.53,
+            0.92
+          ]
+        ],
+        "dimensions_unity_m": [
+          1.741819,
+          1.548,
+          1.78427
+        ],
+        "pivot_unity": [
+          0.0,
+          0.0,
+          -0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "fbx_axes": {
+          "UpAxis": 1,
+          "UpAxisSign": 1,
+          "FrontAxis": 2,
+          "FrontAxisSign": 1,
+          "UnitScaleFactor": 100.0
+        },
+        "contract_checks": [
+          "footprint",
+          "height",
+          "ground contact",
+          "upward-face rule"
+        ]
+      }
+    },
+    "world_construction_site_2": {
+      "description": "Framed cottage construction with rafters, scaffold and rope hoist",
+      "contract": {
+        "footprint_m": [
+          1.84,
+          1.84
+        ],
+        "pivot_unity": [
+          0,
+          0,
+          0
+        ],
+        "stage": 2,
+        "naturalScale": true
+      },
+      "vertices": 558,
+      "triangles": 904,
+      "mesh_count": 1,
+      "editable_part_count": 53,
+      "bounds_blender": [
+        [
+          -0.915,
+          -0.871545,
+          -0.018
+        ],
+        [
+          0.92,
+          0.862243,
+          1.755
+        ]
+      ],
+      "bounds_unity": [
+        [
+          -0.915,
+          -0.018,
+          -0.862243
+        ],
+        [
+          0.92,
+          1.755,
+          0.871545
+        ]
+      ],
+      "pivot_unity": [
+        0,
+        0,
+        0
+      ],
+      "materials": [
+        "Forest_berry",
+        "Forest_earth",
+        "Forest_endgrain",
+        "Forest_stone_light",
+        "Forest_wood"
+      ],
+      "dimensions_unity_m": [
+        1.835,
+        1.773,
+        1.733788
+      ],
+      "guid": "872c98051df753caac321fc055250bb4",
+      "verification": {
+        "passed": true,
+        "triangles": 904,
+        "mesh_count": 1,
+        "bounds_blender": [
+          [
+            -0.915,
+            -0.871545,
+            -0.018
+          ],
+          [
+            0.92,
+            0.862243,
+            1.755
+          ]
+        ],
+        "bounds_unity": [
+          [
+            -0.915,
+            -0.018,
+            -0.862243
+          ],
+          [
+            0.92,
+            1.755,
+            0.871545
+          ]
+        ],
+        "dimensions_unity_m": [
+          1.835,
+          1.773,
+          1.733788
+        ],
+        "pivot_unity": [
+          0.0,
+          0.0,
+          -0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "fbx_axes": {
+          "UpAxis": 1,
+          "UpAxisSign": 1,
+          "FrontAxis": 2,
+          "FrontAxisSign": 1,
+          "UnitScaleFactor": 100.0
+        },
+        "contract_checks": [
+          "footprint",
+          "height",
+          "ground contact",
+          "upward-face rule"
+        ]
+      }
+    },
+    "world_raider_fox": {
+      "description": "Lean masked fox raider with a huge brush tail and loot sack",
+      "contract": {
+        "length_m": 1.1,
+        "width_m": 0.45,
+        "height_m": 0.8,
+        "parts": [
+          "Body",
+          "Head",
+          "Tail",
+          "PawFrontLeft",
+          "PawFrontRight",
+          "PawBackLeft",
+          "PawBackRight"
+        ],
+        "pivot_unity": [
+          0,
+          0,
+          0
+        ],
+        "forward_unity": "+Z",
+        "naturalScale": true,
+        "upward_face_check": true
+      },
+      "vertices": 552,
+      "triangles": 984,
+      "mesh_count": 7,
+      "editable_part_count": 7,
+      "bounds_blender": [
+        [
+          -0.20746,
+          -0.527465,
+          0.01353
+        ],
+        [
+          0.228781,
+          0.584049,
+          0.79376
+        ]
+      ],
+      "bounds_unity": [
+        [
+          -0.20746,
+          0.01353,
+          -0.584049
+        ],
+        [
+          0.228781,
+          0.79376,
+          0.527465
+        ]
+      ],
+      "pivot_unity": [
+        0,
+        0,
+        0
+      ],
+      "materials": [
+        "Forest_cream",
+        "Forest_darkwood",
+        "Forest_ember",
+        "Forest_leather",
+        "Forest_nose",
+        "Forest_terracotta"
+      ],
+      "parts": [
+        "Body",
+        "Head",
+        "Tail",
+        "PawFrontLeft",
+        "PawFrontRight",
+        "PawBackLeft",
+        "PawBackRight"
+      ],
+      "pivots_blender": [
+        [
+          0.0,
+          0.07215999811887741,
+          0.3878600001335144
+        ],
+        [
+          0.0,
+          -0.21648000180721283,
+          0.5321800112724304
+        ],
+        [
+          0.0,
+          0.22550000250339508,
+          0.3878600001335144
+        ],
+        [
+          -0.11725999414920807,
+          -0.12627999484539032,
+          0.3517799973487854
+        ],
+        [
+          0.11725999414920807,
+          -0.12627999484539032,
+          0.3517799973487854
+        ],
+        [
+          -0.11725999414920807,
+          0.19844000041484833,
+          0.3517799973487854
+        ],
+        [
+          0.11725999414920807,
+          0.19844000041484833,
+          0.3517799973487854
+        ]
+      ],
+      "pivots_unity": [
+        [
+          0.0,
+          0.3878600001335144,
+          -0.07215999811887741
+        ],
+        [
+          0.0,
+          0.5321800112724304,
+          0.21648000180721283
+        ],
+        [
+          0.0,
+          0.3878600001335144,
+          -0.22550000250339508
+        ],
+        [
+          -0.11725999414920807,
+          0.3517799973487854,
+          0.12627999484539032
+        ],
+        [
+          0.11725999414920807,
+          0.3517799973487854,
+          0.12627999484539032
+        ],
+        [
+          -0.11725999414920807,
+          0.3517799973487854,
+          -0.19844000041484833
+        ],
+        [
+          0.11725999414920807,
+          0.3517799973487854,
+          -0.19844000041484833
+        ]
+      ],
+      "dimensions_unity_m": [
+        0.436241,
+        0.78023,
+        1.111514
+      ],
+      "guid": "9939f76b7625553e9e1dda76dda57d84",
+      "verification": {
+        "passed": true,
+        "triangles": 984,
+        "mesh_count": 7,
+        "bounds_blender": [
+          [
+            -0.20746,
+            -0.527465,
+            0.01353
+          ],
+          [
+            0.228781,
+            0.584049,
+            0.79376
+          ]
+        ],
+        "bounds_unity": [
+          [
+            -0.20746,
+            0.01353,
+            -0.584049
+          ],
+          [
+            0.228781,
+            0.79376,
+            0.527465
+          ]
+        ],
+        "dimensions_unity_m": [
+          0.436241,
+          0.78023,
+          1.111514
+        ],
+        "pivot_unity": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "fbx_axes": {
+          "UpAxis": 1,
+          "UpAxisSign": 1,
+          "FrontAxis": 2,
+          "FrontAxisSign": 1,
+          "UnitScaleFactor": 100.0
+        },
+        "contract_checks": [
+          "seven fox parts",
+          "lofted brush tail",
+          "grounded paws"
+        ],
+        "parts": [
+          "Body",
+          "Head",
+          "PawBackLeft",
+          "PawBackRight",
+          "PawFrontLeft",
+          "PawFrontRight",
+          "Tail"
+        ],
+        "pivots_unity": [
+          [
+            0.0,
+            0.3878600001335144,
+            -0.07216005772352219
+          ],
+          [
+            0.0,
+            0.5321800708770752,
+            0.21647991240024567
+          ],
+          [
+            -0.11725999414920807,
+            0.351779967546463,
+            -0.1984400600194931
+          ],
+          [
+            0.11725999414920807,
+            0.351779967546463,
+            -0.1984400600194931
+          ],
+          [
+            -0.11725999414920807,
+            0.3517800271511078,
+            0.12627993524074554
+          ],
+          [
+            0.11725999414920807,
+            0.3517800271511078,
+            0.12627993524074554
+          ],
+          [
+            0.0,
+            0.387859970331192,
+            -0.22550006210803986
+          ]
+        ]
+      }
+    },
+    "world_stone_guardian": {
+      "description": "Ancient stone cat guardian with moss, runes and a raised striking paw",
+      "contract": {
+        "footprint_m": [
+          1,
+          1
+        ],
+        "height_m": 1.4,
+        "parts": [
+          "Body",
+          "Head",
+          "PawFrontLeft",
+          "PawFrontRight"
+        ],
+        "pivot_unity": [
+          0,
+          0,
+          0
+        ],
+        "naturalScale": true,
+        "upward_face_check": true
+      },
+      "vertices": 709,
+      "triangles": 1282,
+      "mesh_count": 4,
+      "editable_part_count": 4,
+      "bounds_blender": [
+        [
+          -0.517864,
+          -0.545384,
+          0.0
+        ],
+        [
+          0.477764,
+          0.47,
+          1.4
+        ]
+      ],
+      "bounds_unity": [
+        [
+          -0.517864,
+          0.0,
+          -0.47
+        ],
+        [
+          0.477764,
+          1.4,
+          0.545384
+        ]
+      ],
+      "pivot_unity": [
+        0,
+        0,
+        0
+      ],
+      "materials": [
+        "Forest_gem",
+        "Forest_moss",
+        "Forest_stone",
+        "Forest_stone_light"
+      ],
+      "parts": [
+        "Body",
+        "Head",
+        "PawFrontLeft",
+        "PawFrontRight"
+      ],
+      "pivots_blender": [
+        [
+          0.0,
+          0.0,
+          0.6200000047683716
+        ],
+        [
+          0.0,
+          -0.05000000447034836,
+          0.9800000190734863
+        ],
+        [
+          -0.3400000035762787,
+          -0.07999999821186066,
+          0.8799999952316284
+        ],
+        [
+          0.3400000035762787,
+          -0.03999999910593033,
+          0.8799999952316284
+        ]
+      ],
+      "pivots_unity": [
+        [
+          0.0,
+          0.6200000047683716,
+          -0.0
+        ],
+        [
+          0.0,
+          0.9800000190734863,
+          0.05000000447034836
+        ],
+        [
+          -0.3400000035762787,
+          0.8799999952316284,
+          0.07999999821186066
+        ],
+        [
+          0.3400000035762787,
+          0.8799999952316284,
+          0.03999999910593033
+        ]
+      ],
+      "dimensions_unity_m": [
+        0.995628,
+        1.4,
+        1.015384
+      ],
+      "guid": "bb816aac2884554d93ee6c846ca06192",
+      "verification": {
+        "passed": true,
+        "triangles": 1282,
+        "mesh_count": 4,
+        "bounds_blender": [
+          [
+            -0.517864,
+            -0.545384,
+            -0.0
+          ],
+          [
+            0.477764,
+            0.47,
+            1.4
+          ]
+        ],
+        "bounds_unity": [
+          [
+            -0.517864,
+            -0.0,
+            -0.47
+          ],
+          [
+            0.477764,
+            1.4,
+            0.545384
+          ]
+        ],
+        "dimensions_unity_m": [
+          0.995628,
+          1.4,
+          1.015384
+        ],
+        "pivot_unity": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "fbx_axes": {
+          "UpAxis": 1,
+          "UpAxisSign": 1,
+          "FrontAxis": 2,
+          "FrontAxisSign": 1,
+          "UnitScaleFactor": 100.0
+        },
+        "contract_checks": [
+          "four golem parts",
+          "one raised paw",
+          "grounded"
+        ],
+        "parts": [
+          "Body",
+          "Head",
+          "PawFrontLeft",
+          "PawFrontRight"
+        ],
+        "pivots_unity": [
+          [
+            0.0,
+            0.6200000047683716,
+            -1.0101082636992942e-07
+          ],
+          [
+            0.0,
+            0.9800000190734863,
+            0.049999844282865524
+          ],
+          [
+            -0.3400000035762787,
+            0.8799999952316284,
+            0.07999985665082932
+          ],
+          [
+            0.3400000035762787,
+            0.8799999952316284,
+            0.03999985754489899
+          ]
+        ]
+      }
+    },
+    "world_dungeon_stairwell": {
+      "description": "Stepped stone stairwell with timber frames and a warm lantern",
+      "contract": {
+        "width_m": 1.64,
+        "run_m": 4,
+        "descent_m": 4,
+        "inner_clear_width_m": 1.0,
+        "clear_height_m": 1.1,
+        "light_anchors_unity": [
+          [
+            -0.68,
+            -1.05,
+            2.25
+          ]
+        ],
+        "pivot_unity": [
+          0,
+          0,
+          0
+        ],
+        "matches": "world_dungeon_stairs",
+        "naturalScale": true,
+        "upward_face_check": true
+      },
+      "vertices": 552,
+      "triangles": 836,
+      "mesh_count": 1,
+      "editable_part_count": 67,
+      "bounds_blender": [
+        [
+          -0.82,
+          -3.996,
+          -3.998
+        ],
+        [
+          0.82,
+          -0.004,
+          0.4
+        ]
+      ],
+      "bounds_unity": [
+        [
+          -0.82,
+          -3.998,
+          0.004
+        ],
+        [
+          0.82,
+          0.4,
+          3.996
+        ]
+      ],
+      "pivot_unity": [
+        0,
+        0,
+        0
+      ],
+      "materials": [
+        "Forest_bark",
+        "Forest_ember",
+        "Forest_slate",
+        "Forest_stone",
+        "Forest_stone_light"
+      ],
+      "dimensions_unity_m": [
+        1.64,
+        4.398,
+        3.992
+      ],
+      "guid": "f1981ecb00285d548bdf6ed81f4158eb",
+      "verification": {
+        "passed": true,
+        "triangles": 836,
+        "mesh_count": 1,
+        "bounds_blender": [
+          [
+            -0.82,
+            -3.996001,
+            -3.998
+          ],
+          [
+            0.82,
+            -0.004,
+            0.4
+          ]
+        ],
+        "bounds_unity": [
+          [
+            -0.82,
+            -3.998,
+            0.004
+          ],
+          [
+            0.82,
+            0.4,
+            3.996001
+          ]
+        ],
+        "dimensions_unity_m": [
+          1.64,
+          4.398,
+          3.992001
+        ],
+        "pivot_unity": [
+          0.0,
+          0.0,
+          -0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "fbx_axes": {
+          "UpAxis": 1,
+          "UpAxisSign": 1,
+          "FrontAxis": 2,
+          "FrontAxisSign": 1,
+          "UnitScaleFactor": 100.0
+        },
+        "contract_checks": [
+          "real 0.32 m stepped walls",
+          "16 treads x 2 Z positions x 3 horizontal heights",
+          "16 treads x 2 Z positions x 3 vertical columns",
+          "timber frames and lantern",
+          "five materials or fewer"
+        ]
+      }
+    },
+    "world_loot_chest": {
+      "description": "Banded dungeon treasure chest",
+      "contract": {
+        "footprint_m": [
+          1,
+          1
+        ],
+        "size_m": [
+          0.7,
+          0.5,
+          0.5
+        ],
+        "parts": [
+          "Body",
+          "Lid"
+        ],
+        "hinge_unity": [
+          0,
+          0.4,
+          -0.22
+        ],
+        "lid_open_deg": 0,
+        "pivot_unity": [
+          0,
+          0,
+          0
+        ],
+        "naturalScale": true
+      },
+      "vertices": 90,
+      "triangles": 138,
+      "mesh_count": 2,
+      "editable_part_count": 2,
+      "bounds_blender": [
+        [
+          -0.35,
+          -0.263506,
+          0.0
+        ],
+        [
+          0.35,
+          0.25,
+          0.5
+        ]
+      ],
+      "bounds_unity": [
+        [
+          -0.35,
+          0.0,
+          -0.25
+        ],
+        [
+          0.35,
+          0.5,
+          0.263506
+        ]
+      ],
+      "pivot_unity": [
+        0,
+        0,
+        0
+      ],
+      "materials": [
+        "Forest_darkwood",
+        "Forest_gold",
+        "Forest_wood"
+      ],
+      "parts": [
+        "Body",
+        "Lid"
+      ],
+      "pivots_blender": [
+        [
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.2199999988079071,
+          0.4000000059604645
+        ]
+      ],
+      "pivots_unity": [
+        [
+          0.0,
+          0.0,
+          -0.0
+        ],
+        [
+          0.0,
+          0.4000000059604645,
+          -0.2199999988079071
+        ]
+      ],
+      "dimensions_unity_m": [
+        0.7,
+        0.5,
+        0.513506
+      ],
+      "guid": "538baa5884f85176bc4a3ab4ce12e366",
+      "verification": {
+        "passed": true,
+        "triangles": 138,
+        "mesh_count": 2,
+        "bounds_blender": [
+          [
+            -0.35,
+            -0.263506,
+            -0.0
+          ],
+          [
+            0.35,
+            0.25,
+            0.5
+          ]
+        ],
+        "bounds_unity": [
+          [
+            -0.35,
+            -0.0,
+            -0.25
+          ],
+          [
+            0.35,
+            0.5,
+            0.263506
+          ]
+        ],
+        "dimensions_unity_m": [
+          0.7,
+          0.5,
+          0.513506
+        ],
+        "pivot_unity": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "fbx_axes": {
+          "UpAxis": 1,
+          "UpAxisSign": 1,
+          "FrontAxis": 2,
+          "FrontAxisSign": 1,
+          "UnitScaleFactor": 100.0
+        },
+        "contract_checks": [
+          "two articulated parts",
+          "hinge pivot",
+          "hollow body and treasure"
+        ],
+        "parts": [
+          "Body",
+          "Lid"
+        ],
+        "pivots_unity": [
+          [
+            0.0,
+            0.0,
+            -0.0
+          ],
+          [
+            0.0,
+            0.3999999761581421,
+            -0.22000005841255188
+          ]
+        ]
+      }
+    },
+    "world_loot_chest_open": {
+      "description": "Banded dungeon treasure chest",
+      "contract": {
+        "footprint_m": [
+          1,
+          1
+        ],
+        "size_m": [
+          0.7,
+          0.5,
+          0.5
+        ],
+        "parts": [
+          "Body",
+          "Lid"
+        ],
+        "hinge_unity": [
+          0,
+          0.4,
+          -0.22
+        ],
+        "lid_open_deg": 110,
+        "pivot_unity": [
+          0,
+          0,
+          0
+        ],
+        "naturalScale": true
+      },
+      "vertices": 218,
+      "triangles": 362,
+      "mesh_count": 2,
+      "editable_part_count": 2,
+      "bounds_blender": [
+        [
+          -0.35,
+          -0.277,
+          0.0
+        ],
+        [
+          0.35,
+          0.261192,
+          0.841655
+        ]
+      ],
+      "bounds_unity": [
+        [
+          -0.35,
+          0.0,
+          -0.261192
+        ],
+        [
+          0.35,
+          0.841655,
+          0.277
+        ]
+      ],
+      "pivot_unity": [
+        0,
+        0,
+        0
+      ],
+      "materials": [
+        "Forest_darkwood",
+        "Forest_gem",
+        "Forest_gold",
+        "Forest_iron",
+        "Forest_wood"
+      ],
+      "parts": [
+        "Body",
+        "Lid"
+      ],
+      "pivots_blender": [
+        [
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.21999996900558472,
+          0.4000000059604645
+        ]
+      ],
+      "pivots_unity": [
+        [
+          0.0,
+          0.0,
+          -0.0
+        ],
+        [
+          0.0,
+          0.4000000059604645,
+          -0.21999996900558472
+        ]
+      ],
+      "dimensions_unity_m": [
+        0.7,
+        0.841655,
+        0.538192
+      ],
+      "guid": "243e320f515b587382717d5fd09561fa",
+      "verification": {
+        "passed": true,
+        "triangles": 362,
+        "mesh_count": 2,
+        "bounds_blender": [
+          [
+            -0.35,
+            -0.277,
+            -0.0
+          ],
+          [
+            0.35,
+            0.261192,
+            0.841655
+          ]
+        ],
+        "bounds_unity": [
+          [
+            -0.35,
+            -0.0,
+            -0.261192
+          ],
+          [
+            0.35,
+            0.841655,
+            0.277
+          ]
+        ],
+        "dimensions_unity_m": [
+          0.7,
+          0.841655,
+          0.538192
+        ],
+        "pivot_unity": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "fbx_axes": {
+          "UpAxis": 1,
+          "UpAxisSign": 1,
+          "FrontAxis": 2,
+          "FrontAxisSign": 1,
+          "UnitScaleFactor": 100.0
+        },
+        "contract_checks": [
+          "two articulated parts",
+          "hinge pivot",
+          "hollow body and treasure"
+        ],
+        "parts": [
+          "Body",
+          "Lid"
+        ],
+        "pivots_unity": [
+          [
+            0.0,
+            0.0,
+            -0.0
+          ],
+          [
+            0.0,
+            0.3999999761581421,
+            -0.2200000286102295
+          ]
+        ]
+      }
+    },
+    "world_dungeon_brazier": {
+      "description": "Standing iron brazier with coal and faceted ember flames",
+      "contract": {
+        "footprint_m": [
+          1,
+          1
+        ],
+        "height_m": 0.98,
+        "light_anchors_unity": [
+          [
+            0,
+            0.9,
+            0
+          ]
+        ],
+        "pivot_unity": [
+          0,
+          0,
+          0
+        ],
+        "naturalScale": true
+      },
+      "vertices": 270,
+      "triangles": 480,
+      "mesh_count": 1,
+      "editable_part_count": 16,
+      "bounds_blender": [
+        [
+          -0.3,
+          -0.3,
+          0.0
+        ],
+        [
+          0.3,
+          0.3,
+          1.011016
+        ]
+      ],
+      "bounds_unity": [
+        [
+          -0.3,
+          0.0,
+          -0.3
+        ],
+        [
+          0.3,
+          1.011016,
+          0.3
+        ]
+      ],
+      "pivot_unity": [
+        0,
+        0,
+        0
+      ],
+      "materials": [
+        "Forest_coal",
+        "Forest_ember",
+        "Forest_iron"
+      ],
+      "dimensions_unity_m": [
+        0.6,
+        1.011016,
+        0.6
+      ],
+      "guid": "35b8fa31631c5f1cbc00ce2b25c4b5bb",
+      "verification": {
+        "passed": true,
+        "triangles": 480,
+        "mesh_count": 1,
+        "bounds_blender": [
+          [
+            -0.3,
+            -0.3,
+            -0.0
+          ],
+          [
+            0.3,
+            0.3,
+            1.011016
+          ]
+        ],
+        "bounds_unity": [
+          [
+            -0.3,
+            -0.0,
+            -0.3
+          ],
+          [
+            0.3,
+            1.011016,
+            0.3
+          ]
+        ],
+        "dimensions_unity_m": [
+          0.6,
+          1.011016,
+          0.6
+        ],
+        "pivot_unity": [
+          0.0,
+          0.0,
+          -0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "fbx_axes": {
+          "UpAxis": 1,
+          "UpAxisSign": 1,
+          "FrontAxis": 2,
+          "FrontAxisSign": 1,
+          "UnitScaleFactor": 100.0
+        },
+        "contract_checks": [
+          "compact footprint",
+          "standing height",
+          "ember light source"
+        ]
+      }
+    },
+    "world_dungeon_roots": {
+      "description": "Gnarled roots draped over a dungeon wall segment",
+      "contract": {
+        "length_axis_unity": "X",
+        "length_m": 1,
+        "matches": "world_dungeon_wall",
+        "pivot_unity": [
+          0,
+          0,
+          0
+        ],
+        "naturalScale": true
+      },
+      "vertices": 342,
+      "triangles": 612,
+      "mesh_count": 1,
+      "editable_part_count": 18,
+      "bounds_blender": [
+        [
+          -0.513729,
+          -0.26,
+          1.249309
+        ],
+        [
+          0.50535,
+          0.255544,
+          2.75
+        ]
+      ],
+      "bounds_unity": [
+        [
+          -0.513729,
+          1.249309,
+          -0.255544
+        ],
+        [
+          0.50535,
+          2.75,
+          0.26
+        ]
+      ],
+      "pivot_unity": [
+        0,
+        0,
+        0
+      ],
+      "materials": [
+        "Forest_bark",
+        "Forest_darkwood",
+        "Forest_moss"
+      ],
+      "dimensions_unity_m": [
+        1.019079,
+        1.500691,
+        0.515544
+      ],
+      "guid": "291ddfca73ef5f8aa95f2f80ca12cc76",
+      "verification": {
+        "passed": true,
+        "triangles": 612,
+        "mesh_count": 1,
+        "bounds_blender": [
+          [
+            -0.513729,
+            -0.26,
+            1.249309
+          ],
+          [
+            0.50535,
+            0.255544,
+            2.75
+          ]
+        ],
+        "bounds_unity": [
+          [
+            -0.513729,
+            1.249309,
+            -0.255544
+          ],
+          [
+            0.50535,
+            2.75,
+            0.26
+          ]
+        ],
+        "dimensions_unity_m": [
+          1.019079,
+          1.500691,
+          0.515544
+        ],
+        "pivot_unity": [
+          0.0,
+          0.0,
+          -0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "fbx_axes": {
+          "UpAxis": 1,
+          "UpAxisSign": 1,
+          "FrontAxis": 2,
+          "FrontAxisSign": 1,
+          "UnitScaleFactor": 100.0
+        },
+        "contract_checks": [
+          "wall-length root tangle",
+          "both-face hanging strands",
+          "moss clumps"
+        ]
+      }
+    },
+    "world_rock_a": {
+      "description": "Tall chunky faceted stone node",
+      "contract": {
+        "footprint_m": [
+          1,
+          1
+        ],
+        "max_height_m": 0.79,
+        "pivot_unity": [
+          0,
+          0,
+          0
+        ],
+        "naturalScale": true,
+        "resource": "stone"
+      },
+      "vertices": 60,
+      "triangles": 108,
+      "mesh_count": 1,
+      "editable_part_count": 3,
+      "bounds_blender": [
+        [
+          -0.334427,
+          -0.297847,
+          -0.02
+        ],
+        [
+          0.384197,
+          0.279466,
+          0.74
+        ]
+      ],
+      "bounds_unity": [
+        [
+          -0.334427,
+          -0.02,
+          -0.279466
+        ],
+        [
+          0.384197,
+          0.74,
+          0.297847
+        ]
+      ],
+      "pivot_unity": [
+        0,
+        0,
+        0
+      ],
+      "materials": [
+        "Forest_moss",
+        "Forest_stone",
+        "Forest_stone_light"
+      ],
+      "dimensions_unity_m": [
+        0.718624,
+        0.76,
+        0.577313
+      ],
+      "guid": "5170db1f1e1352b9a2861a98bdfb4b4f",
+      "verification": {
+        "passed": true,
+        "triangles": 108,
+        "mesh_count": 1,
+        "bounds_blender": [
+          [
+            -0.334427,
+            -0.297847,
+            -0.02
+          ],
+          [
+            0.384197,
+            0.279466,
+            0.74
+          ]
+        ],
+        "bounds_unity": [
+          [
+            -0.334427,
+            -0.02,
+            -0.279466
+          ],
+          [
+            0.384197,
+            0.74,
+            0.297847
+          ]
+        ],
+        "dimensions_unity_m": [
+          0.718624,
+          0.76,
+          0.577313
+        ],
+        "pivot_unity": [
+          0.0,
+          0.0,
+          -0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "fbx_axes": {
+          "UpAxis": 1,
+          "UpAxisSign": 1,
+          "FrontAxis": 2,
+          "FrontAxisSign": 1,
+          "UnitScaleFactor": 100.0
+        },
+        "contract_checks": [
+          "footprint",
+          "height",
+          "ground contact",
+          "upward-face rule"
+        ]
+      }
+    },
+    "world_rock_b": {
+      "description": "Two separate leaning faceted stones touching at their crowns",
+      "contract": {
+        "footprint_m": [
+          1,
+          1
+        ],
+        "max_height_m": 0.72,
+        "pivot_unity": [
+          0,
+          0,
+          0
+        ],
+        "naturalScale": true,
+        "resource": "stone"
+      },
+      "vertices": 96,
+      "triangles": 176,
+      "mesh_count": 1,
+      "editable_part_count": 4,
+      "bounds_blender": [
+        [
+          -0.417666,
+          -0.32728,
+          -0.02
+        ],
+        [
+          0.38175,
+          0.335033,
+          0.64
+        ]
+      ],
+      "bounds_unity": [
+        [
+          -0.417666,
+          -0.02,
+          -0.335033
+        ],
+        [
+          0.38175,
+          0.64,
+          0.32728
+        ]
+      ],
+      "pivot_unity": [
+        0,
+        0,
+        0
+      ],
+      "materials": [
+        "Forest_moss",
+        "Forest_stone",
+        "Forest_stone_light"
+      ],
+      "dimensions_unity_m": [
+        0.799416,
+        0.66,
+        0.662313
+      ],
+      "guid": "886b75e36c37561fb193b3c0c2448816",
+      "verification": {
+        "passed": true,
+        "triangles": 176,
+        "mesh_count": 1,
+        "bounds_blender": [
+          [
+            -0.417666,
+            -0.32728,
+            -0.02
+          ],
+          [
+            0.38175,
+            0.335033,
+            0.64
+          ]
+        ],
+        "bounds_unity": [
+          [
+            -0.417666,
+            -0.02,
+            -0.335033
+          ],
+          [
+            0.38175,
+            0.64,
+            0.32728
+          ]
+        ],
+        "dimensions_unity_m": [
+          0.799416,
+          0.66,
+          0.662313
+        ],
+        "pivot_unity": [
+          0.0,
+          0.0,
+          -0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "fbx_axes": {
+          "UpAxis": 1,
+          "UpAxisSign": 1,
+          "FrontAxis": 2,
+          "FrontAxisSign": 1,
+          "UnitScaleFactor": 100.0
+        },
+        "contract_checks": [
+          "footprint",
+          "height",
+          "ground contact",
+          "upward-face rule"
+        ]
+      }
+    },
+    "world_rock_c": {
+      "description": "Low wide irregular slab with a moss cap and loose foot stones",
+      "contract": {
+        "footprint_m": [
+          1,
+          1
+        ],
+        "max_height_m": 0.54,
+        "pivot_unity": [
+          0,
+          0,
+          0
+        ],
+        "naturalScale": true,
+        "resource": "stone"
+      },
+      "vertices": 78,
+      "triangles": 136,
+      "mesh_count": 1,
+      "editable_part_count": 5,
+      "bounds_blender": [
+        [
+          -0.451554,
+          -0.31509,
+          -0.02
+        ],
+        [
+          0.40261,
+          0.3255,
+          0.41
+        ]
+      ],
+      "bounds_unity": [
+        [
+          -0.451554,
+          -0.02,
+          -0.3255
+        ],
+        [
+          0.40261,
+          0.41,
+          0.31509
+        ]
+      ],
+      "pivot_unity": [
+        0,
+        0,
+        0
+      ],
+      "materials": [
+        "Forest_moss",
+        "Forest_stone",
+        "Forest_stone_light"
+      ],
+      "dimensions_unity_m": [
+        0.854164,
+        0.43,
+        0.64059
+      ],
+      "guid": "fde0804cf542531d81662d4fa3cd1b3a",
+      "verification": {
+        "passed": true,
+        "triangles": 136,
+        "mesh_count": 1,
+        "bounds_blender": [
+          [
+            -0.451554,
+            -0.31509,
+            -0.02
+          ],
+          [
+            0.40261,
+            0.3255,
+            0.41
+          ]
+        ],
+        "bounds_unity": [
+          [
+            -0.451554,
+            -0.02,
+            -0.3255
+          ],
+          [
+            0.40261,
+            0.41,
+            0.31509
+          ]
+        ],
+        "dimensions_unity_m": [
+          0.854164,
+          0.43,
+          0.64059
+        ],
+        "pivot_unity": [
+          0.0,
+          0.0,
+          -0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "fbx_axes": {
+          "UpAxis": 1,
+          "UpAxisSign": 1,
+          "FrontAxis": 2,
+          "FrontAxisSign": 1,
+          "UnitScaleFactor": 100.0
+        },
+        "contract_checks": [
+          "footprint",
+          "height",
+          "ground contact",
+          "upward-face rule"
+        ]
+      }
+    },
+    "world_ore_vein_a": {
+      "description": "Tall boulder with a bold diagonal copper vein and leaning miner pick",
+      "contract": {
+        "footprint_m": [
+          1,
+          1
+        ],
+        "max_height_m": 0.84,
+        "pivot_unity": [
+          0,
+          0,
+          0
+        ],
+        "naturalScale": true,
+        "resource": "ore"
+      },
+      "vertices": 168,
+      "triangles": 318,
+      "mesh_count": 1,
+      "editable_part_count": 11,
+      "bounds_blender": [
+        [
+          -0.404015,
+          -0.412,
+          -0.02
+        ],
+        [
+          0.43,
+          0.325941,
+          0.62
+        ]
+      ],
+      "bounds_unity": [
+        [
+          -0.404015,
+          -0.02,
+          -0.325941
+        ],
+        [
+          0.43,
+          0.62,
+          0.412
+        ]
+      ],
+      "pivot_unity": [
+        0,
+        0,
+        0
+      ],
+      "materials": [
+        "Forest_copper",
+        "Forest_iron",
+        "Forest_stone"
+      ],
+      "dimensions_unity_m": [
+        0.834015,
+        0.64,
+        0.737941
+      ],
+      "guid": "54919023ce4159c696b692a56cf82704",
+      "verification": {
+        "passed": true,
+        "triangles": 318,
+        "mesh_count": 1,
+        "bounds_blender": [
+          [
+            -0.404015,
+            -0.412,
+            -0.02
+          ],
+          [
+            0.43,
+            0.325941,
+            0.62
+          ]
+        ],
+        "bounds_unity": [
+          [
+            -0.404015,
+            -0.02,
+            -0.325941
+          ],
+          [
+            0.43,
+            0.62,
+            0.412
+          ]
+        ],
+        "dimensions_unity_m": [
+          0.834015,
+          0.64,
+          0.737941
+        ],
+        "pivot_unity": [
+          0.0,
+          0.0,
+          -0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "fbx_axes": {
+          "UpAxis": 1,
+          "UpAxisSign": 1,
+          "FrontAxis": 2,
+          "FrontAxisSign": 1,
+          "UnitScaleFactor": 100.0
+        },
+        "contract_checks": [
+          "footprint",
+          "height",
+          "ground contact",
+          "upward-face rule"
+        ]
+      }
+    },
+    "world_ore_vein_b": {
+      "description": "Split ore boulder with a vein running along the cleft and a leaning miner pick",
+      "contract": {
+        "footprint_m": [
+          1,
+          1
+        ],
+        "max_height_m": 0.84,
+        "pivot_unity": [
+          0,
+          0,
+          0
+        ],
+        "naturalScale": true,
+        "resource": "ore"
+      },
+      "vertices": 178,
+      "triangles": 335,
+      "mesh_count": 1,
+      "editable_part_count": 11,
+      "bounds_blender": [
+        [
+          -0.444905,
+          -0.412,
+          -0.02
+        ],
+        [
+          0.436026,
+          0.272352,
+          0.62
+        ]
+      ],
+      "bounds_unity": [
+        [
+          -0.444905,
+          -0.02,
+          -0.272352
+        ],
+        [
+          0.436026,
+          0.62,
+          0.412
+        ]
+      ],
+      "pivot_unity": [
+        0,
+        0,
+        0
+      ],
+      "materials": [
+        "Forest_copper",
+        "Forest_iron",
+        "Forest_stone"
+      ],
+      "dimensions_unity_m": [
+        0.880931,
+        0.64,
+        0.684352
+      ],
+      "guid": "966010f7d8e95c839ba8ff159a6a00c7",
+      "verification": {
+        "passed": true,
+        "triangles": 335,
+        "mesh_count": 1,
+        "bounds_blender": [
+          [
+            -0.444905,
+            -0.412,
+            -0.02
+          ],
+          [
+            0.436026,
+            0.272352,
+            0.62
+          ]
+        ],
+        "bounds_unity": [
+          [
+            -0.444905,
+            -0.02,
+            -0.272352
+          ],
+          [
+            0.436026,
+            0.62,
+            0.412
+          ]
+        ],
+        "dimensions_unity_m": [
+          0.880931,
+          0.64,
+          0.684352
+        ],
+        "pivot_unity": [
+          0.0,
+          0.0,
+          -0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "fbx_axes": {
+          "UpAxis": 1,
+          "UpAxisSign": 1,
+          "FrontAxis": 2,
+          "FrontAxisSign": 1,
+          "UnitScaleFactor": 100.0
+        },
+        "contract_checks": [
+          "footprint",
+          "height",
+          "ground contact",
+          "upward-face rule"
+        ]
+      }
+    },
+    "world_gem_vein": {
+      "description": "Irregular slate outcrop with chunky gems bursting from top and sides",
+      "contract": {
+        "footprint_m": [
+          1,
+          1
+        ],
+        "max_height_m": 0.99,
+        "pivot_unity": [
+          0,
+          0,
+          0
+        ],
+        "naturalScale": true,
+        "resource": "gem"
+      },
+      "vertices": 129,
+      "triangles": 246,
+      "mesh_count": 1,
+      "editable_part_count": 9,
+      "bounds_blender": [
+        [
+          -0.450284,
+          -0.350995,
+          -0.02
+        ],
+        [
+          0.443984,
+          0.348836,
+          0.882245
+        ]
+      ],
+      "bounds_unity": [
+        [
+          -0.450284,
+          -0.02,
+          -0.348836
+        ],
+        [
+          0.443984,
+          0.882245,
+          0.350995
+        ]
+      ],
+      "pivot_unity": [
+        0,
+        0,
+        0
+      ],
+      "materials": [
+        "Forest_gem",
+        "Forest_slate",
+        "Forest_stone"
+      ],
+      "dimensions_unity_m": [
+        0.894268,
+        0.902245,
+        0.699831
+      ],
+      "guid": "9327c4e1072555e594e29ac037e3469b",
+      "verification": {
+        "passed": true,
+        "triangles": 246,
+        "mesh_count": 1,
+        "bounds_blender": [
+          [
+            -0.450284,
+            -0.350995,
+            -0.02
+          ],
+          [
+            0.443984,
+            0.348836,
+            0.882245
+          ]
+        ],
+        "bounds_unity": [
+          [
+            -0.450284,
+            -0.02,
+            -0.348836
+          ],
+          [
+            0.443984,
+            0.882245,
+            0.350995
+          ]
+        ],
+        "dimensions_unity_m": [
+          0.894268,
+          0.902245,
+          0.699831
+        ],
+        "pivot_unity": [
+          0.0,
+          0.0,
+          -0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "fbx_axes": {
+          "UpAxis": 1,
+          "UpAxisSign": 1,
+          "FrontAxis": 2,
+          "FrontAxisSign": 1,
+          "UnitScaleFactor": 100.0
+        },
+        "contract_checks": [
+          "footprint",
+          "height",
+          "ground contact",
+          "upward-face rule"
+        ]
+      }
+    },
+    "world_clay_bank": {
+      "description": "Low lumpy terracotta clay bank with stepped spade cuts, puddle and bricks",
+      "contract": {
+        "footprint_m": [
+          1,
+          1
+        ],
+        "max_height_m": 0.45,
+        "pivot_unity": [
+          0,
+          0,
+          0
+        ],
+        "naturalScale": true,
+        "resource": "clay"
+      },
+      "vertices": 157,
+      "triangles": 286,
+      "mesh_count": 1,
+      "editable_part_count": 7,
+      "bounds_blender": [
+        [
+          -0.43462,
+          -0.49,
+          -0.02
+        ],
+        [
+          0.460206,
+          0.350333,
+          0.28
+        ]
+      ],
+      "bounds_unity": [
+        [
+          -0.43462,
+          -0.02,
+          -0.350333
+        ],
+        [
+          0.460206,
+          0.28,
+          0.49
+        ]
+      ],
+      "pivot_unity": [
+        0,
+        0,
+        0
+      ],
+      "materials": [
+        "Forest_terracotta",
+        "Forest_water"
+      ],
+      "dimensions_unity_m": [
+        0.894826,
+        0.3,
+        0.840333
+      ],
+      "guid": "4d849b176a4c5b49bd9f43476d93f7a5",
+      "verification": {
+        "passed": true,
+        "triangles": 286,
+        "mesh_count": 1,
+        "bounds_blender": [
+          [
+            -0.43462,
+            -0.49,
+            -0.02
+          ],
+          [
+            0.460206,
+            0.350333,
+            0.28
+          ]
+        ],
+        "bounds_unity": [
+          [
+            -0.43462,
+            -0.02,
+            -0.350333
+          ],
+          [
+            0.460206,
+            0.28,
+            0.49
+          ]
+        ],
+        "dimensions_unity_m": [
+          0.894826,
+          0.3,
+          0.840333
+        ],
+        "pivot_unity": [
+          0.0,
+          0.0,
+          -0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "fbx_axes": {
+          "UpAxis": 1,
+          "UpAxisSign": 1,
+          "FrontAxis": 2,
+          "FrontAxisSign": 1,
+          "UnitScaleFactor": 100.0
+        },
+        "contract_checks": [
+          "footprint",
+          "height",
+          "ground contact",
+          "upward-face rule"
+        ]
+      }
+    },
+    "world_sand_bank": {
+      "description": "Asymmetric rippled sand dune with shell and rooted edge reeds",
+      "contract": {
+        "footprint_m": [
+          1,
+          1
+        ],
+        "max_height_m": 0.56,
+        "pivot_unity": [
+          0,
+          0,
+          0
+        ],
+        "naturalScale": true,
+        "resource": "sand"
+      },
+      "vertices": 140,
+      "triangles": 236,
+      "mesh_count": 1,
+      "editable_part_count": 11,
+      "bounds_blender": [
+        [
+          -0.44,
+          -0.37,
+          -0.02
+        ],
+        [
+          0.48596,
+          0.41691,
+          0.432
+        ]
+      ],
+      "bounds_unity": [
+        [
+          -0.44,
+          -0.02,
+          -0.41691
+        ],
+        [
+          0.48596,
+          0.432,
+          0.37
+        ]
+      ],
+      "pivot_unity": [
+        0,
+        0,
+        0
+      ],
+      "materials": [
+        "Forest_endgrain",
+        "Forest_moss",
+        "Forest_straw"
+      ],
+      "dimensions_unity_m": [
+        0.92596,
+        0.452,
+        0.78691
+      ],
+      "guid": "18b329965b57594788405eb852d97d99",
+      "verification": {
+        "passed": true,
+        "triangles": 236,
+        "mesh_count": 1,
+        "bounds_blender": [
+          [
+            -0.44,
+            -0.37,
+            -0.02
+          ],
+          [
+            0.48596,
+            0.41691,
+            0.432
+          ]
+        ],
+        "bounds_unity": [
+          [
+            -0.44,
+            -0.02,
+            -0.41691
+          ],
+          [
+            0.48596,
+            0.432,
+            0.37
+          ]
+        ],
+        "dimensions_unity_m": [
+          0.92596,
+          0.452,
+          0.78691
+        ],
+        "pivot_unity": [
+          0.0,
+          0.0,
+          -0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "fbx_axes": {
+          "UpAxis": 1,
+          "UpAxisSign": 1,
+          "FrontAxis": 2,
+          "FrontAxisSign": 1,
+          "UnitScaleFactor": 100.0
+        },
+        "contract_checks": [
+          "footprint",
+          "height",
+          "ground contact",
+          "upward-face rule"
+        ]
+      }
+    },
+    "world_flax": {
+      "description": "Dense ripe golden fibre crop with blue flowers and blue-green lower leaves",
+      "contract": {
+        "footprint_m": [
+          1,
+          1
+        ],
+        "max_height_m": 0.9,
+        "pivot_unity": [
+          0,
+          0,
+          0
+        ],
+        "naturalScale": true,
+        "resource": "fibre"
+      },
+      "vertices": 238,
+      "triangles": 336,
+      "mesh_count": 1,
+      "editable_part_count": 35,
+      "bounds_blender": [
+        [
+          -0.227724,
+          -0.209873,
+          0.0
+        ],
+        [
+          0.275927,
+          0.275362,
+          0.832
+        ]
+      ],
+      "bounds_unity": [
+        [
+          -0.227724,
+          0.0,
+          -0.275362
+        ],
+        [
+          0.275927,
+          0.832,
+          0.209873
+        ]
+      ],
+      "pivot_unity": [
+        0,
+        0,
+        0
+      ],
+      "materials": [
+        "Forest_cloth",
+        "Forest_herb",
+        "Forest_straw"
+      ],
+      "dimensions_unity_m": [
+        0.503651,
+        0.832,
+        0.485235
+      ],
+      "guid": "7ff88a9fc2d25fe48b7355e3aff50395",
+      "verification": {
+        "passed": true,
+        "triangles": 336,
+        "mesh_count": 1,
+        "bounds_blender": [
+          [
+            -0.227724,
+            -0.209873,
+            -0.0
+          ],
+          [
+            0.275927,
+            0.275362,
+            0.832
+          ]
+        ],
+        "bounds_unity": [
+          [
+            -0.227724,
+            -0.0,
+            -0.275362
+          ],
+          [
+            0.275927,
+            0.832,
+            0.209873
+          ]
+        ],
+        "dimensions_unity_m": [
+          0.503651,
+          0.832,
+          0.485235
+        ],
+        "pivot_unity": [
+          0.0,
+          0.0,
+          -0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "fbx_axes": {
+          "UpAxis": 1,
+          "UpAxisSign": 1,
+          "FrontAxis": 2,
+          "FrontAxisSign": 1,
+          "UnitScaleFactor": 100.0
+        },
+        "contract_checks": [
+          "footprint",
+          "height",
+          "ground contact",
+          "upward-face rule"
+        ]
+      }
+    },
+    "world_wild_herbs": {
+      "description": "Loose ground rosette of broad leaves with pale purple flower sprigs",
+      "contract": {
+        "footprint_m": [
+          1,
+          1
+        ],
+        "max_height_m": 0.57,
+        "pivot_unity": [
+          0,
+          0,
+          0
+        ],
+        "naturalScale": true,
+        "resource": "herbs"
+      },
+      "vertices": 203,
+      "triangles": 322,
+      "mesh_count": 1,
+      "editable_part_count": 21,
+      "bounds_blender": [
+        [
+          -0.300455,
+          -0.333901,
+          0.0
+        ],
+        [
+          0.303821,
+          0.30437,
+          0.44
+        ]
+      ],
+      "bounds_unity": [
+        [
+          -0.300455,
+          0.0,
+          -0.30437
+        ],
+        [
+          0.303821,
+          0.44,
+          0.333901
+        ]
+      ],
+      "pivot_unity": [
+        0,
+        0,
+        0
+      ],
+      "materials": [
+        "Forest_flower",
+        "Forest_herb",
+        "Forest_leaf_light"
+      ],
+      "dimensions_unity_m": [
+        0.604276,
+        0.44,
+        0.638271
+      ],
+      "guid": "5882f0ddb80d547a89a683eea24b01f7",
+      "verification": {
+        "passed": true,
+        "triangles": 322,
+        "mesh_count": 1,
+        "bounds_blender": [
+          [
+            -0.300455,
+            -0.333901,
+            -0.0
+          ],
+          [
+            0.303821,
+            0.30437,
+            0.44
+          ]
+        ],
+        "bounds_unity": [
+          [
+            -0.300455,
+            -0.0,
+            -0.30437
+          ],
+          [
+            0.303821,
+            0.44,
+            0.333901
+          ]
+        ],
+        "dimensions_unity_m": [
+          0.604276,
+          0.44,
+          0.638271
+        ],
+        "pivot_unity": [
+          0.0,
+          0.0,
+          -0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "fbx_axes": {
+          "UpAxis": 1,
+          "UpAxisSign": 1,
+          "FrontAxis": 2,
+          "FrontAxisSign": 1,
+          "UnitScaleFactor": 100.0
+        },
+        "contract_checks": [
+          "footprint",
+          "height",
+          "ground contact",
+          "upward-face rule"
+        ]
+      }
+    },
+    "world_berry_bush_b": {
+      "description": "Tall drooping berry bush with visible fruit clusters",
+      "contract": {
+        "footprint_m": [
+          1,
+          1
+        ],
+        "max_height_m": 0.79,
+        "pivot_unity": [
+          0,
+          0,
+          0
+        ],
+        "naturalScale": true,
+        "resource": "food"
+      },
+      "vertices": 321,
+      "triangles": 502,
+      "mesh_count": 1,
+      "editable_part_count": 35,
+      "bounds_blender": [
+        [
+          -0.395,
+          -0.279788,
+          -0.02
+        ],
+        [
+          0.393177,
+          0.262067,
+          0.77
+        ]
+      ],
+      "bounds_unity": [
+        [
+          -0.395,
+          -0.02,
+          -0.262067
+        ],
+        [
+          0.393177,
+          0.77,
+          0.279788
+        ]
+      ],
+      "pivot_unity": [
+        0,
+        0,
+        0
+      ],
+      "materials": [
+        "Forest_berry",
+        "Forest_leaf",
+        "Forest_leaf_light"
+      ],
+      "dimensions_unity_m": [
+        0.788177,
+        0.79,
+        0.541855
+      ],
+      "guid": "b66f4de1efaf584199b1c129e96ac176",
+      "verification": {
+        "passed": true,
+        "triangles": 502,
+        "mesh_count": 1,
+        "bounds_blender": [
+          [
+            -0.395,
+            -0.279788,
+            -0.02
+          ],
+          [
+            0.393177,
+            0.262067,
+            0.77
+          ]
+        ],
+        "bounds_unity": [
+          [
+            -0.395,
+            -0.02,
+            -0.262067
+          ],
+          [
+            0.393177,
+            0.77,
+            0.279788
+          ]
+        ],
+        "dimensions_unity_m": [
+          0.788177,
+          0.79,
+          0.541855
+        ],
+        "pivot_unity": [
+          0.0,
+          0.0,
+          -0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "fbx_axes": {
+          "UpAxis": 1,
+          "UpAxisSign": 1,
+          "FrontAxis": 2,
+          "FrontAxisSign": 1,
+          "UnitScaleFactor": 100.0
+        },
+        "contract_checks": [
+          "footprint",
+          "height",
+          "ground contact",
+          "upward-face rule"
+        ]
+      }
+    },
+    "world_tree_sapling": {
+      "description": "Young broadleaf sapling with irregular soil mound, stake and tie",
+      "contract": {
+        "footprint_m": [
+          1,
+          1
+        ],
+        "max_height_m": 0.72,
+        "pivot_unity": [
+          0,
+          0,
+          0
+        ],
+        "naturalScale": true
+      },
+      "vertices": 141,
+      "triangles": 238,
+      "mesh_count": 1,
+      "editable_part_count": 11,
+      "bounds_blender": [
+        [
+          -0.172657,
+          -0.13686,
+          -0.02
+        ],
+        [
+          0.276858,
+          0.15009,
+          0.69
+        ]
+      ],
+      "bounds_unity": [
+        [
+          -0.172657,
+          -0.02,
+          -0.15009
+        ],
+        [
+          0.276858,
+          0.69,
+          0.13686
+        ]
+      ],
+      "pivot_unity": [
+        0,
+        0,
+        0
+      ],
+      "materials": [
+        "Forest_bark",
+        "Forest_leaf_light",
+        "Forest_soil"
+      ],
+      "dimensions_unity_m": [
+        0.449515,
+        0.71,
+        0.28695
+      ],
+      "guid": "680b41dd333d573c85212ca4cd1216a9",
+      "verification": {
+        "passed": true,
+        "triangles": 238,
+        "mesh_count": 1,
+        "bounds_blender": [
+          [
+            -0.172657,
+            -0.13686,
+            -0.02
+          ],
+          [
+            0.276858,
+            0.15009,
+            0.69
+          ]
+        ],
+        "bounds_unity": [
+          [
+            -0.172657,
+            -0.02,
+            -0.15009
+          ],
+          [
+            0.276858,
+            0.69,
+            0.13686
+          ]
+        ],
+        "dimensions_unity_m": [
+          0.449515,
+          0.71,
+          0.28695
+        ],
+        "pivot_unity": [
+          0.0,
+          0.0,
+          -0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "fbx_axes": {
+          "UpAxis": 1,
+          "UpAxisSign": 1,
+          "FrontAxis": 2,
+          "FrontAxisSign": 1,
+          "UnitScaleFactor": 100.0
+        },
+        "contract_checks": [
+          "footprint",
+          "height",
+          "ground contact",
+          "upward-face rule"
+        ]
+      }
+    },
+    "world_pine_sapling": {
+      "description": "Young pine tuft with irregular soil mound, stake and tie",
+      "contract": {
+        "footprint_m": [
+          1,
+          1
+        ],
+        "max_height_m": 0.72,
+        "pivot_unity": [
+          0,
+          0,
+          0
+        ],
+        "naturalScale": true
+      },
+      "vertices": 103,
+      "triangles": 174,
+      "mesh_count": 1,
+      "editable_part_count": 8,
+      "bounds_blender": [
+        [
+          -0.24,
+          -0.1728,
+          -0.02
+        ],
+        [
+          0.24,
+          0.1728,
+          0.7
+        ]
+      ],
+      "bounds_unity": [
+        [
+          -0.24,
+          -0.02,
+          -0.1728
+        ],
+        [
+          0.24,
+          0.7,
+          0.1728
+        ]
+      ],
+      "pivot_unity": [
+        0,
+        0,
+        0
+      ],
+      "materials": [
+        "Forest_bark",
+        "Forest_pine",
+        "Forest_soil"
+      ],
+      "dimensions_unity_m": [
+        0.48,
+        0.72,
+        0.3456
+      ],
+      "guid": "3954d80272d755dfa6fa67ad2702282b",
+      "verification": {
+        "passed": true,
+        "triangles": 174,
+        "mesh_count": 1,
+        "bounds_blender": [
+          [
+            -0.24,
+            -0.1728,
+            -0.02
+          ],
+          [
+            0.24,
+            0.1728,
+            0.7
+          ]
+        ],
+        "bounds_unity": [
+          [
+            -0.24,
+            -0.02,
+            -0.1728
+          ],
+          [
+            0.24,
+            0.7,
+            0.1728
+          ]
+        ],
+        "dimensions_unity_m": [
+          0.48,
+          0.72,
+          0.3456
+        ],
+        "pivot_unity": [
+          0.0,
+          0.0,
+          -0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "fbx_axes": {
+          "UpAxis": 1,
+          "UpAxisSign": 1,
+          "FrontAxis": 2,
+          "FrontAxisSign": 1,
+          "UnitScaleFactor": 100.0
+        },
+        "contract_checks": [
+          "footprint",
+          "height",
+          "ground contact",
+          "upward-face rule"
+        ]
+      }
+    },
+    "world_stump": {
+      "description": "Natural cut stump with growth rings, roots and fresh chips",
+      "contract": {
+        "footprint_m": [
+          1,
+          1
+        ],
+        "max_height_m": 0.36,
+        "pivot_unity": [
+          0,
+          0,
+          0
+        ],
+        "naturalScale": true
+      },
+      "vertices": 177,
+      "triangles": 290,
+      "mesh_count": 1,
+      "editable_part_count": 8,
+      "bounds_blender": [
+        [
+          -0.409193,
+          -0.329848,
+          -0.02
+        ],
+        [
+          0.342005,
+          0.297452,
+          0.332
+        ]
+      ],
+      "bounds_unity": [
+        [
+          -0.409193,
+          -0.02,
+          -0.297452
+        ],
+        [
+          0.342005,
+          0.332,
+          0.329848
+        ]
+      ],
+      "pivot_unity": [
+        0,
+        0,
+        0
+      ],
+      "materials": [
+        "Forest_bark",
+        "Forest_endgrain"
+      ],
+      "dimensions_unity_m": [
+        0.751198,
+        0.352,
+        0.6273
+      ],
+      "guid": "575360c20a6555269074eba0af3a5255",
+      "verification": {
+        "passed": true,
+        "triangles": 290,
+        "mesh_count": 1,
+        "bounds_blender": [
+          [
+            -0.409193,
+            -0.329848,
+            -0.02
+          ],
+          [
+            0.342005,
+            0.297452,
+            0.332
+          ]
+        ],
+        "bounds_unity": [
+          [
+            -0.409193,
+            -0.02,
+            -0.297452
+          ],
+          [
+            0.342005,
+            0.332,
+            0.329848
+          ]
+        ],
+        "dimensions_unity_m": [
+          0.751198,
+          0.352,
+          0.6273
+        ],
+        "pivot_unity": [
+          0.0,
+          0.0,
+          -0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "fbx_axes": {
+          "UpAxis": 1,
+          "UpAxisSign": 1,
+          "FrontAxis": 2,
+          "FrontAxisSign": 1,
+          "UnitScaleFactor": 100.0
+        },
+        "contract_checks": [
+          "footprint",
+          "height",
+          "ground contact",
+          "upward-face rule"
+        ]
+      }
+    },
+    "world_stump_axe": {
+      "description": "Cut stump with a recognisable woodcutter axe buried in its rings",
+      "contract": {
+        "footprint_m": [
+          1,
+          1
+        ],
+        "max_height_m": 0.65,
+        "pivot_unity": [
+          0,
+          0,
+          0
+        ],
+        "naturalScale": true,
+        "variant": "axe"
+      },
+      "vertices": 215,
+      "triangles": 358,
+      "mesh_count": 1,
+      "editable_part_count": 10,
+      "bounds_blender": [
+        [
+          -0.409193,
+          -0.314404,
+          -0.02
+        ],
+        [
+          0.356487,
+          0.306277,
+          0.615
+        ]
+      ],
+      "bounds_unity": [
+        [
+          -0.409193,
+          -0.02,
+          -0.306277
+        ],
+        [
+          0.356487,
+          0.615,
+          0.314404
+        ]
+      ],
+      "pivot_unity": [
+        0,
+        0,
+        0
+      ],
+      "materials": [
+        "Forest_bark",
+        "Forest_endgrain",
+        "Forest_iron",
+        "Forest_wood"
+      ],
+      "dimensions_unity_m": [
+        0.76568,
+        0.635,
+        0.620681
+      ],
+      "guid": "5f61aaf8d6955f6a98fb0406ac03e76e",
+      "verification": {
+        "passed": true,
+        "triangles": 358,
+        "mesh_count": 1,
+        "bounds_blender": [
+          [
+            -0.409193,
+            -0.314404,
+            -0.02
+          ],
+          [
+            0.356487,
+            0.306277,
+            0.615
+          ]
+        ],
+        "bounds_unity": [
+          [
+            -0.409193,
+            -0.02,
+            -0.306277
+          ],
+          [
+            0.356487,
+            0.615,
+            0.314404
+          ]
+        ],
+        "dimensions_unity_m": [
+          0.76568,
+          0.635,
+          0.620681
+        ],
+        "pivot_unity": [
+          0.0,
+          0.0,
+          -0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "fbx_axes": {
+          "UpAxis": 1,
+          "UpAxisSign": 1,
+          "FrontAxis": 2,
+          "FrontAxisSign": 1,
+          "UnitScaleFactor": 100.0
+        },
+        "contract_checks": [
+          "footprint",
+          "height",
+          "ground contact",
+          "upward-face rule"
         ]
       }
     }
   },
   "verification": {
     "passed": true,
-    "asset_count": 16,
+    "asset_count": 42,
     "method": "Actual FBX reimport in Blender; no Unity run",
     "checks": [
       "FBX axes and units",
@@ -1902,31 +5483,42 @@
   "palette_srgb_hex": {
     "bark": "51362B",
     "berry": "AC5068",
+    "cloth": "7C86A8",
     "coal": "303D45",
     "copper": "C98655",
     "cream": "EDDFC0",
+    "darkwood": "372C29",
     "earth": "977B54",
     "ember": "F29E58",
+    "endgrain": "D7AA6D",
+    "flower": "C1A2C9",
     "gem": "76C6BA",
+    "gold": "D4AA4F",
     "herb": "69A49B",
     "iron": "687E89",
     "leaf": "477B45",
     "leaf_light": "83AB52",
+    "leather": "9B684A",
     "moss": "9BB96B",
+    "nose": "B37077",
     "pine": "24594A",
     "slate": "405660",
+    "soil": "49372B",
     "stone": "78877C",
     "stone_light": "BCC3AD",
+    "straw": "D2AE5D",
     "teal": "306E70",
+    "teal_light": "659A88",
     "terracotta": "B56443",
+    "water": "69B3BE",
     "wood": "A87543"
   },
   "totals": {
-    "assets": 16,
-    "meshes": 16,
-    "triangles": 10145,
-    "vertices": 6256,
-    "shared_materials": 20,
-    "fbx_bytes": 561632
+    "assets": 42,
+    "meshes": 60,
+    "triangles": 23030,
+    "vertices": 13691,
+    "shared_materials": 31,
+    "fbx_bytes": 1436712
   }
 }

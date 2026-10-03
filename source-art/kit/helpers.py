@@ -7,6 +7,7 @@ No downloads, addons, textures, paid services, or external Python packages.
 import json
 import math
 import random
+import re
 import zlib
 from pathlib import Path
 
@@ -610,6 +611,10 @@ def export_one(name, entry):
     entry["root"].select_set(True)
     for obj in entry["meshes"]:
         obj.select_set(True)
+    # Anchor empties (ChimneyTop, BedSlot_*, CarryBack, ...) parented under the root must reach the FBX too.
+    for child in entry["root"].children_recursive:
+        if child.type == "EMPTY":
+            child.select_set(True)
     bpy.context.view_layer.objects.active = entry["root"]
     bpy.ops.export_scene.fbx(
         filepath=str(EXPORT / f"{name}.fbx"),
@@ -649,7 +654,7 @@ def export_and_save(skip_render=False, export=True):
             key: entry[key] for key in ("description", "vertices", "triangles", "bounds_blender")
         }
         manifest["assets"][name]["mesh_count"] = len(entry["meshes"])
-        manifest["assets"][name]["parts"] = [obj.name for obj in entry["meshes"]]
+        manifest["assets"][name]["parts"] = [re.sub(r"\.\d{3}$", "", obj.name) for obj in entry["meshes"]]
     (ART / "asset-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     # Arrange the editable library only after all FBXs have been exported at local origin.
     for index, entry in enumerate(ASSETS.values()):

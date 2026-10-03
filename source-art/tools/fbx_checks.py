@@ -8,6 +8,13 @@ from pathlib import Path
 import bpy
 
 
+CAT_PARTS = {
+    "Body", "Head", "EarL", "EarR", "Jaw", "EyelidL", "EyelidR", "Tail", "Tail_1", "Tail_2", "Tail_3",
+    "PawFrontLeft", "LegFrontLeftLower", "PawBackLeft", "LegBackLeftLower",
+    "PawFrontRight", "LegFrontRightLower", "PawBackRight", "LegBackRightLower",
+}
+
+
 def _reimport(name, expected, export_dir):
     """Reimport one FBX and validate its measured geometry and materials."""
     path = Path(export_dir) / f"{name}.fbx"
@@ -42,10 +49,10 @@ def _reimport(name, expected, export_dir):
             not material.name.startswith("Forest_") for material in obj.data.materials
         ):
             raise RuntimeError(f"{name}: non Forest material")
-    if name == "cat":
+    if name in ("cat", "cat_kitten"):
         actual_parts = {re.sub(r"\.\d{3}$", "", obj.name) for obj in meshes}
-        if actual_parts != set(expected.get("parts", [])):
-            raise RuntimeError("cat: articulation names changed")
+        if actual_parts != {re.sub(r"\.\d{3}$", "", part) for part in expected.get("parts", [])} or actual_parts != CAT_PARTS:
+            raise RuntimeError(f"{name}: articulation names changed")
         head = next((obj for obj in meshes if re.sub(r"\.\d{3}$", "", obj.name) == "Head"), None)
         if head is None or head.location.y >= 0 or head.location.z <= 0.5:
             raise RuntimeError("cat: head pivot changed")

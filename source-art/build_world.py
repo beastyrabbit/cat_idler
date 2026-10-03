@@ -69,46 +69,86 @@ def _bounds(vertices):
 def _prepare(name, entry, write):
     """Join a temporary export copy, measure it, and optionally write FBX."""
     source = [obj for obj in entry["collection"].objects if obj.type == "MESH"]
+    contract = entry["contract"]
+    parts = contract.get("parts")
+    if parts:
+        by_name = {}
+        for obj in source:
+            base = re.sub(r"\.\d{3}$", "", obj.name)
+            if base in parts:
+                if base in by_name:
+                    raise RuntimeError(f"{name}: duplicate source part {base}")
+                by_name[base] = obj
+        missing = [part for part in parts if part not in by_name]
+        if missing or len(by_name) != len(parts) or len(source) != len(parts):
+            raise RuntimeError(f"{name}: source parts mismatch; missing={missing}, objects={[obj.name for obj in source]}")
+        source = [by_name[part] for part in parts]
+        for part, obj in zip(parts, source, strict=True):
+            obj.name = f"{name} {part} source"
     root = bpy.data.objects.new(name, None)
     entry["collection"].objects.link(root)
-    root["contract"] = json.dumps(entry["contract"], sort_keys=True)
+    root["contract"] = json.dumps(contract, sort_keys=True)
     for obj in source:
         obj.parent = root
     entry["root"] = root
     copies = []
-    for obj in source:
+    for part, obj in zip(parts or [None] * len(source), source, strict=True):
         duplicate = obj.copy()
         duplicate.data = obj.data.copy()
+        duplicate.name = part if parts else obj.name
         duplicate.parent = None
         duplicate.matrix_world = obj.matrix_world.copy()
         bpy.context.scene.collection.objects.link(duplicate)
+        if parts:
+            bpy.context.view_layer.objects.active = duplicate
+            duplicate.select_set(True)
+            bpy.ops.object.transform_apply(location=False, rotation=True, scale=True)
+            duplicate.select_set(False)
+            bpy.ops.object.mode_set(mode="EDIT")
+            bpy.ops.mesh.select_all(action="SELECT")
+            bpy.ops.mesh.quads_convert_to_tris(quad_method="BEAUTY", ngon_method="BEAUTY")
+            bpy.ops.object.mode_set(mode="OBJECT")
+        duplicate.parent = root
         copies.append(duplicate)
-    joined = forest.merge_group(name + "_mesh", copies)
-    bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
-    bpy.ops.object.mode_set(mode="EDIT")
-    bpy.ops.mesh.select_all(action="SELECT")
-    bpy.ops.mesh.normals_make_consistent(inside=False)
-    bpy.ops.mesh.quads_convert_to_tris(quad_method="BEAUTY", ngon_method="BEAUTY")
-    bpy.ops.object.mode_set(mode="OBJECT")
-    joined.parent = root
-    verts = _points([joined])
+    if parts:
+        if len(copies) != len(parts):
+            raise RuntimeError(f"{name}: builder produced {len(copies)} meshes for {len(parts)} parts")
+        export_objects = copies
+    else:
+        joined = forest.merge_group(name + "_mesh", copies)
+        bpy.context.view_layer.objects.active = joined
+        bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+        bpy.ops.object.mode_set(mode="EDIT")
+        bpy.ops.mesh.select_all(action="SELECT")
+        bpy.ops.mesh.normals_make_consistent(inside=False)
+        bpy.ops.mesh.quads_convert_to_tris(quad_method="BEAUTY", ngon_method="BEAUTY")
+        bpy.ops.object.mode_set(mode="OBJECT")
+        joined.parent = root
+        export_objects = [joined]
+    verts = _points(export_objects)
+    all_materials = sorted({material.name for obj in export_objects for material in obj.data.materials})
     record = {
         "description": entry["description"],
-        "contract": entry["contract"],
-        "vertices": len(joined.data.vertices),
-        "triangles": len(joined.data.polygons),
-        "mesh_count": 1,
+        "contract": contract,
+        "vertices": sum(len(obj.data.vertices) for obj in export_objects),
+        "triangles": sum(len(obj.data.polygons) for obj in export_objects),
+        "mesh_count": len(export_objects),
         "editable_part_count": len(source),
         "bounds_blender": _bounds(verts),
         "bounds_unity": _bounds([H.unity(point) for point in verts]),
         "pivot_unity": [0, 0, 0],
-        "materials": sorted({material.name for material in joined.data.materials}),
+        "materials": all_materials,
     }
+    if parts:
+        record["parts"] = list(parts)
+        record["pivots_blender"] = [list(obj.matrix_world.translation) for obj in export_objects]
+        record["pivots_unity"] = [list(H.unity(obj.matrix_world.translation)) for obj in export_objects]
     record["dimensions_unity_m"] = [round(b - a, 6) for a, b in zip(*record["bounds_unity"], strict=True)]
     if write:
         bpy.ops.object.select_all(action="DESELECT")
         root.select_set(True)
-        joined.select_set(True)
+        for obj in export_objects:
+            obj.select_set(True)
         bpy.context.view_layer.objects.active = root
         bpy.ops.export_scene.fbx(
             filepath=str(EXPORT / f"{name}.fbx"),
@@ -127,7 +167,8 @@ def _prepare(name, entry, write):
             path_mode="AUTO",
             embed_textures=False,
         )
-    bpy.data.objects.remove(joined, do_unlink=True)
+    for obj in export_objects:
+        bpy.data.objects.remove(obj, do_unlink=True)
     if write:
         _ensure_meta(name)
     record["guid"] = uuid.uuid5(uuid.NAMESPACE_URL, f"idle-cat-forest/art/{name}.fbx").hex
@@ -177,40 +218,6 @@ def _check_roads(name, uv, lo, hi, size, record, objects):
     return checks
 
 
-def _check_stairs(name, uv, lo, hi, size, record, objects):
-    checks = []
-    _assert_close(lo, [-0.5, -4, 0], "stair lower bounds")
-    _assert_close(hi, [0.5, 0, 4], "stair upper bounds")
-    obj = objects[0]
-    inverse = obj.matrix_world.inverted()
-    for index in range(16):
-        hit, local, _, _ = obj.ray_cast(inverse @ Vector((0, -(index + 0.5) * 0.25, 1)), Vector((0, 0, -1)))
-        if not hit or abs((obj.matrix_world @ local).z + index * 0.25) >= 0.001:
-            raise AssertionError((name, "wrong tread", index))
-    checks += [
-        "16 actual horizontal treads",
-        "4 m run along Unity +Z",
-        "4 m descent",
-        "top stair origin",
-        "1 m width",
-    ]
-    return checks
-
-
-def _check_entrance(name, uv, lo, hi, size, record, objects):
-    checks = []
-    _assert_close([size[0], hi[1], lo[1]], [3, 3.5, 0], "entrance envelope")
-    obj = objects[0]
-    inverse = obj.matrix_world.inverted()
-    for x in (-0.82, 0, 0.82):
-        for z in (0.05, 1.2, 2.55):
-            hit, _, _, _ = obj.ray_cast(inverse @ Vector((x, -2, z)), Vector((0, 1, 0)), distance=4)
-            if hit:
-                raise AssertionError((name, "blocked entrance opening", x, z))
-    checks += ["3 m width", "3.5 m height", "nine rays pass through the real opening"]
-    return checks
-
-
 def _check_wall_pillar(name, uv, lo, hi, size, record, objects):
     checks = []
     expected = [1, 2.5, 0.32] if name.endswith("wall") else [0.35, 2.5, 0.35]
@@ -229,32 +236,60 @@ def _check_floor(name, uv, lo, hi, size, record, objects):
     return checks
 
 
-def _check_beetle(name, uv, lo, hi, size, record, objects):
-    checks = []
-    _assert_close([size[0], size[2], lo[1]], [0.9, 1.25, 0], name + " silhouette")
-    checks += ["0.9 m width", "1.25 m length", "ground pivot"]
-    return checks
-
-
 CONTRACT_CHECKERS = {
     "world_road_": _check_roads,
-    "world_dungeon_stairs": _check_stairs,
-    "world_dungeon_entrance": _check_entrance,
     "world_dungeon_wall": _check_wall_pillar,
     "world_dungeon_pillar": _check_wall_pillar,
     "world_dungeon_floor": _check_floor,
-    "world_cave_beetle": _check_beetle,
 }
 
 
 def check_contract(name, verts, record, objects):
+    """Run the owning world module's check, falling back to legacy shared checks."""
+    checks = {}
+    prefixes = {}
+    for path in sorted((ART / "world").glob("*.py")):
+        if path.name.startswith("_") or path.name in {"helpers.py", "__init__.py"}:
+            continue
+        module = importlib.import_module(f"world.{path.stem}")
+        for asset_name, check in getattr(module, "CHECKS", {}).items():
+            if asset_name in checks:
+                raise RuntimeError(f"duplicate check {asset_name}")
+            checks[asset_name] = check
+        for prefix, check in getattr(module, "CONTRACT_CHECKERS", {}).items():
+            if prefix in prefixes or prefix in CONTRACT_CHECKERS:
+                raise RuntimeError(f"duplicate contract checker {prefix}: {path.name}")
+            prefixes[prefix] = check
     uv = [H.unity(vertex) for vertex in verts]
     lo, hi = H.bounds(uv)
     size = [b - a for a, b in zip(lo, hi, strict=True)]
-    for prefix, check in CONTRACT_CHECKERS.items():
+    if name in checks:
+        return checks[name](name, uv, lo, hi, size, record, objects)
+    for prefix, check in {**prefixes, **CONTRACT_CHECKERS}.items():
         if name.startswith(prefix):
             return check(name, uv, lo, hi, size, record, objects)
     return []
+
+
+def _upward_face_check(name, objects):
+    """Reject unsupported downward-facing horizontal faces when requested."""
+    for obj in objects:
+        world = obj.matrix_world
+        for poly in obj.data.polygons:
+            normal = (world.to_3x3() @ poly.normal).normalized()
+            if abs(normal.z) <= 0.95:
+                continue
+            centre = world @ poly.center
+            origin = Vector((centre.x, centre.y, centre.z + 1e-4))
+            hit_any = False
+            for other in objects:
+                inv = other.matrix_world.inverted()
+                hit, _, _, _ = other.ray_cast(inv @ origin, inv.to_3x3() @ Vector((0, 0, 1)), distance=1e6)
+                if hit:
+                    hit_any = True
+                    break
+            if not hit_any and normal.z < 0:
+                raise AssertionError((name, "unsupported downward horizontal face"))
 
 
 def verify(manifest):
@@ -280,50 +315,77 @@ def verify(manifest):
             raise AssertionError((name, "FBX -Z forward metadata", axes))
         if abs(axes.get("UnitScaleFactor", 0) - 100) >= 0.001:
             raise AssertionError((name, "FBX meter units"))
+        model_names = set()
+        def walk(elements):
+            for element in elements:
+                if element.id == b"Model" and len(element.props) >= 2:
+                    raw = element.props[1]
+                    model_names.add(raw.decode("utf-8", "replace").split("\x00", 1)[0])
+                walk(element.elems)
+        walk(document.elems)
+        expected_names = {name, *record.get("parts", [])} if record.get("parts") else {name, f"{name}_mesh"}
+        if model_names != expected_names:
+            raise AssertionError((name, "FBX model names", sorted(model_names), sorted(expected_names)))
         bpy.ops.import_scene.fbx(filepath=str(path), use_anim=False)
         bpy.context.view_layer.update()
         objects = [obj for obj in scene.objects if obj.type == "MESH"]
-        if len(objects) != 1:
-            raise AssertionError((name, "mesh count"))
+        expected_mesh_count = len(record.get("parts", record.get("contract", {}).get("parts", []))) or 1
+        if len(objects) != expected_mesh_count:
+            raise AssertionError((name, "mesh count", len(objects), expected_mesh_count))
         obj = objects[0]
         verts = _points(objects)
         if not all(math.isfinite(coordinate) for point in verts for coordinate in point):
             raise AssertionError((name, "nonfinite vertex"))
-        triangles = sum(len(poly.vertices) - 2 for poly in obj.data.polygons)
+        triangles = sum(sum(len(poly.vertices) - 2 for poly in mesh.data.polygons) for mesh in objects)
         if triangles != record["triangles"]:
             raise AssertionError((name, "triangles", triangles, record["triangles"]))
         actual_bounds = _bounds(verts)
         for actual, expected in zip(actual_bounds, record["bounds_blender"], strict=True):
             _assert_close(actual, expected, name + " bounds")
-        _assert_close(list(obj.matrix_world.translation), [0, 0, 0], name + " mesh pivot")
-        _assert_close(list(obj.matrix_world.to_scale()), [1, 1, 1], name + " scale")
+        if record.get("parts"):
+            actual_parts = {re.sub(r"\.\d{3}$", "", mesh.name) for mesh in objects}
+            if actual_parts != set(record["parts"]):
+                raise AssertionError((name, "part names", actual_parts, record["parts"]))
+            expected_pivots = record.get("pivots_unity", [])
+            actual_pivots = [list(H.unity(mesh.matrix_world.translation)) for mesh in objects]
+            for actual_pivot in actual_pivots:
+                if not any(max(abs(a - b) for a, b in zip(actual_pivot, expected, strict=True)) < 0.001 for expected in expected_pivots):
+                    raise AssertionError((name, "part pivot", actual_pivot, expected_pivots))
+        else:
+            _assert_close(list(obj.matrix_world.translation), [0, 0, 0], name + " mesh pivot")
+        for mesh in objects:
+            _assert_close(list(mesh.matrix_world.to_scale()), [1, 1, 1], name + " scale")
         roots = [obj for obj in scene.objects if obj.parent is None]
         if len(roots) != 1 or roots[0].type != "EMPTY":
             raise AssertionError((name, "root hierarchy"))
         _assert_close(list(roots[0].matrix_world.translation), [0, 0, 0], name + " root pivot")
-        actual_materials = {re.sub(r"\.\d{3}$", "", material.name) for material in obj.data.materials if material}
+        actual_materials = {re.sub(r"\.\d{3}$", "", material.name) for mesh in objects for material in mesh.data.materials if material}
         if actual_materials != set(record["materials"]):
             raise AssertionError((name, "materials", actual_materials))
-        for material in obj.data.materials:
-            key = re.sub(r"\.\d{3}$", "", material.name).removeprefix("Forest_")
-            color = forest.PALETTE[key]
-            expected = [int(color[index : index + 2], 16) / 255 for index in (0, 2, 4)]
-            _assert_close(list(material.diffuse_color[:3]), expected, name + " material color")
+        for mesh in objects:
+            for material in mesh.data.materials:
+                key = re.sub(r"\.\d{3}$", "", material.name).removeprefix("Forest_")
+                color = forest.PALETTE[key]
+                expected = [int(color[index : index + 2], 16) / 255 for index in (0, 2, 4)]
+                _assert_close(list(material.diffuse_color[:3]), expected, name + " material color")
+        _upward_face_check(name, objects)
         contract_checks = check_contract(name, verts, record, objects)
         unity_bounds = _bounds([H.unity(point) for point in verts])
         record["verification"] = {
             "passed": True,
             "triangles": triangles,
-            "mesh_count": 1,
+            "mesh_count": len(objects),
             "bounds_blender": actual_bounds,
             "bounds_unity": unity_bounds,
             "dimensions_unity_m": [round(hi - lo, 6) for lo, hi in zip(*unity_bounds, strict=True)],
-            "pivot_unity": list(H.unity(obj.matrix_world.translation)),
+            "pivot_unity": list(H.unity(obj.matrix_world.translation)) if not record.get("parts") else [0, 0, 0],
             "scale": [round(value, 6) for value in obj.matrix_world.to_scale()],
             "fbx_axes": {
                 key: axes[key] for key in ("UpAxis", "UpAxisSign", "FrontAxis", "FrontAxisSign", "UnitScaleFactor")
             },
             "contract_checks": contract_checks,
+            **({"parts": [re.sub(r"\.\d{3}$", "", mesh.name) for mesh in objects],
+                "pivots_unity": [list(H.unity(mesh.matrix_world.translation)) for mesh in objects]} if record.get("parts") else {}),
         }
     for obj in list(scene.objects):
         bpy.data.objects.remove(obj, do_unlink=True)
@@ -479,7 +541,7 @@ def main():
     manifest["palette_srgb_hex"] = {key: forest.PALETTE[key] for key in sorted(used)}
     manifest["totals"] = {
         "assets": len(assets),
-        "meshes": len(assets),
+        "meshes": sum(entry["mesh_count"] for entry in assets.values()),
         "triangles": sum(entry["triangles"] for entry in assets.values()),
         "vertices": sum(entry["vertices"] for entry in assets.values()),
         "shared_materials": len(used),
