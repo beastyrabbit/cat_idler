@@ -17,7 +17,7 @@ namespace IdleCatForest.Simulation
                     v.LeaderId = winner;
                 v.Election = null;
                 v.NextElection = TimeSeconds + Pace.ElectionIntervalSeconds;
-                Note(v, "election", "Leader term began", v.LeaderId);
+                Note(v, EventKind.Election, "Leader term began", v.LeaderId);
             }
             if (v.KickPetition != null && TimeSeconds >= v.KickPetition.EndAt)
             {
@@ -29,10 +29,10 @@ namespace IdleCatForest.Simulation
                     v.LeaderId = v.Cats.Where(c => c.Alive && c.Id != petition.TargetId && c.Migration != "arriving" && c.Migration != "departing").OrderByDescending(c => Amount(c.Stats, "leadership")).ThenBy(c => c.Id, StringComparer.Ordinal).FirstOrDefault()?.Id ?? "";
                     if (v.Election == null)
                         v.Election = new Election { Id = Id("election"), Kind = "snap", EndAt = TimeSeconds + Pace.ElectionDurationSeconds };
-                    Note(v, "election", "Five players removed the leader; interim term began", v.LeaderId);
+                    Note(v, EventKind.Election, "Five players removed the leader; interim term began", v.LeaderId);
                 }
                 else
-                    Note(v, "election", "Leader removal petition expired without five signatures");
+                    Note(v, EventKind.Election, "Leader removal petition expired without five signatures");
             }
             MaybeSpawnRaid(v);
         }

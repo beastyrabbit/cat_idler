@@ -40,6 +40,7 @@ namespace IdleCatForest.Simulation
             {
                 if (Move(c, v.Center, dt))
                 {
+                    int mapped = c.ScoutNotes.Distinct().Count(p => !v.Known.Contains(p));
                     foreach (var p in c.ScoutNotes)
                         if (!v.Known.Contains(p))
                             v.Known.Add(p);
@@ -50,7 +51,7 @@ namespace IdleCatForest.Simulation
                         if (!other.Contacts.Contains(v.Id))
                             other.Contacts.Add(v.Id);
                     }
-                    Note(v, EventKind.Discovery, c.ScoutNotes.Count + " notes delivered to shrine", c.Id);
+                    NoteScoutReport(v, c, mapped);
                     c.ScoutNotes.Clear();
                     Finish(v, c, j);
                 }

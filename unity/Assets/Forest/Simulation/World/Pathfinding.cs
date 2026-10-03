@@ -16,7 +16,7 @@ namespace IdleCatForest.Simulation
         {
             if (t.Landform == "dungeon_opening")
                 return false;
-            if (t.Wall || t.Water && !t.Bridge && !(GenerationVersion > 0 && t.WaterDepth > 0 && t.WaterDepth <= .45) || t.Mountain && (p.Level != 0 || !Catalog.Owns(village, "unlock_capability", "mountain_travel")))
+            if (t.Wall || t.Water && !t.Bridge && !(GenerationVersion > 0 && t.WaterDepth > 0 && t.WaterDepth <= .45) || t.Mountain && (p.Level != 0 || !Catalog.Owns(this, village, "unlock_capability", "mountain_travel")))
                 return false;
             return !village.Stockpiles.Any(s => s.Kind == "zone_avoid" && Contains(s.Position, s.Width, s.Depth, p));
         }
@@ -88,7 +88,7 @@ namespace IdleCatForest.Simulation
             double terrain = tile.Road ? pace.RoadSpeedFactor : tile.Dirt ? pace.DirtSpeedFactor : tile.Mountain ? pace.MountainSpeedFactor : tile.Biome.Contains("forest") ? pace.ForestSpeedFactor : pace.OpenGroundSpeedFactor;
             if (tile.Water && !tile.Bridge)
                 terrain *= pace.WadingSpeedFactor;
-            return pace.CatBaseSpeed * (village == null ? 1 : Catalog.Effect(village, "movementSpeed", 1) * Catalog.Effect(village, "moveSpeedMult", 1)) * terrain;
+            return pace.CatBaseSpeed * (village == null ? 1 : Catalog.Effect(this, village, "movementSpeed", 1) * Catalog.Effect(this, village, "moveSpeedMult", 1)) * terrain;
         }
         private static void ClearPathFailure(Cat c)
         {

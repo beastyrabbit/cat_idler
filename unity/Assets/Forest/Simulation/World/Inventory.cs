@@ -80,9 +80,9 @@ namespace IdleCatForest.Simulation
         public double Capacity(Village v, Stockpile s)
         {
             var building = v.Buildings.Find(b => b.Id == s.ManagedBy);
-            return s.Capacity * Catalog.Effect(v, "storageCapacity", 1) * Catalog.Effect(v, "storagePerLevelMult", 1) * (building == null ? 1 : Catalog.BuildingEffect(v, building.Kind, "capacity", 1));
+            return s.Capacity * Catalog.Effect(this, v, "storageCapacity", 1) * Catalog.Effect(this, v, "storagePerLevelMult", 1) * (building == null ? 1 : Catalog.BuildingEffect(this, v, building.Kind, "capacity", 1));
         }
         public double ResourceCapacity(Village v, Stockpile s, string resource) => Capacity(v, s) + ResourceCapacityBonus(v, resource);
-        public double StationCapacity(Village v, string building) => 16 * Catalog.BuildingEffect(v, building, "capacity", 1);
+        public double StationCapacity(Village v, string building) => 16 * Catalog.BuildingEffect(this, v, building, "capacity", 1);
     }
 }

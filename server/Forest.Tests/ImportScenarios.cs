@@ -94,9 +94,10 @@ static class ImportScenarios
                 });
                 var world = Restart(Convert(input)); var v = world.Village("c"); var job = v.Jobs.Single(); var store = v.Stockpiles.Single();
                 check(job.ItemIds.SequenceEqual(new[] { "c\u001fvariant" }) && v.Items.Single(i => i.Id == "c\u001fvariant").LocationId == job.Id && v.Cats.Single(c => c.Id == "c\u001fworker").Cargo.Count == 0, "suffixed variant retained its refined compatibility cargo");
+                var context = new PlayerContext { PlayerId = "fixture-owner", VillageId = v.Id };
+                check(world.Apply(context, new GameAction { Kind = "EnterCatControl", CatId = "c\u001fkeeper" }).Success, "keeper could not be held beside the store");
                 world.Step(2); world = Restart(world); v = world.Village("c"); job = v.Jobs.Single();
                 check(!job.Completed && job.ItemIds.Count == 1 && job.BlockedReason == "output_storage_full_or_unreachable" && v.Items.Single(i => i.Id == "c\u001fleftover").LocationId == "c\u001fbench", "full variant storage changed exact cargo or station ownership");
-                var context = new PlayerContext { PlayerId = "fixture-owner", VillageId = v.Id };
                 check(world.Apply(context, new GameAction { Kind = "EnterCatControl", CatId = "c\u001fkeeper" }).Success && world.Apply(context, new GameAction { Kind = "InteractCat", CatId = "c\u001fkeeper", TargetId = store.Id, Resource = "stone", Amount = 1 }).Success, "public pickup could not free variant receiving capacity");
                 world.Step(1); world = Restart(world); v = world.Village("c");
                 var item = v.Items.Single(i => i.Id == "c\u001fvariant");

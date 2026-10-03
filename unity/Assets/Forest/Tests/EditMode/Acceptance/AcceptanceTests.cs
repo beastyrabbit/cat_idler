@@ -13,6 +13,9 @@ public class AcceptanceTests
             // Campaign twins run for minutes each; Run All must never pick them up.
             if (c.Name.StartsWith("campaign.", StringComparison.Ordinal))
                 data = data.SetCategory("Campaign").Explicit("campaign");
+            // Demo timing cases replay 40 demo minutes each; the dotnet runner opts in with --include-demo-timing.
+            else if (c.Name.StartsWith("demo_timing.", StringComparison.Ordinal))
+                data = data.SetCategory("DemoTiming").Explicit("demo timing");
             yield return data;
         }
     }

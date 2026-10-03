@@ -27,15 +27,11 @@ namespace IdleCatForest.Simulation
     /// </summary>
     public partial class World
     {
-        // PACING-HANDOFF BuildWorkBase: work for the first building of a kind (today's literal in Plan).
-        private const double BuildWorkBase = 120;
-        // PACING-HANDOFF BuildWorkPerExisting: extra work per counted building of the same kind.
-        private const double BuildWorkPerExisting = 30;
-        // PACING-HANDOFF BridgeLumber and DockLumber: today's literals in the bridge and dock handlers.
-        private const double BridgeLumber = 4;
-        private const double DockLumber = 8;
-        // PACING-HANDOFF DemolishRefundShare: share of the bill a demolished building returns.
-        private const double DemolishRefundShare = 0.5;
+        private double BuildWorkBase => Pace.BuildWorkBase;
+        private double BuildWorkPerExisting => Pace.BuildWorkPerExisting;
+        private double BridgeLumber => Pace.BridgeLumber;
+        private double DockLumber => Pace.DockLumber;
+        private double DemolishRefundShare => Pace.DemolishRefundShare;
 
         /// <summary>
         /// The demo construction rules: player-built pricing, queued plans, several builders per site, full-load

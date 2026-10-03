@@ -42,8 +42,8 @@ namespace IdleCatForest.Simulation
             cat.ControlledBy = "";
             cat.ControlDirection = default;
             cat.Goal = GoalKey.Idle;
-            // W2-INT-a: call W2-09's ContinueExpeditionAfterControl(village, cat) here (Dungeons.cs), so an
-            // explorer released underground resumes its expedition.
+            // An explorer released underground resumes its expedition (W2-09).
+            ContinueExpeditionAfterControl(village, cat);
             return ActionResult.Ok(ResultCode.ControlLeft, cat.Id);
         }
         private ActionResult HandleKeepCatControl(PlayerContext context, Cat cat)
@@ -80,9 +80,8 @@ namespace IdleCatForest.Simulation
             }
             if (!continuing)
                 StepTo(village, cat, next.Value);
-            // W2-INT-a: call W2-09's MaterialiseStairEndpoints(village, cat) here (Dungeons.cs), so stair
-            // endpoints the cat is about to use exist as tiles. Steps chained by TickControls start in StepTo;
-            // add the same call at the marker there.
+            // Stair endpoints the cat is about to use exist as tiles (W2-09); chained steps do the same in StepTo.
+            MaterialiseStairEndpoints(village, cat);
             return HoldDirection(cat, direction);
         }
         private ActionResult HoldDirection(Cat cat, Int2 direction)
@@ -134,7 +133,7 @@ namespace IdleCatForest.Simulation
                 v.Known.Add(next);
             c.Path = new List<Int2> { next };
             c.ControlStepAt = TimeSeconds;
-            // W2-INT-a: MaterialiseStairEndpoints(v, c) for chained steps (see HandleMoveCat).
+            MaterialiseStairEndpoints(v, c);
         }
 
         private ActionResult HandleInteractCat(PlayerContext context, Village village, GameAction action, Cat cat)
@@ -165,15 +164,19 @@ namespace IdleCatForest.Simulation
                     return ActionResult.Fail(ResultCode.UnknownTarget, "That pile no longer exists", (ResultArg.Target, a.TargetId));
                 return PileInteraction(v, c, pile, a);
             }
-            var chest = c.Position.Level < 0 ? Dungeons.SelectMany(d => d.Floors).FirstOrDefault(f => f.Loot.Any(s => s.Amount > 0) && (f.LootPosition.Equals(c.Position) || Int2.Distance(f.LootPosition, c.Position) == 1 && Crossable(c.Position, f.LootPosition))) : null;
-            if (chest != null)
-                return CollectChest(v, c, chest);
+            // Underground, E opens the chest in reach once its guardian is down (W2-09). With no chest in
+            // reach, E answers like everywhere else.
+            if (c.Position.Level < 0)
+            {
+                var chest = TakeDungeonChest(v, c);
+                return chest.Code == ResultCode.NoChestInReach ? ActionResult.Fail(ResultCode.NothingInReach, "No interactable target within reach") : chest;
+            }
             bool atShrine = AtShrine(v, c.Position);
             if (atShrine)
             {
-                if (c.Thirst <= 100 - Pace.DrinkRestorePerServing && Serving(v, c, "drink") != null)
+                if (c.Thirst <= 100 - Pace.DrinkRestorePerServing * Pace.NeedServing && Serving(v, c, "drink") != null)
                     return ControlledNeed(v, c, "drink");
-                if (c.Hunger <= 100 - Pace.EatRestorePerServing && Serving(v, c, "eat") != null)
+                if (c.Hunger <= 100 - Pace.EatRestorePerServing * Pace.NeedServing && Serving(v, c, "eat") != null)
                     return ControlledNeed(v, c, "eat");
                 if (c.Cargo.Any(s => OfferableResources.Contains(s.Resource) && s.Amount > 0))
                     return ShrineOffering(v, c);
@@ -184,19 +187,6 @@ namespace IdleCatForest.Simulation
             return atShrine && c.Cargo.Count > 0
                 ? ActionResult.Fail(ResultCode.NothingToOffer, "Only food, herbs and materials can be offered")
                 : ActionResult.Fail(ResultCode.NothingInReach, "No interactable target within reach");
-        }
-
-        private ActionResult CollectChest(Village v, Cat c, DungeonFloor chest)
-        {
-            double taken = 0;
-            foreach (var stack in chest.Loot.ToArray())
-            {
-                double take = Math.Min(stack.Amount, Math.Max(0, CarryCapacity(v, stack.Resource) - Amount(c.Cargo, stack.Resource)));
-                Add(c.Cargo, stack.Resource, take);
-                Add(chest.Loot, stack.Resource, -take);
-                taken += take;
-            }
-            return ActionResult.Ok(ResultCode.Collected, c.Id, (ResultArg.Amount, ActionResult.Number(taken)));
         }
 
         private ActionResult PileInteraction(Village v, Cat c, Stockpile pile, GameAction a)

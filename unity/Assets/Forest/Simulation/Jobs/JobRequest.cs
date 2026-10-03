@@ -67,53 +67,10 @@ namespace IdleCatForest.Simulation
                 return ActionResult.Ok(c.JobId);
             }
             if (kind == JobKind.Expand)
-                return RequestExpansion(v, c);
+                return PlanExpansion(v, c);
             if (kind == JobKind.Scout)
                 return RequestScout(v, c, manual, resource);
             return RequestGather(v, c, kind, manual, resource);
-        }
-        private ActionResult RequestExpansion(Village v, Cat c)
-        {
-            var pending = v.Jobs.Find(j => j.Kind == JobKind.Expand && !j.Completed);
-            if (pending != null)
-            {
-                if (pending.CatId != "")
-                    return ActionResult.Fail("Expansion already active");
-                if (!CanConstructJob(v, pending))
-                    return ActionResult.Fail("Foreign territory blocks expansion");
-                if (pending.OriginalKind != JobKind.ExpandVillage && ExpansionFootprintBlocked(v, v.Radius + 2, pending.Path))
-                    return ActionResult.Fail("Existing footprint or entrance blocks expansion");
-                if (c.Cargo.Count > 0)
-                    Spill(v, c.Position, c.Cargo);
-                pending.CatId = c.Id;
-                c.JobId = pending.Id;
-                c.Path.Clear();
-                return ActionResult.Ok(pending.Id);
-            }
-            int radius = v.Radius + 2;
-            if (!CanModifyTerrain(v.Id, new Int2(v.Center.X - radius, v.Center.Z - radius), radius * 2 + 1, radius * 2 + 1))
-                return ActionResult.Fail("Foreign territory blocks expansion");
-            if (ExpansionFootprintBlocked(v, radius))
-                return ActionResult.Fail("Existing footprint or entrance blocks expansion");
-            var perimeter = new List<Int2>();
-            for (int x = -radius; x <= radius; x++)
-            {
-                perimeter.Add(new Int2(v.Center.X + x, v.Center.Z - radius));
-                if (x != 0)
-                    perimeter.Add(new Int2(v.Center.X + x, v.Center.Z + radius));
-            }
-            for (int z = -radius + 1; z < radius; z++)
-            {
-                perimeter.Add(new Int2(v.Center.X - radius, v.Center.Z + z));
-                perimeter.Add(new Int2(v.Center.X + radius, v.Center.Z + z));
-            }
-            perimeter.RemoveAll(p => FarmExterior(v, p, radius) || LayoutGate(v, p, radius));
-            if (perimeter.Any(p => !v.Known.Contains(p) || !Walkable(p)))
-                return ActionResult.Fail("Survey a dry reachable outer perimeter first");
-            var result = CreateInputJob(v, c, JobKind.Expand, v.Center, "materials", perimeter.Count, Pace.ExpansionWork, "");
-            if (result.Success)
-                v.Jobs.Find(j => j.Id == result.EntityId).Path = perimeter;
-            return result;
         }
         private ActionResult RequestScout(Village v, Cat c, bool manual, string resource)
         {

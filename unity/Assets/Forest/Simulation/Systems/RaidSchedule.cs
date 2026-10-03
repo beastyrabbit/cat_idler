@@ -5,15 +5,13 @@ namespace IdleCatForest.Simulation
 {
     public partial class World
     {
-        // PACING-HANDOFF ScriptedBandMembers, ScriptedRaiderHealth, ScriptedRaiderStrength: the demo's fox band.
-        private const int ScriptedBandMembers = 3;
-        private const double ScriptedRaiderHealth = 6;
-        private const double ScriptedRaiderStrength = 15;
-        // PACING-HANDOFF NaturalRaiderHealth, NaturalRaiderStrength, CatsPerRaider, MaxRaiders: natural raiding parties.
-        private const double NaturalRaiderHealth = 10;
-        private const double NaturalRaiderStrength = 15;
-        private const int CatsPerRaider = 8;
-        private const int MaxRaiders = 6;
+        private int ScriptedBandMembers => Pace.ScriptedBandMembers;
+        private double ScriptedRaiderHealth => Pace.ScriptedRaiderHealth;
+        private double ScriptedRaiderStrength => Pace.ScriptedRaiderStrength;
+        private double NaturalRaiderHealth => Pace.NaturalRaiderHealth;
+        private double NaturalRaiderStrength => Pace.NaturalRaiderStrength;
+        private int CatsPerRaider => Pace.CatsPerRaider;
+        private int MaxRaiders => Pace.MaxRaiders;
 
         /// <summary>
         /// Once per planning second: the demo's scripted raid (warning, then a fox band of three at the

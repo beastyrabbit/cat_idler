@@ -5,23 +5,19 @@ namespace IdleCatForest.Simulation
 {
     public partial class World
     {
-        // PACING-HANDOFF BlessingStudyCostFactor: blessing price of a study as a multiple of its research cost
-        // (classic 1; demo 3, so blessings stop being the cheap path to the core studies).
-        private const double BlessingStudyCostFactorDemo = 3;
-        // PACING-HANDOFF HurryStudySeconds: seconds of current research one blessing buys (300 in every profile).
-        private const double HurryStudySeconds = 300;
+        private double HurryStudySeconds => Pace.HurryStudySeconds;
         // Studies a blessing can buy: the original first entries of the research catalog.
         private const int BlessableStudies = 24;
 
-        private double BlessingStudyCostFactor => Pace.Profile == Pacing.DemoProfile ? BlessingStudyCostFactorDemo : 1;
+        private double BlessingStudyCostFactor => Pace.BlessingStudyCostFactor;
 
         /// <summary>The blessing price of a study, or +infinity when blessings cannot buy it.</summary>
-        public double BlessingStudyCost(Study node) => node != null && Catalog.Research.IndexOf(node) is int index && index >= 0 && index < BlessableStudies ? node.Cost * BlessingStudyCostFactor : double.PositiveInfinity;
+        public double BlessingStudyCost(Study node) => node != null && Catalog.Research.FindIndex(n => n.Id == node.Id) is int index && index >= 0 && index < BlessableStudies ? node.Cost * BlessingStudyCostFactor : double.PositiveInfinity;
 
         private ActionResult HandleResearchNode(Village village, GameAction action, string kind) => Research(village, action.NodeId, kind == "unlocknode");
         private ActionResult Research(Village v, string id, bool blessings)
         {
-            var node = Catalog.Study(id);
+            var node = Catalog.Study(this, id);
             if (node == null)
                 return ActionResult.Fail(ResultCode.UnknownStudy, "Unknown study", (ResultArg.Study, id ?? ""));
             if (v.Research.Contains(id))

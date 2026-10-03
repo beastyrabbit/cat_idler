@@ -10,10 +10,8 @@ namespace IdleCatForest.Simulation
         /// <summary>Every idle activity, in the order the picker falls back through them.</summary>
         private static readonly string[] IdleActivities = { GoalKey.IdleNap, GoalKey.IdleGroom, GoalKey.IdleSocial, GoalKey.IdlePatrol, GoalKey.IdleShrine, GoalKey.IdlePlay };
 
-        // PACING-HANDOFF IdleWalkLimitSeconds: an idle cat that has not reached its spot after this long picks again (45).
-        private const double IdleWalkLimitSeconds = 45;
-        // PACING-HANDOFF IdleTileShare: idle cats that may stand on one tile (2).
-        private const int IdleTileShare = 2;
+        private double IdleWalkLimitSeconds => Pace.IdleWalkLimitSeconds;
+        private int IdleTileShare => Pace.IdleTileShare;
 
         public static bool IsIdleActivity(string goal) => Array.IndexOf(IdleActivities, goal) >= 0;
 

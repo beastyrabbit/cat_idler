@@ -82,18 +82,8 @@ namespace IdleCatForest.Acceptance
             }
         }
 
-        /// <summary>
-        /// Applies CancelConstruction or Demolish through the router. Until W2-INT-a adds the two router cases
-        /// (ActionRouter belongs to W2-06) the router answers "Unknown action"; then the handler is called
-        /// directly. Remove the fallback once the cases are routed.
-        /// </summary>
-        internal static ActionResult Construct(World w, Village v, GameAction a)
-        {
-            var r = w.Apply(Context(v), a);
-            if (r.Success || !r.Error.StartsWith("Unknown action", StringComparison.Ordinal))
-                return r;
-            return (ActionResult)Invoke(w, a.Kind == "CancelConstruction" ? "HandleCancelConstruction" : "HandleDemolish", v, a);
-        }
+        /// <summary>Applies CancelConstruction or Demolish through the router.</summary>
+        internal static ActionResult Construct(World w, Village v, GameAction a) => w.Apply(Context(v), a);
 
         /// <summary>The safety net W2-INT-a calls from TickVillage on planning ticks; scenarios call it directly.</summary>
         static void SafetyNet(World w, Village v) => Invoke(w, "EnsureScaffoldJobs", v);
@@ -407,16 +397,17 @@ namespace IdleCatForest.Acceptance
             for (int tick = 0; tick < 600 && !v.Buildings.Single(b => b.Id == id).Completed; tick++)
                 w.Step(1);
             Check(v.Events.Count(e => e.Kind == EventKind.BuildingCompleted && e.EntityId == id) == 1, "Building completion was not logged once as a milestone");
-            int before = v.Events.Count;
+            // Completions are info events kept in the routine log (W2-08); read both logs in Seq order.
+            long before = w.EventsSince(v, 0).Select(e => e.Seq).DefaultIfEmpty(0).Max();
             Invoke(w, "NoteJobCompleted", v, c, new Job { Id = "road-job", Kind = JobKind.Road });
             Invoke(w, "NoteJobCompleted", v, c, new Job { Id = "offering-job", Kind = JobKind.Offering });
             Invoke(w, "NoteJobCompleted", v, c, new Job { Id = "haul-job", Kind = JobKind.Haul });
             Invoke(w, "NoteJobCompleted", v, c, new Job { Id = "hunt-job", Kind = JobKind.Hunt });
             Invoke(w, "NoteJobCompleted", v, c, new Job { Id = "build-job", Kind = JobKind.Build });
-            var logged = v.Events.Skip(before).ToList();
+            var logged = w.EventsSince(v, before);
             Check(logged.Count == 2 && logged.All(e => e.Kind == EventKind.Completed) && logged[0].EntityId == "road-job" && logged[1].EntityId == "offering-job", "Routine jobs were logged or milestone jobs were not: " + string.Join(",", logged.Select(e => e.EntityId)));
             Invoke(w, "NoteScoutReport", v, c, 12);
-            var report = v.Events.Last();
+            var report = w.EventsSince(v, 0).Last();
             Check(report.Kind == EventKind.Discovery && report.EntityId == c.Id && report.Text == c.Name + " mapped 12 tiles", "Scout report does not say how many tiles were mapped: " + report.Text);
         }
         static HashSet<Int2> LayoutRoads(World w, Village v)

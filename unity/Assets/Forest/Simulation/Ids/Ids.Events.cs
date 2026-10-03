@@ -47,6 +47,9 @@ namespace IdleCatForest.Simulation
         // Added in W2-08.
         /// <summary>A save-time or post-fault invariant repair (trimmed claims, unassigned double work, freed beds).</summary>
         public const string Repaired = "repaired";
+
+        // Added at W2-INT-a: an office filled automatically once its study and building exist (W2-02).
+        public const string Appointment = "appointment";
     }
 
     /// <summary>

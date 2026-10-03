@@ -173,8 +173,8 @@ namespace IdleCatForest.Simulation
                         t.OfferedDelivered = true;
                     }
                     t.Status = "completed";
-                    Note(source, "trade", "Caravan returned and barter completed", t.Id);
-                    Note(target, "trade", "Barter delivery completed", t.Id);
+                    Note(source, EventKind.Trade, "Caravan returned and barter completed", t.Id);
+                    Note(target, EventKind.Trade, "Barter delivery completed", t.Id);
                     continue;
                 }
                 if (t.PathIndex < t.Path.Count)
@@ -245,7 +245,7 @@ namespace IdleCatForest.Simulation
             var item = v.Items.Find(i => i.Id == a.TargetId && v.Stockpiles.Any(p => p.Id == i.LocationId && p.Kind == "storage"));
             if (item == null)
                 return ActionResult.Fail("Exact stored item required");
-            double price = (item.Quality + 1) * Pace.TraderSellPricePerQuality * Catalog.Effect(v, "tradeValue", 1);
+            double price = (item.Quality + 1) * Pace.TraderSellPricePerQuality * Catalog.Effect(this, v, "tradeValue", 1);
             if (v.Trader.Coins < price || item.Weight > 20 || v.Trader.Items.Sum(i => i.Weight) + item.Weight > 100)
                 return ActionResult.Fail("Trader purse or wagon capacity exhausted");
             v.Items.Remove(item);
@@ -328,7 +328,7 @@ namespace IdleCatForest.Simulation
                 t.Phase = "trading";
                 t.Until = TimeSeconds + Pace.TraderWindowSeconds;
                 t.BlockedReason = "";
-                Note(v, "trader", "Finite merchant wagon reached the shrine");
+                Note(v, EventKind.Trader, "Finite merchant wagon reached the shrine");
             }
             else
             {
@@ -341,7 +341,7 @@ namespace IdleCatForest.Simulation
         private bool FreeInfrastructureFootprint(Village v, string kind, Int2 p) => !v.Buildings.Any(b => Contains(b.Position, b.Width, b.Depth, p)) && (kind != "road" || RoadSpace(v, p));
         private ActionResult PlanLinear(Village v, GameAction a, string kind, Cat cat)
         {
-            if (kind == "rail" && !Catalog.Owns(v, "unlock_capability", "rail_logistics"))
+            if (kind == "rail" && !Catalog.Owns(this, v, "unlock_capability", "rail_logistics"))
                 return ActionResult.Fail("Rail research required");
             var path = new List<Int2>();
             var p = a.Position;
@@ -376,9 +376,9 @@ namespace IdleCatForest.Simulation
                 return ActionResult.Fail("Bridge needs a narrow reachable crossing");
             if (kind == "dock" && (!Walkable(a.Position) || !Neighbors(a.Position).Any(p => TileAt(p).Water)))
                 return ActionResult.Fail("Dock needs a dry shoreline");
-            if (kind == "wagon" && (!Catalog.Owns(v, "unlock_capability", "rail_logistics") || !TileAt(a.Position).Rail))
+            if (kind == "wagon" && (!Catalog.Owns(this, v, "unlock_capability", "rail_logistics") || !TileAt(a.Position).Rail))
                 return ActionResult.Fail("Rail and completed track required");
-            if ((kind == "dock" || kind == "vessel") && !Catalog.Owns(v, "unlock_capability", "water_travel"))
+            if ((kind == "dock" || kind == "vessel") && !Catalog.Owns(this, v, "unlock_capability", "water_travel"))
                 return ActionResult.Fail("Shipping research required");
             if (kind == "vessel" && !TileAt(a.Position).Dock)
                 return ActionResult.Fail("Completed dock required");

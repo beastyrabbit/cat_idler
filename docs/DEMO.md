@@ -117,7 +117,7 @@ tag and the path of the wave report under `artifacts/demo/`.
 |---|---|---|---|---|---|
 | W0 | Guardrails: compile gate, worktrees, Unity slots, captures, CI, demo brief, seams | 5 (1 integration) | Done (2026-10-02; 4 of 4 merged) | `demo-w0` | `artifacts/demo/wave-0/report.md` |
 | W1 | Behaviour-neutral splits and every frozen contract | 9 (1 integration) | Done (2026-10-02; 8 of 8 merged) | `demo-w1` | `artifacts/demo/wave-1/report.md` |
-| W2 | Core rebuild in parallel; staged integration A, B, C | 29 (3 integration) | Not started | `demo-w2a`, `demo-w2b`, `demo-w2` | `artifacts/demo/wave-2/report.md` |
+| W2 | Core rebuild in parallel; staged integration A, B, C | 29 (3 integration) | In progress: W2-INT-a done (2026-10-03; W2-01 to W2-10 merged, simulation wired, demo timing green); W2-INT-b and W2-INT-c pending | `demo-w2a`, `demo-w2b`, `demo-w2` | `artifacts/demo/wave-2/report.md` |
 | W3 | Features: milestones, shell, settings, demo boundary, build mode, drawers, direct control, animation, art hookup, FX, markers, audio, art | 22 (1 integration) | Not started | `demo-w3` | `artifacts/demo/wave-3/report.md` |
 | W4 | Polish and ship-readiness, Windows (conditional), playtest punch lists | 12 (1 integration) | Not started | `demo-w4` | `artifacts/demo/wave-4/report.md` |
 | W5 | Docs, store page, trailer, release candidate | 4 (1 integration) | Not started | `demo-w5` | `artifacts/demo/wave-5/report.md` |
@@ -330,7 +330,7 @@ remove one listed here. Values are byte-identical to the literals they replaced.
 - **`Pacing.World.cs`** (8; hook `DemoWorld()`): `CatBaseSpeed` 1.6, `RoadSpeedFactor` 1.75, `DirtSpeedFactor` 1.05, `MountainSpeedFactor` 0.4, `ForestSpeedFactor` 0.85, `OpenGroundSpeedFactor` 1, `WadingSpeedFactor` .55, `PathWearToDirt` 50
 - **`Pacing.cs`** (2): `Profile` ClassicProfile, `DayScale` 1
 
-Total: 247 public fields across the Pacing partials.
+Total at W1-INT: 247 public fields across the Pacing partials (293 after W2-INT-a; see 3.9).
 
 #### Input router
 
@@ -542,30 +542,112 @@ The same mapping is the comment at the top of `AcceptanceScenarios.cs`:
 
 ```text
 Which file owns which case-name prefix (every name below is under regression. unless shown otherwise):
-  DungeonScenarios.cs          dungeons_*
-  SpatialScenarios.cs          world_levels_*
+  DungeonScenarios.cs          dungeons_*, dungeon.*
+  SpatialScenarios.cs          world_levels_*, spatial.*
   WorldGenerationScenarios.cs  world_generation_*
   SeamScenarios.cs             seam.*
-  CoreScenarios.cs             continuous_* except continuous_storage_*
-  NeedsScenarios.cs            cargo_critical_need_*, preserved_food_*, emergency_staffed_water, medicine_and_brew_*
+  CoreScenarios.cs             continuous_* except continuous_storage_*, core.*
+  NeedsScenarios.cs            cargo_critical_need_*, preserved_food_*, emergency_staffed_water, medicine_and_brew_*,
+                               needs.*
+  LivelinessScenarios.cs       liveliness.*
   PopulationScenarios.cs       review_housing_skips_disconnected_*, pregnancy_beds_*, death_preserves_*, extinction_*,
-                               unhoused_migrant_*
+                               unhoused_migrant_*, population_*
+  DemoPacingScenarios.cs       demo_pacing.*, demo_timing.* (demo_timing.* explicit in Unity, runner needs --include-demo-timing)
   HaulingScenarios.cs          continuous_storage_*, busy_cat_*, item_only_stockpile_*, exact_haul_*, review_scalar_haul_*,
                                review_armor_*
-  ConstructionScenarios.cs     layout_*, review_expansion_*, review_fishing_placement_*, buildable_founding_*,
-                               communal_and_personal_enclosures, expansion_interruption_*
+  JobRobustnessScenarios.cs    job_robustness.*
+  ConstructionScenarios.cs     layout_* except layout_pending_*, review_expansion_respects_linear_*, buildable_founding_*,
+                               communal_and_personal_enclosures, expansion_interruption_*, construction.*
+  PlacementScenarios.cs        placement.*, review_expansion_reserves_*, review_fishing_placement_*, layout_pending_*
   ProductionScenarios.cs       recipe.*, chain.*, production_expertise_*, accountant_*, mountain_research_*,
                                station_capacity_*, repeat_queue_*, pause_preserves_*, officer_vacancy_*, selected_quarry_*,
                                farm_worker_replacement
+  ColonyAutomationScenarios.cs colony_automation.*, demo_timing.colony_idle_ratio_10min
   EffectScenarios.cs           catalog.*, building_effect.*, service_effect.*, resource_effect.*, legacy_upgrade.*,
                                legacy_effect.*, resource_capacity_is_resource_specific
+  DemoContentScenarios.cs      demo_content.*
   ControlScenarios.cs          direct_control_*, review_scaffold_preserves_*, review_new_building_preserves_*,
                                review_new_job_preserves_*, review_resume_*, gather_and_avoid_zones, resource_targeted_scout
+  ActionContractScenarios.cs   action_contract.*
   TransportScenarios.cs        capability.*, rail_transfers_*, review_rail_*, review_transport_*, shipping_*
   GovernanceScenarios.cs       territory_*
-  DefenseScenarios.cs          undefended_raid_*, functional_weapon_*, review_land_mover_*
+  DefenseScenarios.cs          undefended_raid_*, functional_weapon_*, review_land_mover_*, defense.*
+  RaidBeatScenarios.cs         raid_beat.*
+  FoundingScenarios.cs         founding.*
   CampaignScenarios.cs         campaign.* (explicit in Unity, excluded by the runner unless --include-campaigns)
   ScenarioKit.cs               no cases: Scenario plus the shared fixtures and assertions
 A new file names its cases <file prefix in snake_case>.<case> (job_robustness.* in JobRobustnessScenarios.cs) and
 needs no registration: any static *Scenarios class with a public static Cases() is discovered below.
 ```
+
+### 3.9 Wave 2 simulation additions (W2-INT-a)
+
+Merged and wired on 2026-10-03 (W2-01 to W2-10). Members were only added; nothing in 3.1 to 3.8 was
+renamed or removed. The scenario map above includes the new files.
+
+**Demo founding.** `World.CreateColony(int seed, string colonyName, string pacingProfile, long nowUnixMs)`
+founds the player's colony on generation version 2 (`World.DemoSeed` 16, `DefaultColonyName` "Mosslight",
+`MaxColonyNameLength` 48, `ColonyRevealRadius` 34). `World.Validate` accepts generation versions 0 to 2. A
+demo-profile founding owns `DemoContent.FoundingStudies` (the Research Hut) and the Leader waits one
+`LeaderStudyIntervalSeconds` before its first study, so the first study is the player's. Every new
+single-player world must use `CreateColony(World.DemoSeed, name, Pacing.DemoProfile, now)`; the switch in
+`AuthorityRuntime` and `ForestGame` is W2-INT-b's or W3-04's (both files belong to W2-11 and W2-12).
+`World.Create` stays on version 1 for the server and tooling.
+
+**Identifier constants added.**
+- `Blocked`: `ConstructionReserve` = `construction_reserve`, `ExpeditionWounded` = `expedition_wounded`,
+  `ExpeditionStranded` = `expedition_stranded`.
+- `EventKind`: `Repaired` = `repaired` (W2-08), `Appointment` = `appointment`; `EventSeverity` `Info`,
+  `Notable`, `Alert` with `ForKind(kind)`. Info events (completed, discovery, repaired) live in
+  `Village.RoutineEvents`; read both logs in order with `World.EventsSince(v, seq)`.
+- `ResultCode`: the W2-06 list (successes, router, cat, queue, research, equipment, governance and
+  direct-control failures; see `Ids.Codes.cs`), plus `BusyWithNeed`, `ReleaseControl`, `AlreadyExploring`,
+  `NeedsRest`, `DungeonCleared`, `DungeonDeadly`, `ChestGuarded`, `NoChestInReach`, `Rallied`,
+  `NoActiveRaid`, `RallyCooldown`, `NoDefenders`. `PlacementCode` (Placement.cs) holds the placement codes.
+- `GoalKey`: the six `idle_*` goals are live; `resting at home` is only read from old saves.
+
+**Pacing knobs added** (classic value, then demo value where it differs). Total: 293 public fields
+(Jobs 64, Life 87, Population 28, Research 24, Threats 65, Trade 15, World 8, core 2).
+- `Pacing.Life.cs`: `NeedsHealthFloor` 0 / 10, `NeedStagger` false / true, `NeedSeedMin` 55, `NeedSeedMax` 100,
+  `DeliveryLegFinishTiles` 15, `NeedBackoffMaxDoublings` 4, `NeedSourceSearchLimit` 4, `IdleWalkLimitSeconds` 45,
+  `IdleTileShare` 2, `LeaderStockTarget` 60, `LeaderGathersPerResource` 2, `EmergencyCooldownSeconds` 60,
+  `EmergencyProtectedProgress` 0.5.
+- `Pacing.Population.cs`: `MigrationRequiresFreeBed` false / true, `HousingSitingRetrySeconds` 600.
+- `Pacing.Jobs.cs`: `ToolQualityWorkScale` 0 / 0.375, `BaseCarryLoad` 8, `BuildWorkBase` 120,
+  `BuildWorkPerExisting` 30, `BridgeLumber` 4, `DockLumber` 8, `DemolishRefundShare` 0.5.
+- `Pacing.Research.cs`: `BoostJobFraction` 0 / 0.05, `BlessingStudyCostFactor` 1 / 3, `HurryStudySeconds` 300.
+- `Pacing.Threats.cs`: `RootHollowThreat` 0.9, `GuardianAttackPerThreat` 4.6, `GuardianDefensePerFloor` 0.25,
+  `FightFloorHealth` 15, `CombatVariance` 0.25, `SafeLossShare` 0.25, `GuardianRegenPerSecond` 0.5,
+  `FloorOneLore` 5, `FloorTwoLore` 8, `RaidReferenceStrength` 30, `RallySize` 4, `RallyCooldownSeconds` 60,
+  `DefenderFloorHealth` 15, `RelicCombatBonus` 1.1, `ScriptedBandMembers` 3, `ScriptedRaiderHealth` 6,
+  `ScriptedRaiderStrength` 15, `NaturalRaiderHealth` 10, `NaturalRaiderStrength` 15, `CatsPerRaider` 8,
+  `MaxRaiders` 6. `RaidMinWealth` is no longer read.
+- The `Demo<Domain>()` hooks are filled (W2-01); `demo_pacing.*` pins the classic table and every demo
+  difference field by field, and `docs/unity/GAMEPLAY_ACCEPTANCE.md` explains each demo value.
+
+**Public simulation API added.**
+- Population: `EligibleForOffice(Cat)`. Needs and idle life: static `BusyWithNeed(Cat)`, `RestRate(Village)`,
+  `NeedThreshold(Cat, string)`, static `IsIdleActivity(string)`; `DayClock.SleepThresholdBias(World)`;
+  `CatActivity.Shrine`.
+- Jobs: `CanTakeOrders(Cat)`, `ReserveNearest(Village, owner, resource, amount, Int2 from)`,
+  `ToolWorkBonus(Village, Cat)`; serialized `Job.LastProgressAt`, `Village.SourceExclusions`.
+- Construction and placement: `CheckPlacement`, `CheckLine`, `CheckArea`, `LineFootprint`, `PlanTransportPath`,
+  `BuildCost`, `LineCost`, `InfrastructureCost`, `ExpansionCost`, `Shortfalls`, `PlayerBuilt`, `MaxLineTiles`;
+  types `PlacementCheck`, `PlacementCode`, `MaterialShortfall`, `BuildBill`. `World.DemoConstruction` gates
+  queued plans, extra builders, full loads, player-built pricing and natural expansion barriers to demo worlds.
+  Router kinds `CancelConstruction`, `Demolish` and `DemolishBuilding` are live.
+- Actions: `World.ActionKinds`, `NormaliseKind`, `ActionAvailable(PlayerContext, kind)`, `IsWorkplace`,
+  `InReach`, `AtShrine`, `OfferingBlessings`, `OfferableResources`, `BlessingStudyCost`; kinds `ReleaseWorker`,
+  `PreferForWork`, `HurryStudy`; non-saved `World.ControlTimeScale`; `ActionResult.Coded`, `ActionResult.Number`.
+- Automation and estimates: `EstimatedTotal(v, resource, out bool isEstimate)`, `EstimateAgeSeconds(v)`,
+  static `CoarseCount(x)`.
+- Events and faults: `Event.Position`, `Severity`, `Args`, `EffectiveSeverity()`; `NoteMilestone`,
+  `NoteBuildingCompleted`, `NoteResourceDiscovered`, `NoteStorageFull`, `NoteStorageEmpty`, `NoteRankUp`,
+  `NoteRaidRepelled`, `NoteExpeditionLoot`; `IsolatedFaults()`, `ValidateFatal()`, `ValidateRepairable()`,
+  `RepairInvariants()`. `Step` isolates faults per system; scenarios assert none happened (`ScenarioKit.Valid`).
+- Threats: `RiskOf(cat, floor)`, `DungeonChestLocked`, `TakeDungeonChest`, `MaterialiseStairEndpoints`,
+  `ContinueExpeditionAfterControl`; `GameAction.AcceptDeadly`; `Village.RaidsRepelled`, `DeepestLootFloor`.
+- Content: `DemoContent` (`IsDemo`, `Recipe`, `Recipes`, `AllRecipes`, `Study`, `Studies`, `PriorityOf`,
+  `IsDemoVisible*`, `IsFunctional`, `OwnedAtFounding`, `SlotsFor`, `ServiceFactor`, `FoundingServiceFactor`,
+  `Slice`, `FoundingStudies`) and the `Catalog` overloads that take a `World`. Simulation code asks the
+  World overloads, so demo worlds see demo costs, prerequisites, slots and founding service effects.

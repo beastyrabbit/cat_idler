@@ -153,6 +153,9 @@ namespace IdleCatForest.Acceptance
             var c = v.Cats[0];
             v.Cats.RemoveAll(x => x.Id != c.Id);
             var floor = w.Dungeons[0].Floors[0];
+            // The chest stays locked while its guardian lives (W2-09); this case is about reach only.
+            foreach (var guardian in w.Creatures.Where(e => e.SiteId == w.Dungeons[0].Id && e.Position.Level == floor.Level))
+                guardian.Health = 0;
             var beside = floor.Cells.First(p => Int2.Distance(p, floor.LootPosition) == 1 && w.Walkable(v, p));
             Act(w, v, new GameAction { Kind = "EnterCat", CatId = c.Id });
             c.Position = beside;
@@ -164,8 +167,10 @@ namespace IdleCatForest.Acceptance
             Check(finite > 0, "Fixture chest must hold loot");
             var r = w.Apply(Context(v), new GameAction { Kind = "InteractCat", CatId = c.Id });
             Check(r.Success && r.Code == ResultCode.Collected, "A cat beside the chest, still settling, must collect it: " + r.Code + " " + r.Error);
-            Near(c.Cargo.Sum(s => s.Amount) + floor.Loot.Sum(s => s.Amount), finite, "Collection conserves the chest");
-            Check(c.Cargo.Count > 0, "Collection moved loot into cargo");
+            // Chest notes become the cat's lore and weapons or relics become carried items (W2-09).
+            double carried = c.Cargo.Sum(s => s.Amount) + c.DungeonLore + v.Items.Count(i => i.LocationId == c.Id);
+            Near(carried + floor.Loot.Sum(s => s.Amount), finite, "Collection conserves the chest");
+            Check(carried > 0, "Collection moved loot to the cat");
             c.Position = new Int2(floor.LootPosition.X + 3, floor.LootPosition.Z, floor.LootPosition.Level);
             var far = w.Apply(Context(v), new GameAction { Kind = "InteractCat", CatId = c.Id });
             Check(!far.Success && far.Code == ResultCode.NothingInReach, "A distant chest is out of reach");

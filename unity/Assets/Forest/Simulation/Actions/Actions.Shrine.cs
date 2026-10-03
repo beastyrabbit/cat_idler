@@ -16,7 +16,7 @@ namespace IdleCatForest.Simulation
         /// The one offering rate used by tithes, offering jobs and shrine interaction:
         /// amount / Pace.OfferingHerbsPerBlessing, times the shrine's blessing yield.
         /// </summary>
-        public double OfferingBlessings(Village v, double amount) => Math.Max(0, amount) / Pace.OfferingHerbsPerBlessing * Catalog.Effect(v, "shrineBlessingYield", 1);
+        public double OfferingBlessings(Village v, double amount) => Math.Max(0, amount) / Pace.OfferingHerbsPerBlessing * Catalog.Effect(this, v, "shrineBlessingYield", 1);
 
         /// <summary>Credits the blessings for offered goods and returns them.</summary>
         private double ConvertOffering(Village v, double amount)

@@ -487,7 +487,8 @@ namespace IdleCatForest.Acceptance
             foreach (var gate in new[] { new Int2(v.Center.X, v.Center.Z + outer), new Int2(v.Center.X, v.Center.Z - outer), new Int2(v.Center.X + outer, v.Center.Z), new Int2(v.Center.X - outer, v.Center.Z) })
                 Check(!w.TileAt(gate).Wall, "Expansion closed a gate at " + gate);
             Near(Goods(w, v, "materials"), materials - job.Path.Count, "Expansion did not charge one material per fence tile");
-            Check(w.Reservations.Count == 0, "Completed expansion kept claims");
+            // The Leader plans a Den after HousingPlanAfterSeconds in demo worlds (W2-01, W2-02); only the expansion's claims must be gone.
+            Check(!w.Reservations.Any(r => r.OwnerId == job.Id || r.OwnerId.StartsWith(job.Id + ":", StringComparison.Ordinal)), "Completed expansion kept claims");
             Valid(w);
         }
 

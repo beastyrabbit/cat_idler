@@ -70,9 +70,8 @@ namespace IdleCatForest.Acceptance
             Check(rejected, "An over-long colony name was accepted");
             // Same seed, same world: the new-game path is deterministic.
             Check(LayoutHash(World.CreateColony(5, "Fernhold", Pacing.DemoProfile, 0)) == LayoutHash(World.CreateColony(5, "Fernhold", Pacing.DemoProfile, 0)), "CreateColony is not deterministic for one seed");
-            // Validation must accept a fresh colony. W2-INT-a: remove this one exception once
-            // World.Validate accepts generation version 2 (W2-07 handoff).
-            var errors = named.Validate().Where(e => e != "Unsupported world generation version").ToList();
+            // Validation must accept a fresh colony.
+            var errors = named.Validate();
             Check(errors.Count == 0, "Fresh colony failed validation: " + string.Join("; ", errors));
         }
 

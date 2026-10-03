@@ -89,28 +89,6 @@ namespace IdleCatForest.Simulation
                 return 1 / Math.Max(Pace.UpgradeRitualFloor, 1 - UpgradeLevel(v, "ritual_mastery") * Pace.UpgradeRitualStep);
             return 1;
         }
-        private ActionResult BoostJob(Village v, Job job)
-        {
-            if (job == null)
-                return ActionResult.Fail("Job no longer active");
-            long minute = (long)(TimeSeconds / 60);
-            if (v.BoostMinute != minute)
-            {
-                v.BoostMinute = minute;
-                v.BoostsUsed = 0;
-            }
-            v.BoostsUsed++;
-            double seconds = Pace.BoostSeconds + UpgradeLevel(v, "click_power") * Pace.BoostSecondsPerClickPower;
-            if (v.BoostsUsed > Pace.BoostFreePerMinute)
-                seconds = Math.Max(Pace.BoostMinSeconds, Math.Floor(seconds * Math.Pow(Pace.BoostDecay, (v.BoostsUsed - Pace.BoostFreePerMinute) / Pace.BoostDecayClicks)));
-            var building = job.Kind == JobKind.Build ? v.Buildings.Find(b => b.Id == job.TargetId) : null;
-            if (building != null)
-                building.RequiredWork = Math.Max(building.Progress + 1, building.RequiredWork - seconds);
-            else
-                job.RequiredWork = Math.Max(job.Progress + 1, job.RequiredWork - seconds);
-            job.BoostCount++;
-            return ActionResult.Ok();
-        }
         public static string RecipeFamily(Recipe recipe)
         {
             if (FamilyCache.TryGetValue(recipe.Id, out var cached))
@@ -128,20 +106,18 @@ namespace IdleCatForest.Simulation
             FamilyCache[recipe.Id] = fallback;
             return fallback;
         }
-        private static bool FamilyOwned(Village v, Recipe recipe, string stage) => Catalog.Owns(v, "unlock_resource", RecipeFamily(recipe) + "_" + stage);
+        private bool FamilyOwned(Village v, Recipe recipe, string stage) => Catalog.Owns(this, v, "unlock_resource", RecipeFamily(recipe) + "_" + stage);
         // Exact goods stay whole identities. Output studies improve material efficiency instead of minting fractional items.
-        public double RecipeInput(Village v, Recipe recipe, double amount) => amount * (recipe.ItemKind != "" && FamilyOwned(v, recipe, "sources") ? Pace.FamilySourcesInputFactor : 1) / (recipe.ItemKind != "" ? Math.Max(1, Catalog.BuildingEffect(v, recipe.Building, "output", 1)) : 1);
-        public double RecipeOutput(Village v, Recipe recipe, double amount) => amount * (recipe.ItemKind == "" && FamilyOwned(v, recipe, "sources") ? Pace.FamilySourcesOutputFactor : 1) * Catalog.BuildingEffect(v, recipe.Building, "output", 1);
+        public double RecipeInput(Village v, Recipe recipe, double amount) => amount * (recipe.ItemKind != "" && FamilyOwned(v, recipe, "sources") ? Pace.FamilySourcesInputFactor : 1) / (recipe.ItemKind != "" ? Math.Max(1, Catalog.BuildingEffect(this, v, recipe.Building, "output", 1)) : 1);
+        public double RecipeOutput(Village v, Recipe recipe, double amount) => amount * (recipe.ItemKind == "" && FamilyOwned(v, recipe, "sources") ? Pace.FamilySourcesOutputFactor : 1) * Catalog.BuildingEffect(this, v, recipe.Building, "output", 1);
         public double RecipeDuration(Village v, Recipe recipe) => recipe.Seconds * (FamilyOwned(v, recipe, "bulk") ? Pace.FamilyBulkDurationFactor : 1);
         private static bool Completed(Village v, string kind) => v.Buildings.Any(b => b.Kind == kind && b.Completed);
-        public int DenCapacity(Village v) => Math.Max(5, (int)Catalog.Effect(v, "housingPerDen", 5));
+        public int DenCapacity(Village v) => Math.Max(5, (int)Catalog.Effect(this, v, "housingPerDen", 5));
         // haulCapacity studies are multipliers on the base load of 8 (legacy haul_capacity_mult starts at 1).
-        public double CarryCapacity(Village v, string resource = "") => Math.Clamp(BaseCarryLoad * Catalog.Effect(v, "haulCapacity", 1) + (resource == "water" ? Catalog.Effect(v, "waterCarryCapacity", 0) : 0), BaseCarryLoad, 64);
-        private const double BaseCarryLoad = 8;
+        public double CarryCapacity(Village v, string resource = "") => Math.Clamp(BaseCarryLoad * Catalog.Effect(this, v, "haulCapacity", 1) + (resource == "water" ? Catalog.Effect(this, v, "waterCarryCapacity", 0) : 0), BaseCarryLoad, 64);
+        private double BaseCarryLoad => Pace.BaseCarryLoad;
 
-        // PACING-HANDOFF ToolQualityWorkScale: Pacing.Jobs knob, classic 0 (flat WorkToolBonus), demo 0.375.
-        private const double DemoToolQualityWorkScale = 0.375;
-        private double ToolQualityWorkScale => Pace.Profile == Pacing.DemoProfile ? DemoToolQualityWorkScale : 0;
+        private double ToolQualityWorkScale => Pace.ToolQualityWorkScale;
 
         /// <summary>
         /// The work-rate factor of the cat's equipped tool: 1 without a working tool. Classic gives every tool the
@@ -175,11 +151,11 @@ namespace IdleCatForest.Simulation
         }
 
         private static double ToolRank(Item item) => (item.Quality + 1) * (item.Material == "metal" ? 1.5 : item.Material == "stone" ? 1.2 : item.Material == "bone" ? 1.1 : 1) * Math.Min(1, item.Condition / Math.Max(1, item.MaxCondition));
-        private double Service(Village v, string building, string effect, double baseline = 1) => Completed(v, building) ? Catalog.Effect(v, effect, baseline) : baseline;
+        private double Service(Village v, string building, string effect, double baseline = 1) => (Completed(v, building) ? Catalog.Effect(this, v, effect, baseline) : baseline) * DemoContent.ServiceFactor(this, v, building, effect);
         public double ResourceCapacityBonus(Village v, string resource)
         {
             double result = 0;
-            foreach (var recipe in Catalog.Recipes.Where(r => r.Outputs.Any(s => s.Resource == resource) || EquipmentKind(resource) != "" && EquipmentKind(resource) == r.ItemKind))
+            foreach (var recipe in DemoContent.AllRecipes(this).Where(r => r.Outputs.Any(s => s.Resource == resource) || EquipmentKind(resource) != "" && EquipmentKind(resource) == r.ItemKind))
             {
                 if (FamilyOwned(v, recipe, "preservation"))
                 {
@@ -187,13 +163,13 @@ namespace IdleCatForest.Simulation
                     break;
                 }
             }
-            if (new[] { "food", "hide", "bone" }.Contains(resource) && Catalog.Owns(v, "unlock_resource", "hunting_reserves"))
+            if (new[] { "food", "hide", "bone" }.Contains(resource) && Catalog.Owns(this, v, "unlock_resource", "hunting_reserves"))
                 result += 50;
-            if (new[] { "fibre", "herbs", "catnip" }.Contains(resource) && Catalog.Owns(v, "unlock_resource", "foraging_reserves"))
+            if (new[] { "fibre", "herbs", "catnip" }.Contains(resource) && Catalog.Owns(this, v, "unlock_resource", "foraging_reserves"))
                 result += 50;
-            if (resource == "grain" && Catalog.Owns(v, "unlock_resource", "grain_milling_reserves"))
+            if (resource == "grain" && Catalog.Owns(this, v, "unlock_resource", "grain_milling_reserves"))
                 result += 50;
-            if (resource == "food" && Catalog.Owns(v, "unlock_resource", "baking_reserves"))
+            if (resource == "food" && Catalog.Owns(this, v, "unlock_resource", "baking_reserves"))
                 result += 50;
             return result;
         }
@@ -207,10 +183,10 @@ namespace IdleCatForest.Simulation
                 pile.Accepts = b.Kind == "water_bowl" ? new List<string> { "water" } : new List<string> { "food", "fish", "grain", "flour", "preserves", "brew" };
                 v.Stockpiles.Add(pile);
             }
-            else if (Catalog.Recipes.Any(r => r.Building == b.Kind))
+            else if (DemoContent.AllRecipes(this).Any(r => r.Building == b.Kind))
             {
                 var pile = new Stockpile { Id = Id("station_store"), ManagedBy = b.Id, Kind = "storage", Position = b.Position, Width = 1, Depth = 1, Capacity = 16 };
-                pile.Accepts = Catalog.Recipes.Where(r => r.Building == b.Kind).SelectMany(r => r.Inputs.Concat(r.Outputs)).Select(s => s.Resource).Distinct().ToList();
+                pile.Accepts = DemoContent.AllRecipes(this).Where(r => r.Building == b.Kind).SelectMany(r => r.Inputs.Concat(r.Outputs)).Select(s => s.Resource).Distinct().ToList();
                 v.Stockpiles.Add(pile);
             }
         }
@@ -221,7 +197,7 @@ namespace IdleCatForest.Simulation
                 {
                     double held = Reservations.Where(r => r.PileId == pile.Id && r.Resource == s.Resource).Sum(r => r.Amount);
                     double rate = s.Resource == "preserves" ? Pace.PreservesSpoilageRate : Pace.SpoilageRate;
-                    double resistance = Catalog.Effect(v, "spoilageResistance", 1) * Service(v, "food_storage", "foodStorekeeping", 1);
+                    double resistance = Catalog.Effect(this, v, "spoilageResistance", 1) * Service(v, "food_storage", "foodStorekeeping", 1);
                     double loss = Math.Max(0, s.Amount - held) * rate / resistance;
                     if (loss > 0)
                         Add(pile.Goods, s.Resource, -loss);

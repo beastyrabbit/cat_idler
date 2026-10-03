@@ -212,6 +212,8 @@ await AsyncTest("counted equipment remains selectable over a real socket until i
         var owner = runtime.Connect(null, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
         var village = runtime.World.Village(owner.SelectedVillageId);
         var pile = village.Stockpiles[0]; var accountant = village.Cats[2]; var bearer = village.Cats[3];
+        // Founding workshops the Leader runs while their office is vacant would fetch from the counted store mid-test.
+        foreach (var station in village.Buildings) station.Paused = true;
         var tent = new Building { Id = "fixture-accounting-tent", Kind = "accounting_tent", Completed = true, Position = pile.Position };
         tent.Slots.Add(new WorkSlot { CatId = accountant.Id }); village.Buildings.Add(tent); accountant.BuildingId = tent.Id;
         village.Officers.Add(new Officer { Role = "accountant", CatId = accountant.Id });

@@ -5,8 +5,6 @@ namespace IdleCatForest.Simulation
 {
     public partial class World
     {
-        // BLOCKED-HANDOFF Blocked.ConstructionReserve: automated work waits so the next Den keeps its timber and blocks.
-        private const string ConstructionReserveBlock = "construction_reserve";
 
         /// <summary>
         /// The first time a player-assigned worker is seen idle at a station with an empty queue, queue
@@ -55,7 +53,7 @@ namespace IdleCatForest.Simulation
                         if (Move(c, b.Position, dt))
                         {
                             double worked = SpendActorTime(c);
-                            v.ResearchPoints += worked * WorkRate(v, c, "research", b.Kind) * Catalog.Effect(v, "researchRateMult", 1) * Catalog.BuildingEffect(v, b.Kind, "output", 1) / Pace.ResearchDivisor;
+                            v.ResearchPoints += worked * WorkRate(v, c, "research", b.Kind) * Catalog.Effect(this, v, "researchRateMult", 1) * Catalog.BuildingEffect(this, v, b.Kind, "output", 1) / Pace.ResearchDivisor;
                             GainSkill(c, "research", worked / Pace.ResearchSkillSecondsPerPoint);
                         }
                         continue;
@@ -88,7 +86,7 @@ namespace IdleCatForest.Simulation
                             continue;
                         }
                         string mouseJob = Id("job");
-                        if (!Reserve(v, mouseJob, "grain", Pace.MouseFarmGrain))
+                        if (!ReserveNearest(v, mouseJob, "grain", Pace.MouseFarmGrain, b.Position))
                             continue;
                         StartJob(v, c, new Job { Id = mouseJob, Kind = "mouse_farm", Phase = "fetch", Position = b.Position, TargetId = b.Id, RequiredWork = Pace.MouseFarmWorkSeconds });
                         continue;
@@ -102,7 +100,7 @@ namespace IdleCatForest.Simulation
                         continue;
                     }
                     // Cheapest checks first; the storage route search (A*) runs last.
-                    if (!Catalog.RecipeAvailable(v, recipe))
+                    if (!Catalog.RecipeAvailable(this, v, recipe))
                     {
                         slot.BlockedReason = b.BlockedReason = "recipe_locked";
                         continue;
@@ -115,7 +113,7 @@ namespace IdleCatForest.Simulation
                     // Automated work never spends the timber and blocks the next Den needs.
                     if (slot.AutomatedBy != "" && !KeepsConstructionReserve(v, recipe, b))
                     {
-                        slot.BlockedReason = b.BlockedReason = ConstructionReserveBlock;
+                        slot.BlockedReason = b.BlockedReason = Blocked.ConstructionReserve;
                         continue;
                     }
                     double localLoad = v.Jobs.Where(j => !j.Completed && j.Kind == "production" && j.TargetId == b.Id).Sum(j => j.Local.Sum(s => s.Amount));
@@ -134,7 +132,7 @@ namespace IdleCatForest.Simulation
                     foreach (var input in recipe.Inputs)
                     {
                         double missing = Math.Max(0, RecipeInput(v, recipe, input.Amount) - Amount(b.Inputs, input.Resource));
-                        if (missing > 0 && !Reserve(v, id, input.Resource, missing))
+                        if (missing > 0 && !ReserveNearest(v, id, input.Resource, missing, b.Position))
                         {
                             funded = false;
                             break;

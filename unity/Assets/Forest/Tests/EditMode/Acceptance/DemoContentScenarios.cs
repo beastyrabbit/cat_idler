@@ -215,7 +215,8 @@ namespace IdleCatForest.Acceptance
         // desks 85 % of the time (needs trips), research starting half a minute in, and every slice study
         // bought as soon as it is affordable, in slice order. School and Scholars' Guild raise the rate,
         // More Scholars adds a third seat. W2-INT-a measures the same curve in the running simulation.
-        const double PointsPerScholarMinute = 1.0, Attendance = 0.85, StartMinutes = 0.5;
+        static readonly double PointsPerScholarMinute = 60.0 / Pacing.Demo.ResearchDivisor;
+        const double Attendance = 0.85, StartMinutes = 0.5;
 
         internal static List<double> SliceUnlockMinutes(World w, Village v)
         {

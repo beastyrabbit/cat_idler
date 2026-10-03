@@ -1,26 +1,36 @@
 // Which file owns which case-name prefix (every name below is under regression. unless shown otherwise):
-//   DungeonScenarios.cs          dungeons_*
-//   SpatialScenarios.cs          world_levels_*
+//   DungeonScenarios.cs          dungeons_*, dungeon.*
+//   SpatialScenarios.cs          world_levels_*, spatial.*
 //   WorldGenerationScenarios.cs  world_generation_*
 //   SeamScenarios.cs             seam.*
-//   CoreScenarios.cs             continuous_* except continuous_storage_*
-//   NeedsScenarios.cs            cargo_critical_need_*, preserved_food_*, emergency_staffed_water, medicine_and_brew_*
+//   CoreScenarios.cs             continuous_* except continuous_storage_*, core.*
+//   NeedsScenarios.cs            cargo_critical_need_*, preserved_food_*, emergency_staffed_water, medicine_and_brew_*,
+//                                needs.*
+//   LivelinessScenarios.cs       liveliness.*
 //   PopulationScenarios.cs       review_housing_skips_disconnected_*, pregnancy_beds_*, death_preserves_*, extinction_*,
-//                                unhoused_migrant_*
+//                                unhoused_migrant_*, population_*
+//   DemoPacingScenarios.cs       demo_pacing.*, demo_timing.* (demo_timing.* explicit in Unity, runner needs --include-demo-timing)
 //   HaulingScenarios.cs          continuous_storage_*, busy_cat_*, item_only_stockpile_*, exact_haul_*, review_scalar_haul_*,
 //                                review_armor_*
-//   ConstructionScenarios.cs     layout_*, review_expansion_*, review_fishing_placement_*, buildable_founding_*,
-//                                communal_and_personal_enclosures, expansion_interruption_*
+//   JobRobustnessScenarios.cs    job_robustness.*
+//   ConstructionScenarios.cs     layout_* except layout_pending_*, review_expansion_respects_linear_*, buildable_founding_*,
+//                                communal_and_personal_enclosures, expansion_interruption_*, construction.*
+//   PlacementScenarios.cs        placement.*, review_expansion_reserves_*, review_fishing_placement_*, layout_pending_*
 //   ProductionScenarios.cs       recipe.*, chain.*, production_expertise_*, accountant_*, mountain_research_*,
 //                                station_capacity_*, repeat_queue_*, pause_preserves_*, officer_vacancy_*, selected_quarry_*,
 //                                farm_worker_replacement
+//   ColonyAutomationScenarios.cs colony_automation.*, demo_timing.colony_idle_ratio_10min
 //   EffectScenarios.cs           catalog.*, building_effect.*, service_effect.*, resource_effect.*, legacy_upgrade.*,
 //                                legacy_effect.*, resource_capacity_is_resource_specific
+//   DemoContentScenarios.cs      demo_content.*
 //   ControlScenarios.cs          direct_control_*, review_scaffold_preserves_*, review_new_building_preserves_*,
 //                                review_new_job_preserves_*, review_resume_*, gather_and_avoid_zones, resource_targeted_scout
+//   ActionContractScenarios.cs   action_contract.*
 //   TransportScenarios.cs        capability.*, rail_transfers_*, review_rail_*, review_transport_*, shipping_*
 //   GovernanceScenarios.cs       territory_*
-//   DefenseScenarios.cs          undefended_raid_*, functional_weapon_*, review_land_mover_*
+//   DefenseScenarios.cs          undefended_raid_*, functional_weapon_*, review_land_mover_*, defense.*
+//   RaidBeatScenarios.cs         raid_beat.*
+//   FoundingScenarios.cs         founding.*
 //   CampaignScenarios.cs         campaign.* (explicit in Unity, excluded by the runner unless --include-campaigns)
 //   ScenarioKit.cs               no cases: Scenario plus the shared fixtures and assertions
 // A new file names its cases <file prefix in snake_case>.<case> (job_robustness.* in JobRobustnessScenarios.cs) and

@@ -69,7 +69,7 @@ namespace IdleCatForest.Simulation
                 if (missing > 1e-8)
                 {
                     double reserved = Reservations.Where(r => r.OwnerId == j.Id && r.Resource == required.Resource).Sum(r => r.Amount);
-                    if (reserved + 1e-8 < missing && !Reserve(v, j.Id, required.Resource, missing - reserved))
+                    if (reserved + 1e-8 < missing && !ReserveNearest(v, j.Id, required.Resource, missing - reserved, c.Position))
                     {
                         j.BlockedReason = Blocked.MissingRecipeInput;
                         return true;
@@ -122,7 +122,7 @@ namespace IdleCatForest.Simulation
             foreach (var input in b.Required)
             {
                 double need = input.Amount - ScaffoldSecured(v, b, input.Resource);
-                if (need <= 1e-8 || Reserve(v, b.Id, input.Resource, need))
+                if (need <= 1e-8 || ReserveNearest(v, b.Id, input.Resource, need, c.Position))
                     continue;
                 if (!DemoConstruction)
                 {

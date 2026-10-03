@@ -16,6 +16,7 @@ namespace IdleCatForest.Simulation
             foreach (var v in Villages)
                 foreach (var c in v.Cats.Where(c => c.Alive && c.ControlledBy != ""))
                 {
+                    BeginActor(c);
                     if (c.ControlLeaseUntil <= TimeSeconds)
                     {
                         c.ControlledBy = "";
@@ -30,7 +31,7 @@ namespace IdleCatForest.Simulation
                         {
                             var den = v.Buildings.Find(b => b.Id == c.BedId && b.Completed);
                             if (den != null && InReach(c.Position, den.Position, den.Width, den.Depth))
-                                c.Rest = Math.Min(100, c.Rest + SpendActorTime(c) * 0.15 * Service(v, "beds", "restRecovery", 1));
+                                c.Rest = Math.Min(100, c.Rest + SpendActorTime(c) * RestRate(v));
                             else
                                 c.Goal = GoalKey.PlayerControl;
                         }
@@ -67,6 +68,7 @@ namespace IdleCatForest.Simulation
                             break;
                     }
                 }
+            EndActor();
         }
 
         /// <summary>The carried serving a controlled eat or drink would use, or null.</summary>
@@ -108,7 +110,7 @@ namespace IdleCatForest.Simulation
                 c.PersonalBrewUsed = resource == "brew";
                 return ActionResult.Ok(ResultCode.Drank, c.Id, (ResultArg.Resource, resource), (ResultArg.Amount, ActionResult.Number(amount)));
             }
-            c.Hunger = Math.Min(100, c.Hunger + Pace.EatRestorePerServing);
+            c.Hunger = Math.Min(100, c.Hunger + Pace.EatRestorePerServing * amount);
             return ActionResult.Ok(ResultCode.Ate, c.Id, (ResultArg.Resource, resource), (ResultArg.Amount, ActionResult.Number(amount)));
         }
     }

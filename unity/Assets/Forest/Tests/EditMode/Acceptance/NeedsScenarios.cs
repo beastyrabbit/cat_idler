@@ -292,7 +292,8 @@ namespace IdleCatForest.Acceptance
             w.Step(60);
             Check(c.Hunger > 35, "A hungry cat ignored food in a " + kind + " pile");
             // Spoilage nibbles at loose food every upkeep tick.
-            Near(World.Amount(loose.Goods, "food"), 2, "Eating did not take one serving from the " + kind + " pile", 0.01);
+            // One serving is the profile's NeedServing (demo servings are an eighth of a unit, W2-01).
+            Near(World.Amount(loose.Goods, "food"), 3 - w.CurrentPacing().NeedServing, "Eating did not take one serving from the " + kind + " pile", 0.01);
             Valid(w);
         }
 

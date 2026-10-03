@@ -115,23 +115,15 @@ namespace IdleCatForest.Simulation
         [NonSerialized] private Dictionary<Int2, DungeonFloor> dungeonFloors;
         [NonSerialized] private int dungeonFloorCount = -1;
 
-        // PACING-HANDOFF RootHollowThreat: Root Hollow's site threat, so any healthy adult can try floor 1.
-        private const double RootHollowThreat = 0.9;
-        // PACING-HANDOFF GuardianAttackPerThreat: guardian damage per second per point of floor threat.
-        private const double GuardianAttackPerThreat = 4.6;
-        // PACING-HANDOFF GuardianDefensePerFloor: extra guardian defence per floor below the first.
-        private const double GuardianDefensePerFloor = 0.25;
-        // PACING-HANDOFF FightFloorHealth: below this health a cat stops fighting and flees.
-        private const double FightFloorHealth = 15;
-        // PACING-HANDOFF CombatVariance: +/- share of every blow, from a seeded hash.
-        private const double CombatVariance = 0.25;
-        // PACING-HANDOFF SafeLossShare: an expected loss up to this share of current health is Safe.
-        private const double SafeLossShare = 0.25;
-        // PACING-HANDOFF GuardianRegenPerSecond: an idle guardian at its post heals this fast.
-        private const double GuardianRegenPerSecond = 0.5;
-        // PACING-HANDOFF FloorOneLore, FloorTwoLore: research notes in Root Hollow's chests.
-        private const double FloorOneLore = 5;
-        private const double FloorTwoLore = 8;
+        private double RootHollowThreat => Pace.RootHollowThreat;
+        private double GuardianAttackPerThreat => Pace.GuardianAttackPerThreat;
+        private double GuardianDefensePerFloor => Pace.GuardianDefensePerFloor;
+        private double FightFloorHealth => Pace.FightFloorHealth;
+        private double CombatVariance => Pace.CombatVariance;
+        private double SafeLossShare => Pace.SafeLossShare;
+        private double GuardianRegenPerSecond => Pace.GuardianRegenPerSecond;
+        private double FloorOneLore => Pace.FloorOneLore;
+        private double FloorTwoLore => Pace.FloorTwoLore;
 
         /// <summary>Only a new founding generates sites. Existing saves retain their terrain and identities.</summary>
         public void EnsureVillageDungeon(Village village)
@@ -317,10 +309,10 @@ namespace IdleCatForest.Simulation
         private double FightSkillFactor(Cat cat) => 1 + Amount(cat.Skills, "fight") * Pace.ReadinessFightSkillFactor;
 
         /// <summary>A cat's offence: weapon, fighting skill, colony combat effects and the relic.</summary>
-        private double CatProwess(Village v, Cat cat) => EquipmentPower(v, cat, "weapon") * FightSkillFactor(cat) * Catalog.Effect(v, "combatPower", 1) * Catalog.Effect(v, "combatPowerMult", 1) * ColonyRelicFactor(v);
+        private double CatProwess(Village v, Cat cat) => EquipmentPower(v, cat, "weapon") * FightSkillFactor(cat) * Catalog.Effect(this, v, "combatPower", 1) * Catalog.Effect(this, v, "combatPowerMult", 1) * ColonyRelicFactor(v);
 
         /// <summary>A cat's guard: armour, colony defence effects and fighting skill.</summary>
-        private double CatGuard(Village v, Cat cat) => Math.Max(1, EquipmentPower(v, cat, "armor") * Catalog.Effect(v, "defensePower", 1) * Catalog.Effect(v, "defenseMult", 1)) * FightSkillFactor(cat);
+        private double CatGuard(Village v, Cat cat) => Math.Max(1, EquipmentPower(v, cat, "armor") * Catalog.Effect(this, v, "defensePower", 1) * Catalog.Effect(this, v, "defenseMult", 1)) * FightSkillFactor(cat);
 
         private double GuardianAttack(DungeonCreature creature) => creature.Attack > 0 ? creature.Attack : creature.Power * GuardianAttackPerThreat;
         private static double GuardianDefense(DungeonCreature creature) => creature.Defense > 0 ? creature.Defense : 1;
@@ -378,35 +370,35 @@ namespace IdleCatForest.Simulation
             if (cat == null || !cat.Alive || !village.Cats.Contains(cat))
                 return ActionResult.Fail(ResultCode.UnknownTarget, "Choose a living cat in this village", ("target", cat?.Id ?? ""));
             if (cat.ControlledBy != "")
-                return ActionResult.Fail("release_control", "Release direct control first", ("cat", cat.Id));
+                return ActionResult.Fail(ResultCode.ReleaseControl, "Release direct control first", ("cat", cat.Id));
             if (cat.AgeHours < Pace.WorkerMinAgeHours)
-                return ActionResult.Fail("kitten", "Kittens cannot join expeditions", ("cat", cat.Id));
+                return ActionResult.Fail(ResultCode.Kitten, "Kittens cannot join expeditions", ("cat", cat.Id));
             if (cat.Migration == "arriving" || cat.Migration == "departing")
-                return ActionResult.Fail("migrating", "This cat is still arriving or leaving", ("cat", cat.Id));
+                return ActionResult.Fail(ResultCode.Migrating, "This cat is still arriving or leaving", ("cat", cat.Id));
             if (site == null)
                 return ActionResult.Fail(ResultCode.UnknownTarget, "No known dungeon entrance", ("target", siteId ?? ""));
             if (IsDungeonExplorer(cat))
-                return ActionResult.Fail("already_exploring", "Recall the current expedition first", ("cat", cat.Id));
+                return ActionResult.Fail(ResultCode.AlreadyExploring, "Recall the current expedition first", ("cat", cat.Id));
             if (village.Routes.Any(r => r.CatId == cat.Id))
-                return ActionResult.Fail("transport_returning", "The cat must finish physically returning its transport first", ("cat", cat.Id));
+                return ActionResult.Fail(ResultCode.TransportReturning, "The cat must finish physically returning its transport first", ("cat", cat.Id));
             if (cat.Health < Pace.ExpeditionMinHealth)
-                return ActionResult.Fail("needs_rest", "This cat is too hurt for an expedition", ("need", "health"));
+                return ActionResult.Fail(ResultCode.NeedsRest, "This cat is too hurt for an expedition", ("need", "health"));
             if (NeedsCritical(cat, Pace.ExpeditionMinNeed))
-                return ActionResult.Fail("needs_rest", "This cat must eat, drink and rest before an expedition", ("need", cat.Hunger < Pace.ExpeditionMinNeed ? "hunger" : cat.Thirst < Pace.ExpeditionMinNeed ? "thirst" : "rest"));
+                return ActionResult.Fail(ResultCode.NeedsRest, "This cat must eat, drink and rest before an expedition", ("need", cat.Hunger < Pace.ExpeditionMinNeed ? "hunger" : cat.Thirst < Pace.ExpeditionMinNeed ? "thirst" : "rest"));
             int index = FirstUnclearedFloor(site);
             if (index < 0)
             {
                 double restock = site.Floors.Where(f => f.RestockAt > 0).Select(f => f.RestockAt - TimeSeconds).DefaultIfEmpty(Pace.FloorRestockSeconds).Min();
-                return ActionResult.Fail("dungeon_cleared", "Nothing left; " + site.Name + " restocks soon", ("seconds", Math.Max(0, Math.Ceiling(restock)).ToString(System.Globalization.CultureInfo.InvariantCulture)));
+                return ActionResult.Fail(ResultCode.DungeonCleared, "Nothing left; " + site.Name + " restocks soon", ("seconds", Math.Max(0, Math.Ceiling(restock)).ToString(System.Globalization.CultureInfo.InvariantCulture)));
             }
             var estimate = RiskOf(cat, site.Floors[index]);
             if (estimate.Risk == DungeonRisk.Deadly && !acceptDeadly)
-                return ActionResult.Fail("dungeon_deadly", "This expedition could kill " + cat.Name + "; accept the risk to send them anyway", ("floor", (index + 1).ToString(System.Globalization.CultureInfo.InvariantCulture)), ("loss", Math.Round(estimate.ExpectedHpLoss).ToString(System.Globalization.CultureInfo.InvariantCulture)));
+                return ActionResult.Fail(ResultCode.DungeonDeadly, "This expedition could kill " + cat.Name + "; accept the risk to send them anyway", ("floor", (index + 1).ToString(System.Globalization.CultureInfo.InvariantCulture)), ("loss", Math.Round(estimate.ExpectedHpLoss).ToString(System.Globalization.CultureInfo.InvariantCulture)));
             if (Path(cat.Position, site.Entrance, village) == null)
                 return ActionResult.Fail(Blocked.BlockedRoute, "The dungeon entrance has no accessible surface route", ("target", site.Id));
             CancelWork(village, cat);
             if (cat.BuildingId != "")
-                return ActionResult.Fail("transport_returning", "The cat must finish physically returning its transport first", ("cat", cat.Id));
+                return ActionResult.Fail(ResultCode.TransportReturning, "The cat must finish physically returning its transport first", ("cat", cat.Id));
             cat.DungeonId = site.Id;
             cat.DungeonPhase = "exploring";
             cat.DungeonFloorIndex = index;
@@ -446,14 +438,14 @@ namespace IdleCatForest.Simulation
         public ActionResult TakeDungeonChest(Village v, Cat c)
         {
             if (v == null || c == null || !c.Alive || c.Position.Level >= 0)
-                return ActionResult.Fail("no_chest_in_reach", "Walk to a dungeon chest or select a nearby pile");
+                return ActionResult.Fail(ResultCode.NoChestInReach, "Walk to a dungeon chest or select a nearby pile");
             var floor = Dungeons.SelectMany(d => d.Floors).FirstOrDefault(f => f.LootPosition.Level == c.Position.Level && Math.Abs(f.LootPosition.X - c.Position.X) + Math.Abs(f.LootPosition.Z - c.Position.Z) <= 1 && f.Loot.Any(s => s.Amount > 0));
             if (floor == null)
-                return ActionResult.Fail("no_chest_in_reach", "Walk to a dungeon chest or select a nearby pile");
+                return ActionResult.Fail(ResultCode.NoChestInReach, "Walk to a dungeon chest or select a nearby pile");
             if (DungeonChestLocked(floor))
-                return ActionResult.Fail("chest_guarded", "The guardian still watches this chest");
+                return ActionResult.Fail(ResultCode.ChestGuarded, "The guardian still watches this chest");
             OpenChest(v, c, floor);
-            return ActionResult.Ok(c.Id);
+            return ActionResult.Ok(ResultCode.Collected, c.Id);
         }
 
         /// <summary>Moves a chest's finite contents once: notes to the cat's lore, weapons and relics as carried items, goods to cargo.</summary>
@@ -571,6 +563,7 @@ namespace IdleCatForest.Simulation
             foreach (var village in Villages)
                 foreach (var cat in village.Cats.Where(c => c.Alive && c.Health > 0 && IsDungeonExplorer(c)).ToArray())
                 {
+                    BeginActor(cat);
                     var site = Dungeons.Find(d => d.Id == cat.DungeonId) ?? Dungeons.Find(d => d.Floors.Any(f => f.Cells.Contains(cat.Position)));
                     if (site == null)
                         continue;
@@ -595,7 +588,7 @@ namespace IdleCatForest.Simulation
                     if (cat.DungeonPhase == "manual")
                         RetreatDungeon(cat, "expedition_return_for_safety");
                     else if (active && cat.Health < FightFloorHealth)
-                        RetreatDungeon(cat, "expedition_wounded");
+                        RetreatDungeon(cat, Blocked.ExpeditionWounded);
                     // A fight under way finishes unless the cat falls below the fight floor.
                     else if (active && committed == null && NeedsCritical(cat, Pace.ExpeditionRetreatNeed))
                         RetreatDungeon(cat, "expedition_return_for_safety");
@@ -655,6 +648,7 @@ namespace IdleCatForest.Simulation
                     else
                         RetreatDungeon(cat, "");
                 }
+            EndActor();
             foreach (var creature in Creatures.Where(e => e.Health > 0))
                 TickDungeonCreature(creature, dt, planning);
             if (planning)
@@ -930,7 +924,7 @@ namespace IdleCatForest.Simulation
             CancelDungeon(cat);
             cat.Path.Clear();
             cat.Goal = GoalKey.Idle;
-            cat.BlockedReason = "expedition_stranded";
+            cat.BlockedReason = Blocked.ExpeditionStranded;
             if (!warned)
                 Note(village, EventKind.Emergency, cat.Name + " could not find a way home from the expedition and stopped to tend its needs", cat.Id);
         }

@@ -68,7 +68,7 @@ namespace IdleCatForest.Acceptance
         {
             Require(Pacing.For("demo").Profile == "demo", "Demo profile lookup returned " + Pacing.For("demo").Profile);
             Require(Pacing.For("demo") == Pacing.Demo && Pacing.Demo != Pacing.Classic, "Demo profile is not its own table");
-            Require(Pacing.Classic.Profile == "classic" && Pacing.Classic.DayScale == 1 && Pacing.Demo.DayScale == 1, "Core pacing defaults changed");
+            Require(Pacing.Classic.Profile == "classic" && Pacing.Classic.DayScale == 1 && Pacing.Demo.DayScale == 60, "Core pacing defaults changed");
         }
 
         private static void PacingForUnknown()
@@ -84,9 +84,10 @@ namespace IdleCatForest.Acceptance
             foreach (var recipe in Catalog.Recipes)
                 Require(ReferenceEquals(w.RecipeOf(recipe.Id), Catalog.Recipe(recipe.Id)), "RecipeOf differs from the catalog for " + recipe.Id);
             Require(w.RecipeOf("no_such_recipe") == null, "RecipeOf invented an unknown recipe");
+            // Demo worlds read DemoContent's copies (W2-10); demo_content.* checks their numbers.
             w.PacingProfile = Pacing.DemoProfile;
             foreach (var recipe in Catalog.Recipes)
-                Require(ReferenceEquals(w.RecipeOf(recipe.Id), Catalog.Recipe(recipe.Id)), "RecipeOf overrides " + recipe.Id + " before demo content exists");
+                Require(w.RecipeOf(recipe.Id)?.Id == recipe.Id && !ReferenceEquals(w.RecipeOf(recipe.Id), recipe), "Demo RecipeOf does not return DemoContent's copy of " + recipe.Id);
         }
 
         private static void GainSkillAdds()

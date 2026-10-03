@@ -131,6 +131,22 @@ namespace IdleCatForest.Simulation
         public const string NeedWaterInCargo = "need_water_in_cargo";
         public const string GoToShrine = "go_to_shrine";
         public const string NoReservedBed = "no_reserved_bed";
+
+        // Added at W2-INT-a: order refusals (W2-04).
+        public const string BusyWithNeed = "busy_with_need";
+
+        // Added at W2-INT-a: expeditions, dungeon chests and rallies (W2-09).
+        public const string ReleaseControl = "release_control";
+        public const string AlreadyExploring = "already_exploring";
+        public const string NeedsRest = "needs_rest";
+        public const string DungeonCleared = "dungeon_cleared";
+        public const string DungeonDeadly = "dungeon_deadly";
+        public const string ChestGuarded = "chest_guarded";
+        public const string NoChestInReach = "no_chest_in_reach";
+        public const string Rallied = "rallied";
+        public const string NoActiveRaid = "no_active_raid";
+        public const string RallyCooldown = "rally_cooldown";
+        public const string NoDefenders = "no_defenders";
     }
 
     /// <summary>Keys of <see cref="ActionResult.Args"/>; numbers are invariant-culture strings.</summary>

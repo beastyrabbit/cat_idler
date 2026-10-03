@@ -138,8 +138,8 @@ namespace IdleCatForest.Acceptance
             { "huntYieldMult", Direct((w, v, c) => Gather(w, v, c, "hunt", "food")) },
             { "gatherYieldMult", Direct((w, v, c) => Gather(w, v, c, "fibre", "fibre")) },
             { "materialYieldMult", Direct((w, v, c) => Gather(w, v, c, "logs", "logs")) },
-            // One trip carries 8 plus the bonus; the base load is 8 units.
-            { "haulCapacity", new Mechanism { Run = (w, v, c) => Gather(w, v, c, "logs", "logs"), Expected = total => (8 + total) / 8 } },
+            // haulCapacity multiplies the base load of 8 (W2-04, sim-work: "carry capacity scales as 8 * haulCapacity").
+            { "haulCapacity", new Mechanism { Run = (w, v, c) => Gather(w, v, c, "logs", "logs"), Expected = total => 1 + total } },
             { "waterCarryCapacity", new Mechanism { Run = (w, v, c) => Gather(w, v, c, "water", "water"), Expected = total => (8 + total) / 8 } },
             { "denStewardship", Inverse(RestLoss) },
             { "waterStewardship", Inverse((w, v, c) => ThirstLoss(w, v, c, true)) },

@@ -21,28 +21,9 @@ namespace IdleCatForest.Acceptance
             yield return new Scenario("raid_beat.classic_world_has_no_scripted_raid", ClassicHasNoScript);
         }
 
-        private static readonly object KnobLock = new object();
-
-        /// <summary>
-        /// W2-01 sets the demo threat knobs (DemoRaidAtSeconds 900, RaidCanKill false). Until that
-        /// package merges they are the W1 placeholders, so this fills the same values once. After the
-        /// merge it changes nothing. Only the demo table is touched; classic stays as it is.
-        /// </summary>
-        private static void EnsureDemoThreatKnobs()
-        {
-            lock (KnobLock)
-            {
-                if (Pacing.Demo.DemoRaidAtSeconds <= 0)
-                    Pacing.Demo.DemoRaidAtSeconds = 900;
-                if (Pacing.Demo.RaidCanKill)
-                    Pacing.Demo.RaidCanKill = false;
-            }
-        }
-
         /// <summary>A demo-profile founding colony whose clock starts <paramref name="lead"/> seconds before the raid warning.</summary>
         private static World DemoWorld(out Village v, double lead)
         {
-            EnsureDemoThreatKnobs();
             var w = World.Create(41);
             w.PacingProfile = Pacing.DemoProfile;
             v = w.Villages[0];
@@ -147,7 +128,6 @@ namespace IdleCatForest.Acceptance
 
         private static void ClassicHasNoScript()
         {
-            EnsureDemoThreatKnobs();
             var w = World.Create(41);
             var v = w.Villages[0];
             v.FoundedAt = -2000;

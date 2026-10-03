@@ -15,7 +15,7 @@ namespace IdleCatForest.Simulation
             var job = v.Jobs.Find(j => j.Id == c.JobId && !j.Completed);
             if (job != null)
             {
-                bool preserve = job.Kind == JobKind.Road || job.Kind == JobKind.Rail || job.Kind == JobKind.Expand;
+                bool preserve = job.Kind == JobKind.Road || job.Kind == JobKind.Rail || job.Kind == JobKind.Expand || job.Kind == JobKind.Build && DemoConstruction;
                 if (preserve)
                 {
                     if (c.Cargo.Count > 0)
@@ -104,7 +104,7 @@ namespace IdleCatForest.Simulation
             }
             foreach (var item in v.Items.Where(i => c.Equipment.Contains(i.Id) && i.Kind == "tool"))
                 item.Condition = Math.Max(0, item.Condition - Pace.ToolWearPerJob);
-            Note(v, EventKind.Completed, c.Name + " completed " + j.Kind, j.Id);
+            NoteJobCompleted(v, c, j);
             if (j.Kind == JobKind.Haul)
                 PruneSpill(v, v.Stockpiles.Find(s => s.Id == j.SourceId));
         }

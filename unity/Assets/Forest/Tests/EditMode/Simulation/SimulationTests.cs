@@ -66,7 +66,7 @@ public class SimulationTests
     [Test] public void BlockedCarrierPreservesGoodsWhileMeetingCriticalThirst()
     {
         var w=World.Create(7);var v=w.Villages[0];var c=v.Cats[0];var j=new Job{Id="blocked-haul",Kind="logs",Phase="output_delivery",CatId=c.Id,Position=c.Position};
-        v.Jobs.Add(j);c.JobId=j.Id;c.Cargo.Add(new Stack("logs",8));c.Thirst=1;v.Stockpiles[0].Capacity=v.Stockpiles[0].Goods.Sum(s=>s.Amount);
+        v.Jobs.Add(j);c.JobId=j.Id;c.Cargo.Add(new Stack("logs",8));c.Thirst=1;foreach(var s in v.Stockpiles) s.Capacity=s.Goods.Sum(g=>g.Amount);
         w.Step(1);
         Assert.That(c.Goal,Is.EqualTo("need_drink"));
         Assert.That(v.Stockpiles.Where(s=>s.Kind=="spill").Sum(s=>World.Amount(s.Goods,"logs")),Is.EqualTo(8));

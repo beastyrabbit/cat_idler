@@ -12,6 +12,7 @@ namespace IdleCatForest.Simulation
             "ensure", "presence", "foundvillage", "joinvillage",
             "settestacceleration", "advancetime", "settestrngseed",
             "requestjob", "dispatchscout", "boost", "boostcat", "preferforwork", "setcatlaborpreference", "planbuilding",
+            "cancelconstruction", "demolish", "demolishbuilding",
             "assignworker", "releaseworker", "assignofficer", "unassignofficer", "researchnode", "unlocknode", "hurrystudy",
             "purchaseupgrade", "editproductionqueue", "editproductionworkslot", "designatestockpile", "designategatherspot",
             "designatefishingspot", "removestockpile", "removegatherspot", "haulgatherspot", "designatefarm", "clearfarm",
@@ -116,6 +117,11 @@ namespace IdleCatForest.Simulation
                     return HandleSetCatLaborPreference(action, cat);
                 case "planbuilding":
                     return HandlePlanBuilding(village, action, cat);
+                case "cancelconstruction":
+                    return HandleCancelConstruction(village, action);
+                case "demolish":
+                case "demolishbuilding":
+                    return HandleDemolish(village, action);
                 case "assignworker":
                     return HandleAssignWorker(village, action, cat, building);
                 case "releaseworker":

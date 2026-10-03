@@ -85,12 +85,31 @@ namespace IdleCatForest.Simulation
         public double SourceExclusionSeconds = 60;
         public int BuildersPerSite = 2;
 
+        // Moved from Wave 2 PACING-HANDOFF constants by W2-INT-a (classic values are the old literals).
+        /// <summary>
+        /// How far a tool's quality, material and condition scale its work bonus (W2-04). 0 keeps the flat
+        /// <see cref="WorkToolBonus"/>.
+        /// </summary>
+        public double ToolQualityWorkScale = 0;
+        /// <summary>One cat's base load before haulCapacity studies multiply it.</summary>
+        public double BaseCarryLoad = 8;
+        /// <summary>Construction work of the first building of a kind, and per counted building of that kind (W2-05).</summary>
+        public double BuildWorkBase = 120;
+        public double BuildWorkPerExisting = 30;
+        /// <summary>Lumber a bridge or a dock costs.</summary>
+        public double BridgeLumber = 4;
+        public double DockLumber = 8;
+        /// <summary>Share of the bill a demolished building returns.</summary>
+        public double DemolishRefundShare = 0.5;
+
         /// <summary>
         /// Demo equals classic: work durations and yields are tuned per recipe in DemoContent (W2-10), and
         /// regrowth only matters after the demo's half hour.
         /// </summary>
         partial void DemoJobs()
         {
+            // Better tools work visibly better; a basic quality-1 wood tool keeps the flat bonus.
+            ToolQualityWorkScale = 0.375;
         }
     }
 }

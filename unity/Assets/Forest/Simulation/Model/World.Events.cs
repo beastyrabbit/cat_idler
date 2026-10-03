@@ -158,8 +158,8 @@ namespace IdleCatForest.Simulation
         public Event NoteExpeditionLoot(Village v, Cat cat, IEnumerable<Stack> loot)
         {
             var stacks = (loot ?? Enumerable.Empty<Stack>()).Where(s => s != null && s.Amount > 0).ToList();
-            var args = stacks.Select(s => (s.Resource, Number(s.Amount))).ToArray();
-            string text = (cat == null ? "The expedition" : cat.Name) + " brought home " + (stacks.Count == 0 ? "nothing" : string.Join(", ", stacks.Select(s => Number(s.Amount) + " " + Words(s.Resource))));
+            var args = stacks.Select(s => (s.Resource, EventAmount(s.Amount))).ToArray();
+            string text = (cat == null ? "The expedition" : cat.Name) + " brought home " + (stacks.Count == 0 ? "nothing" : string.Join(", ", stacks.Select(s => EventAmount(s.Amount) + " " + Words(s.Resource))));
             return NoteMilestone(v, EventKind.ExpeditionLoot, text, cat?.Id ?? "", null, args);
         }
 
@@ -188,6 +188,6 @@ namespace IdleCatForest.Simulation
         }
 
         private static string Words(string id) => (id ?? "").Replace('_', ' ');
-        private static string Number(double amount) => Math.Round(amount, 2).ToString("0.##", CultureInfo.InvariantCulture);
+        private static string EventAmount(double amount) => Math.Round(amount, 2).ToString("0.##", CultureInfo.InvariantCulture);
     }
 }

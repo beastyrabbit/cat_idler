@@ -34,6 +34,14 @@ namespace IdleCatForest.Simulation
         public double BoostDecayClicks = 10.0;
         public double BoostMinSeconds = 1;
 
+        // Moved from Wave 2 PACING-HANDOFF constants by W2-INT-a (classic values keep today's behaviour).
+        /// <summary>Share of a job's work one boost removes; 0 keeps the flat <see cref="BoostSeconds"/> (W2-06).</summary>
+        public double BoostJobFraction = 0;
+        /// <summary>Blessing price of a study as a multiple of its research cost.</summary>
+        public double BlessingStudyCostFactor = 1;
+        /// <summary>Seconds of the current research rate one blessing buys.</summary>
+        public double HurryStudySeconds = 300;
+
         /// <summary>
         /// Demo: one research point per scholar-minute, the leader studies at most every 10 minutes, and
         /// elections never come round (they are hidden in the demo).
@@ -43,6 +51,9 @@ namespace IdleCatForest.Simulation
             ResearchDivisor = 60;
             LeaderStudyIntervalSeconds = 10 * 60;
             ElectionIntervalSeconds = 100 * 365 * 86400.0;
+            // A click helps a job by a share of it, and blessings stop being the cheap path to core studies.
+            BoostJobFraction = 0.05;
+            BlessingStudyCostFactor = 3;
         }
     }
 }

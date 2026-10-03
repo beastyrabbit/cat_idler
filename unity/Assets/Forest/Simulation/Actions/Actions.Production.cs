@@ -6,10 +6,7 @@ namespace IdleCatForest.Simulation
 {
     public partial class World
     {
-        // PACING-HANDOFF BoostJobFraction: the share of a job's work one boost removes (classic 0 keeps the flat
-        // Pace.BoostSeconds; demo 0.05). For a research hut the "job" is one research point of scholar work.
-        private const double BoostJobFractionDemo = 0.05;
-        private double BoostJobFraction => Pace.Profile == Pacing.DemoProfile ? BoostJobFractionDemo : 0;
+        private double BoostJobFraction => Pace.BoostJobFraction;
 
         /// <summary>Completed buildings that take workers without having recipes.</summary>
         private static readonly string[] StaffedKinds = { "research_hut", "school", "accounting_tent", "mouse_farm", "field" };
@@ -135,7 +132,7 @@ namespace IdleCatForest.Simulation
                     var c = v.Cats.Find(x => x.Id == slot.CatId && x.Alive);
                     if (c == null || c.ControlledBy != "" || c.JobId != "" || IsDungeonExplorer(c))
                         continue;
-                    rate += WorkRate(v, c, "research", b.Kind) * Catalog.Effect(v, "researchRateMult", 1) * Catalog.BuildingEffect(v, b.Kind, "output", 1) / Pace.ResearchDivisor;
+                    rate += WorkRate(v, c, "research", b.Kind) * Catalog.Effect(this, v, "researchRateMult", 1) * Catalog.BuildingEffect(this, v, b.Kind, "output", 1) / Pace.ResearchDivisor;
                 }
             return rate;
         }
@@ -201,7 +198,7 @@ namespace IdleCatForest.Simulation
                 case "add":
                 case "addonce":
                     recipe = RecipeOf(a.RecipeId);
-                    if (recipe == null || recipe.Building != b.Kind || !Catalog.RecipeAvailable(v, recipe))
+                    if (recipe == null || recipe.Building != b.Kind || !Catalog.RecipeAvailable(this, v, recipe))
                         return ActionResult.Fail(ResultCode.RecipeLocked, "Recipe locked or wrong station", (ResultArg.Target, a.RecipeId ?? ""), (ResultArg.Building, b.Kind));
                     if (queue.Count >= 64)
                         return ActionResult.Fail(ResultCode.QueueFull, "Queue limit reached", (ResultArg.Need, "64"), (ResultArg.Have, ActionResult.Number(queue.Count)));
@@ -290,13 +287,25 @@ namespace IdleCatForest.Simulation
                 return ActionResult.Fail(ResultCode.NotAWorkplace, "Cats cannot work at this building", (ResultArg.Target, b.Id), (ResultArg.Building, b.Kind));
             if (!b.Completed)
             {
-                if (v.Jobs.Any(j => !j.Completed && j.TargetId == b.Id))
+                // A queued site has an unowned job to join; demo sites take up to BuildersPerSite builders (W2-05).
+                var siteJobs = ScaffoldJobs(v, b).ToList();
+                var open = siteJobs.FirstOrDefault(j => j.CatId == "");
+                if (open == null && siteJobs.Count >= (DemoConstruction ? Pace.BuildersPerSite : 1))
                     return ActionResult.Fail(ResultCode.ScaffoldHasBuilder, "Scaffold already has a builder", (ResultArg.Target, b.Id), (ResultArg.Building, b.Kind));
                 CancelWork(v, c);
-                StartJob(v, c, new Job { Kind = JobKind.Build, TargetId = b.Id, Position = b.Position, RequiredWork = b.RequiredWork, Manual = true });
+                if (open != null && !open.Completed && open.CatId == "")
+                {
+                    open.CatId = c.Id;
+                    open.BlockedReason = "";
+                    c.JobId = open.Id;
+                    c.Goal = open.Kind;
+                    c.Path.Clear();
+                }
+                else
+                    StartScaffoldJob(v, b, c);
                 return Assigned(c, b.Id, b.Kind, interrupted);
             }
-            int positions = (int)Catalog.BuildingEffect(v, b.Kind, "worker_slots", 1);
+            int positions = DemoContent.SlotsFor(this, v, b.Kind);
             if (b.Slots.Count(s => s.CatId != "" && s.CatId != c.Id) >= positions)
                 return ActionResult.Fail(ResultCode.AllSlotsStaffed, "All work positions staffed", (ResultArg.Target, b.Id), (ResultArg.Building, b.Kind), (ResultArg.Need, ActionResult.Number(positions)));
             CancelWork(v, c);

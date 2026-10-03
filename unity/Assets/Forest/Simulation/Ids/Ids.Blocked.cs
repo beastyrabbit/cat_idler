@@ -31,6 +31,11 @@ namespace IdleCatForest.Simulation
         public const string RouteBlocked = "route_blocked";
         public const string SourceExcluded = "source_excluded";
 
+        // Added at W2-INT-a: automation keeps the next Den's planks and blocks (W2-02); expedition states (W2-09).
+        public const string ConstructionReserve = "construction_reserve";
+        public const string ExpeditionWounded = "expedition_wounded";
+        public const string ExpeditionStranded = "expedition_stranded";
+
         /// <summary>
         /// True for either route code. Movement sets <see cref="BlockedRoute"/> today and Wave 2 code may set
         /// <see cref="RouteBlocked"/>; readers test both through this helper so neither spelling is missed.

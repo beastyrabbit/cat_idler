@@ -106,7 +106,7 @@ namespace IdleCatForest.Simulation
                 check.Work = bill.Work;
                 check.MissingMaterials = Shortfalls(v, bill.Inputs);
             }
-            check.Code = !known ? PlacementCode.UnknownBuilding : !Catalog.BuildingAvailable(v, kind) ? PlacementCode.ResearchLocked : foreign ? PlacementCode.OutsideClaim : first != "" ? first : !check.Entrance.HasValue ? PlacementCode.EntranceBlocked : "";
+            check.Code = !known ? PlacementCode.UnknownBuilding : !Catalog.BuildingAvailable(this, v, kind) ? PlacementCode.ResearchLocked : foreign ? PlacementCode.OutsideClaim : first != "" ? first : !check.Entrance.HasValue ? PlacementCode.EntranceBlocked : "";
             check.Ok = check.Code == "";
             return check;
         }
@@ -142,7 +142,7 @@ namespace IdleCatForest.Simulation
                 check.Work = bill.Work;
                 check.MissingMaterials = Shortfalls(v, bill.Inputs);
             }
-            check.Code = !line ? PlacementCode.UnknownBuilding : kind == JobKind.Rail && !Catalog.Owns(v, "unlock_capability", "rail_logistics") ? PlacementCode.ResearchLocked : !reached ? PlacementCode.TooLong : first != "" ? first : foreign ? PlacementCode.OutsideClaim : !connected ? PlacementCode.NotConnected : "";
+            check.Code = !line ? PlacementCode.UnknownBuilding : kind == JobKind.Rail && !Catalog.Owns(this, v, "unlock_capability", "rail_logistics") ? PlacementCode.ResearchLocked : !reached ? PlacementCode.TooLong : first != "" ? first : foreign ? PlacementCode.OutsideClaim : !connected ? PlacementCode.NotConnected : "";
             check.Ok = check.Code == "";
             return check;
         }

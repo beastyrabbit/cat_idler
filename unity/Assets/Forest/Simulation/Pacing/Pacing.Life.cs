@@ -27,6 +27,31 @@ namespace IdleCatForest.Simulation
         /// </summary>
         public double NeedsHealthFloor = 0;
 
+        // Moved from Wave 2 PACING-HANDOFF constants by W2-INT-a (classic values are the old literals).
+        /// <summary>Per-cat seeded first-tick needs, metabolism and threshold jitter (W2-03).</summary>
+        public bool NeedStagger = false;
+        /// <summary>Range of the seeded first-tick Hunger, Thirst and Rest.</summary>
+        public double NeedSeedMin = 55;
+        public double NeedSeedMax = 100;
+        /// <summary>A critical need waits for a delivery leg shorter than this many tiles.</summary>
+        public int DeliveryLegFinishTiles = 15;
+        /// <summary>The need retry delay doubles at most this often (3 s to 48 s).</summary>
+        public int NeedBackoffMaxDoublings = 4;
+        /// <summary>Reachable-route checks per need resource before trying the next one.</summary>
+        public int NeedSourceSearchLimit = 4;
+        /// <summary>An idle cat that has not reached its spot after this long picks again.</summary>
+        public double IdleWalkLimitSeconds = 45;
+        /// <summary>Idle cats that may stand on one tile.</summary>
+        public int IdleTileShare = 2;
+        /// <summary>Logs and stone the Leader keeps gathered while no Forester holds office (W2-02).</summary>
+        public double LeaderStockTarget = 60;
+        /// <summary>Concurrent Leader gather jobs per resource.</summary>
+        public int LeaderGathersPerResource = 2;
+        /// <summary>At most one Emergency pre-emption per job kind in this window.</summary>
+        public double EmergencyCooldownSeconds = 60;
+        /// <summary>Build, expand and production work past this share is never pre-empted.</summary>
+        public double EmergencyProtectedProgress = 0.5;
+
         // A need trip starts below these levels.
         public double DrinkThreshold = 35;
         public double EatThreshold = 35;
@@ -140,6 +165,8 @@ namespace IdleCatForest.Simulation
             // No starvation deaths in the demo (D16): need damage stops at critical health.
             NeedsCanKill = false;
             NeedsHealthFloor = 10;
+            // Each cat gets its own first-tick needs and rhythm, so trips start staggered instead of together.
+            NeedStagger = true;
             // A fished-out spot refills in about two hours instead of two days.
             FishRegenPerHour = 12;
         }

@@ -499,6 +499,9 @@ namespace IdleCatForest.Acceptance
             var w = ContinuousFixture(out var v, out var c, true);
             var job = v.Jobs.Single();
             v.Stockpiles[0].Goods.RemoveAll(s => s.Resource == "water");
+            // Thirsty cats drink at known open water when stores are dry; this case needs no water anywhere.
+            foreach (var tile in w.Tiles.Where(t => t.Water))
+                tile.Water = false;
             c.Thirst = 1;
             job.Position = new Int2(4, 2);
             job.Phase = "travel";
@@ -541,7 +544,8 @@ namespace IdleCatForest.Acceptance
             else
             {
                 var den = v.Buildings.First(b => b.Id == c.BedId);
-                c.Position = den.Position;
+                // Cats sleep on the den's doorstep, never inside the den.
+                c.Position = den.Entrance;
                 c.X = c.Position.X;
                 c.Z = c.Position.Z;
                 c.Goal = "need_sleep";

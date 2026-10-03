@@ -96,7 +96,9 @@ namespace IdleCatForest.Acceptance
         /// </summary>
         static void DemoIdleRatio()
         {
-            var w = Fresh(Pacing.DemoProfile, out var v);
+            // The demo colony every new single-player world starts from (W2-07).
+            var w = World.CreateColony(World.DemoSeed, null, Pacing.DemoProfile, 0);
+            var v = w.Villages[0];
             var ratios = MeasureIdle(w, v, Pacing.DemoProfile);
             Check(ratios.idle10 < 0.6, "Demo idle ratio after 10 minutes is not under 60%: " + F(ratios.idle10));
             Valid(w);

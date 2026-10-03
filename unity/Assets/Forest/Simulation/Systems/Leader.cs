@@ -6,14 +6,10 @@ namespace IdleCatForest.Simulation
 {
     public partial class World
     {
-        // PACING-HANDOFF LeaderStockTarget: logs and stone the Leader keeps gathered while no Forester holds office.
-        private const double LeaderStockTarget = 60;
-        // PACING-HANDOFF LeaderGathersPerResource: concurrent Leader gather jobs per resource.
-        private const int LeaderGathersPerResource = 2;
-        // PACING-HANDOFF EmergencyCooldownSeconds: at most one Emergency pre-emption per job kind in this window.
-        private const double EmergencyCooldownSeconds = 60;
-        // PACING-HANDOFF EmergencyProtectedProgress: build, expand and production work past this share is never pre-empted.
-        private const double EmergencyProtectedProgress = 0.5;
+        private double LeaderStockTarget => Pace.LeaderStockTarget;
+        private int LeaderGathersPerResource => Pace.LeaderGathersPerResource;
+        private double EmergencyCooldownSeconds => Pace.EmergencyCooldownSeconds;
+        private double EmergencyProtectedProgress => Pace.EmergencyProtectedProgress;
 
         private bool HasOfficer(Village v, string role) => v.Officers.Any(o => o.Role == role && v.Cats.Any(c => c.Id == o.CatId && c.Alive));
 
@@ -43,7 +39,7 @@ namespace IdleCatForest.Simulation
                 last.Amount = TimeSeconds;
                 var result = Request(v, kind, worker, false);
                 if (result.Success)
-                    Note(v, "emergency", worker.Name + " preempted work for physical " + kind, worker.Id);
+                    Note(v, EventKind.Emergency, worker.Name + " preempted work for physical " + kind, worker.Id);
                 return;
             }
         }
@@ -145,7 +141,7 @@ namespace IdleCatForest.Simulation
                 MarkOfficerJob(v, CreateInputJob(v, null, "offering", v.Center, "materials", Pace.LoremasterOfferingMaterials, Pace.LoremasterOfferingWork, ""), "loremaster");
             if (TimeSeconds - v.LastLeaderResearch >= Pace.LeaderStudyIntervalSeconds && v.Cats.Any(c => c.Id == v.LeaderId && c.Alive))
             {
-                var node = Catalog.Research.Where(n => !v.Research.Contains(n.Id) && n.Cost <= v.ResearchPoints && n.Prerequisites.All(v.Research.Contains)).OrderBy(n => n.LeaderPriority).ThenBy(n => n.Id, StringComparer.Ordinal).FirstOrDefault();
+                var node = DemoContent.Studies(this).Where(n => !v.Research.Contains(n.Id) && n.Cost <= v.ResearchPoints && n.Prerequisites.All(v.Research.Contains)).OrderBy(n => DemoContent.PriorityOf(this, n)).ThenBy(n => n.Id, StringComparer.Ordinal).FirstOrDefault();
                 if (node != null && Research(v, node.Id, false).Success)
                     v.LastLeaderResearch = TimeSeconds;
             }

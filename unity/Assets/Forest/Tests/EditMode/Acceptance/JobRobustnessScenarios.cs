@@ -31,14 +31,6 @@ namespace IdleCatForest.Acceptance
             yield return new Scenario("job_robustness.only_working_cats_take_orders", OnlyWorkingCatsTakeOrders);
             yield return new Scenario("job_robustness.upgrade_levels_normalised_and_current", UpgradeLevelsCurrent);
             yield return new Scenario("job_robustness.demo_tools_auto_equip_and_scale_with_quality", DemoToolsAutoEquip);
-        }
-
-        /// <summary>
-        /// Cases that need the W2-04 handoff edits in JobCompletion.cs and VillageTick.cs (files this package
-        /// does not own). The wave integrator moves them into <see cref="Cases"/> after applying those edits.
-        /// </summary>
-        public static IEnumerable<Scenario> PendingIntegrationCases()
-        {
             yield return new Scenario("job_robustness.hunt_keeps_regrowth_and_never_lowers_deposit", HuntKeepsRegrowth);
         }
 

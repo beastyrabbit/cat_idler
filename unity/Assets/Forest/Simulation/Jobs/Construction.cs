@@ -25,7 +25,7 @@ namespace IdleCatForest.Simulation
         private Building ResolveScaffold(Village v, Cat c, Job j)
         {
             string kind = Snake(j.PendingBuildingKind == "" ? "den" : j.PendingBuildingKind);
-            if (!Catalog.BuildingAvailable(v, kind) || kind == "shrine")
+            if (!Catalog.BuildingAvailable(this, v, kind) || kind == "shrine")
             {
                 j.BlockedReason = Blocked.BuildingResearchRequired;
                 return null;

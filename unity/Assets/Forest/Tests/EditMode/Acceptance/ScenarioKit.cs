@@ -111,6 +111,7 @@ namespace IdleCatForest.Acceptance
         internal static double Goods(World w, Village v, string resource) => v.Stockpiles.Sum(p => World.Amount(p.Goods, resource)) + v.Cats.Sum(c => World.Amount(c.Cargo, resource)) + v.Jobs.Where(j => !j.Completed).Sum(j => World.Amount(j.Local, resource)) + v.Buildings.Sum(b => World.Amount(b.Inputs, resource) + World.Amount(b.Outputs, resource)) + v.Farms.Where(f => f.Crop == resource).Sum(f => f.Harvest) + v.Vehicles.Sum(x => World.Amount(x.Cargo, resource));
         internal static void Valid(World w)
         {
+            Check(w.IsolatedFaults().Count == 0, "Isolated faults: " + string.Join("; ", w.IsolatedFaults()));
             Check(w.Validate().Count == 0, string.Join("; ", w.Validate()));
             foreach (var v in w.Villages)
             {

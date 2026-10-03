@@ -257,7 +257,7 @@ namespace IdleCatForest.Simulation
         public List<string> ValidateFatal()
         {
             var errors = new List<string>();
-            if (GenerationVersion < 0 || GenerationVersion > 1)
+            if (GenerationVersion < 0 || GenerationVersion > 2)
                 errors.Add("Unsupported world generation version");
             if (!Finite(TimeSeconds) || TimeSeconds < 0)
                 errors.Add("Invalid clock");

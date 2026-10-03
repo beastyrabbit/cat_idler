@@ -293,6 +293,51 @@ namespace IdleCatForest.Acceptance
             // Added by W2-01; classic leaves them inert.
             ["NeedsHealthFloor"] = 0,
             ["MigrationRequiresFreeBed"] = false,
+            // Moved from Wave 2 PACING-HANDOFF constants by W2-INT-a; each classic value is the old literal.
+            ["NeedStagger"] = false,
+            ["NeedSeedMin"] = 55,
+            ["NeedSeedMax"] = 100,
+            ["DeliveryLegFinishTiles"] = 15,
+            ["NeedBackoffMaxDoublings"] = 4,
+            ["NeedSourceSearchLimit"] = 4,
+            ["IdleWalkLimitSeconds"] = 45,
+            ["IdleTileShare"] = 2,
+            ["LeaderStockTarget"] = 60,
+            ["LeaderGathersPerResource"] = 2,
+            ["EmergencyCooldownSeconds"] = 60,
+            ["EmergencyProtectedProgress"] = 0.5,
+            ["HousingSitingRetrySeconds"] = 600,
+            ["ToolQualityWorkScale"] = 0,
+            ["BaseCarryLoad"] = 8,
+            ["BuildWorkBase"] = 120,
+            ["BuildWorkPerExisting"] = 30,
+            ["BridgeLumber"] = 4,
+            ["DockLumber"] = 8,
+            ["DemolishRefundShare"] = 0.5,
+            ["BoostJobFraction"] = 0,
+            ["BlessingStudyCostFactor"] = 1,
+            ["HurryStudySeconds"] = 300,
+            ["RootHollowThreat"] = 0.9,
+            ["GuardianAttackPerThreat"] = 4.6,
+            ["GuardianDefensePerFloor"] = 0.25,
+            ["FightFloorHealth"] = 15,
+            ["CombatVariance"] = 0.25,
+            ["SafeLossShare"] = 0.25,
+            ["GuardianRegenPerSecond"] = 0.5,
+            ["FloorOneLore"] = 5,
+            ["FloorTwoLore"] = 8,
+            ["RaidReferenceStrength"] = 30,
+            ["RallySize"] = 4,
+            ["RallyCooldownSeconds"] = 60,
+            ["DefenderFloorHealth"] = 15,
+            ["RelicCombatBonus"] = 1.1,
+            ["ScriptedBandMembers"] = 3,
+            ["ScriptedRaiderHealth"] = 6,
+            ["ScriptedRaiderStrength"] = 15,
+            ["NaturalRaiderHealth"] = 10,
+            ["NaturalRaiderStrength"] = 15,
+            ["CatsPerRaider"] = 8,
+            ["MaxRaiders"] = 6,
         };
 
         // Every field the demo profile sets, with its demo value. Every other field must equal classic.
@@ -328,6 +373,10 @@ namespace IdleCatForest.Acceptance
             ["RaidWarningSeconds"] = 120,
             ["RaidCanKill"] = false,
             ["FloorRestockSeconds"] = 600,
+            ["NeedStagger"] = true,
+            ["ToolQualityWorkScale"] = 0.375,
+            ["BoostJobFraction"] = 0.05,
+            ["BlessingStudyCostFactor"] = 3,
         };
 
         static FieldInfo[] Knobs() => typeof(Pacing).GetFields(BindingFlags.Public | BindingFlags.Instance).OrderBy(f => f.Name, StringComparer.Ordinal).ToArray();
@@ -413,13 +462,13 @@ namespace IdleCatForest.Acceptance
         static void PrintCurve() => Console.WriteLine(Curve.Line);
 
         /// <summary>
-        /// Seed 41 in the demo profile, stepped at 1 s for 40 sim minutes. The scripted player only keeps one scholar in
-        /// the research hut; everything else is the colony on its own.
+        /// The demo colony (World.DemoSeed, founded by CreateColony in the demo profile, as every new single-player world
+        /// is), stepped at 1 s for 40 sim minutes. The scripted player only keeps one scholar in the research hut;
+        /// everything else is the colony on its own.
         /// </summary>
         static DemoCurve Measure()
         {
-            var w = World.Create(41);
-            w.PacingProfile = Pacing.DemoProfile;
+            var w = World.CreateColony(World.DemoSeed, null, Pacing.DemoProfile, 0);
             var curve = new DemoCurve();
             var v = w.Villages[0];
             var founders = new HashSet<string>(v.Cats.Select(c => c.Id));
@@ -432,12 +481,12 @@ namespace IdleCatForest.Acceptance
                 w.Step(1);
                 v = w.Villages[0];
                 double t = w.TimeSeconds;
-                double spent = v.Research.Where(id => !foundingStudies.Contains(id)).Sum(id => Catalog.Study(id)?.Cost ?? 0);
+                double spent = v.Research.Where(id => !foundingStudies.Contains(id)).Sum(id => Catalog.Study(w, id)?.Cost ?? 0);
                 if (curve.FirstResearch < 0 && v.ResearchPoints + spent > 0)
                     curve.FirstResearch = t;
                 if (curve.FirstResearchPoint < 0 && v.ResearchPoints + spent >= 1)
                     curve.FirstResearchPoint = t;
-                if (curve.FirstStudyAffordable < 0 && (spent > 0 || Catalog.Research.Any(n => !v.Research.Contains(n.Id) && n.Prerequisites.All(v.Research.Contains) && n.Cost <= v.ResearchPoints)))
+                if (curve.FirstStudyAffordable < 0 && (spent > 0 || DemoContent.Studies(w).Any(n => !v.Research.Contains(n.Id) && n.Prerequisites.All(v.Research.Contains) && n.Cost <= v.ResearchPoints)))
                     curve.FirstStudyAffordable = t;
                 foreach (var c in v.Cats.Where(c => !founders.Contains(c.Id)))
                 {
@@ -485,7 +534,7 @@ namespace IdleCatForest.Acceptance
             }
             curve.Studies = v.Research.Count - foundingStudies.Count;
             curve.Cats = v.Cats.Count(c => c.Alive);
-            curve.Line = "demo.curve seed=41 profile=demo minutes=40"
+            curve.Line = "demo.curve seed=" + World.DemoSeed + " profile=demo minutes=40"
                 + " research>0=" + Seconds(curve.FirstResearch)
                 + " research>=1=" + Seconds(curve.FirstResearchPoint)
                 + " study_affordable=" + Seconds(curve.FirstStudyAffordable)

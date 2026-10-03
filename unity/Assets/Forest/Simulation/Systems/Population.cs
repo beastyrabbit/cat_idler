@@ -47,7 +47,7 @@ namespace IdleCatForest.Simulation
             }
             if (v.LeaderId == c.Id)
                 v.LeaderId = v.Cats.Where(EligibleForOffice).OrderBy(x => x.Id, StringComparer.Ordinal).FirstOrDefault()?.Id ?? "";
-            Note(v, "death", c.Name + " died from " + cause, c.Id);
+            Note(v, EventKind.Death, c.Name + " died from " + cause, c.Id);
         }
         /// <summary>Refounding after extinction, housing, births, old age, breeding and migration, once per upkeep tick.</summary>
         private void Population(Village v)
@@ -58,7 +58,7 @@ namespace IdleCatForest.Simulation
                 if (!CanFoundAt(v.Id, v.Center, v.Communal))
                 {
                     if (!v.Events.Any(e => e.Kind == "recovery_blocked"))
-                        Note(v, "recovery_blocked", "Refounding blocked by foreign territory", v.Id);
+                        Note(v, EventKind.RecoveryBlocked, "Refounding blocked by foreign territory", v.Id);
                     return;
                 }
                 foreach (var r in Reservations.Where(r => r.VillageId == v.Id).ToArray())
@@ -70,7 +70,7 @@ namespace IdleCatForest.Simulation
                 replacement.Blessings = v.Blessings;
                 replacement.Research = new List<string>(v.Research);
                 Villages[Villages.IndexOf(v)] = replacement;
-                Note(replacement, "recovery", "Colony refounded after extinction");
+                Note(replacement, EventKind.Recovery, "Colony refounded after extinction");
                 return;
             }
             int beds = v.Buildings.Count(b => b.Completed && b.Kind == "den") * DenCapacity(v);
@@ -114,7 +114,7 @@ namespace IdleCatForest.Simulation
                     v.Cats.Add(kitten);
                     c.PregnantUntil = -1;
                     c.PregnancyMateId = "";
-                    Note(v, "birth", kitten.Name + " was born", kitten.Id);
+                    Note(v, EventKind.Birth, kitten.Name + " was born", kitten.Id);
                 }
                 if (c.AgeHours >= (c.Id == v.LeaderId || c.OfficerRole == "loremaster" ? Pace.HonouredElderAgeHours : Pace.ElderAgeHours) && Roll() < Pace.OldAgeDeathChance / Service(v, "elder_corner", "elderProtection", 1))
                     Die(v, c, "old age");
@@ -136,7 +136,7 @@ namespace IdleCatForest.Simulation
                         var mate = mates[RandomInt(mates.Length)];
                         mother.PregnantUntil = TimeSeconds + Pace.GestationSeconds;
                         mother.PregnancyMateId = mate.Id;
-                        Note(v, "pregnancy", mother.Name + " reserved a kitten bed", mother.Id);
+                        Note(v, EventKind.Pregnancy, mother.Name + " reserved a kitten bed", mother.Id);
                     }
                 }
             }
@@ -149,7 +149,7 @@ namespace IdleCatForest.Simulation
                     var migrant = NewCat(v, "Wanderer " + NextId, new Int2(v.Center.X, v.Center.Z + v.Radius + 3));
                     migrant.Migration = "arriving";
                     v.Cats.Add(migrant);
-                    Note(v, "migration", migrant.Name + " approaches the gate", migrant.Id);
+                    Note(v, EventKind.Migration, migrant.Name + " approaches the gate", migrant.Id);
                 }
             }
         }

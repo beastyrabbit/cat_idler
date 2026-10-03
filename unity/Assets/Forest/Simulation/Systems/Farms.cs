@@ -70,7 +70,7 @@ namespace IdleCatForest.Simulation
                 f.Phase = fraction < 1.0 / 12 ? "soil" : fraction < 0.25 ? "sprout" : fraction < 0.5 ? "growing" : fraction < 0.75 ? "mature" : "flowering";
                 if (f.Growth + 1e-9 >= cycle)
                 {
-                    f.Harvest = f.YieldPerTile * f.Width * f.Depth * (f.FertilityAffectsGrowth ? 1 : Math.Max(0, f.Fertility)) * Catalog.Effect(v, "farmYield", 1) * Catalog.Effect(v, "farmYieldMult", 1) * Catalog.BuildingEffect(v, "field", "output", 1);
+                    f.Harvest = f.YieldPerTile * f.Width * f.Depth * (f.FertilityAffectsGrowth ? 1 : Math.Max(0, f.Fertility)) * Catalog.Effect(this, v, "farmYield", 1) * Catalog.Effect(this, v, "farmYieldMult", 1) * Catalog.BuildingEffect(this, v, "field", "output", 1);
                     f.Growth = 0;
                     f.Phase = "harvesting";
                 }

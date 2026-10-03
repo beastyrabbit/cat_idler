@@ -45,6 +45,8 @@ namespace IdleCatForest.Simulation
         public int HousingSpareBeds = 1;
         public double HousingFoodPerCat = 3;
         public double HousingWaterPerCat = 4;
+        /// <summary>A failed housing siting scan is repeated at the latest after this long on an unchanged layout (W2-02).</summary>
+        public double HousingSitingRetrySeconds = 600;
 
         /// <summary>
         /// Demo (D6): the first pregnancy around minute 10 to 12 and a kitten about 8 minutes later, the first

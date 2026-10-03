@@ -9,16 +9,11 @@ namespace IdleCatForest.Simulation
         /// <summary><see cref="Cat.RalliedTo"/> of a cat waiting at the south gate for a warned raid.</summary>
         public const string RallyGate = "gate";
 
-        // PACING-HANDOFF RaidReferenceStrength: a raid of this Strength deals RaiderStrikePerSecond.
-        private const double RaidReferenceStrength = 30;
-        // PACING-HANDOFF RallySize: adults sent by one rally.
-        private const int RallySize = 4;
-        // PACING-HANDOFF RallyCooldownSeconds: game seconds between rallies.
-        private const double RallyCooldownSeconds = 60;
-        // PACING-HANDOFF DefenderFloorHealth: a cat at or below this health stops defending.
-        private const double DefenderFloorHealth = 15;
-        // PACING-HANDOFF RelicCombatBonus: combat multiplier while a relic sits in colony storage.
-        private const double RelicCombatBonus = 1.1;
+        private double RaidReferenceStrength => Pace.RaidReferenceStrength;
+        private int RallySize => Pace.RallySize;
+        private double RallyCooldownSeconds => Pace.RallyCooldownSeconds;
+        private double DefenderFloorHealth => Pace.DefenderFloorHealth;
+        private double RelicCombatBonus => Pace.RelicCombatBonus;
 
         public double EquipmentPower(Village v, Cat c, string kind)
         {
@@ -43,7 +38,7 @@ namespace IdleCatForest.Simulation
         }
 
         /// <summary>The party's strength as a damage multiplier; a legacy raid of Strength 30 is exactly 1.</summary>
-        private static double RaiderStrength(Raid raid) => Math.Max(0, raid.Strength) / RaidReferenceStrength * LivingShare(raid);
+        private double RaiderStrength(Raid raid) => Math.Max(0, raid.Strength) / RaidReferenceStrength * LivingShare(raid);
 
         /// <summary>Just inside the south gate, where raiders come in and rallied defenders wait.</summary>
         private static Int2 SouthGate(Village v) => new Int2(v.Center.X, v.Center.Z + v.Radius - 1);
@@ -62,15 +57,15 @@ namespace IdleCatForest.Simulation
             if (v == null)
                 return ActionResult.Fail(ResultCode.UnknownTarget, "No village to defend");
             if (!RaidThreat(v))
-                return ActionResult.Fail("no_active_raid", "No raid is approaching");
+                return ActionResult.Fail(ResultCode.NoActiveRaid, "No raid is approaching");
             if (TimeSeconds + 1e-9 < v.RallyReadyAt)
-                return ActionResult.Fail("rally_cooldown", "Defenders were rallied moments ago", ("seconds", Math.Ceiling(v.RallyReadyAt - TimeSeconds).ToString(CultureInfo.InvariantCulture)));
+                return ActionResult.Fail(ResultCode.RallyCooldown, "Defenders were rallied moments ago", ("seconds", Math.Ceiling(v.RallyReadyAt - TimeSeconds).ToString(CultureInfo.InvariantCulture)));
             var raid = v.Raids.FirstOrDefault();
             var point = raid?.Position ?? SouthGate(v);
             var chosen = v.Cats.Where(c => CanDefend(c) && c.RalliedTo == "" && c.AgeHours >= Pace.WorkerMinAgeHours && c.Migration != "arriving" && c.Migration != "departing" && !v.Routes.Any(r => r.CatId == c.Id))
                 .OrderBy(c => Int2.Distance(c.Position, point)).ThenBy(c => c.Id, StringComparer.Ordinal).Take(RallySize).ToList();
             if (chosen.Count == 0)
-                return ActionResult.Fail("no_defenders", "No adult is free to defend the colony");
+                return ActionResult.Fail(ResultCode.NoDefenders, "No adult is free to defend the colony");
             foreach (var c in chosen)
             {
                 if (c.JobId != "" || c.BuildingId != "")
@@ -81,7 +76,7 @@ namespace IdleCatForest.Simulation
             }
             v.RallyReadyAt = TimeSeconds + RallyCooldownSeconds;
             Note(v, EventKind.Defense, chosen.Count + " cats rallied to defend the south gate", raid?.Id ?? "");
-            return ActionResult.Ok("rallied", raid?.Id ?? "", ("count", chosen.Count.ToString(CultureInfo.InvariantCulture)));
+            return ActionResult.Ok(ResultCode.Rallied, raid?.Id ?? "", ("count", chosen.Count.ToString(CultureInfo.InvariantCulture)));
         }
 
         private static void StandDown(Cat c)
@@ -183,8 +178,8 @@ namespace IdleCatForest.Simulation
                         double fighting = SpendActorTime(defender);
                         if (fighting > 0)
                         {
-                            double injury = fighting * Pace.RaiderStrikePerSecond * RaiderStrength(raid) / Math.Max(1, EquipmentPower(v, defender, "armor") * Catalog.Effect(v, "defensePower", 1) * Catalog.Effect(v, "defenseMult", 1) * Service(v, "walls", "wallDefense", 1));
-                            raid.Health -= fighting * Pace.DefenderStrikePerSecond * EquipmentPower(v, defender, "weapon") * WorkRate(v, defender, "fight", "barracks") * Catalog.Effect(v, "combatPower", 1) * Catalog.Effect(v, "combatPowerMult", 1) * Service(v, "barracks", "barracksReadiness", 1) * ColonyRelicFactor(v);
+                            double injury = fighting * Pace.RaiderStrikePerSecond * RaiderStrength(raid) / Math.Max(1, EquipmentPower(v, defender, "armor") * Catalog.Effect(this, v, "defensePower", 1) * Catalog.Effect(this, v, "defenseMult", 1) * Service(v, "walls", "wallDefense", 1));
+                            raid.Health -= fighting * Pace.DefenderStrikePerSecond * EquipmentPower(v, defender, "weapon") * WorkRate(v, defender, "fight", "barracks") * Catalog.Effect(this, v, "combatPower", 1) * Catalog.Effect(this, v, "combatPowerMult", 1) * Service(v, "barracks", "barracksReadiness", 1) * ColonyRelicFactor(v);
                             GainSkill(defender, "fight", fighting / Pace.DefenderSkillSecondsPerPoint);
                             foreach (var item in v.Items.Where(i => defender.Equipment.Contains(i.Id)))
                                 item.Condition = Math.Max(0, item.Condition - fighting * Pace.DefenderWeaponWearPerSecond);

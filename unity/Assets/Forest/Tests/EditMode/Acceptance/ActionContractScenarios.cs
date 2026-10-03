@@ -356,7 +356,8 @@ namespace IdleCatForest.Acceptance
                 var w = Fixture(out var v, out var c);
                 w.PacingProfile = profile;
                 v.Research.Clear();
-                var study = Catalog.Research.Take(24).First(n => n.Prerequisites.Count == 0 && n.Cost > 0);
+                // The study as this world prices it: demo worlds read DemoContent's costs and prerequisites (W2-10).
+                var study = Catalog.Research.Take(24).Select(n => Catalog.Study(w, n.Id)).First(n => n.Prerequisites.Count == 0 && n.Cost > 0);
                 v.Blessings = study.Cost * 2;
                 var r = w.Apply(Context(v), new GameAction { Kind = "UnlockNode", NodeId = study.Id });
                 Coded(r, "UnlockNode");

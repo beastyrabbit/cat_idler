@@ -7,10 +7,7 @@ namespace IdleCatForest.Simulation
 {
     public partial class World
     {
-        // PACING-HANDOFF HousingSitingRetrySeconds: a failed housing siting scan is repeated at the latest after this long, even on an unchanged layout.
-        private const double HousingSitingRetrySeconds = 600;
-        // EVENT-HANDOFF EventKind.Appointment: notable event logged when an office is filled automatically.
-        private const string AppointmentEvent = "appointment";
+        private double HousingSitingRetrySeconds => Pace.HousingSitingRetrySeconds;
         private const string LeaderRole = "leader";
 
         // Indexed like Catalog.Roles: steward, accountant, forester, farmer, captain, loremaster, cloth_leader.
@@ -65,9 +62,9 @@ namespace IdleCatForest.Simulation
         }
 
         private static bool HasRecipes(string kind) => Catalog.Recipes.Any(r => r.Building == kind);
-        private int WorkerSlots(Village v, Building b) => Math.Max(1, (int)Catalog.BuildingEffect(v, b.Kind, "worker_slots", 1));
+        private int WorkerSlots(Village v, Building b) => Math.Max(1, DemoContent.SlotsFor(this, v, b.Kind));
         /// <summary>Unlocked recipes of a station kind, with any demo overrides applied.</summary>
-        private IEnumerable<Recipe> StationRecipes(Village v, string kind) => Catalog.Recipes.Where(r => r.Building == kind).Select(r => RecipeOf(r.Id)).Where(r => r != null && Catalog.RecipeAvailable(v, r));
+        private IEnumerable<Recipe> StationRecipes(Village v, string kind) => DemoContent.Recipes(this).Where(r => r.Building == kind).Select(r => RecipeOf(r.Id)).Where(r => r != null && Catalog.RecipeAvailable(this, v, r));
         private bool InputsReady(Village v, Recipe r, Building b) => r.Inputs.All(input => Available(v, input.Resource) + Amount(b.Inputs, input.Resource) >= RecipeInput(v, r, input.Amount));
         /// <summary>Output per unit of input: resource output, or item quality, divided by the inputs.</summary>
         private double OutputPerInput(Village v, Recipe r)
@@ -217,7 +214,7 @@ namespace IdleCatForest.Simulation
                 v.Officers.Add(new Officer { Role = role, CatId = cat.Id });
                 cat.OfficerRole = role;
                 v.OfficesFilled.Add(role);
-                Note(v, AppointmentEvent, cat.Name + " was appointed " + OfficeTitles[i] + ".", cat.Id);
+                Note(v, EventKind.Appointment, cat.Name + " was appointed " + OfficeTitles[i] + ".", cat.Id);
             }
         }
         private bool EligibleForAutomaticOffice(Village v, Cat c) => c.Alive && c.AgeHours >= Pace.KittenUntilHours && c.Migration == "resident" && c.ControlledBy == "" && c.OfficerRole == "" && c.Id != v.LeaderId && !IsDungeonExplorer(c) && !v.Officers.Any(o => o.CatId == c.Id);

@@ -43,6 +43,15 @@ namespace IdleCatForest.Simulation
             if (!CanFoundAt(id, center, communal))
                 throw new InvalidOperationException("Founding site overlaps foreign territory");
             var v = new Village { Id = id, Name = name, OwnerId = owner, Communal = communal, Center = center, Radius = communal ? 9 : 6, LayoutVersion = 1, FoundedAt = TimeSeconds, NextElection = TimeSeconds + Pace.ElectionIntervalSeconds, LastMigration = TimeSeconds };
+            // Demo colonies own the studies their founding buildings stand for (W2-10), e.g. the Research Hut.
+            if (DemoContent.IsDemo(this))
+            {
+                foreach (var study in DemoContent.FoundingStudies)
+                    if (!v.Research.Contains(study))
+                        v.Research.Add(study);
+                // The first study is the player's to buy (D6, about 2 minutes in); the Leader waits one study interval.
+                v.LastLeaderResearch = TimeSeconds;
+            }
             PrepareFoundingTerrain(v);
             if (GenerationVersion >= 2)
                 return FoundColony(v);

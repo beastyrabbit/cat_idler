@@ -7,16 +7,12 @@ namespace IdleCatForest.Simulation
 {
     public partial class World
     {
-        // PACING-HANDOFF NeedStagger: per-cat seeded needs, metabolism and threshold jitter. Classic false, demo true.
-        private bool NeedStagger => Pace.Profile == Pacing.DemoProfile;
-        // PACING-HANDOFF NeedSeedMin / NeedSeedMax: range of the first-tick seeded Hunger, Thirst and Rest (55 / 100).
-        private const double NeedSeedMin = 55, NeedSeedMax = 100;
-        // PACING-HANDOFF DeliveryLegFinishTiles: a critical need waits for a delivery leg shorter than this (15).
-        private const int DeliveryLegFinishTiles = 15;
-        // PACING-HANDOFF NeedBackoffMaxDoublings: the need retry delay doubles at most this often (4, so 3 s to 48 s).
-        private const int NeedBackoffMaxDoublings = 4;
-        // PACING-HANDOFF NeedSourceSearchLimit: reachable-route checks per need resource before the next one (4).
-        private const int NeedSourceSearchLimit = 4;
+        private bool NeedStagger => Pace.NeedStagger;
+        private double NeedSeedMin => Pace.NeedSeedMin;
+        private double NeedSeedMax => Pace.NeedSeedMax;
+        private int DeliveryLegFinishTiles => Pace.DeliveryLegFinishTiles;
+        private int NeedBackoffMaxDoublings => Pace.NeedBackoffMaxDoublings;
+        private int NeedSourceSearchLimit => Pace.NeedSourceSearchLimit;
 
         private static readonly string[] DrinkServings = { "water", "brew" };
         private static readonly string[] EatServings = { "food", "fish", "preserves" };

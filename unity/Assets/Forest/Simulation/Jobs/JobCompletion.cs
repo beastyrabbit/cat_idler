@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 
 namespace IdleCatForest.Simulation
@@ -69,7 +70,7 @@ namespace IdleCatForest.Simulation
                 Add(j.Local, output.Resource, RecipeOutput(v, recipe, output.Amount));
             if (recipe.ItemKind != "")
             {
-                var item = new Item { Id = Id("item"), Kind = recipe.ItemKind, Material = recipe.Material, Quality = recipe.Quality, VillageId = v.Id, LocationId = j.Id, MaxCondition = Pace.ItemBaseCondition * Catalog.BuildingEffect(v, recipe.Building, "durability", 1) * (FamilyOwned(v, recipe, "preservation") ? Pace.PreservationDurabilityMult : 1) };
+                var item = new Item { Id = Id("item"), Kind = recipe.ItemKind, Material = recipe.Material, Quality = recipe.Quality, VillageId = v.Id, LocationId = j.Id, MaxCondition = Pace.ItemBaseCondition * Catalog.BuildingEffect(this, v, recipe.Building, "durability", 1) * (FamilyOwned(v, recipe, "preservation") ? Pace.PreservationDurabilityMult : 1) };
                 item.Condition = item.MaxCondition;
                 v.Items.Add(item);
                 j.ItemIds.Add(item.Id);
@@ -91,7 +92,7 @@ namespace IdleCatForest.Simulation
 
         private void CompleteJobOffering(Village v, Cat c, Job j)
         {
-            v.Blessings += j.Local.Sum(s => s.Amount) / Pace.OfferingHerbsPerBlessing * Catalog.Effect(v, "shrineBlessingYield", 1);
+            ConvertOffering(v, j.Local.Sum(s => s.Amount));
             j.Local.Clear();
             Finish(v, c, j);
         }
@@ -148,7 +149,7 @@ namespace IdleCatForest.Simulation
                 Finish(v, helper, other);
             }
             Finish(v, c, j);
-            Note(v, EventKind.BuildingCompleted, c.Name + " completed " + b.Kind, b.Id);
+            NoteMilestone(v, EventKind.BuildingCompleted, c.Name + " completed " + b.Kind, b.Id, null, ("building", b.Kind), ("cat", c.Name));
         }
 
         /// <summary>
@@ -167,7 +168,7 @@ namespace IdleCatForest.Simulation
         /// A scout's report on returning: how many tiles it added to the village map, logged as a discovery about
         /// the scout ("Hazel mapped 12 tiles"), not as research.
         /// </summary>
-        private void NoteScoutReport(Village v, Cat c, int mappedTiles) => Note(v, EventKind.Discovery, c.Name + " mapped " + mappedTiles + " tiles", c.Id);
+        private void NoteScoutReport(Village v, Cat c, int mappedTiles) => NoteEvent(v, EventKind.Discovery, c.Name + " mapped " + mappedTiles + " tiles", c.Id, null, "", new Dictionary<string, string> { ["cat"] = c.Name, ["tiles"] = mappedTiles.ToString(System.Globalization.CultureInfo.InvariantCulture) });
 
         /// <summary>Road and rail are paved tile by tile, so finishing the last tile only ends the job (Finish logs it).</summary>
         private void CompleteJobPaving(Village v, Cat c, Job j) => Finish(v, c, j);
@@ -197,7 +198,7 @@ namespace IdleCatForest.Simulation
         private void CompleteJobGather(Village v, Job j)
         {
             var tile = TileAt(j.Position);
-            double quantity = j.Amount > 0 ? j.Amount : CarryCapacity(v, j.Resource) * (j.Kind == JobKind.Hunt ? Catalog.Effect(v, "huntYieldMult", 1) : j.Kind == JobKind.Fibre ? Catalog.Effect(v, "gatherYieldMult", 1) : j.Kind == JobKind.Quarry || j.Kind == JobKind.Logs ? Catalog.Effect(v, "materialYieldMult", 1) : 1) * j.YieldMultiplier;
+            double quantity = j.Amount > 0 ? j.Amount : CarryCapacity(v, j.Resource) * (j.Kind == JobKind.Hunt ? Catalog.Effect(this, v, "huntYieldMult", 1) : j.Kind == JobKind.Fibre ? Catalog.Effect(this, v, "gatherYieldMult", 1) : j.Kind == JobKind.Quarry || j.Kind == JobKind.Logs ? Catalog.Effect(this, v, "materialYieldMult", 1) : 1) * j.YieldMultiplier;
             if (j.Kind == JobKind.Hunt)
                 quantity *= 1 + UpgradeLevel(v, "hunt_mastery") * Pace.HuntMasteryYieldPerLevel;
             if (j.Kind != JobKind.Water && j.Kind != JobKind.Fish)
@@ -218,7 +219,9 @@ namespace IdleCatForest.Simulation
             {
                 Add(j.Local, "hide", quantity * Pace.HuntHidePerFood);
                 Add(j.Local, "bone", quantity * Pace.HuntBonePerFood);
-                tile.RegrowAt = TimeSeconds + Pace.HuntRegrowSeconds;
+                // Only an emptied hunting ground waits to regrow; hunting a full deposit must not reset it.
+                if (SourceAmount(tile, j.Resource) <= 1e-9 && tile.RegrowAt < 0)
+                    tile.RegrowAt = TimeSeconds + Pace.HuntRegrowSeconds;
             }
         }
     }
