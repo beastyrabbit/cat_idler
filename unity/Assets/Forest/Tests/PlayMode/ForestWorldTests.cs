@@ -65,6 +65,8 @@ namespace IdleCatForest.Tests
         }
         [UnityTest] public IEnumerator TerrainMeshesHaveDepthAndCameraCannotGenerateTiles()
         {
+            // The window is rebuilt by hand around the lake; a running view would re-window around the camera next frame.
+            game.View.enabled = false;
             var world = game.CurrentWorld;
             Tile water = null;
             for (int z = -96; z <= 96 && water == null; z++) for (int x = -96; x <= 96; x++) { var t = world.GenerateSurfaceTile(new Int2(x, z)); if (t.Water && t.WaterDepth > .5) { water = world.TileAt(t.Position); break; } }
@@ -79,7 +81,7 @@ namespace IdleCatForest.Tests
             int tiles = world.Tiles.Count;
             game.View.MakeGround(); yield return null;
             var chunk = TerrainMeshes().FirstOrDefault(f => Covers(f.sharedMesh.bounds, water.Position));
-            Assert.That(chunk, Is.Not.Null, "A terrain chunk covers the lake");
+            Assert.That(chunk, Is.Not.Null, "A terrain chunk covers the lake at " + water.Position + "; window " + game.View.TerrainWindow + ", chunks " + game.View.TerrainChunkCount + ", village " + game.Selected.Center);
             var bed = chunk.sharedMesh;
             var surfaceFilter = chunk.transform.Find("Water").GetComponent<MeshFilter>();
             var surface = surfaceFilter.sharedMesh;

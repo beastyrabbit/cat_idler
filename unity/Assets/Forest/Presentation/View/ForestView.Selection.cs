@@ -113,16 +113,15 @@ namespace IdleCatForest.Presentation
         }
 
         /// <summary>
-        /// What a click at this screen point selects. W2-18's render-based pick (<see cref="SubjectAt"/>, or the hover
-        /// pick when the pointer has not moved) decides; a station store or food container selects its building, a
-        /// dungeon entrance selects nothing (it has no card yet), and open ground falls back to the building footprint
-        /// or free stockpile under the ground point.
+        /// What a click at this screen point selects. W2-18's render-based pick (<see cref="SubjectAt"/>) at the press
+        /// point decides; a station store or food container selects its building, a dungeon entrance selects nothing (it
+        /// has no card yet), and open ground falls back to the building footprint or free stockpile under the ground point.
         /// </summary>
         internal Subject SelectableAt(Vector2 screen)
         {
             var village = Game.Selected;
             if (village == null || Camera == null) return Subject.None;
-            var picked = HoveredSubject.IsNone ? SubjectAt(screen) : HoveredSubject;
+            var picked = SubjectAt(screen);
             if (picked.Kind == SubjectKind.Pile)
             {
                 var pile = village.Stockpiles.Find(p => p.Id == picked.Id);

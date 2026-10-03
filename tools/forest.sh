@@ -235,7 +235,8 @@ latest_build() { # newest complete player built from this worktree
 }
 
 capture() {
-  local script="" out="" fixture="fresh" seed="4242" size="2400x1500" rebuild=0
+  # The fresh fixture founds the demo colony; 16 is World.DemoSeed.
+  local script="" out="" fixture="fresh" seed="16" size="2400x1500" rebuild=0
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --out) [ "$#" -ge 2 ] || die "--out needs a directory"; out="$2"; shift 2 ;;

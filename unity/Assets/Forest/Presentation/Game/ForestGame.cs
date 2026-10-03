@@ -108,11 +108,12 @@ namespace IdleCatForest.Presentation
                 var args = Environment.GetCommandLineArgs();
                 string Argument(string key, string fallback) { int i = Array.IndexOf(args, key); return i >= 0 && i + 1 < args.Length ? args[i + 1] : fallback; }
                 SavePath = Argument("--forest-save", InitialSavePath.Length > 0 ? InitialSavePath : DefaultSavePath());
-                int seed = int.TryParse(Argument("--forest-seed", "4242"), out int n) ? n : 4242;
+                // A new single-player world is the named demo colony on the demo seed unless a seed is given (W2-INT-c).
+                int seed = int.TryParse(Argument("--forest-seed", ""), out int n) ? n : IdleCatForest.Simulation.World.DemoSeed;
                 evidenceDirectory = Argument("--forest-evidence", "");
                 string saveRoot = Path.GetDirectoryName(Path.GetFullPath(SavePath)) ?? "";
                 ForestLog.Begin(Path.Combine(saveRoot, "logs"), saveRoot, seed);
-                local = new LocalAuthority(SavePath, seed);
+                local = InitialClassicWorld ? LocalAuthority.OpenClassic(SavePath, seed) : new LocalAuthority(SavePath, seed);
                 Status = "Local shared world · saved on this Mac";
                 ready = true;
                 Revision++;

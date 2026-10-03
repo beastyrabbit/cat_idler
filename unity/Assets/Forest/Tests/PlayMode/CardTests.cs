@@ -163,9 +163,22 @@ namespace IdleCatForest.Tests
             Assert.That(game.UI.OpenSection, Is.Not.EqualTo(DrawerHost.InspectId), "The card is the only inspector; no Inspect drawer.");
             AssertOnlyBody("cat");
 
-            var building = game.Selected.Buildings.First(b => b.Kind == "wood_cutter");
-            view.TryGetEntity("building:" + building.Id, out var model);
-            Assert.That(Click(view.Camera.WorldToScreenPoint(model.transform.position + Vector3.up * .3f)), Is.True, "A click on a building selects it.");
+            // A cat in front of a building wins the click (W2-18), and demo colonies keep cats busy at their workplaces,
+            // so click the roof of an on-screen building that has no cat drawn near that point.
+            var cats = view.CatTransforms().Select(c => (Vector2)view.Camera.WorldToScreenPoint(c.t.position + Vector3.up * .28f)).ToList();
+            float reach = Mathf.Max(ForestView.CatPickPoints * (Screen.dpi >= 160 ? 2 : 1), ((Vector2)view.Camera.WorldToScreenPoint(view.Camera.transform.right * .42f) - (Vector2)view.Camera.WorldToScreenPoint(Vector3.zero)).magnitude) + 4;
+            Building building = null; Vector2 roof = default;
+            foreach (var candidate in game.Selected.Buildings.Where(b => b.Completed && b.Position.Level == 0).OrderBy(b => b.Kind == "wood_cutter" ? 0 : 1))
+            {
+                if (!view.TryGetEntity("building:" + candidate.Id, out var model)) continue;
+                var bounds = model.GetComponentsInChildren<Renderer>().Select(r => r.bounds).Aggregate((x, y) => { x.Encapsulate(y); return x; });
+                var top = (Vector2)view.Camera.WorldToScreenPoint(new Vector3(bounds.center.x, bounds.max.y - .05f, bounds.center.z));
+                if (top.x < 0 || top.y < 0 || top.x > Screen.width || top.y > Screen.height) continue;
+                if (cats.Any(c => Vector2.Distance(c, top) <= reach)) continue;
+                building = candidate; roof = top; break;
+            }
+            Assert.That(building, Is.Not.Null, "Some on-screen building has a roof clear of cats (" + cats.Count + " cats, reach " + reach + " px, screen " + Screen.width + "x" + Screen.height + ").");
+            Assert.That(Click(roof), Is.True, "A click on a building selects it.");
             Assert.That(view.SelectedSubject, Is.EqualTo(new Subject(SubjectKind.Building, building.Id)));
             UiTestKit.Tick(game);
             Assert.That(game.UI.OpenSection, Is.Not.EqualTo(DrawerHost.InspectId));

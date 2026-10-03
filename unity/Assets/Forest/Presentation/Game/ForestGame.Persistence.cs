@@ -40,6 +40,11 @@ namespace IdleCatForest.Presentation
 
         public string SavePath { get; private set; } = "";
         public string InitialSavePath = "";
+        /// <summary>
+        /// Test seam: a missing save becomes a classic world (village at the origin, classic pacing) instead of the
+        /// demo colony. Only fixtures written against the classic founding's coordinates set it.
+        /// </summary>
+        internal bool InitialClassicWorld;
         public SaveState SaveState { get; private set; }
         /// <summary>Wall-clock time of the last successful save this session, or null.</summary>
         public DateTime? LastSaveUtc { get; private set; }

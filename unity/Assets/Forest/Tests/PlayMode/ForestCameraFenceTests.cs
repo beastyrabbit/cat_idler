@@ -28,6 +28,9 @@ namespace IdleCatForest.Tests
             directory = Path.Combine(Path.GetTempPath(), "forest-camera-fence-" + Guid.NewGuid().ToString("N"));
             game = new GameObject("Isolated camera and fence test").AddComponent<ForestGame>();
             game.InitialSavePath = Path.Combine(directory, "world.json");
+            // Fixed-coordinate rendering fixtures are written against the classic founding at the origin; the demo colony
+            // is covered by CardTests, GameLoopTests, WidgetTests and ForestUiRevisionTests.
+            game.InitialClassicWorld = true;
             yield return null;
             game.SetSpeed(0); game.UI.ClosePanel();
             mouse = InputSystem.AddDevice<Mouse>(); keyboard = InputSystem.AddDevice<Keyboard>();
@@ -140,7 +143,7 @@ namespace IdleCatForest.Tests
             yield return null;
             game.View.UpdateCamera();
             int clicks = 0;
-            using (InputRouter.Current.BindPointer(PointerAction.PrimaryClick, InputPriority.Selection, p => { clicks++; return true; }))
+            using (InputRouter.Current.BindPointer(PointerAction.PrimaryClick, InputPriority.Selection + 1, p => { clicks++; return true; }))
             {
                 var from = new Vector2(Screen.width * .5f, Screen.height * .5f);
                 var to = from + new Vector2(Screen.width * .12f, -Screen.height * .1f);
@@ -279,6 +282,8 @@ namespace IdleCatForest.Tests
             game.View.InspectBuilding(building.Id);
             game.View.ForceReconcile();
             yield return Ease();
+            // Framed; now deselect so the tethered card (a bottom sheet in the small batch window) does not cover the roof.
+            game.UI.Select(Subject.None); UiTestKit.Tick(game);
             Assert.That(game.View.TryGetEntity("building:" + building.Id, out var go), Is.True);
             var bounds = go.GetComponentsInChildren<Renderer>().Select(r => r.bounds).Aggregate((a, b) => { a.Encapsulate(b); return a; });
             Vector2 roof = game.View.Camera.WorldToScreenPoint(new Vector3(bounds.center.x, bounds.max.y - .05f, bounds.center.z));
@@ -287,7 +292,7 @@ namespace IdleCatForest.Tests
             Assert.That(game.View.SubjectAt(roof), Is.EqualTo(new Subject(SubjectKind.Building, building.Id)), "The roof selects its building, not the ground behind it.");
 
             Subject clicked = Subject.None;
-            using (InputRouter.Current.BindPointer(PointerAction.PrimaryClick, InputPriority.Selection, p => { clicked = game.View.SubjectAt(p.Position); return true; }))
+            using (InputRouter.Current.BindPointer(PointerAction.PrimaryClick, InputPriority.Selection + 1, p => { clicked = game.View.SubjectAt(p.Position); return true; }))
             {
                 Move(roof); game.View.TickInput(); game.View.UpdateHover();
                 Assert.That(game.View.HoveredSubject, Is.EqualTo(new Subject(SubjectKind.Building, building.Id)), "Hovering the roof reports the building.");

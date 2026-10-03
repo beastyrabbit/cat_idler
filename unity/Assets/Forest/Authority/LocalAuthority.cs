@@ -27,10 +27,13 @@ namespace IdleCatForest.Authority
         /// <summary>What opening tolerated; the presentation logs these once.</summary>
         public IReadOnlyList<string> LoadWarnings => loadWarnings;
 
-        public LocalAuthority(string path, int seed) : this(path, seed, false) { }
-        private LocalAuthority(string path, int seed, bool requireNew)
+        /// <summary>Opens the save at <paramref name="path"/>; a missing save becomes a new demo colony founded on <paramref name="seed"/>.</summary>
+        public LocalAuthority(string path, int seed) : this(path, seed, false, false) { }
+        /// <summary>Like the default constructor, but a missing save becomes a classic world (<see cref="World.Create"/>).</summary>
+        public static LocalAuthority OpenClassic(string path, int seed) => new LocalAuthority(path, seed, false, true);
+        private LocalAuthority(string path, int seed, bool requireNew, bool classic)
         {
-            runtime = AuthorityRuntime.OpenLocal(path, seed, requireNew);
+            runtime = AuthorityRuntime.OpenLocal(path, seed, requireNew, classic);
             try
             {
                 loadWarnings.AddRange(runtime.LoadWarnings);
@@ -39,7 +42,7 @@ namespace IdleCatForest.Authority
             }
             catch { runtime.Dispose(); throw; }
         }
-        public static LocalAuthority CreateNew(string path, int seed) => new LocalAuthority(path, seed, true);
+        public static LocalAuthority CreateNew(string path, int seed) => new LocalAuthority(path, seed, true, false);
         public ActionResult Apply(GameAction action) => runtime.Apply(connection, action);
         public void Advance(double seconds) => runtime.Advance(seconds);
         /// <summary>Snapshots and writes on the calling thread.</summary>

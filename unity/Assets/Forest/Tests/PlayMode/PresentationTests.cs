@@ -46,6 +46,9 @@ namespace IdleCatForest.Tests
             directory = Path.Combine(Path.GetTempPath(), "forest-presentation-" + Guid.NewGuid().ToString("N"));
             game = new GameObject("Isolated presentation test").AddComponent<ForestGame>();
             game.InitialSavePath = Path.Combine(directory, "world.json");
+            // Fixed-coordinate rendering fixtures are written against the classic founding at the origin; the demo colony
+            // is covered by CardTests, GameLoopTests, WidgetTests and ForestUiRevisionTests.
+            game.InitialClassicWorld = true;
             yield return null;
             Assert.That(game.Selected, Is.Not.Null, game.Status);
             game.SetSpeed(0);

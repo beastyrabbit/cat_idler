@@ -44,10 +44,14 @@ namespace IdleCatForest.Authority
             catch { ReleaseLease(); throw; }
         }
 
-        /// <summary>Opens the embedded game's world. It never signs, verifies or expires bearer sessions and ignores <c>SESSION_HMAC_SECRET</c>.</summary>
-        internal static AuthorityRuntime OpenLocal(string path, int seed, bool requireNew) => new AuthorityRuntime(path, seed, requireNew, true, null);
+        /// <summary>
+        /// Opens the embedded game's world. It never signs, verifies or expires bearer sessions and ignores <c>SESSION_HMAC_SECRET</c>.
+        /// A missing save becomes a new world: the named demo colony (<see cref="World.CreateColony"/>, demo pacing) unless
+        /// <paramref name="classic"/> asks for the classic founding that the shared-world host and older fixtures use.
+        /// </summary>
+        internal static AuthorityRuntime OpenLocal(string path, int seed, bool requireNew, bool classic = false) => new AuthorityRuntime(path, seed, requireNew, true, null, classic);
 
-        private AuthorityRuntime(string path, int seed, bool requireNew, bool local, string injectedSecret)
+        private AuthorityRuntime(string path, int seed, bool requireNew, bool local, string injectedSecret, bool classic = true)
         {
             this.path = Path.GetFullPath(path);
             Directory.CreateDirectory(Path.GetDirectoryName(this.path));
@@ -68,7 +72,8 @@ namespace IdleCatForest.Authority
                 }
                 else
                 {
-                    World = World.Create(seed, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+                    long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                    World = classic ? World.Create(seed, now) : World.CreateColony(seed, World.DefaultColonyName, Pacing.DemoProfile, now);
                     Created = true;
                 }
                 try { ValidateStructure(World); }

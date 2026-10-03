@@ -47,6 +47,17 @@ namespace IdleCatForest.Tests
         }
 
         [Test]
+        public void ANewLocalWorldIsTheNamedDemoColony()
+        {
+            var world = game.CurrentWorld;
+            Assert.That(world.PacingProfile, Is.EqualTo(Pacing.DemoProfile), "New single-player worlds use demo pacing.");
+            Assert.That(world.GenerationVersion, Is.EqualTo(2), "New single-player worlds are founded by CreateColony.");
+            Assert.That(game.Selected.Name, Is.EqualTo(World.DefaultColonyName));
+            Assert.That(game.Selected.Cats.Count(c => c.Alive), Is.GreaterThanOrEqualTo(30));
+            Assert.That(world.Validate(), Is.Empty);
+        }
+
+        [Test]
         public void InjectedStepExceptionPausesFlagsFaultedSkipsTheSaveAndTheNextGoodStepClearsIt()
         {
             game.SetSpeed(8);
