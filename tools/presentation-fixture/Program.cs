@@ -9,7 +9,8 @@ if (!Path.IsPathRooted(args[0]) || File.Exists(target) || Directory.Exists(targe
 { Console.Error.WriteLine("Choose a new absolute save path with no existing save or identity directory."); return 2; }
 try
 {
-    using var authority = LocalAuthority.CreateNew(target, 41);
+    // The named fixtures stay classic seed-41 foundings so captures compare across waves; "fresh" captures found the demo colony.
+    using var authority = LocalAuthority.CreateNew(target, 41, classic: true);
     if (population == 150) Populate(authority, population);
     else PrepareFounding(authority);
     var world = authority.World; var village = world.Villages.Single(); var failures = world.Validate();

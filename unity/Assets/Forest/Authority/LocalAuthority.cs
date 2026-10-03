@@ -42,7 +42,8 @@ namespace IdleCatForest.Authority
             }
             catch { runtime.Dispose(); throw; }
         }
-        public static LocalAuthority CreateNew(string path, int seed) => new LocalAuthority(path, seed, true, false);
+        /// <summary>Creates a new world and refuses an existing save; <paramref name="classic"/> founds a classic world instead of the demo colony.</summary>
+        public static LocalAuthority CreateNew(string path, int seed, bool classic = false) => new LocalAuthority(path, seed, true, classic);
         public ActionResult Apply(GameAction action) => runtime.Apply(connection, action);
         public void Advance(double seconds) => runtime.Advance(seconds);
         /// <summary>Snapshots and writes on the calling thread.</summary>
