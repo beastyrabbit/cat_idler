@@ -1,0 +1,107 @@
+/*
+ * The section drawer (GUIDE §5.6, glass.css .sheet): a left glass sheet over the map. Reference column:
+ * left 20, top 82, bottom 96, width 660; Research opens wide at 1220 and dims the map 35 %. The 1280 × 720
+ * column is 560 wide (wide: full width minus 24); below 1100 points every drawer is full width minus 24.
+ */
+.sheet {
+    position: absolute;
+    left: var(--margin);
+    top: 82px;
+    bottom: 96px;
+    width: 660px;
+    padding: 16px 18px 10px 18px;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.sheet.wide {
+    width: 1220px;
+}
+
+.drawer-dim {
+    position: absolute;
+    left: 0;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    background-color: var(--dim-map);
+}
+
+.sheet-hd {
+    flex-direction: row;
+    align-items: flex-end;
+    flex-shrink: 0;
+    padding-bottom: 10px;
+    border-bottom-width: 1px;
+    border-bottom-color: var(--line);
+}
+
+.sheet-hd Label {
+    padding: 0;
+    margin: 0;
+}
+
+.sheet-hd .sheet-title {
+    -unity-font-definition: url("Fonts/Manrope-ExtraBold.ttf");
+    font-size: var(--size-title);
+    color: var(--ink);
+    margin-right: 12px;
+    white-space: nowrap;
+}
+
+.sheet-hd .sheet-summary {
+    -unity-font-definition: url("Fonts/Manrope-SemiBold.ttf");
+    font-size: 12px;
+    color: var(--dim);
+    flex-grow: 1;
+    flex-shrink: 1;
+    margin-bottom: 2px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.sheet-hd .sheet-x {
+    flex-shrink: 0;
+    margin: 0 0 0 8px;
+    padding: 3px 8px;
+    min-height: 0;
+    border-width: 1px;
+    border-color: var(--edge);
+    border-radius: 8px;
+    background-color: rgba(0, 0, 0, 0);
+    -unity-font-definition: url("Fonts/Manrope-ExtraBold.ttf");
+    font-size: 11px;
+    letter-spacing: 0.6px;
+    color: var(--dim);
+}
+
+.sheet-hd .sheet-x:hover {
+    color: var(--ink);
+    background-color: var(--fill);
+}
+
+.drawer-scroll {
+    flex-grow: 1;
+    margin-top: 10px;
+}
+
+.drawer-scroll > .unity-scroll-view__content-viewport {
+    padding-right: 10px;
+}
+
+.compact .sheet {
+    top: 70px;
+    bottom: 76px;
+    width: 560px;
+    padding: 12px 14px 8px 14px;
+}
+
+.compact .sheet.wide, .narrow .sheet {
+    width: auto;
+    right: var(--margin);
+}
+
+.narrow .sheet {
+    bottom: 70px;
+}

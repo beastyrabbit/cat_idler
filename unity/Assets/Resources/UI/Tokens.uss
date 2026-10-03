@@ -1,0 +1,94 @@
+/*
+ * Glass Clearing design tokens (docs/ui-redesign/GUIDE.html §3). Every HUD stylesheet reads these
+ * variables instead of literals. UI Toolkit has no backdrop blur, so the glass uses the guide's opaque
+ * fallback. The project renders in linear colour space, where UI alpha blends in linear light: a 14 %
+ * white edge reads like ~45 % and an 86 % dark glass lets the bright map show through. The alphas below
+ * are therefore the linear-space equivalents of the guide's sRGB values (glass .86 → .95, drawer .95 →
+ * .985, edge .14 → .06, fill .08 → .015, sun tint .18 → .05, map dim .35 → .6), matched on captures.
+ *
+ * Type: Manrope 600 / 700 / 800 for the interface, Instrument Serif italic for the village name only.
+ * Fonts are SIL OFL files under Resources/UI/Fonts (see docs/unity/THIRD_PARTY.md).
+ */
+:root, #forest-ui {
+    --glass: rgba(12, 22, 16, 0.95);
+    --glass2: rgba(10, 19, 14, 0.985);
+    --glass-hint: rgba(12, 22, 16, 0.85);
+    --edge: rgba(255, 255, 255, 0.06);
+    --line: rgba(255, 255, 255, 0.02);
+    --fill: rgba(255, 255, 255, 0.015);
+    --fill-hover: rgba(255, 255, 255, 0.035);
+    --well: rgba(0, 0, 0, 0.35);
+    --ink: #eef3ea;
+    --dim: #a9b8a8;
+    --sun: #ffd166;
+    --sun-ink: #1a1608;
+    --sun-tint: rgba(255, 209, 102, 0.05);
+    --sun-faint: rgba(255, 209, 102, 0.02);
+    --bad: #ff6b57;
+    --bad-tint: rgba(255, 107, 87, 0.025);
+    --ok: #7ed37a;
+    --info: #7cc6e6;
+    --ring-hole: #15221a;
+    --dim-map: rgba(4, 9, 6, 0.6);
+    --shadow-text: rgba(0, 0, 0, 0.75);
+
+    --radius-pill: 999px;
+    --radius-panel: 16px;
+    --radius-dock: 22px;
+    --radius-cell: 14px;
+    --radius-button: 10px;
+    --radius-box: 12px;
+
+    --margin: 20px;
+    --chip-top: 18px;
+
+    --size-name: 26px;
+    --size-title: 20px;
+    --size-subject: 19px;
+    --size-count: 15px;
+    --size-now: 14px;
+    --size-body: 13px;
+    --size-button: 12px;
+    --size-caption: 11.5px;
+    --size-label: 10px;
+
+    -unity-font-definition: url("Fonts/Manrope-SemiBold.ttf");
+    -unity-font-style: normal;
+    color: var(--ink);
+    font-size: var(--size-body);
+}
+
+/* Weight helpers: each weight is its own font file, so styles never use synthetic bold. */
+.w600 { -unity-font-definition: url("Fonts/Manrope-SemiBold.ttf"); -unity-font-style: normal; }
+.w700 { -unity-font-definition: url("Fonts/Manrope-Bold.ttf"); -unity-font-style: normal; }
+.w800 { -unity-font-definition: url("Fonts/Manrope-ExtraBold.ttf"); -unity-font-style: normal; }
+.serif { -unity-font-definition: url("Fonts/InstrumentSerif-Italic.ttf"); -unity-font-style: normal; }
+
+/* Shared glass surfaces (GUIDE .g and .g2). */
+.glass {
+    background-color: var(--glass);
+    border-width: 1px;
+    border-color: var(--edge);
+    border-radius: var(--radius-panel);
+}
+
+.glass2 {
+    background-color: var(--glass2);
+    border-width: 1px;
+    border-color: var(--edge);
+    border-radius: var(--radius-panel);
+}
+
+/* The 1280 × 720 column (GUIDE §4): 12 px screen margins. */
+#forest-ui.compact {
+    --margin: 12px;
+    --chip-top: 12px;
+}
+
+/* Settings: "Larger text" bumps body, caption and button sizes by about 15 %. */
+#forest-ui.larger-text {
+    --size-body: 15px;
+    --size-button: 14px;
+    --size-caption: 13px;
+    --size-now: 16px;
+}

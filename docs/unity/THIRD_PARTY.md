@@ -27,3 +27,27 @@ The lockfiles record the actual resolved graph, including transitive packages.
 Catalog export reads this repository's maintained content rather than importing
 an external content collection. Blender's tool license does not make the modeled
 output Blender source code.
+
+## Interface fonts and icons
+
+The HUD ships two SIL Open Font Licence 1.1 families as TTF files under
+`unity/Assets/Resources/UI/Fonts`, next to their licence texts. They are static
+instances served by the Google Fonts CSS API (`fonts.googleapis.com/css2`), downloaded
+and verified by `tools/ui-icons/fetch_fonts.sh`.
+
+| File | Source URL | Author | Licence | SHA-256 |
+| --- | --- | --- | --- | --- |
+| `Manrope-Regular.ttf` (400) | https://fonts.gstatic.com/s/manrope/v20/xn7_YHE41ni1AdIRqAuZuw1Bx9mbZk79FO_F.ttf | The Manrope Project Authors (Mikhail Sharanda) | SIL OFL 1.1 | `a13d9b41b0a471ce58f0e46d377fa3cc76615e4632c3b15eb397caadf7a13f0a` |
+| `Manrope-SemiBold.ttf` (600) | https://fonts.gstatic.com/s/manrope/v20/xn7_YHE41ni1AdIRqAuZuw1Bx9mbZk4jE-_F.ttf | The Manrope Project Authors (Mikhail Sharanda) | SIL OFL 1.1 | `6bad1a774228464cc88b8b0271555b266f7a3c64a7bedf15e165fdab4f6ac0ce` |
+| `Manrope-Bold.ttf` (700) | https://fonts.gstatic.com/s/manrope/v20/xn7_YHE41ni1AdIRqAuZuw1Bx9mbZk4aE-_F.ttf | The Manrope Project Authors (Mikhail Sharanda) | SIL OFL 1.1 | `b9584e099e0e7f1e1e914c3037aabb9010c50346a3ce8df5eeeeecc0563044d8` |
+| `Manrope-ExtraBold.ttf` (800) | https://fonts.gstatic.com/s/manrope/v20/xn7_YHE41ni1AdIRqAuZuw1Bx9mbZk59E-_F.ttf | The Manrope Project Authors (Mikhail Sharanda) | SIL OFL 1.1 | `b8f802f05b322a7345805f5b89f8bb976604cc719a91530918d5ce3c47160950` |
+| `InstrumentSerif-Italic.ttf` | https://fonts.gstatic.com/s/instrumentserif/v5/jizHRFtNs2ka5fXjeivQ4LroWlx-6zATiw.ttf | The Instrument Serif Project Authors (Instrument) | SIL OFL 1.1 | `fecf4861d5202405b8bd45c683858b6870642a026784fe0dbf88ff55dedee8a0` |
+| `OFL-Manrope.txt` | https://raw.githubusercontent.com/google/fonts/main/ofl/manrope/OFL.txt | The Manrope Project Authors | licence text | `58172e0c0fac2cda8a37b348164bb55e44b0e69051e557e92b1d3f6910141f7b` |
+| `OFL-InstrumentSerif.txt` | https://raw.githubusercontent.com/google/fonts/main/ofl/instrumentserif/OFL.txt | The Instrument Serif Project Authors | licence text | `129ed7618959716959f2941fdd5b49e0ad6e6c1d78726761786a00253d865521` |
+
+The interface icons are project-authored. `tools/ui-icons/build_icons.py` exports the
+24 px line glyphs of `docs/ui-redesign/mockups/icons.js` to
+`unity/Assets/Resources/UI/Icons/*.svg` (imported as UI Toolkit VectorImage) and copies the
+tracked resource silhouettes `public/images/game/icons/*.png` to
+`unity/Assets/Resources/UI/Icons/Goods/`; it also writes their importer metas with GUIDs
+derived from the asset path. No external, purchased or generated art is involved.

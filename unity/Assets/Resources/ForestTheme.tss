@@ -1,1 +1,3 @@
 @import url("unity-theme://default");
+/* Glass Clearing tokens and fonts for the whole panel, including dropdown popups outside the HUD root. */
+@import url("UI/Tokens.uss");
