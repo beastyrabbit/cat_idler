@@ -51,6 +51,9 @@ namespace IdleCatForest.Presentation
         /// </summary>
         public bool Faulted { get; private set; }
 
+        /// <summary>The <see cref="SaveFailure"/> code of a refused open (for the recovery card), or empty.</summary>
+        public string OpenFailureCode { get; private set; } = "";
+
         /// <summary>How many step or action faults this session has seen.</summary>
         public int FaultCount { get; private set; }
 
@@ -121,6 +124,7 @@ namespace IdleCatForest.Presentation
             {
                 // The reason (often with an absolute path) goes to the log only, never to the screen.
                 ForestLog.Exception(e, "opening the saved world");
+                OpenFailureCode = (e as SaveException)?.Code ?? "";
                 Status = "Could not open the saved world.";
             }
         }
@@ -191,7 +195,7 @@ namespace IdleCatForest.Presentation
                 accumulated = Math.Min(accumulated, World.SimulationStepSeconds);
                 behindUntil = Time.realtimeSinceStartupAsDouble + BehindHoldSeconds;
             }
-            if (count > 0) Revision++;
+            if (count > 0) { Revision++; LogIsolatedFaults(); }
             if (StepMilliseconds.Count > 0) TickMilliseconds = StepMilliseconds[StepMilliseconds.Count - 1];
             return stepped;
         }
@@ -216,6 +220,15 @@ namespace IdleCatForest.Presentation
             if (publish) Publish(new GameAction { Kind = "Simulation" }, ActionResult.Fail(FeedbackCode.SimulationFault, ""));
         }
 
+        /// <summary>The simulation isolates in-tick faults and keeps running; each new one is logged once here.</summary>
+        private void LogIsolatedFaults()
+        {
+            var faults = local.World.IsolatedFaults();
+            if (faults.Count < loggedFaults) loggedFaults = 0; // A restored world starts a new list.
+            for (; loggedFaults < faults.Count; loggedFaults++) ForestLog.Warning("isolated simulation fault: " + faults[loggedFaults]);
+        }
+        private int loggedFaults;
+
         private void RaiseChanged()
         {
             if (Revision == changedRevision) return;
@@ -238,6 +251,7 @@ namespace IdleCatForest.Presentation
         private void OnApplicationFocus(bool focus)
         {
             if (throttleInBackground) Application.targetFrameRate = focus ? FocusedFrameRate : BackgroundFrameRate;
+            if (!focus) SaveIfChanged();
         }
 
         private void OnDestroy()

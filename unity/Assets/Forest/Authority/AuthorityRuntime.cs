@@ -73,6 +73,7 @@ namespace IdleCatForest.Authority
                 }
                 try { ValidateStructure(World); }
                 catch (InvalidDataException error) { throw new SaveException(SaveFailure.InvalidOwnership, error.Message + " The original was left untouched.", error); }
+                foreach (var repair in World.RepairInvariants()) loadWarnings.Add("Repaired on open: " + repair);
                 foreach (var failure in World.Validate()) loadWarnings.Add("Simulation invariant: " + failure);
             }
             catch { ReleaseLease(); throw; }
@@ -202,6 +203,8 @@ namespace IdleCatForest.Authority
             lock (Sync)
             {
                 var clock = System.Diagnostics.Stopwatch.StartNew();
+                // Repairable breaches (over-claims, overbooked beds, double work owners) are fixed and logged as events.
+                World.RepairInvariants();
                 var failures = World.Validate();
                 var structure = "";
                 try { ValidateStructure(World); }

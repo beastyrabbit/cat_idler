@@ -173,11 +173,16 @@ namespace IdleCatForest.Presentation
         private void RecordSaveFailure(Exception error)
         {
             ConsecutiveSaveFailures++;
-            LastSaveError = error == null ? "Unknown save error." : error.Message;
+            // Raw I/O messages can carry absolute paths; only SaveException messages are written for players.
+            LastSaveError = error is SaveException ? error.Message : "The save could not be written.";
             SaveState = SaveState.Failed;
             if (!Status.StartsWith(SaveFailedPrefix, StringComparison.Ordinal)) statusBeforeSaveFailure = Status;
             Status = SaveFailedPrefix + LastSaveError;
-            if (ConsecutiveSaveFailures == 1 || ConsecutiveSaveFailures % 10 == 0) Debug.LogError(Status + " (" + ConsecutiveSaveFailures + " in a row)");
+            if (ConsecutiveSaveFailures == 1 || ConsecutiveSaveFailures % 10 == 0)
+            {
+                if (error != null) ForestLog.Exception(error, "saving the world (" + ConsecutiveSaveFailures + " in a row)");
+                else ForestLog.Warning(Status + " (" + ConsecutiveSaveFailures + " in a row)");
+            }
         }
 
         /// <summary>Starts a background save if anything changed since the last one.</summary>
@@ -190,7 +195,6 @@ namespace IdleCatForest.Presentation
             if (saveDirty) BeginSave(now);
         }
 
-        private void OnApplicationFocus(bool hasFocus) { if (!hasFocus) SaveIfChanged(); }
         private void OnApplicationPause(bool pause) { if (pause) SaveIfChanged(); }
 
         private void OnApplicationQuit()

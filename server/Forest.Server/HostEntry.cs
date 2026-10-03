@@ -120,6 +120,7 @@ public static class HostEntry
                 var last = clock.Elapsed.TotalSeconds;
                 var saveAt = last + 5;
                 var snapshotAt = last + 0.1;
+                var loggedFaults = 0;
                 Task broadcast = Task.CompletedTask;
                 using var timer = new PeriodicTimer(TimeSpan.FromSeconds(World.SimulationStepSeconds));
                 try
@@ -128,6 +129,13 @@ public static class HostEntry
                     {
                         var current = clock.Elapsed.TotalSeconds;
                         runtime.Advance(Math.Min(1, current - last)); last = current;
+                        // The simulation isolates in-tick faults and keeps running; log each new one once.
+                        lock (runtime.Sync)
+                        {
+                            var faults = runtime.World.IsolatedFaults();
+                            if (faults.Count < loggedFaults) loggedFaults = 0;
+                            for (; loggedFaults < faults.Count; loggedFaults++) Console.Error.WriteLine("Isolated simulation fault: " + faults[loggedFaults]);
+                        }
                         if (current >= snapshotAt && broadcast.IsCompleted)
                         {
                             snapshotAt = current + 0.1;

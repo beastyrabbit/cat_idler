@@ -18,7 +18,7 @@ namespace IdleCatForest.Presentation
         /// <summary>Managed bytes allocated per frame (an estimate from the managed heap size; frames with a collection are skipped).</summary>
         public readonly List<double> AllocatedBytesPerFrame = new List<double>();
         /// <summary>Main-thread milliseconds of the persistence tick on frames where it did real work (a save).</summary>
-        public readonly List<double> SaveMilliseconds = new List<double>();
+        public readonly List<double> PersistenceTickMilliseconds = new List<double>();
         /// <summary>Frames slower than 33 ms (below 30 fps) since the session started.</summary>
         public int FramesOver33Milliseconds { get; private set; }
         private const int TelemetryWindow = 3600;
@@ -72,7 +72,7 @@ namespace IdleCatForest.Presentation
 
         private void RecordPersistenceTiming(double milliseconds)
         {
-            if (milliseconds >= SaveWorkThresholdMilliseconds) Window(SaveMilliseconds, milliseconds);
+            if (milliseconds >= SaveWorkThresholdMilliseconds) Window(PersistenceTickMilliseconds, milliseconds);
         }
 
         /// <summary>Records one simulation step that advanced the clock; whole-second crossings count as economy ticks.</summary>
@@ -120,9 +120,11 @@ namespace IdleCatForest.Presentation
                 stepP50 = Percentile(StepMilliseconds, .5),
                 stepP95 = Percentile(StepMilliseconds, .95),
                 stepMax = Max(StepMilliseconds),
-                saves = SaveMilliseconds.Count,
-                saveMsLast = SaveMilliseconds.Count == 0 ? 0 : SaveMilliseconds[SaveMilliseconds.Count - 1],
-                saveMsMax = Max(SaveMilliseconds),
+                saves = PersistenceTickMilliseconds.Count,
+                saveMsLast = PersistenceTickMilliseconds.Count == 0 ? 0 : PersistenceTickMilliseconds[PersistenceTickMilliseconds.Count - 1],
+                saveMsMax = Max(PersistenceTickMilliseconds),
+                saveMs = SaveMilliseconds,
+                saveMainThreadMs = SaveMainThreadMilliseconds,
                 allocatedBytesP50 = Percentile(AllocatedBytesPerFrame, .5),
                 allocatedBytesP95 = Percentile(AllocatedBytesPerFrame, .95),
                 gcCollections = GC.CollectionCount(0),
@@ -155,6 +157,8 @@ namespace IdleCatForest.Presentation
             public double stepMax;
             /// <summary>Main-thread milliseconds of the persistence tick on frames that saved.</summary>
             public int saves; public double saveMsLast, saveMsMax;
+            /// <summary>Last successful save in total (encode plus background write) and its main-thread part.</summary>
+            public double saveMs, saveMainThreadMs;
             /// <summary>Estimated managed bytes allocated per frame; gen-0 collections since startup.</summary>
             public double allocatedBytesP50, allocatedBytesP95; public int gcCollections;
             public int errors, faults; public bool faulted, simulationBehind;
