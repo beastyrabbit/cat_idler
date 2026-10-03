@@ -135,6 +135,7 @@ namespace IdleCatForest.Tests
             var center = new Vector3(building.Position.X + (building.Width - 1) * .5f, 0, building.Position.Z + (building.Depth - 1) * .5f);
             game.View.UpdateCamera();
             Vector2 cursor = game.View.Camera.WorldToScreenPoint(center);
+            var beforeClick = game.View.Camera.WorldToViewportPoint(center);
             // Target the player's Dynamic buffer; a batch Editor can default to its separate Editor buffer.
             InputState.Change(mouse.position, cursor, InputUpdateType.Dynamic);
             Assert.That(mouse.leftButton.wasPressedThisFrame, Is.False);
@@ -147,12 +148,16 @@ namespace IdleCatForest.Tests
             Assert.That(game.UI.PointerOverPanel || game.UI.TextInputFocused || game.UI.HasPlacement, Is.False, "The click must reach world selection.");
             game.View.TickInput();
             Assert.That(game.View.SelectedBuilding, Is.SameAs(building), "Clicked tile: " + game.View.CursorTile + "; intended center: " + center);
-            Assert.That(game.UI.OpenSection, Is.EqualTo("Inspect"));
+            // The tethered card is the only inspector (W2-14): selecting never opens a drawer page.
+            UiTestKit.Tick(game);
+            Assert.That(game.UI.OpenSection, Is.Not.EqualTo("Inspect"));
             yield return null; yield return null;
             game.View.UpdateCamera();
             var screen = game.View.Camera.WorldToViewportPoint(center);
             Assert.That(screen.x, Is.GreaterThan(game.UI.WorldLeftFraction + .03f), "A world click must keep the inspected building clear of the drawer.");
-            Assert.That(screen.y, Is.InRange(.3f, .7f));
+            // Selecting an on-screen building no longer recentres the camera: it stays where it was clicked.
+            Assert.That(screen.x, Is.EqualTo(beforeClick.x).Within(.02f));
+            Assert.That(screen.y, Is.EqualTo(beforeClick.y).Within(.02f));
         }
 
         [UnityTest]
