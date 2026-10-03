@@ -15,6 +15,8 @@ namespace IdleCatForest.Presentation
             viewedLevel = 0; followSelectedCat = false; nextReconcile = 0; focus = At(site.Entrance); zoom = 10; ApplyManagementCamera();
         }
 
+        private static readonly Int2[] Steps = { new Int2(0, 1), new Int2(1, 0), new Int2(0, -1), new Int2(-1, 0) };
+
         private static bool InStairOpening(DungeonStair stair, Int2 p)
         {
             int dx = Math.Sign(stair.To.X - stair.From.X), dz = Math.Sign(stair.To.Z - stair.From.Z);
@@ -41,16 +43,19 @@ namespace IdleCatForest.Presentation
                     var stairs = Entity("stairs:" + site.Id + ":" + stair.From, "world_dungeon_stairs", new Vector3(stair.From.X, (float)world.DungeonHeight(stair.From), stair.From.Z), 1, naturalScale: true);
                     stairs.transform.rotation = Quaternion.LookRotation(new Vector3(stair.To.X - stair.From.X, 0, stair.To.Z - stair.From.Z));
                 }
+                HashSet<Int2> openings = null;
                 foreach (var floor in site.Floors.Where(f => f.Level == level || controlled != null && controlled.Path.Count > 0 && controlled.Path[0].Level == f.Level))
                 {
                     var cells = new HashSet<Int2>(floor.Cells);
+                    openings ??= new HashSet<Int2>(site.Stairs.SelectMany(s => s.Opening));
                     foreach (var p in floor.Cells.Where(p => known.Contains(p) && Int2.Distance(p, groundCenter) <= 76))
                     {
-                        var tile = world.GetTile(p); if (tile == null || tile.Wall) continue;
-                        if (!site.Stairs.Any(s => s.From.Level == p.Level && InStairOpening(s, p))) Entity("floor:" + p, "world_dungeon_floor", At(p), 1, naturalScale: true);
-                        foreach (var step in new[] { new Int2(0, 1), new Int2(1, 0), new Int2(0, -1), new Int2(-1, 0) })
+                        // A revealed floor cell is floor even before anything walked it into the tile list.
+                        var tile = world.GetTile(p); if (tile != null && tile.Wall) continue;
+                        if (!openings.Contains(p) && !site.Stairs.Any(s => s.From.Level == p.Level && InStairOpening(s, p))) Entity("floor:" + p, "world_dungeon_floor", At(p), 1, naturalScale: true);
+                        foreach (var step in Steps)
                         {
-                            var next = new Int2(p.X + step.X, p.Z + step.Z, p.Level); if (cells.Contains(next) || site.Stairs.Any(s => s.Opening.Contains(next))) continue;
+                            var next = new Int2(p.X + step.X, p.Z + step.Z, p.Level); if (cells.Contains(next) || openings.Contains(next)) continue;
                             if (site.Stairs.Any(s => s.To.Equals(p) && Math.Sign(s.From.X - p.X) == step.X && Math.Sign(s.From.Z - p.Z) == step.Z)) continue;
                             var wall = Entity("cavewall:" + p + ":" + step, "world_dungeon_wall", At(p) + new Vector3(step.X * .5f, 0, step.Z * .5f), 1, naturalScale: true);
                             wall.transform.rotation = Quaternion.Euler(0, step.X == 0 ? 0 : 90, 0);
