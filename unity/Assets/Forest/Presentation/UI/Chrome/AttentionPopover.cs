@@ -366,7 +366,10 @@ namespace IdleCatForest.Presentation
             float width = Mathf.Min(Width, root.layout.width - 2 * margin);
             if (!Mathf.Approximately(style.width.value.value, width)) style.width = width;
             float left = HudLayout.PopoverLeft(Context, sealRect, width);
-            HudLayout.Place(this, left, sealRect.yMax + 10);
+            // Below both the seal and the chip it is aligned with, so the chip's census line stays readable.
+            float top = sealRect.yMax;
+            if (HudLayout.TryMounted(Context, UiSlots.Chip, out var chip)) top = Mathf.Max(top, chip.yMax);
+            HudLayout.Place(this, left, top + 10);
             float caretLeft = Mathf.Clamp(sealRect.center.x - left - 6, 16, width - 28);
             if (!Mathf.Approximately(caret.style.left.value.value, caretLeft)) caret.style.left = caretLeft;
         }

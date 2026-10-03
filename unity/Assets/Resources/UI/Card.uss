@@ -9,7 +9,8 @@
     border-width: 1px;
     border-color: rgba(255, 255, 255, 0.14);
     /* Runtime UI Toolkit has no backdrop blur, so the card uses the opaque glass fallback over the busy map. */
-    background-color: rgba(12, 22, 16, 0.93);
+    /* Near-opaque: UI Toolkit blends in linear space, so 0.93 let the busy map read through the text. */
+    background-color: rgba(10, 19, 14, 0.985);
     color: rgb(238, 243, 234);
     font-size: 13px;
     overflow: hidden;
