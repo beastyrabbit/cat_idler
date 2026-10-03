@@ -1,0 +1,114 @@
+/*
+ * Widgets (W2-16): action buttons, state chips, sparks, rings, glyphs and the shared tooltip.
+ * Colours read the GUIDE section 3 tokens from Tokens.uss, with the same values as fallbacks.
+ */
+
+/* Every HUD button moves a little: 120 ms colour fades and a 0.96 press. None under reduced motion. */
+.unity-button {
+    transition-property: background-color, border-color, color, scale;
+    transition-duration: 120ms, 120ms, 120ms, 80ms;
+    transition-timing-function: ease-out;
+}
+.unity-button:active { scale: 0.96 0.96; }
+.reduced-motion .unity-button { transition-duration: 0s, 0s, 0s, 0s; }
+.reduced-motion .unity-button:active { scale: 1 1; }
+
+/* Action button (.act in glass.css) */
+.act {
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    min-height: 0;
+    margin: 0;
+    padding: 7px 11px;
+    border-width: 1px;
+    border-radius: 10px;
+    border-color: var(--edge, rgba(255, 255, 255, 0.14));
+    background-color: var(--fill, rgba(255, 255, 255, 0.08));
+    color: var(--ink, rgb(238, 243, 234));
+    font-size: 12px;
+    -unity-font-style: bold;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 300px;
+}
+.act:hover { background-color: rgba(255, 255, 255, 0.14); border-color: rgba(255, 209, 102, 0.6); }
+.act:active { background-color: rgba(255, 209, 102, 0.22); border-color: var(--sun, rgb(255, 209, 102)); }
+.act--primary { background-color: var(--sun, rgb(255, 209, 102)); border-color: rgba(0, 0, 0, 0); color: rgb(26, 22, 8); }
+.act--primary:hover { background-color: rgb(255, 222, 148); border-color: rgba(0, 0, 0, 0); }
+.act--primary:active { background-color: rgb(240, 192, 84); }
+.act--pending { opacity: 0.6; }
+.act--confirmed { color: var(--ok, rgb(126, 211, 122)); background-color: rgba(126, 211, 122, 0.14); border-color: rgba(126, 211, 122, 0.55); }
+.act--primary.act--confirmed { color: rgb(12, 26, 14); background-color: var(--ok, rgb(126, 211, 122)); border-color: rgba(0, 0, 0, 0); }
+.act--failed { color: var(--bad, rgb(255, 107, 87)); background-color: rgba(255, 107, 87, 0.12); border-color: rgba(255, 107, 87, 0.55); }
+.act--confirming { padding: 3px 3px 3px 10px; background-color: rgba(255, 107, 87, 0.12); border-color: rgba(255, 107, 87, 0.55); }
+.act--confirming:hover { background-color: rgba(255, 107, 87, 0.16); border-color: rgba(255, 107, 87, 0.7); }
+.act-confirm { flex-direction: row; align-items: center; }
+.act-confirm__question { margin: 0 6px 0 0; padding: 0; font-size: 12px; -unity-font-style: bold; color: var(--ink, rgb(238, 243, 234)); }
+.act-confirm__yes, .act-confirm__no {
+    min-height: 0;
+    margin: 0 0 0 4px;
+    padding: 4px 9px;
+    border-width: 0;
+    border-radius: 8px;
+    font-size: 12px;
+    -unity-font-style: bold;
+}
+.act-confirm__yes { background-color: var(--bad, rgb(255, 107, 87)); color: rgb(26, 12, 9); }
+.act-confirm__yes:hover { background-color: rgb(255, 135, 118); }
+.act-confirm__no { background-color: var(--fill, rgba(255, 255, 255, 0.08)); color: var(--ink, rgb(238, 243, 234)); }
+.act-confirm__no:hover { background-color: rgba(255, 255, 255, 0.16); }
+
+/* State chip: colour always travels with a word */
+.state-chip {
+    padding: 2px 8px;
+    margin: 0;
+    border-radius: 999px;
+    background-color: var(--fill, rgba(255, 255, 255, 0.08));
+    color: var(--dim, rgb(169, 184, 168));
+    font-size: 10px;
+    -unity-font-style: bold;
+    letter-spacing: 0.6px;
+    white-space: nowrap;
+}
+.state-chip.tone-good { color: var(--ok, rgb(126, 211, 122)); background-color: rgba(126, 211, 122, 0.14); }
+.state-chip.tone-sun { color: var(--sun, rgb(255, 209, 102)); background-color: rgba(255, 209, 102, 0.14); }
+.state-chip.tone-bad { color: var(--bad, rgb(255, 107, 87)); background-color: rgba(255, 107, 87, 0.14); }
+.state-chip.tone-info { color: var(--info, rgb(124, 198, 230)); background-color: rgba(124, 198, 230, 0.14); }
+
+/* Spark: a small fill bar */
+.spark { height: 6px; min-width: 40px; border-radius: 3px; background-color: var(--fill, rgba(255, 255, 255, 0.08)); overflow: hidden; }
+.spark-fill { border-radius: 3px; background-color: var(--ok, rgb(126, 211, 122)); transition-property: width; transition-duration: 300ms; transition-timing-function: ease-out; }
+.spark-fill.tone-sun { background-color: var(--sun, rgb(255, 209, 102)); }
+.spark-fill.tone-bad { background-color: var(--bad, rgb(255, 107, 87)); }
+.spark-fill.tone-info { background-color: var(--info, rgb(124, 198, 230)); }
+.spark-fill.tone-neutral { background-color: var(--dim, rgb(169, 184, 168)); }
+.reduced-motion .spark-fill { transition-duration: 0s; }
+
+/* Ring: Painter2D draws the arc; the number sits in the hole */
+.ring { width: 52px; height: 52px; flex-shrink: 0; align-items: center; justify-content: center; }
+.ring-label { margin: 0; padding: 0; font-size: 13px; -unity-font-style: bold; color: var(--ink, rgb(238, 243, 234)); -unity-text-align: middle-center; }
+
+/* Line icons */
+.glyph { width: 20px; height: 20px; flex-shrink: 0; }
+
+/* The shared runtime tooltip */
+.hud-tooltip {
+    position: absolute;
+    max-width: 320px;
+    margin: 0;
+    padding: 7px 10px;
+    border-width: 1px;
+    border-radius: 10px;
+    border-color: var(--edge, rgba(255, 255, 255, 0.14));
+    background-color: rgba(10, 19, 14, 0.97);
+    color: var(--ink, rgb(238, 243, 234));
+    font-size: 12px;
+    white-space: normal;
+    opacity: 0;
+    transition-property: opacity;
+    transition-duration: 120ms;
+}
+.hud-tooltip--visible { opacity: 1; }
+.reduced-motion .hud-tooltip { transition-duration: 0s; }
