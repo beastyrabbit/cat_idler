@@ -97,7 +97,7 @@ namespace IdleCatForest.Presentation
                 case "attention.research_unstaffed.cause":
                     return "No research comes in until a cat studies there";
                 case "attention.study_affordable.cause":
-                    var study = Catalog.Study(item.Arg(AttentionArg.Study));
+                    var study = StudyOf(world, item.Arg(AttentionArg.Study));
                     return study == null ? "" : "Costs " + Number(study.Cost) + " research · you have " + Number(Math.Floor(village?.ResearchPoints ?? 0));
                 case "attention.workplace_vacant.cause":
                     return CatName(world, village, item.Arg(AttentionArg.Cat)) + " is free to work there";
@@ -153,7 +153,7 @@ namespace IdleCatForest.Presentation
                 case AttentionRule.ResearchUnstaffed:
                     return "Let " + CatName(world, village, item.Arg(AttentionArg.Cat)) + " study";
                 case AttentionRule.StudyAffordable:
-                    var study = Catalog.Study(item.Arg(AttentionArg.Study));
+                    var study = StudyOf(world, item.Arg(AttentionArg.Study));
                     return "Study now · " + Number(study?.Cost ?? 0);
                 case AttentionRule.WorkplaceVacant:
                     return "Let " + CatName(world, village, item.Arg(AttentionArg.Cat)) + " work";
@@ -257,6 +257,9 @@ namespace IdleCatForest.Presentation
         }
 
         public static string StudyName(string id) => UiText.Name(NameKind.Study, id);
+
+        /// <summary>The study as this world prices it (demo worlds have their own costs).</summary>
+        private static Study StudyOf(World world, string id) => world != null ? Catalog.Study(world, id) : Catalog.Study(id);
 
         /// <summary>Upper-cases the first letter, the way a building name starts a sentence.</summary>
         public static string Sentence(string text) =>

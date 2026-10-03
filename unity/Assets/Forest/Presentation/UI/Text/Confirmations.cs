@@ -75,6 +75,16 @@ namespace IdleCatForest.Presentation
             ["releaseworker"] = "Released from work",
             ["stopcat"] = "",
             ["hurrystudy"] = "Hurried",
+            // Kinds wired into the router in Wave 2.
+            ["preferforwork"] = "Preference saved",
+            ["cancelconstruction"] = "Site cancelled",
+            ["demolish"] = "Taken down",
+            ["demolishbuilding"] = "Taken down",
+            ["foundvillage"] = "Colony founded",
+            ["joinvillage"] = "Joined",
+            ["ensure"] = "",
+            ["presence"] = "",
+            ["advancetime"] = "",
         };
 
         /// <summary>The short verb for an action kind: "Planned". "" means show nothing.</summary>

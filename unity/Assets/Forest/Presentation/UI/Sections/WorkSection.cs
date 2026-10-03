@@ -41,8 +41,7 @@ namespace IdleCatForest.Presentation
                     ctx.Hud.OpenPanel("Build");
                     return;
                 }
-                ctx.Game.View.InspectBuilding(hut.Id);
-                ctx.Hud.OpenPanel(DrawerHost.InspectId);
+                ctx.Hud.Select(new Subject(SubjectKind.Building, hut.Id));
             }).Named(UiNames.Act("open", "research-work"));
             UiKit.Separator(root);
             UiKit.Label(root, "Farms and gathering", "subtitle");
@@ -70,10 +69,9 @@ namespace IdleCatForest.Presentation
             foreach (var b in village.Buildings)
             {
                 string id = b.Id;
-                UiKit.Button(root, UiText.Pretty(b.Kind) + " · " + (b.WorkerId == "" ? "vacant" : "staffed"), () =>
+                UiKit.Button(root, UiText.Name(ctx.Village, b) + " · " + (b.WorkerId == "" ? "vacant" : "staffed"), () =>
                 {
-                    ctx.Game.View.InspectBuilding(id);
-                    ctx.Hud.OpenPanel(DrawerHost.InspectId);
+                    ctx.Hud.Select(new Subject(SubjectKind.Building, id));
                 }).Named(UiNames.Act("inspect", id));
             }
             foreach (var job in village.Jobs.Where(j => !j.Completed))
@@ -81,7 +79,7 @@ namespace IdleCatForest.Presentation
                 string id = job.Id;
                 UiKit.Text(root, UiText.Pretty(job.Kind) + " · " + UiText.Pretty(job.Phase));
                 if (job.BlockedReason != "") UiKit.Text(root, UiText.HumanReason(job.BlockedReason), "warning");
-                UiKit.Button(root, "Boost " + UiText.Pretty(job.Kind) + " · " + id, () => ctx.Act(new GameAction { Kind = "Boost", TargetId = id })).Named(UiNames.Act("boost", id));
+                UiKit.Button(root, "Help " + UiText.Pretty(job.Kind), () => ctx.Act(new GameAction { Kind = "Boost", TargetId = id })).Named(UiNames.Act("boost", id));
             }
             return root;
         }

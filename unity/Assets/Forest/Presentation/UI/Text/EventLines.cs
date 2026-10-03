@@ -27,6 +27,7 @@ namespace IdleCatForest.Presentation
         public static readonly IReadOnlyCollection<string> Routine = new HashSet<string>
         {
             EventKind.Completed, EventKind.Discovery, EventKind.Tithe, EventKind.Emergency, EventKind.Expansion,
+            EventKind.Repaired,
         };
 
         /// <summary>The window in simulated seconds within which routine events of one kind are folded.</summary>
@@ -65,6 +66,8 @@ namespace IdleCatForest.Presentation
             [EventKind.Death] = "A cat has died",
             [EventKind.ExpeditionLoot] = "An explorer brought back loot",
             [EventKind.Error] = "Something went wrong, but the colony carried on",
+            [EventKind.Appointment] = "A cat took up an office",
+            [EventKind.Repaired] = "The colony sorted out a muddle in its stores and beds",
         };
 
         /// <summary>What a finished job adds to "Birch …" and how many of them read in a summary.</summary>

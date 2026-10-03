@@ -125,7 +125,6 @@ namespace IdleCatForest.Presentation
             var game = Context.Game;
             var view = game.View;
             AttachLeader();
-            RetireInspectDrawer();
             var subject = view != null ? view.SelectedSubject : Subject.None;
             var body = BodyFor(subject.Kind);
             bool hide = panel == null || parent == null || game.Selected == null || view == null || view.Camera == null || body == null
@@ -182,12 +181,6 @@ namespace IdleCatForest.Presentation
             leader.Hide();
             shown = Subject.None;
             placed = false;
-        }
-
-        /// <summary>The retired Inspect drawer must never show next to the card.</summary>
-        private void RetireInspectDrawer()
-        {
-            if (Context.State.OpenSection == DrawerHost.InspectId && !Context.Hud.HasPlacement) Context.Hud.ClosePanel();
         }
 
         private void AttachLeader()

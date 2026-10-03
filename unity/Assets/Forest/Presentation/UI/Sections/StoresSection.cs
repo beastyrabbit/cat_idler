@@ -32,8 +32,8 @@ namespace IdleCatForest.Presentation
             foreach (var p in village.Stockpiles)
             {
                 var pile = p;
-                var card = UiKit.Card(root, p.Kind + " · " + p.Id);
-                UiKit.Label(card, "Capacity " + p.Capacity.ToString("0") + " · " + (p.CountedAt < 0 ? "uncounted" : "counted at " + (p.CountedAt / 3600).ToString("0.0") + "h"), "muted");
+                var card = UiKit.Card(root, UiText.Name(village, p));
+                UiKit.Label(card, "Capacity " + p.Capacity.ToString("0") + " · " + (p.CountedAt < 0 ? "not counted yet" : "counted " + UiText.Ago(ctx.World.TimeSeconds - p.CountedAt)), "muted");
                 UiKit.Label(card, UiText.Goods(p.Report), "body");
                 UiKit.Button(card, "Haul from pile", () => ctx.Act(new GameAction { Kind = "HaulGatherSpot", TargetId = pile.Id })).Named(UiNames.Act("haul-pile", pile.Id));
                 UiKit.Button(card, "Remove pile", () => ctx.Act(new GameAction { Kind = pile.Kind == "storage" ? "RemoveStockpile" : "RemoveGatherSpot", TargetId = pile.Id })).Named(UiNames.Act("remove-pile", pile.Id));

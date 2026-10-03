@@ -66,7 +66,8 @@ namespace IdleCatForest.Presentation
                     default:
                         if (countedAt < 0)
                         {
-                            double total = world.Total(village, pill.Resource);
+                            // Before any count the Leader's coarse estimate stands in, never the exact stock (W2-02).
+                            double total = world.EstimatedTotal(village, pill.Resource, out _);
                             pill.Show(total, "≈" + Whole(total), "", Mark.Estimate, reset);
                         }
                         else

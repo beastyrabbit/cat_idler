@@ -1,3 +1,4 @@
+using IdleCatForest.Simulation;
 using UnityEngine;
 using UnityEngine.UIElements;
 
@@ -45,13 +46,27 @@ namespace IdleCatForest.Presentation
             if (hud.HasPlacement) return (hud.Placement.Label + " · click to place · Esc cancels", false);
             if (view != null && view.DirectControl)
                 return ("Steering " + (view.ControlledCat?.Name ?? "a cat") + " · WASD walk · right drag look · E interact · Tab hand back", false);
-            if (game.Status.StartsWith("Save failed", System.StringComparison.Ordinal) || game.Status.StartsWith("Could not", System.StringComparison.Ordinal))
+            if (game.SaveState == SaveState.Failed)
                 return ("Could not save the forest · it will try again", true);
             if (game.IsRemote) return (game.Status, false);
-            if (game.LastAction.Length > 0 && Time.unscaledTime - hud.LastActionAt < FeedbackSeconds)
-                return (UiText.HumanReason(game.LastAction), hud.LastActionFailed);
+            var feedback = game.LastFeedback;
+            if (feedback != null && Time.realtimeSinceStartupAsDouble - feedback.At < FeedbackSeconds)
+            {
+                string line = FeedbackText(feedback);
+                if (line.Length > 0) return (line, !feedback.Success);
+            }
             if (Time.unscaledTime - shownAt < LegendSeconds) return (Legend, false);
             return ("", false);
+        }
+
+        /// <summary>The player's words for an action result: the confirmation verb, or the refusal and its next step.</summary>
+        public static string FeedbackText(Feedback feedback)
+        {
+            if (feedback == null) return "";
+            if (feedback.Success) return UiText.Confirm(feedback.Kind);
+            var result = ActionResult.Fail(feedback.Code, feedback.Message);
+            foreach (var arg in feedback.Args) (result.Args ??= new System.Collections.Generic.Dictionary<string, string>())[arg.Key] = arg.Value;
+            return UiText.ActionError(result);
         }
 
         public void Refresh()

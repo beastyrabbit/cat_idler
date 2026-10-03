@@ -70,8 +70,7 @@ namespace IdleCatForest.Presentation
                 if (cat.BlockedReason != "") UiKit.Label(card, UiText.HumanReason(cat.BlockedReason), "warning");
                 UiKit.Button(card, "Follow explorer", () =>
                 {
-                    view.InspectCat(id);
-                    ctx.Hud.OpenPanel(DrawerHost.InspectId);
+                    ctx.Hud.Select(new Subject(SubjectKind.Cat, id));
                 }).Named(UiNames.Act("follow", id));
                 UiKit.Button(card, "Recall to village", () => ctx.Act(new GameAction { Kind = "RecallExplorer", CatId = id })).Named(UiNames.Act("recall", id));
             }

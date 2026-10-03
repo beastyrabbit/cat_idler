@@ -24,7 +24,7 @@ namespace IdleCatForest.Presentation
             picks.CatChoice(ctx, root);
             UiKit.Button(root, "Train selected cat", () => ctx.Act(new GameAction { Kind = "TrainWarrior", CatId = picks.SelectedCat })).Named(UiNames.Act("train", "warrior"));
             UiKit.Button(root, "Defend active raid", () => ctx.Act(new GameAction { Kind = "DefendRaid" })).Named(UiNames.Act("defend", "raid"));
-            foreach (var raid in village.Raids) UiKit.Text(root, "Raid · health " + raid.Health.ToString("0") + " · " + raid.Position);
+            foreach (var raid in village.Raids) UiKit.Text(root, "Raiders · strength " + UiText.Whole(raid.Health));
             if (village.Raids.Count == 0) UiKit.Text(root, "No active raids.");
             return root;
         }

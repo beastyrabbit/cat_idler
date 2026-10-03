@@ -174,7 +174,7 @@ namespace IdleCatForest.Presentation
             text.AddToClassList("toast__text");
             var title = new Label(overflow ? HudCopy.ToastOverflow(-(int)e.Seq) : HudCopy.ToastTitle(e.Kind)) { pickingMode = PickingMode.Ignore };
             title.AddToClassList("toast__title");
-            var body = new Label(UiText.Pretty(e.Text ?? "")) { pickingMode = PickingMode.Ignore };
+            var body = new Label(overflow ? e.Text ?? "" : UiText.EventLine(Context.Village, e)) { pickingMode = PickingMode.Ignore };
             body.AddToClassList("toast__body");
             text.Add(title);
             if (!string.IsNullOrEmpty(e.Text)) text.Add(body);

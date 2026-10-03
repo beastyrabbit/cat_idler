@@ -82,7 +82,7 @@ namespace IdleCatForest.Presentation
                 UiKit.Label(card, n.Name, "subtitle");
                 UiKit.Label(card, n.Description, "body");
                 UiKit.Label(card, "Cost " + n.Cost.ToString("0") + " research · " + (owned ? "complete" : prereqs ? "prerequisites met" : "needs " + string.Join(", ", n.Prerequisites.Where(p => !village.Research.Contains(p)))), owned ? "muted" : "body");
-                UiKit.Label(card, string.Join(" · ", n.Payloads.Select(p => UiText.Effect(p.Kind, p.Id, p.Value))), "muted");
+                UiKit.Label(card, string.Join(" · ", n.Payloads.Select(p => UiText.Effect(p))), "muted");
                 foreach (var prerequisite in n.Prerequisites)
                 {
                     string id = prerequisite;

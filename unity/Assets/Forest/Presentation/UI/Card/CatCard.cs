@@ -115,7 +115,7 @@ namespace IdleCatForest.Presentation
                 Act(list, label, UiNames.Act("assign", c.Id, building.Id), () => new GameAction { Kind = "AssignWorker", CatId = c.Id, BuildingId = building.Id }).AddToClassList("card-row-act");
             }
             if (c.BuildingId != "")
-                Act(list, "Release from the " + WorkplaceName(c), UiNames.Act("release-workplace", c.Id), () => new GameAction { Kind = "AssignWorker", CatId = c.Id }).AddToClassList("card-row-act");
+                Act(list, "Release from the " + WorkplaceName(c), UiNames.Act("release-workplace", c.Id), () => new GameAction { Kind = "ReleaseWorker", CatId = c.Id }).AddToClassList("card-row-act");
             Plain(list, "Manual jobs in Work", UiNames.Act("open-work", "card"), () => Context.Hud.OpenPanel("Work")).AddToClassList("card-quiet");
         }
 
@@ -153,7 +153,7 @@ namespace IdleCatForest.Presentation
                 toggle.RegisterValueChangedCallback(e => _ = Send(new GameAction { Kind = "SetCatLaborPreference", CatId = c.Id, Labor = id, Enabled = e.newValue }));
                 grid.Add(toggle);
             }
-            var prefer = Act(more, c.Boosted ? "Preferred for work ✓" : "Prefer for work", UiNames.Act("prefer", c.Id), () => new GameAction { Kind = "BoostCat", CatId = c.Id, Enabled = !c.Boosted });
+            var prefer = Act(more, c.Boosted ? "Preferred for work ✓" : "Prefer for work", UiNames.Act("prefer", c.Id), () => new GameAction { Kind = "PreferForWork", CatId = c.Id, Enabled = !c.Boosted });
             prefer.AddToClassList("card-quiet");
 
             var events = Village.Events.Where(e => e.EntityId == c.Id).Skip(System.Math.Max(0, Village.Events.Count(e => e.EntityId == c.Id) - 6)).Reverse().ToList();

@@ -117,7 +117,7 @@ tag and the path of the wave report under `artifacts/demo/`.
 |---|---|---|---|---|---|
 | W0 | Guardrails: compile gate, worktrees, Unity slots, captures, CI, demo brief, seams | 5 (1 integration) | Done (2026-10-02; 4 of 4 merged) | `demo-w0` | `artifacts/demo/wave-0/report.md` |
 | W1 | Behaviour-neutral splits and every frozen contract | 9 (1 integration) | Done (2026-10-02; 8 of 8 merged) | `demo-w1` | `artifacts/demo/wave-1/report.md` |
-| W2 | Core rebuild in parallel; staged integration A, B, C | 29 (3 integration) | In progress: W2-INT-a done (2026-10-03; W2-01 to W2-10 merged, simulation wired, demo timing green); W2-INT-b and W2-INT-c pending | `demo-w2a`, `demo-w2b`, `demo-w2` | `artifacts/demo/wave-2/report.md` |
+| W2 | Core rebuild in parallel; staged integration A, B, C | 29 (3 integration) | In progress: W2-INT-a done (2026-10-03; W2-01 to W2-10 merged, simulation wired, demo timing green); W2-INT-b done (2026-10-03; W2-11 to W2-16 merged: persistence, game loop, Glass chrome, tethered card, copy layer, widgets; copy coverage and UI PlayMode green); W2-INT-c pending | `demo-w2a`, `demo-w2b`, `demo-w2` | `artifacts/demo/wave-2/report.md` |
 | W3 | Features: milestones, shell, settings, demo boundary, build mode, drawers, direct control, animation, art hookup, FX, markers, audio, art | 22 (1 integration) | Not started | `demo-w3` | `artifacts/demo/wave-3/report.md` |
 | W4 | Polish and ship-readiness, Windows (conditional), playtest punch lists | 12 (1 integration) | Not started | `demo-w4` | `artifacts/demo/wave-4/report.md` |
 | W5 | Docs, store page, trailer, release candidate | 4 (1 integration) | Not started | `demo-w5` | `artifacts/demo/wave-5/report.md` |
@@ -423,7 +423,7 @@ Declared as `partial void` in `Pres/View/ForestView.cs`: `AwakeLighting()`,
 | `slot-pills` | ResourcePills |
 | `slot-dock` | Dock |
 | `slot-hint` | HintLine |
-| `slot-drawer` | legacy drawer (DrawerHost) |
+| `slot-drawer` | Glass drawer (DrawerHost) |
 | `slot-card` | TetheredCard |
 | `slot-toasts` | Toasts |
 | `slot-mode` | ModeChip and BuildTray |
@@ -442,19 +442,19 @@ Chrome and layout:
 | Element | Name |
 |---|---|
 | Root | `forest-ui` |
-| Top bar | `hud-top` |
-| Brand | `hud-brand` |
-| Resources | `hud-resources` |
-| Resource chips | `resource-food`, `resource-water`, `resource-research`, `resource-blessings` |
-| Clock | `hud-clock` |
-| Speed buttons | `act-speed-0`, `act-speed-1`, `act-speed-4`, `act-speed-8` |
-| Attention seal | `seal` |
-| Navigation | `hud-nav`; entries `nav-<id lowercase>` |
-| Drawer | `drawer`, `act-back-drawer`, `act-close-drawer`, `drawer-scroll` |
-| Section bodies | `section-<id lowercase>` (inspect and overview included) |
-| Bottom bar | `hud-bottom`, `act-zoom-out`, `act-zoom-in`, `act-focus-village` |
-| Tethered card | `card-tethered`, button `act-inspect-card` |
-| Card stubs | `card-cat`, `card-building`, `card-pile` |
+| Village chip (W2-13) | `village-chip`, `chip-name`, `hud-clock`, `chip-census`, `chip-paused`, `chip-speed`, `act-show-idle` |
+| Speed buttons | `act-speed-0`, `act-speed-1`, `act-speed-2`, `act-speed-4` (8 and 16 only with dev speeds) |
+| Resource pills | `hud-resources`; `resource-food`, `resource-water`, `resource-logs`, `resource-stone`, `resource-research`, `resource-blessings` |
+| Attention seal | `seal` (W2-16; popover and toasts beside it) |
+| Dock | `dock-row`, `hud-dock`; entries `nav-<id lowercase>` |
+| Hint line | `hud-hint` |
+| Drawer | `drawer`, `drawer-dim`, `drawer-title`, `drawer-summary`, `act-close-drawer`, `drawer-scroll` |
+| Section bodies | `section-<id lowercase>` (overview included; Inspect is gone) |
+| Tethered card (W2-14) | `card-tethered`, `card-leader`, `card-portrait`, `card-name`, `card-facts`, `card-now`, `card-why`, `card-scroll`, `act-pin-card`, `act-close-card`, `act-more-card`, `card-more` |
+| Card bodies | `card-cat`, `card-building`, `card-pile` |
+
+Removed at W2-INT-b (the Glass chrome replaced them): `hud-top`, `hud-brand`, `hud-nav`, `hud-bottom`,
+`act-zoom-out`, `act-zoom-in`, `act-focus-village`, `act-back-drawer`, `act-inspect-card`, `section-inspect`.
 
 Village section:
 
@@ -464,22 +464,22 @@ Village section:
 
 Cats section: `act-inspect-<catId>`.
 
-Inspect section, cat:
+Tethered card, cat (W2-14; the Inspect section is deleted):
 
-- Progress and cargo: `live-work-progress`, `carried-item-<itemId>`
-- Control: `act-return-<catId>`, `act-control-<catId>`, `act-collect-chest-<catId>`
-- Shared pickers: `choice-resource`, `field-amount`
-- Interactions: `act-pile-<pileId>`, `act-shrine-<catId>`, `act-eat-<catId>`, `act-drink-<catId>`, `act-rest-<catId>`
-- Preferences and equipment: `act-labor-<labor>` (Toggle), `act-unequip-<itemId>`
-- Other actions: `act-release-workplace-<catId>`, `act-boost-cat-<catId>`
+- Needs and work: `ring-hunger`, `ring-thirst`, `ring-rest`, `ring-health`, `live-work-progress`, `carried-item-<itemId>`
+- Actions: `act-help-<catId>`, `act-assign-to-<catId>`, `act-assign-<catId>-<buildingId>`,
+  `act-release-workplace-<catId>` (sends `ReleaseWorker`), `act-open-work-card`, `act-control-<catId>`
+- More: `act-labor-<labor>` (Toggle), `act-unequip-<itemId>`, `act-prefer-<catId>` (sends `PreferForWork`)
 
-Inspect section, building:
+Tethered card, building and pile:
 
-- Staffing: `choice-cat`, `act-assign-worker-<buildingId>`
-- Production: `choice-recipe`, `act-queue-add-<buildingId>`, `act-slot-add-<buildingId>-<catId>`
-- Queue controls: `act-queue-pause-<b>-<cat>`, `act-queue-resume-<b>-<cat>`
-- Entry controls: `act-queue-up|down|repeat|remove-<b>-<cat>-<index>`
-- Entries: `queue-entry-<b>-<cat>-<index>`. `<cat>` is empty for the station queue, which gives a double dash.
+- Construction: `live-build-progress`, `card-material-<resource>`, `card-eta`, `act-card-cancel-<b>`,
+  `act-card-cancel-yes-<b>`, `act-card-cancel-no-<b>` (sends `CancelConstruction`)
+- Housing and storage: `card-beds`, `card-contents`; pile removal `act-card-remove-<pile>`, `-yes-`, `-no-`
+- Workplace: `card-crew-<n>`, `act-assign-idle-<b>`, `act-card-boost-<b>`, `act-edit-queue-<b>`, `act-open-shrine-card`
+- Queue editor (opened by `act-edit-queue-<b>`): `choice-recipe`, `act-queue-add-<b>`, `act-slot-add-<b>-<cat>`,
+  `act-queue-pause|resume-<b>-<cat>`, `act-queue-up|down|repeat|remove-<b>-<cat>-<index>`,
+  `queue-entry-<b>-<cat>-<index>`. `<cat>` is empty for the station queue, which gives a double dash.
 
 Build section:
 
@@ -573,6 +573,7 @@ Which file owns which case-name prefix (every name below is under regression. un
   GovernanceScenarios.cs       territory_*
   DefenseScenarios.cs          undefended_raid_*, functional_weapon_*, review_land_mover_*, defense.*
   RaidBeatScenarios.cs         raid_beat.*
+  AttentionScenarios.cs        attention.*
   FoundingScenarios.cs         founding.*
   CampaignScenarios.cs         campaign.* (explicit in Unity, excluded by the runner unless --include-campaigns)
   ScenarioKit.cs               no cases: Scenario plus the shared fixtures and assertions
@@ -651,3 +652,69 @@ single-player world must use `CreateColony(World.DemoSeed, name, Pacing.DemoProf
   `IsDemoVisible*`, `IsFunctional`, `OwnedAtFounding`, `SlotsFor`, `ServiceFactor`, `FoundingServiceFactor`,
   `Slice`, `FoundingStudies`) and the `Catalog` overloads that take a `World`. Simulation code asks the
   World overloads, so demo worlds see demo costs, prerequisites, slots and founding service effects.
+
+### 3.10 Wave 2 authority, game loop and UI additions (W2-INT-b)
+
+Merged and wired on 2026-10-03 (W2-11 to W2-16). Members were only added, except the retired
+Inspect drawer (`InspectSection` is deleted; `DrawerHost.InspectId` stays as a no-op so
+`OpenPanel("Inspect")` from old capture scripts only syncs the selection).
+
+**Persistence and identity (W2-11).** Local play has one stable player (`World.Players[0]`, or the one
+named by an existing `<save>.identity/session.json`), no bearer and no expiry; the server keeps
+`SessionAuthority`. New: `LocalAuthority.RestoreLastGood()` (implemented), `Snapshot()`,
+`Write(SaveSnapshot)`, `PlayerId`, `SavePath`, `Created`, `LoadWarnings`; `AuthorityRuntime.Snapshot()`,
+`Write(SaveSnapshot)`, `ValidateStructure(World)`, `LoadWarnings`, `Created`, `SavePath`; `Save()` returns
+`SaveResult`. Every open or create failure is a `SaveException` (an `IOException`) with `Code` from
+`SaveFailure`: `damaged`, `made_by_newer_version`, `unsupported_version`, `too_large`, `already_running`,
+`already_exists`, `missing_save_with_backup`, `invalid_ownership`. `SaveStore.Load(path, out
+SaveLoadReport)`, `DecodePayload`, `Encode`, `Write`; `SaveMigrations.Migrate` and `OldestSupported`;
+`Backups.SessionBackupPath`, `PreviousPath`, `InvalidCopyPath`, `Recoverable`, `TakeSessionSnapshot`,
+`RemoveStaleTemporaries`. Simulation invariants never block an open or a save: repairable breaches are
+fixed by `World.RepairInvariants()` on open and before every snapshot, the rest become warnings.
+Migration rule: adding a field needs nothing; a rename or a change of meaning bumps `SaveStore.Version`
+and adds a step in `Authority/SaveMigrations.cs` with a test that loads
+`server/Forest.Tests/Fixtures/world-v1.main-5ec7278.json.gz`.
+
+**Game loop (W2-11, W2-12).** On `ForestGame`: `SaveState` (Unavailable, Idle, Saving, Saved,
+SavedWithWarnings, Failed), `LastSaveUtc`, `LastSaveError`, `SaveWarnings`, `ConsecutiveSaveFailures`,
+`SaveMilliseconds`, `SaveMainThreadMilliseconds`, `AutosaveIntervalSeconds` (30, wall clock),
+`ActionSaveDelaySeconds` (2), `OpenFailureCode`, `LastFeedback`, `FeedbackPosted`, `ActAsync`,
+`FaultCount`, `SimulationBehind`, `FocusedFrameRate` (60), `BackgroundFrameRate` (10),
+`DefaultStepBudgetMilliseconds` (6), `ConnectTimeoutMilliseconds`; the telemetry list of persistence-tick
+timings is `PersistenceTickMilliseconds`. `Faulted` and `Changed` work as specified: a throwing step
+pauses, restores the last good world and never autosaves until a step succeeds. `ForestGame` sets
+`World.ControlTimeScale = Speed` before stepping and logs `World.IsolatedFaults()` once each (the server
+tick does the same). New types `Feedback`, `FeedbackCode` (`io_error`, `timeout`, `network`,
+`invalid_address`, `unexpected_error`, `already_sent`, `not_ready`, `simulation_fault`,
+`server_controls_time`) and `ForestLog`. Speeds are pause, 1x, 2x, 4x (`GameSpeeds.Clamp`).
+
+**Glass chrome (W2-13).** ConstantPixelSize panel with `ForestUI.PanelScaleFor(dpi, uiScale)`; root
+classes `has-minimap` (width 1600 and up), `compact` (below 1600), `narrow` (below 1100); tokens in
+`Resources/UI/Tokens.uss`; Manrope and Instrument Serif (OFL) and the generated icon set under
+`Resources/UI/Fonts` and `Resources/UI/Icons` (deterministic metas from `tools/ui-icons`). Slot order back to
+front: chip, pills, hint, drawer, dock, card, seal, toasts, mode, reins, objective, modal. `UiState.Bind`
+binds Escape as text field (Modal + 10), popover, placement, drawer, selection. `ForestUI.ChipBounds`,
+`IsNarrow`, `PanelScale`; `SectionRegistry.Dock` with groups; `DrawerHost.SummaryOf`. The Space and 1/2/3
+bindings exist but only fire once `KeyMap` marks them live (W2-18, merged in W2-INT-c).
+
+**Tethered card (W2-14).** The only inspector. `ForestUI.Select(Subject)` handles cats, buildings and
+piles; `ForestView.InspectPile`, `SelectedPileId`, `SelectedSubject`; `TetheredCard.PlaceNear`, `Showing`,
+`IsSheet`; `BuildingCard.RoleOf`, `BestIdleCat`; `CatCard.Candidates`; `NeedRing`; `CardPortrait.Layer` 31.
+
+**Copy (W2-15, W2-INT-b).** `UiText` hands off to `Presentation/UI/Text/**` (`Names`, `Numbers`,
+`GameClock`, `NowLines`, `Reasons`, `Confirmations`, `Effects`, `EventLines`, and `HudCopy` moved there
+from Widgets at W2-INT-b). `tools/presentation-tests` (in the solution and CI) runs under de-DE; its
+Coverage category reflects over `Blocked`, `ResultCode`, `EventKind`, `GoalKey`, `JobKind`, `JobPhase`,
+`PlacementCode`, `World.ActionKinds` and `AttentionRule`, and checks the `FeedbackCode` values, so a code
+added later fails until its text is written. Every Wave 2 code above has authored text.
+
+**Widgets and attention (W2-16).** `Attention.Compute(World, Village)` is pure; rules `raid`,
+`raid_warning`, `explorer_danger`, `need_thirst`, `need_hunger`, `need_health`, `no_bed`,
+`workplace_blocked`, `research_unstaffed`, `study_affordable`, `workplace_vacant`, `idle_cats`,
+`stale_counts` (`AttentionRule.All`); `AttentionItem.Arg(key)`, `AttentionArg`, `AttentionSection`,
+`AttentionAction.OpenSection`; `Attention.CountBySection` feeds the dock badges. Widgets: `ActionButton`
+(pending, in-place result, inline confirm for destructive verbs), keyed `Table`, `BoundDropdown`,
+`StateChip`, `Spark`, `Ring`, `Tooltip`, `Glyph`, `WidgetStyles`, `HudLayout`; `AttentionSeal`,
+`AttentionPopover`, `Toasts` (bodies use `UiText.EventLine`). Scenario prefix: `AttentionScenarios.cs`
+owns `attention.*`.
+

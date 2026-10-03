@@ -28,10 +28,9 @@ namespace IdleCatForest.Presentation
                 UiKit.Label(row, c.Name + (c.Id == village.LeaderId ? " · Leader" : ""), "subtitle");
                 UiKit.Button(row, "Inspect " + c.Name, () =>
                 {
-                    ctx.Game.View.InspectCat(id);
-                    ctx.Hud.OpenPanel(DrawerHost.InspectId);
+                    ctx.Hud.Select(new Subject(SubjectKind.Cat, id));
                 }).Named(UiNames.Act("inspect", id));
-                UiKit.Label(card, UiText.Pretty(c.Goal) + (c.OfficerRole != "" ? " · " + UiText.Pretty(c.OfficerRole) : ""), "body");
+                UiKit.Label(card, UiText.NowLine(ctx.World, ctx.Village, c) + (c.OfficerRole != "" ? " · " + UiText.Pretty(c.OfficerRole) : ""), "body");
                 UiKit.Label(card, "Hunger " + c.Hunger.ToString("0") + "  Thirst " + c.Thirst.ToString("0") + "  Rest " + c.Rest.ToString("0"), "muted");
                 if (c.BlockedReason != "") UiKit.Label(card, UiText.HumanReason(c.BlockedReason), "warning");
             }

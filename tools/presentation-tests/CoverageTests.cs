@@ -63,6 +63,49 @@ namespace IdleCatForest.Presentation.Tests
             }
         }
 
+        public static IEnumerable<TestCaseData> PlacementCodes() => Cases(typeof(PlacementCode));
+
+        [TestCaseSource(nameof(PlacementCodes))]
+        public void EveryPlacementCodeHasText(string code)
+        {
+            Assert.That(Reasons.IsAuthoredResult(code), Is.True, "No authored text for placement code " + code);
+            TextAssert.Clean(UiText.Reason(code), code);
+            TextAssert.Clean(UiText.ActionError(ActionResult.Fail(code, "engine message " + code)), code);
+        }
+
+        [TestCase("io_error"), TestCase("timeout"), TestCase("network"), TestCase("invalid_address"), TestCase("unexpected_error")]
+        [TestCase("already_sent"), TestCase("not_ready"), TestCase("simulation_fault"), TestCase("server_controls_time")]
+        public void EveryFeedbackCodeHasText(string code)
+        {
+            // FeedbackCode lives in the Unity game loop, outside this test assembly; the values are mirrored here.
+            Assert.That(Reasons.IsAuthoredResult(code), Is.True, "No authored text for feedback code " + code);
+            TextAssert.Clean(UiText.Reason(code), code);
+        }
+
+        public static IEnumerable<TestCaseData> AttentionRules() =>
+            AttentionRule.All.Select(rule => new TestCaseData(rule).SetName("AttentionRule." + rule));
+
+        [TestCaseSource(nameof(AttentionRules))]
+        public void EveryAttentionRuleHasTitleCauseAndAction(string rule)
+        {
+            var world = World.CreateColony(World.DemoSeed, "", Pacing.DemoProfile, 0);
+            var village = world.Villages[0];
+            var cat = village.Cats[0];
+            var building = village.Buildings[0];
+            var args = new[] { "cat=" + cat.Id, "cat2=" + village.Cats[1].Id, "building=" + building.Id, "study=basic_tools", "count=2", "seconds=90" };
+            foreach (string cause in new[] { "", "need_supply_missing", Blocked.WorkerRequired, AttentionRule.TitleCode(rule) + ".cause" })
+            {
+                var item = new AttentionItem(rule + ":" + cat.Id, AttentionSeverity.Warning, AttentionRule.TitleCode(rule), cause, AttentionSection.Work, cat.Id, "RequestJob", args);
+                TextAssert.Clean(HudCopy.Title(item, world, village), rule);
+                TextAssert.CleanOrEmpty(HudCopy.Cause(item, world, village), rule + " " + cause);
+                TextAssert.CleanOrEmpty(HudCopy.Action(item, world, village), rule);
+                TextAssert.CleanOrEmpty(HudCopy.Confirmed(item), rule);
+            }
+        }
+
+        [TestCaseSource(nameof(EventKinds))]
+        public void EveryEventKindHasAToastTitle(string kind) => TextAssert.Clean(HudCopy.ToastTitle(kind), kind);
+
         [TestCaseSource(nameof(EventKinds))]
         public void EveryEventKindHasALine(string kind)
         {
@@ -158,19 +201,8 @@ namespace IdleCatForest.Presentation.Tests
         [Test]
         public void EveryActionKindHasAConfirmation()
         {
-            // The router's own list of kinds: every case label of ActionRouter.Apply.
-            var kinds = new[]
-            {
-                "acceptvillagetrade", "assignofficer", "assignworker", "attackcreature", "boost", "boostcat", "buildbridge", "builddock",
-                "buildroad", "buildtransportvehicle", "buyresource", "canceltransportroute", "cancelvillagetrade", "castvote", "clearfarm",
-                "createtransportroute", "createzone", "defendraid", "designatefarm", "designatefishingspot", "designategatherspot",
-                "designaterail", "designatestockpile", "dispatchscout", "editproductionqueue", "editproductionworkslot", "entercat",
-                "entercatcontrol", "equipitem", "exploredungeon", "haulgatherspot", "interactcat", "keepcatcontrol", "leavecat",
-                "leavecatcontrol", "movecat", "offermaterials", "offerresource", "offertithe", "offervillagetrade", "planbuilding",
-                "purchaseupgrade", "recallexplorer", "removegatherspot", "removestockpile", "removezone", "repairitem", "requestjob",
-                "requestvotekick", "researchnode", "sellgoods", "setcatlaborpreference", "trainwarrior", "unassignofficer", "unequipitem",
-                "unlocknode",
-            };
+            // The router's own list of kinds (aliases included), so a kind added later fails here until it has a verb.
+            var kinds = World.ActionKinds;
             foreach (string kind in kinds)
             {
                 Assert.That(Confirmations.IsAuthored(kind), Is.True, "No confirmation for " + kind);

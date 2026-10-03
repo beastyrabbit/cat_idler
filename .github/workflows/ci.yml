@@ -48,6 +48,8 @@ jobs:
         run: dotnet run --project tools/scenarios -c Release --no-build -- --jobs=0
       - name: Run authority and server tests
         run: bash tools/forest.sh server-test
+      - name: Run UI text tests
+        run: dotnet test tools/presentation-tests -c Release --no-build
 
   gitleaks:
     name: Secret scan (gitleaks)

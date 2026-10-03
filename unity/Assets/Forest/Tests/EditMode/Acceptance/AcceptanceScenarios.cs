@@ -30,6 +30,7 @@
 //   GovernanceScenarios.cs       territory_*
 //   DefenseScenarios.cs          undefended_raid_*, functional_weapon_*, review_land_mover_*, defense.*
 //   RaidBeatScenarios.cs         raid_beat.*
+//   AttentionScenarios.cs        attention.*
 //   FoundingScenarios.cs         founding.*
 //   CampaignScenarios.cs         campaign.* (explicit in Unity, excluded by the runner unless --include-campaigns)
 //   ScenarioKit.cs               no cases: Scenario plus the shared fixtures and assertions

@@ -8,6 +8,9 @@
   <Folder Name="/tools/presentation-fixture/">
     <Project Path="tools/presentation-fixture/Forest.PresentationFixture.csproj" />
   </Folder>
+  <Folder Name="/tools/presentation-tests/">
+    <Project Path="tools/presentation-tests/Forest.PresentationTests.csproj" />
+  </Folder>
   <Folder Name="/tools/save-import/">
     <Project Path="tools/save-import/Forest.SaveImport/Forest.SaveImport.csproj" />
   </Folder>

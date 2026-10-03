@@ -168,6 +168,8 @@ namespace IdleCatForest.Presentation
             double stepped = 0;
             bool cut = false;
             var budget = Stopwatch.StartNew();
+            // Direct-control walking runs in real time: the simulation divides it by the selected speed (W2-06).
+            local.World.ControlTimeScale = Speed;
             try
             {
                 while (accumulated + 1e-9 >= World.SimulationStepSeconds)

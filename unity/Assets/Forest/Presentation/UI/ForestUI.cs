@@ -323,7 +323,8 @@ namespace IdleCatForest.Presentation
             if (view == null) return;
             if (view.SelectedCatId != "") state.Selected = new Subject(SubjectKind.Cat, view.SelectedCatId);
             else if (view.SelectedBuildingId != "") state.Selected = new Subject(SubjectKind.Building, view.SelectedBuildingId);
-            else if (state.Selected.Kind == SubjectKind.Cat || state.Selected.Kind == SubjectKind.Building) state.Selected = Subject.None;
+            else if (view.SelectedPileId != "") state.Selected = new Subject(SubjectKind.Pile, view.SelectedPileId);
+            else if (state.Selected.Kind == SubjectKind.Cat || state.Selected.Kind == SubjectKind.Building || state.Selected.Kind == SubjectKind.Pile) state.Selected = Subject.None;
             state.Mode = HasPlacement ? UiMode.Placement : view.DirectControl ? UiMode.Control : UiMode.None;
         }
 
@@ -367,6 +368,9 @@ namespace IdleCatForest.Presentation
                     break;
                 case SubjectKind.Building:
                     Game.View.InspectBuilding(s.Id);
+                    break;
+                case SubjectKind.Pile:
+                    Game.View.InspectPile(s.Id);
                     break;
                 case SubjectKind.None:
                     Game.View.InspectBuilding("");

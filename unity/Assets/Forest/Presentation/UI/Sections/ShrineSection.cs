@@ -42,7 +42,7 @@ namespace IdleCatForest.Presentation
             foreach (var n in Catalog.Research.Take(BlessingStudyCount).Where(n => !village.Research.Contains(n.Id)))
             {
                 string id = n.Id;
-                UiKit.Button(root, "Blessing: " + n.Name + " · " + n.Cost.ToString("0"), () => ctx.Act(new GameAction { Kind = "UnlockNode", NodeId = id })).Named(UiNames.Act("unlock", id));
+                UiKit.Button(root, "Blessing: " + n.Name + " · " + UiText.Whole(world.BlessingStudyCost(Catalog.Study(world, n.Id))), () => ctx.Act(new GameAction { Kind = "UnlockNode", NodeId = id })).Named(UiNames.Act("unlock", id));
             }
             return root;
         }

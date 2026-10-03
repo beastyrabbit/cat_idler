@@ -91,7 +91,7 @@ namespace IdleCatForest.Tests
             var cat = game.Selected.Cats[1];
             var job = new Job { Id = "live-inspector-job", Kind = "woodcut", Phase = "working", CatId = cat.Id, Position = cat.Position, Progress = 1, RequiredWork = 20 };
             game.Selected.Jobs.Add(job); cat.JobId = job.Id;
-            game.View.InspectCat(cat.Id); game.UI.OpenPanel("Inspect");
+            game.View.InspectCat(cat.Id); UiTestKit.Tick(game);
             var progress = UiTestKit.Find<ProgressBar>(game, UiNames.WorkProgress);
             Assert.That(progress, Is.Not.Null, "Working cats need a live progress meter.");
             job.Progress = 1.05;
@@ -236,14 +236,14 @@ namespace IdleCatForest.Tests
             job.ItemIds.Add(item.Id); village.Jobs.Add(job); village.Items.Add(item); cat.JobId = job.Id;
             yield return new WaitForSecondsRealtime(.25f);
             Assert.That(GameObject.Find("cargo:" + cat.Id), Is.Null, "A reserved item is still at its source before pickup.");
-            game.View.InspectCat(cat.Id); game.UI.OpenPanel("Inspect");
+            game.View.InspectCat(cat.Id); UiTestKit.Tick(game);
             Assert.That(UiTestKit.WithPrefix<Label>(game, CarriedItem), Is.Empty);
             job.Phase = "output_delivery";
             yield return new WaitForSecondsRealtime(.25f);
             var cargo = GameObject.Find("cargo:" + cat.Id);
             Assert.That(cargo, Is.Not.Null, "Finished exact goods must visibly travel with their carrier.");
             Assert.That(cargo.GetComponentsInChildren<MeshFilter>().Sum(m => m.sharedMesh.vertexCount), Is.GreaterThan(30), "Carried goods use authored geometry.");
-            game.View.InspectCat(cat.Id); game.UI.OpenPanel("Inspect");
+            game.View.InspectCat(cat.Id); UiTestKit.Tick(game);
             Assert.That(UiTestKit.WithPrefix<Label>(game, CarriedItem).Select(label => label.name), Is.EqualTo(new[] { CarriedItem + item.Id }), "Inspection must identify the same carried exact item.");
             var before = cargo.transform.position;
             cat.X += 1;
@@ -252,7 +252,7 @@ namespace IdleCatForest.Tests
             item.LocationId = source.Id; job.ItemIds.Clear(); job.Completed = true; cat.JobId = "";
             yield return new WaitForSecondsRealtime(.25f);
             Assert.That(GameObject.Find("cargo:" + cat.Id), Is.Null, "Delivered items cannot remain on the cat.");
-            game.UI.OpenPanel("Inspect");
+            UiTestKit.Tick(game);
             Assert.That(UiTestKit.WithPrefix<Label>(game, CarriedItem), Is.Empty);
         }
 
@@ -264,14 +264,14 @@ namespace IdleCatForest.Tests
             var cat = game.Selected.Cats.First(c => c.Alive && c.Id != game.Selected.LeaderId);
             cat.Cargo.Add(new Simulation.Stack("food", 1));
             game.View.InspectCat(cat.Id);
-            game.UI.OpenPanel("Inspect");
+            UiTestKit.Tick(game);
             UiTestKit.Click(game, UiNames.Act("control", cat.Id));
             yield return null;
             Assert.That(game.View.ControlledCat, Is.SameAs(cat));
             Assert.That(game.View.Camera.orthographic, Is.False);
             Assert.That(cat.Cargo.Single(s => s.Resource == "food").Amount, Is.EqualTo(1));
-            game.UI.OpenPanel("Inspect");
-            UiTestKit.Click(game, UiNames.Act("return", cat.Id));
+            // The card hides in direct control; the reins bar (W3) owns Return, so hand the cat back through the view.
+            game.View.LeaveCat();
             yield return null;
             Assert.That(cat.ControlledBy, Is.Empty);
             Assert.That(game.View.Camera.orthographic, Is.True);
@@ -314,7 +314,8 @@ namespace IdleCatForest.Tests
             var restored=Authority.WireJson.Clone(station);
             restored.Slots[0].Queue.Clear();
             game.Selected.Buildings[game.Selected.Buildings.IndexOf(station)]=restored;
-            game.View.InspectBuilding(station.Id);game.UI.OpenPanel("Inspect");
+            game.View.InspectBuilding(station.Id); UiTestKit.Tick(game);
+            UiTestKit.Click(game, UiNames.Act("edit-queue", station.Id)); UiTestKit.Tick(game);
             yield return null;
             Assert.That(UiTestKit.WithPrefix<VisualElement>(game, "queue-entry-"),Is.Empty,"A stale building queue must not hide the real empty first-slot queue.");
         }
@@ -396,7 +397,8 @@ namespace IdleCatForest.Tests
             var station = game.Selected.Buildings.First(b => b.Kind == "wood_cutter");
             station.Slots.Add(new WorkSlot { CatId = "" });
             station.Slots.Add(new WorkSlot { CatId = "", Queue = new System.Collections.Generic.List<QueueEntry> { new QueueEntry { RecipeId = "logs_to_planks" } } });
-            game.View.InspectBuilding(station.Id); game.UI.OpenPanel("Inspect");
+            game.View.InspectBuilding(station.Id); UiTestKit.Tick(game);
+            UiTestKit.Click(game, UiNames.Act("edit-queue", station.Id)); UiTestKit.Tick(game);
             yield return null;
             Assert.That(UiTestKit.WithPrefix<Button>(game, UiNames.Act("queue-remove") + "-"), Is.Empty, "An unstaffed secondary queue cannot route edits to the first slot.");
         }
