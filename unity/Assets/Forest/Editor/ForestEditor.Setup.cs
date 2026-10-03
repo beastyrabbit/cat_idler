@@ -19,8 +19,11 @@ namespace IdleCatForest.Editor
         /// Idempotent: player settings and shared resources are (re)applied on every run, but the entry scene is
         /// never replaced. <c>Assets/Scenes/Forest.unity</c> is created only when it is missing; an existing scene
         /// is opened (or reused when already loaded) and gets the ForestGame object only if none exists in it.
-        /// The scene is saved only when this run created it or added that object, so authored lighting, skybox
-        /// or post-processing in the scene survive repeated runs.
+        /// The scene is saved only when this run created it, added that object or had to switch its fog on (fog
+        /// must be on so the player keeps fog shader variants), so authored lighting, skybox or post-processing in
+        /// the scene survive repeated runs. Quality levels (Low, Medium, High; High is the Standalone default) are
+        /// authored in <c>ProjectSettings/QualitySettings.asset</c> and are not overridden here; shadow distance,
+        /// cascade split and fog distances are set per frame by the lighting rig.
         /// </summary>
         [MenuItem("Forest/Prepare native project")]
         [CliCommand("forest_setup", "Configure the native Apple Silicon game and author its entry scene", MainThreadRequired = true)]
@@ -40,8 +43,6 @@ namespace IdleCatForest.Editor
             PlayerSettings.colorSpace = ColorSpace.Linear;
             PlayerSettings.usePlayerLog = true;
             EditorSettings.serializationMode = SerializationMode.ForceText;
-            QualitySettings.antiAliasing = 4; QualitySettings.shadowResolution = ShadowResolution.Medium;
-            QualitySettings.shadowDistance = 45;
 
             bool created = !File.Exists(ScenePath);
             Scene scene;
@@ -59,14 +60,20 @@ namespace IdleCatForest.Editor
                 game.AddComponent<ForestGame>();
                 added = true;
             }
-            if (created || added)
+            bool fogEnabled = false;
+            if (!RenderSettings.fog)
+            {
+                RenderSettings.fog = true; RenderSettings.fogMode = FogMode.Linear;
+                fogEnabled = true;
+            }
+            if (created || added || fogEnabled)
             {
                 Directory.CreateDirectory("Assets/Scenes");
                 if (!EditorSceneManager.SaveScene(scene, ScenePath)) throw new IOException("Could not save Forest scene.");
             }
             EditorBuildSettings.scenes = new[] { new EditorBuildSettingsScene(ScenePath, true) };
             AssetDatabase.SaveAssets();
-            string sceneResult = created ? "Forest scene created" : added ? "ForestGame added to the existing Forest scene" : "Forest scene kept unchanged";
+            string sceneResult = created ? "Forest scene created" : added ? "ForestGame added to the existing Forest scene" : fogEnabled ? "Forest scene fog enabled" : "Forest scene kept unchanged";
             string result = sceneResult + "; Apple Silicon IL2CPP player configured.";
             Debug.Log("forest_setup: " + result);
             return result;
@@ -92,6 +99,7 @@ namespace IdleCatForest.Editor
                 panel.themeStyleSheet = Resources.Load<ThemeStyleSheet>("ForestTheme");
                 AssetDatabase.CreateAsset(panel, panelPath);
             }
+            ForestLookAssets.Ensure(false);
             AssetDatabase.SaveAssets();
         }
     }
