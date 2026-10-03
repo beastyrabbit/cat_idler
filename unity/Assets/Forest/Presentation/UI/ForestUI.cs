@@ -339,6 +339,12 @@ namespace IdleCatForest.Presentation
                 SyncState();
                 return;
             }
+            // The attention popover is not a drawer: tools and captures open it by this name (W2-16).
+            if (section == AttentionPopover.PanelId)
+            {
+                state.PopoverOpen = true;
+                return;
+            }
             if (registry.Find(section) == null) return;
             if (HasPlacement)
             {

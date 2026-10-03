@@ -214,7 +214,9 @@ namespace IdleCatForest.Tests
                 refused.Press();
                 yield return null;
                 Assert.That(refused.State, Is.EqualTo(ActionButtonState.Failed));
-                Assert.That(refused.text, Is.EqualTo("Insufficient research points"));
+                // The copy layer (W2-15) maps the authority's message to the colony's voice.
+                Assert.That(refused.text, Is.EqualTo(UiText.ActionError(ActionResult.Fail("Insufficient research points"))));
+                Assert.That(refused.text, Is.EqualTo("Not enough research yet. Cats study at the Research Hut."));
                 Assert.That(refused.ClassListContains(ActionButton.FailedClass), Is.True);
                 Assert.That(failed, Is.EqualTo(1));
 

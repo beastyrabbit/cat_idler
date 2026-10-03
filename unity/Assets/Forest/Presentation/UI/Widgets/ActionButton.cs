@@ -210,7 +210,7 @@ namespace IdleCatForest.Presentation
         public static string FailureText(ActionResult result)
         {
             if (result == null) return HudCopy.Failed;
-            if (!string.IsNullOrEmpty(result.Code)) return UiText.Reason(result.Code);
+            if (!string.IsNullOrEmpty(result.Code)) return UiText.Reason(result.Code, result.Args);
             string error = UiText.ActionError(result);
             return string.IsNullOrEmpty(error) ? HudCopy.Failed : error;
         }
