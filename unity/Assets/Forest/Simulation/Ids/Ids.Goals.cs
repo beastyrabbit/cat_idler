@@ -42,7 +42,7 @@ namespace IdleCatForest.Simulation
         public const string PlayerControlReturningToDock = "player_control · returning to dock";
         public const string TransportReturning = "transport returning";
 
-        // Pre-declared idle activities (W2-03).
+        // Idle activities, chosen by TickIdle; World.IsIdleActivity recognises exactly these.
         public const string IdleNap = "idle_nap";
         public const string IdleGroom = "idle_groom";
         public const string IdleSocial = "idle_social";

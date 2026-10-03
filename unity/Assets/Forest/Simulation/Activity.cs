@@ -6,15 +6,18 @@ namespace IdleCatForest.Simulation
     public enum CatActivity
     {
         Idle, Nap, Groom, Social, Patrol, Play, Walk, Carry, Gather, Hunt, Fish, Build, Craft, Farm, Research, Count,
-        Eat, Drink, Sleep, Fight, Explore, Train, Controlled, Leave
+        Eat, Drink, Sleep, Fight, Explore, Train, Controlled, Leave,
+        /// <summary>Sitting by the shrine.</summary>
+        Shrine
     }
 
     public partial class World
     {
         /// <summary>
         /// Maps a cat's saved Goal, its job's kind and phase, and its migration state to one activity.
-        /// Pure: reads the world and changes nothing. Unknown values map to Walk while the cat has a
-        /// path and to Idle otherwise.
+        /// Pure: reads the world and changes nothing. Every goal the simulation sets has its own
+        /// activity; unknown values (old saves, future kinds) map to Walk while the cat has a path and
+        /// to Idle otherwise.
         /// </summary>
         public CatActivity ActivityOf(Village v, Cat c)
         {
@@ -39,8 +42,16 @@ namespace IdleCatForest.Simulation
                 case GoalKey.NeedSleep:
                 case GoalKey.PlayerRest:
                     return CatActivity.Sleep;
+                case GoalKey.PlayerControl:
+                    return CatActivity.Controlled;
                 case GoalKey.Defending:
+                case GoalKey.FightingDungeonGuardian:
                     return CatActivity.Fight;
+                case GoalKey.ExploringDungeon:
+                case GoalKey.ReturningFromDungeon:
+                case GoalKey.DescendingDungeonStairs:
+                case GoalKey.CollectingDungeonSupplies:
+                    return CatActivity.Explore;
                 case GoalKey.Research:
                     return CatActivity.Research;
                 case GoalKey.IdleNap:
@@ -54,8 +65,7 @@ namespace IdleCatForest.Simulation
                 case GoalKey.IdlePlay:
                     return CatActivity.Play;
                 case GoalKey.IdleShrine:
-                case GoalKey.RestingAtHome:
-                    return Wandering(c);
+                    return CatActivity.Shrine;
                 case GoalKey.ReturningRailVehicle:
                 case GoalKey.ReturningVesselToDock:
                 case GoalKey.PlayerControlReturningToDock:
@@ -66,14 +76,16 @@ namespace IdleCatForest.Simulation
                 return CatActivity.Farm;
             if (goal.StartsWith(GoalKey.AccountingPrefix, StringComparison.Ordinal))
                 return CatActivity.Count;
-            if (goal.StartsWith(GoalKey.ReturningToPrefix, StringComparison.Ordinal)
-                || goal.StartsWith("rail" + GoalKey.Separator, StringComparison.Ordinal)
-                || goal.StartsWith("shipping" + GoalKey.Separator, StringComparison.Ordinal))
-                return CatActivity.Carry;
+            // A live job decides first: a rail construction job and a rail route both read "rail · <phase>".
             var job = v?.Jobs.Find(j => j.Id == c.JobId && !j.Completed);
             if (job != null)
                 return JobActivity(job.Kind, job.Phase, c);
-            // A goal set from a job reads "<kind>" or "<kind> · <phase>".
+            if (goal.StartsWith(GoalKey.ReturningToPrefix, StringComparison.Ordinal)
+                || goal.StartsWith(JobKind.Rail + GoalKey.Separator, StringComparison.Ordinal)
+                || goal.StartsWith("shipping" + GoalKey.Separator, StringComparison.Ordinal))
+                return CatActivity.Carry;
+            // A goal set from a job reads "<kind>" or "<kind> · <phase>". Idle, "resting at home" and
+            // "production paused" are no job kind, so they end as Walk or Idle below.
             int separator = goal.IndexOf(GoalKey.Separator, StringComparison.Ordinal);
             if (separator > 0)
                 return JobActivity(goal.Substring(0, separator), goal.Substring(separator + GoalKey.Separator.Length), c);
@@ -86,54 +98,75 @@ namespace IdleCatForest.Simulation
         {
             switch (phase)
             {
-                case "input_delivery":
-                case "output_delivery":
+                case JobPhase.InputDelivery:
+                case JobPhase.OutputDelivery:
                     return CatActivity.Carry;
-                case "fetch":
-                case "item_fetch":
-                case "return":
+                case JobPhase.Fetch:
+                case JobPhase.ItemFetch:
+                case JobPhase.Return:
                     return c.Cargo.Count > 0 ? CatActivity.Carry : CatActivity.Walk;
-                case "travel":
+                case JobPhase.Travel:
                     return CatActivity.Walk;
             }
+            var activity = KindActivity(kind);
+            return activity ?? Wandering(c);
+        }
+
+        /// <summary>The working activity of a job kind, including legacy kinds from imported saves; null when unknown.</summary>
+        private static CatActivity? KindActivity(string kind)
+        {
             switch (kind)
             {
-                case "hunt":
+                case JobKind.Hunt:
+                case JobKind.HuntExpedition:
+                case JobKind.LeaderPlanHunt:
+                case JobKind.SupplyFood:
                     return CatActivity.Hunt;
-                case "fish":
+                case JobKind.Fish:
                     return CatActivity.Fish;
-                case "water":
-                case "logs":
-                case "quarry":
-                case "fibre":
+                case JobKind.Water:
+                case JobKind.SupplyWater:
+                case JobKind.FetchWater:
+                case JobKind.Logs:
+                case JobKind.GatherLogs:
+                case JobKind.Quarry:
+                case JobKind.Fibre:
+                case JobKind.ForageFibre:
                 case "gather":
                 case "zone_gather":
                     return CatActivity.Gather;
-                case "build":
-                case "expand":
-                case "expand_village":
-                case "road":
-                case "rail":
-                case "bridge":
-                case "dock":
-                case "wagon":
-                case "vessel":
+                case JobKind.Build:
+                case JobKind.BuildHouse:
+                case JobKind.LeaderPlanHouse:
+                case JobKind.Expand:
+                case JobKind.ExpandVillage:
+                case JobKind.Road:
+                case JobKind.Rail:
+                case JobKind.Bridge:
+                case JobKind.Dock:
+                case JobKind.Wagon:
+                case JobKind.Vessel:
                     return CatActivity.Build;
-                case "production":
-                case "mouse_farm":
-                case "offering":
+                case JobKind.Production:
+                case JobKind.MouseFarm:
+                case JobKind.Offering:
+                case JobKind.Ritual:
+                case JobKind.PerformOffering:
                     return CatActivity.Craft;
-                case "replant":
+                case JobKind.Replant:
+                case JobKind.ReplantTree:
                     return CatActivity.Farm;
-                case "train":
+                case JobKind.Train:
+                case JobKind.TrainWarrior:
                     return CatActivity.Train;
-                case "scout":
+                case JobKind.Scout:
+                case JobKind.Explore:
                     return CatActivity.Explore;
-                case "haul":
+                case JobKind.Haul:
+                case JobKind.CarryOffering:
                     return CatActivity.Carry;
             }
-            // Idle, "production paused" and anything unknown.
-            return Wandering(c);
+            return null;
         }
     }
 }
