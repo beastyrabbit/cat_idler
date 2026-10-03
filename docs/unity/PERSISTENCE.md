@@ -15,7 +15,23 @@ The default listener is `http://127.0.0.1:8788`, with WebSocket endpoint `/ws`, 
 
 `FOREST_LISTEN` changes the listener. `FOREST_SAVE_PATH` selects the complete versioned world file. The default shared save is under the platform local application data directory at `IdleCatForest/shared/world-v1.json`. Embedded Unity saves use the separate path selected by the client under `Application.persistentDataPath/unity/`.
 
-A public listener requires `SESSION_HMAC_SECRET` through the deployment's secret mechanism. Local use creates a random private authority key beside the selected save, under `<save>.identity/authority.key`. Keep that directory with the world. Replacing the key prevents existing identities from proving ownership. Never paste the key or bearer JSON into logs, issue reports, evidence or commits.
+A public listener requires `SESSION_HMAC_SECRET` through the deployment's secret mechanism. A loopback host without it creates a random private authority key beside the selected save, under `<save>.identity/authority.key`. Keep that directory with the shared world. Replacing the key prevents existing identities from proving ownership. Never paste the key or bearer JSON into logs, issue reports, evidence or commits. The embedded game uses neither the key nor the secret; see [Local identity](#local-identity).
+
+## Embedded save location
+
+The packaged game saves to `Application.persistentDataPath/unity/world-v1.json`. On macOS that is `~/Library/Application Support/Idle Cat Forest/Idle Cat Forest/unity/world-v1.json`. Play mode in the Unity Editor uses the sibling folder `unity-editor/`, so pressing Play never writes the packaged game's world. `--forest-save <path>` opens any other world directly. Tests and captures use temporary paths only.
+
+A save path `world-v1.json` has these neighbours:
+
+| File | Meaning |
+|---|---|
+| `world-v1.json.lock` | Writer lease, held while the world is open. |
+| `world-v1.json.previous` | The file that the latest write replaced. |
+| `world-v1.backup.json` | The save as it was when the current session opened it. |
+| `world-v1.invalid-<utc>.json` | A world that broke simulation invariants when it was saved; kept for diagnosis. |
+| `world-v1.json.identity/session.json` | Optional imported native bearer that names the local owner. |
+
+The game never deletes, rotates or restores these files automatically. A sync tool or Steam Cloud should carry `*.json`, `*.previous` and the `.identity` folder, and skip `*.lock` and `*.tmp-*`.
 
 ## State and recovery
 
@@ -23,21 +39,47 @@ The save envelope is `idle-cat-forest-unity`, version 1. It contains the entire 
 
 Exact crafted hauling uses the existing job identity, item IDs, source position and phase. A claimed item stays physically at its source during `item_fetch` and continues occupying that source's capacity. After pickup, `output_delivery` retains the item while storage is full. Save/reload preserves both stages, condition and exclusive ownership; completed delivery cannot replay the item. Cancellation before pickup releases the claim at the source, while interruption after pickup leaves cargo at the carrier's actual position.
 
-Each write creates a private temporary file, flushes it and atomically replaces the destination. The previous complete file remains at `<save>.previous`. The directory is synced on Unix. A single-writer file lease prevents two authorities from opening the same save. Creating a new world at an existing path fails. Unsupported versions, corrupt JSON, checksum mismatch and invalid ownership fail without resetting the world.
-
-To inspect a failed save, stop its authority and work on a copy. To recover the previous file, explicitly copy the selected `.previous` file to a new save path and start the host with that path. No code automatically rolls back player progress or overwrites the suspected source.
-
-The server advances explicit simulation time on a 50-millisecond timer. It publishes snapshots at a 100-millisecond target during both autonomous play and direct control. Slow clients cannot delay the simulation clock. Saves run every five seconds. I/O and write-permission failures leave simulation running and retry at the next save interval. `/ready` fails after three consecutive save failures and recovers after a successful save. Graceful shutdown attempts a final save. An abrupt stop can lose work since the last complete save, but must not expose a partial replacement.
-
 The continuous simulation persists its last consumed 50-millisecond step separately from requested elapsed time. A fractional save retains the unused portion and resumes without replay. Older saves without this cursor initialize it at their existing clock. New fractional mover coordinates retain a separate last-reached grid position for collision checks. These additions preserve existing layouts, identities, jobs and goods.
 
 Older merchants and raiders stored a whole-tile position plus cadence credit rather than a physical intermediate position. On first advance, they continue from that saved tile and discard the old cadence credit, including credit accumulated while blocked. This prevents a burst of catch-up movement. Existing fractional caravan coordinates remain intact.
+
+Each write creates a private temporary file, flushes it and atomically replaces the destination. The previous complete file remains at `<save>.previous`. The directory is synced on Unix. Opening a world deletes temporary files that a crash left behind for that save, its backup or an invalid copy, and nothing else.
+
+A single-writer lease prevents two authorities from opening the same save: `<save>.lock` is opened with `FileShare.None`, and where the runtime supports it also locked with `FileStream.Lock`, which the IL2CPP player enforces across processes. There is no `flock` and no P/Invoke for it. A second writer fails with `already_running`. Within one process a held lease is refused before the lock file is opened again, because closing any descriptor of that file would drop the process's byte-range lock.
+
+Opening never writes. The first write of a session over a loaded world first copies the save as it was opened to `<name>.backup.json`; a world created in this session never writes a backup, so a fresh world cannot replace the backup of an old one. A missing main save next to an existing `.backup.json` or `.previous` fails with `missing_save_with_backup` instead of creating a new world, also for an explicit new world at that path. Creating a new world at an existing path fails with `already_exists`.
+
+Simulation invariants (`World.Validate`) never block a save or an open. A world that breaks them is still saved, its first such save in a session is also kept as `<name>.invalid-<utc>.json`, and an open lists the failures as warnings for the log. Only the ownership structure (exactly one communal village, unique village identities, one owner per personal village) refuses to open, with `invalid_ownership`. For the same reason a world whose structure broke during play is never written over the save: the write fails with `invalid_ownership`, the invalid copy is still kept, and the save keeps its last good contents.
+
+Every failure to open or create is a `SaveException`, an `IOException` with a stable `Code` from `SaveFailure`: `damaged` (not a save, invalid JSON or checksum mismatch), `made_by_newer_version`, `unsupported_version`, `too_large`, `already_running`, `already_exists`, `missing_save_with_backup` and `invalid_ownership`. The original file is never changed or reset.
+
+To inspect a failed save, stop its authority and work on a copy. To recover, explicitly copy the selected `.backup.json` or `.previous` file to a new save path and open that path. No code automatically rolls back player progress or overwrites the suspected source.
+
+### Loading and migrations
+
+A save is read in three steps: the envelope's `Format`, `Version` and checksum; `SaveMigrations.Migrate(payload, version)` on the payload as JSON; then the typed decode. Saves tolerate members this build does not know: their values are skipped and listed as `Type.Member` in `SaveLoadReport.DroppedMembers` and in the authority's `LoadWarnings`. Wire input from sockets keeps rejecting unknown members.
+
+Rules for every change to the serialized model:
+
+- Add a field only in a new partial file `Simulation/Model/<Type>.<Feature>.cs`; old saves decode it as its initial value. No migration is needed.
+- Removing a field loads old saves, but silently loses that data. Move the data first if it still matters.
+- Renaming a field, or changing its meaning or type, bumps `SaveStore.Version`, adds the step `Steps[old version]` in `Authority/SaveMigrations.cs` that rewrites the old JSON, and adds a test that loads `server/Forest.Tests/Fixtures/world-v1.main-5ec7278.json.gz` through it. A build that finds a higher version refuses with `made_by_newer_version` instead of guessing.
+
+The fixture is an embedded world written by `main` at `5ec7278`, the build players had before the demo push, after 120 simulated seconds. It is gzip-compressed and synthetic; it holds no identity files.
+
+### Embedded save cadence
+
+The embedded game saves on wall-clock time, never on simulated time: 30 seconds after the last save while the world changed, 2 seconds after a successful player action (also while paused), on focus loss and on quit. It never saves while `ForestGame.Faulted` is set. The world is validated and encoded on the main thread; the envelope, hash, backup and atomic write run on a background task with at most one save in flight. `ForestGame` exposes `SaveState`, `LastSaveUtc`, `LastSaveError`, `SaveWarnings`, `ConsecutiveSaveFailures`, `SaveMilliseconds` and its main-thread part `SaveMainThreadMilliseconds`. `LocalAuthority.RestoreLastGood()` replaces the live world with the last payload the session loaded or wrote.
+
+### Shared host cadence
+
+The server advances explicit simulation time on a 50-millisecond timer. It publishes snapshots at a 100-millisecond target during both autonomous play and direct control. Slow clients cannot delay the simulation clock. Saves run every five seconds; the world is encoded under the simulation lock and written outside it. I/O and write-permission failures leave simulation running and retry at the next save interval. `/ready` fails after three consecutive save failures and recovers after a successful save. Graceful shutdown attempts a final save. An abrupt stop can lose work since the last complete save, but must not expose a partial replacement.
 
 ## Identities and permissions
 
 Presence establishes one signed identity for a socket. Every action must use that socket's valid bearer. A server-owned context supplies the player and selected village; values in a client action cannot replace it. A signed player controls the communal village and their own personal village. A foreign village remains inaccessible, with only discovered summary information exposed.
 
-Bearer sessions last 30 days and renew within a further seven days without changing the player identity. Authentic historical Rust bearer tokens can upgrade while retaining ownership. A rejected stored bearer is preserved, and the client reports that authentication failed. It does not silently create a replacement owner.
+On the shared host, bearer sessions last 30 days and renew within a further seven days without changing the player identity. Authentic historical Rust bearer tokens can upgrade while retaining ownership. A rejected stored bearer is preserved, and the client reports that authentication failed. It does not silently create a replacement owner.
 
 Coordinate construction checks foreign tile claims and physical building, farm and stockpile footprints before reserving inputs and again before work advances. Expansion checks its complete future area. Founding chooses a site whose enclosure, access paths and starter deposits avoid foreign property. Blocked work retains its paid progress and owned goods; traversal across shared land remains available.
 
@@ -48,6 +90,10 @@ The native identity file uses the maintained Rust shape `sessionId`, `sig`, `sel
 The protocol version is 3. It uses request IDs for action results and complete authorized snapshots. Each projection receives an increasing sequence under the authority lock. Clients discard older or duplicate projections while still completing their correlated action requests, so delayed broadcasts cannot undo a newer village selection or cat-control handoff. Rate-limited requests receive their correlated rejection without constructing or sending another world projection. The client retains its latest frame and continues receiving scheduled snapshots. Sequences last for one authority process; reconnecting creates a fresh client receiver. Invalid JSON, duplicate JSON properties, non-finite numbers, oversized requests and development-only actions are rejected. Native clients have no Origin header; browser clients require an exact entry in `FOREST_ALLOWED_ORIGINS`. Forwarded identity or IP headers are not trusted.
 
 Ordinary actions are limited to 30 per socket and signed player per ten seconds, and 120 per address. Signed movement has a separate allowance of 120 per socket and player, and 800 per address, over the same period. Reconnecting does not reset the player allowance. A connection can establish only one identity, with eight sockets per address and eight new identities per address per hour. Creating villages stops at 256. Control heartbeats run every real second, independently of input focus. They use the ordinary action budget and only renew the current controller's lease.
+
+### Local identity
+
+The embedded game has no bearer session, so nothing expires. Its local player id is stored in the world as the first entry of `World.Players`. A long break, a clock moved forward or back, `SESSION_HMAC_SECRET` in the environment or a missing `.identity` folder therefore never changes who owns the world. When `<save>.identity/session.json` exists, for example an imported native bearer, the player id it names becomes the local owner; the embedded game reads only that id and checks neither signature nor age. An unreadable identity file is ignored with a warning. The embedded game writes no identity files and creates no authority key.
 
 ## Import a legacy SQLite world
 
@@ -79,7 +125,7 @@ Imported farms retain their 24-hour biological work cycle, fertility effect and 
 
 Thirteen removed building-capacity studies receive their exact original research-point cost as a refund, recorded in the event log. Legacy recipe-entitlement version zero retains its grandfathered recipe access. A funded scaffold without a historical material contract stays funded. Site-less construction keeps its type and queued work until a valid site can be resolved. An orphan transit ledger becomes a finite recovery pile at its saved position with an event explaining the recovery. Unsupported identities or system shapes are refused before the Unity destination is installed.
 
-Start the shared host with `FOREST_SAVE_PATH` selecting the new world, or launch the packaged app with `--forest-save /new/private/world-v1.json`. To retain a historical private-village owner, provide the original authority HMAC secret through the same approved environment injection used by the Rust deployment. Both embedded and shared authorities accept `SESSION_HMAC_SECRET`. World conversion never exports, reads or replaces that secret.
+Start the shared host with `FOREST_SAVE_PATH` selecting the new world, or launch the packaged app with `--forest-save /new/private/world-v1.json`. To retain a historical private-village owner on the shared host, provide the original authority HMAC secret through the same approved environment injection used by the Rust deployment; only the shared host reads `SESSION_HMAC_SECRET`. The embedded game needs only the imported bearer below. World conversion never exports, reads or replaces that secret.
 
 Import the explicitly selected native bearer to the new installation's credential path separately:
 
@@ -87,7 +133,7 @@ Import the explicitly selected native bearer to the new installation's credentia
 dotnet tools/save-import/Forest.SaveImport/bin/Debug/net10.0/Forest.SaveImport.dll --credential /explicit/old/session.json /new/private/world-v1.json.identity/session.json
 ```
 
-That example is the embedded authority's credential path. Shared-client credentials live at `Application.persistentDataPath/unity/servers/<key>.json`, where `<key>` is the lowercase SHA-256 hex digest of the server URI's `GetLeftPart(UriPartial.Authority)`. Import to that new destination before connecting. The original signer and valid bearer are both needed to preserve ownership. A missing signer cannot safely be inferred from a world or nickname. Keep the original SQLite file, signer configuration and bearer backup until the converted world has been inspected and saved successfully.
+That example is the embedded authority's credential path; the embedded game takes the owner's player id from it. Shared-client credentials live at `Application.persistentDataPath/unity/servers/<key>.json`, where `<key>` is the lowercase SHA-256 hex digest of the server URI's `GetLeftPart(UriPartial.Authority)`. Import to that new destination before connecting. On the shared host, the original signer and valid bearer are both needed to preserve ownership. A missing signer cannot safely be inferred from a world or nickname. Keep the original SQLite file, signer configuration and bearer backup until the converted world has been inspected and saved successfully.
 
 The importer transfers durable state into the Unity simulation. Future simulation ticks follow the C# game rules and are not a bit-for-bit replay of the old engine's random event history.
 
@@ -111,7 +157,7 @@ python3 tools/save-import/test_legacy_archive.py
 python3 tools/save-import/test_playable_import.py
 ```
 
-The live-simulation server executable passed 56 authority/import tests with zero failures. They exercise signed identity expiry and renewal, corruption and overwrite refusal, protected native-bearer import, complete aggregate reload, the writer lease and real loopback clients with two identities, private villages, cat control and restart. The signed socket test rejects foreign coordinate construction without changing terrain, jobs or reservations, then accepts construction on owned land. An automatically ticking host also runs through a test relay that deliberately delivers an older broadcast after a newer action projection, checking selection and both directions of cat-control handoff. Typed conversion scenarios continue inbound station work, outbound exact equipment, construction reservations, migration, farms, accounting, weighted elections, loaded transport and returning barter after a save/reload boundary.
+On 2026-10-03 the live-simulation server executable (`bash tools/forest.sh server-test`) passed 79 authority/import tests with zero failures. Eighteen `persistence:` cases cover the embedded world: credentials issued 90 days ago or a day in the future, a missing `.identity` folder, `SESSION_HMAC_SECRET` on and off, unknown members, the `main` fixture, invariant failures, broken ownership during play, a missing main save beside a backup, the second writer, stale temporary files, no write on open, the session backup, `RestoreLastGood`, every failure code, migrations and a background write racing the simulation. The other cases exercise signed identity expiry and renewal, corruption and overwrite refusal, protected native-bearer import, complete aggregate reload, the writer lease and real loopback clients with two identities, private villages, cat control and restart. The signed socket test rejects foreign coordinate construction without changing terrain, jobs or reservations, then accepts construction on owned land. An automatically ticking host also runs through a test relay that deliberately delivers an older broadcast after a newer action projection, checking selection and both directions of cat-control handoff. Typed conversion scenarios continue inbound station work, outbound exact equipment, construction reservations, migration, farms, accounting, weighted elections, loaded transport and returning barter after a save/reload boundary.
 
 The Mac permission regression removes write access from a synthetic host's save directory. It first reproduced the automatic tick task stopping after its first failed save. After the correction, ticks continue, three failed saves make `/ready` return 503, and the last durable file remains byte-identical. Restoring permission allows the next save to persist the advanced world with the same founding cat identities and restores readiness. Temporary permissions and files are restored and removed after the test.
 
