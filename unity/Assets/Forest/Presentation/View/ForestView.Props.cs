@@ -86,7 +86,7 @@ namespace IdleCatForest.Presentation
                 staticProps.Clear();
                 propsVillage = v.Id; propsSeed = world.Seed; propsGeneration = world.GenerationVersion;
                 canopySeed = Canopy.Seed(world);
-                footprintSignature = 0; occupied.Clear();
+                footprintSignature = 0; occupied.Clear(); stagingChunk = null;
                 propsActiveDirty = true; hasPropWindow = false;
             }
             UpdateFootprint(world, v);
@@ -97,7 +97,11 @@ namespace IdleCatForest.Presentation
                 if (!TouchesKnown(key)) continue;
                 var chunk = staticProps.GetOrCreate(key);
                 if (chunk.Built && !chunk.Dirty && KnownSignature(world, key) != chunk.Signature) chunk.Dirty = true;
-                if (chunk.Dirty || !chunk.Built) { BuildChunk(world, v, chunk); propsActiveDirty = true; }
+                if (chunk.Dirty || !chunk.Built)
+                {
+                    if (stagingChunk != null && stagingChunk.Key.Equals(key)) stagingChunk = null;
+                    BuildChunk(world, v, chunk); propsActiveDirty = true;
+                }
             }
             if (force && !isActiveAndEnabled)
             {
@@ -186,9 +190,15 @@ namespace IdleCatForest.Presentation
         private void BuildChunk(World world, Village v, StaticProps.Chunk chunk)
         {
             chunk.Clear();
+            bool nearKnown = TouchesKnown(chunk.Key);
+            BuildRows(world, v, chunk, 0, ChunkKey.Size, nearKnown);
+            FinishChunk(world, v, chunk, nearKnown);
+        }
+
+        private void BuildRows(World world, Village v, StaticProps.Chunk chunk, int fromRow, int toRow, bool nearKnown)
+        {
             var key = chunk.Key;
-            bool nearKnown = TouchesKnown(key);
-            for (int z = key.MinZ; z < key.MinZ + ChunkKey.Size; z++)
+            for (int z = key.MinZ + fromRow; z < key.MinZ + toRow; z++)
                 for (int x = key.MinX; x < key.MinX + ChunkKey.Size; x++)
                 {
                     var p = new Int2(x, z, key.Level);
@@ -200,8 +210,12 @@ namespace IdleCatForest.Presentation
                     }
                     else AddUnknownTile(chunk, world, x, z, nearKnown ? FogStep(p) : PropLook.FogSteps - 1);
                 }
+        }
+
+        private void FinishChunk(World world, Village v, StaticProps.Chunk chunk, bool nearKnown)
+        {
             if (nearKnown) AddBoundary(chunk, world, v);
-            chunk.Signature = nearKnown ? KnownSignature(world, key) : 0;
+            chunk.Signature = nearKnown ? KnownSignature(world, chunk.Key) : 0;
             chunk.Built = true; chunk.Dirty = false;
         }
 
@@ -257,6 +271,12 @@ namespace IdleCatForest.Presentation
 
         private int ChunkDistance(ChunkKey k) => Math.Max(Math.Abs(k.X - propCenterX), Math.Abs(k.Z - propCenterZ));
 
+        // A chunk built a few rows per frame off to the side, then swapped in, so streaming never costs a frame more
+        // than the budget plus one row and never shows a half-built chunk.
+        private StaticProps.Chunk stagingChunk, spareChunk;
+        private int stagingRow, stagingInvalidations;
+        private bool stagingNearKnown;
+
         /// <summary>Builds missing or invalidated chunks of the window, nearest first, until the time budget is spent.</summary>
         private void BuildPropWindow(World world, Village v, float budgetMs)
         {
@@ -266,18 +286,38 @@ namespace IdleCatForest.Presentation
                 var key = new ChunkKey(cx, cz, 0);
                 if (!staticProps.TryGetChunk(key, out var chunk) || chunk.Dirty || !chunk.Built) propQueue.Add(key);
             }
+            if (stagingChunk != null && !propQueue.Contains(stagingChunk.Key)) { spareChunk = stagingChunk; stagingChunk = null; }
             if (propQueue.Count == 0) return;
             propQueue.Sort(byDistanceToCenter);
             propWatch.Restart();
-            int built = 0;
-            foreach (var key in propQueue)
+            int built = 0, next = 0;
+            while (propWatch.Elapsed.TotalMilliseconds < budgetMs)
             {
-                BuildChunk(world, v, staticProps.GetOrCreate(key));
+                if (stagingChunk == null)
+                {
+                    bool found = false; var key = default(ChunkKey);
+                    while (!found && next < propQueue.Count)
+                    {
+                        key = propQueue[next++];
+                        found = !(staticProps.TryGetChunk(key, out var current) && current.Built && !current.Dirty);
+                    }
+                    if (!found) break;
+                    stagingChunk = spareChunk ?? new StaticProps.Chunk();
+                    spareChunk = null;
+                    stagingChunk.Key = key; stagingChunk.Clear(); stagingChunk.Built = false; stagingChunk.Dirty = true;
+                    stagingRow = 0; stagingNearKnown = TouchesKnown(key); stagingInvalidations = staticProps.Invalidations;
+                }
+                BuildRows(world, v, stagingChunk, stagingRow, stagingRow + 1, stagingNearKnown);
+                if (++stagingRow < ChunkKey.Size) continue;
+                FinishChunk(world, v, stagingChunk, stagingNearKnown);
+                // Invalidated while it was being built: install it (better than a hole) but build it again later.
+                if (staticProps.Invalidations != stagingInvalidations) stagingChunk.Dirty = true;
+                spareChunk = staticProps.Replace(stagingChunk);
+                stagingChunk = null;
                 built++;
-                if (propWatch.Elapsed.TotalMilliseconds >= budgetMs) break;
             }
             LastPropBuildMilliseconds = propWatch.Elapsed.TotalMilliseconds; LastPropBuildChunks = built;
-            propsActiveDirty = true;
+            if (built > 0) propsActiveDirty = true;
         }
 
         /// <summary>Forgets cached chunks well outside the window once the cache is much larger than the window.</summary>

@@ -124,11 +124,22 @@ namespace IdleCatForest.Presentation
 
         public void Remove(ChunkKey key) => chunks.Remove(key);
 
-        public void Clear() { chunks.Clear(); foreach (var b in buckets.Values) b.Matrices.Clear(); drawList.Clear(); }
+        /// <summary>Installs a chunk built off to the side and returns the one it replaces (for reuse), or null.</summary>
+        public Chunk Replace(Chunk chunk)
+        {
+            chunks.TryGetValue(chunk.Key, out var old);
+            chunks[chunk.Key] = chunk;
+            return old;
+        }
 
-        public void MarkAllDirty() { foreach (var c in chunks.Values) c.Dirty = true; }
+        /// <summary>Counts invalidations, so a chunk built across several frames knows it may already be stale.</summary>
+        public int Invalidations { get; private set; }
 
-        public void MarkDirty(ChunkKey key) { if (chunks.TryGetValue(key, out var c)) c.Dirty = true; }
+        public void Clear() { chunks.Clear(); foreach (var b in buckets.Values) b.Matrices.Clear(); drawList.Clear(); Invalidations++; }
+
+        public void MarkAllDirty() { foreach (var c in chunks.Values) c.Dirty = true; Invalidations++; }
+
+        public void MarkDirty(ChunkKey key) { if (chunks.TryGetValue(key, out var c)) c.Dirty = true; Invalidations++; }
 
         // ------------------------------------------------------------------ models
 
