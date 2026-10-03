@@ -25,6 +25,24 @@ namespace IdleCatForest.Acceptance
                 var world = New(); var site = new DungeonSite { Id = "existing", Entrance = new Int2(500, 500) }; world.Dungeons.Add(site);
                 Require(!world.CanPrepareFoundingTerrain("other", site.Entrance, 6), "Founding can grade over an existing dungeon entrance and its stairs");
             });
+            yield return new Scenario("regression.world_generation_version_1_samples_unchanged", () =>
+            {
+                // Recorded before generation version 2 existed; version 1 worlds must never move.
+                var text = new System.Text.StringBuilder();
+                foreach (uint seed in new uint[] { 7, 41, 4242 })
+                {
+                    var w = New(seed);
+                    for (int z = -150; z <= 150; z += 3)
+                        for (int x = -150; x <= 150; x += 3)
+                            text.Append(Fingerprint(w.GenerateSurfaceTile(new Int2(x, z)))).Append(':').Append(w.GenerateSurfaceTile(new Int2(x, z)).FishCapacity).Append('\n');
+                }
+                string actual = Sha256(text.ToString());
+                Require(actual == Version1SampleHash, "Version 1 terrain samples changed: " + actual);
+            });
+            yield return new Scenario("regression.world_generation_v2_banks_replace_film_water", BanksReplaceFilmWater);
+            yield return new Scenario("regression.world_generation_v2_outcrops_and_ridges", OutcropsAndRidges);
+            yield return new Scenario("regression.world_generation_v2_coordinate_pure_with_datum", CoordinatePureVersion2);
+            yield return new Scenario("regression.world_generation_v2_founding_grade", FoundingGradeVersion2);
             yield return new Scenario("regression.world_generation_rejects_unsupported_version", () =>
             {
                 var world = World.Create(41); world.GenerationVersion = 99;
@@ -32,7 +50,13 @@ namespace IdleCatForest.Acceptance
             });
         }
 
+        const string Version1SampleHash = "5a8c602dbb4371f5a210a11072b1ab62631ce2cec3d25cfc353df5b310c83913";
         private static World New(uint seed = 41) => new World { Seed = seed, RandomState = 1234, GenerationVersion = 1 };
+        private static string Sha256(string value)
+        {
+            using (var sha = System.Security.Cryptography.SHA256.Create())
+                return string.Concat(sha.ComputeHash(System.Text.Encoding.UTF8.GetBytes(value)).Select(b => b.ToString("x2", System.Globalization.CultureInfo.InvariantCulture)));
+        }
         private static void Require(bool value, string message)
         {
             if (!value)
@@ -217,6 +241,153 @@ namespace IdleCatForest.Acceptance
                 var next = a.GenerateSurfaceTile(new Int2(point.X + 1, point.Z));
                 if (!left.Water && !next.Water)
                     Require(Math.Abs(left.Elevation - next.Elevation) <= 0.65, "Founding shoulder has a blocked dry elevation seam");
+            }
+        }
+
+        private static World New2(uint seed = 41, double datum = 0) => new World { Seed = seed, RandomState = 1234, GenerationVersion = 2, SurfaceDatum = datum };
+        private static int Chebyshev(Int2 a, Int2 b) => Math.Max(Math.Abs(a.X - b.X), Math.Abs(a.Z - b.Z));
+
+        /// <summary>Version 2 never leaves millimetre water: thin edges become dry banks and fish follow the real depth.</summary>
+        private static void BanksReplaceFilmWater()
+        {
+            int water = 0, converted = 0;
+            foreach (uint seed in new uint[] { 7, 41, 4242 })
+            {
+                var v1 = New(seed);
+                var v2 = New2(seed);
+                for (int z = -48; z <= 48; z++)
+                    for (int x = -96; x <= 96; x++)
+                    {
+                        var p = new Int2(x, z);
+                        var t = v2.GenerateSurfaceTile(p);
+                        if (t.Water)
+                        {
+                            water++;
+                            Require(t.WaterDepth >= 0.15, "Film water at " + p + " depth " + t.WaterDepth);
+                            Require(t.Resource == "fish" && t.Amount == t.FishCapacity && t.FishCapacity == 24 + Math.Floor(t.WaterDepth * 4), "Fish stock ignores the real water depth at " + p);
+                            Require(Math.Abs(t.WaterSurface - t.Elevation - t.WaterDepth) < 1e-9, "Water bed and surface disagree at " + p);
+                            continue;
+                        }
+                        Require(t.WaterDepth == 0 && t.Resource != "fish" && t.FishCapacity == 0, "Dry land keeps water or fish at " + p);
+                        var old = v1.GenerateSurfaceTile(p);
+                        if (old.Water && old.WaterDepth < 0.15)
+                        {
+                            converted++;
+                            Require(t.Landform.EndsWith("_bank", StringComparison.Ordinal) && t.Biome == "wetland", "Thin water at " + p + " did not become a bank: " + t.Landform);
+                        }
+                    }
+            }
+            Require(water > 1000 && converted > 50, "Sample lacks real water or converted banks: water=" + water + " converted=" + converted);
+        }
+
+        /// <summary>Version 2 adds rock landmarks: clustered outcrops everywhere and ridges in the highland band, without blocking ordinary walking.</summary>
+        private static void OutcropsAndRidges()
+        {
+            int ridges = 0;
+            foreach (uint seed in new uint[] { 7, 41, 4242 })
+            {
+                var w = New2(seed);
+                int outcrops = 0, scree = 0, stone = 0, mountains = 0, tiles = 0;
+                var row = new Tile[193];
+                Tile[] previous = null;
+                for (int z = -96; z <= 96; z++)
+                {
+                    for (int x = -96; x <= 96; x++)
+                    {
+                        var t = w.GenerateSurfaceTile(new Int2(x, z));
+                        row[x + 96] = t;
+                        tiles++;
+                        if (t.Mountain)
+                        {
+                            mountains++;
+                            Require(!t.Water && t.Resource == "", "Mountain rock holds water or a deposit at " + t.Position);
+                            if (t.Landform == "outcrop")
+                                outcrops++;
+                            else if (t.Landform == "ridge")
+                                ridges++;
+                        }
+                        else if (t.Landform == "outcrop")
+                        {
+                            scree++;
+                            if (t.Resource == "stone")
+                                stone++;
+                        }
+                        Require(t.Resource != "logs" || t.Biome.Contains("forest"), "Trees ignored climate biome at " + t.Position);
+                        Require(t.Resource != "ore" && t.Resource != "gem" || t.Biome == "highland", "Deep minerals ignored geology at " + t.Position);
+                    }
+                    for (int x = 0; x < row.Length; x++)
+                    {
+                        var t = row[x];
+                        bool Walk(Tile o) => !o.Water && !o.Mountain;
+                        if (x > 0 && Walk(t) && Walk(row[x - 1]))
+                            Require(Math.Abs(t.Elevation - row[x - 1].Elevation) <= 0.65, "Unwalkable dry seam at " + t.Position);
+                        if (previous != null && Walk(t) && Walk(previous[x]))
+                            Require(Math.Abs(t.Elevation - previous[x].Elevation) <= 0.65, "Unwalkable dry seam at " + t.Position);
+                    }
+                    previous = (Tile[])row.Clone();
+                }
+                Require(outcrops > 0 && scree > 0 && stone > 0, "Seed " + seed + " lacks clustered rock outcrops with stone scree");
+                Require(mountains > tiles * 0.004 && mountains < tiles * 0.08, "Seed " + seed + " mountain share is " + mountains + " of " + tiles);
+            }
+            Require(ridges > 0, "No highland ridge in three sampled worlds");
+        }
+
+        private static void CoordinatePureVersion2()
+        {
+            var first = New2();
+            var second = New2();
+            var points = new[] { new Int2(-1, -1), new Int2(-5, 0), new Int2(0, -5), new Int2(5, 0), new Int2(0, 5), new Int2(-113, 127), new Int2(113, -127), new Int2(int.MinValue + 2, int.MaxValue - 2), new Int2(int.MaxValue - 2, int.MinValue + 2) };
+            var expected = points.ToDictionary(p => p, p => Fingerprint(first.GenerateSurfaceTile(p)));
+            foreach (var point in points.Reverse())
+                Require(expected[point] == Fingerprint(second.GenerateSurfaceTile(point)), "Exploration order changed version 2 terrain at " + point);
+            Require(first.RandomState == 1234 && second.RandomState == 1234 && first.Tiles.Count == 0 && second.Tiles.Count == 0, "Version 2 sampling consumed actor entropy or inserted hidden tiles");
+            Require(points.Any(p => expected[p] != Fingerprint(New2(42).GenerateSurfaceTile(p))), "Different seeds generated identical version 2 terrain");
+            Require(points.Any(p => expected[p] != Fingerprint(New(41).GenerateSurfaceTile(p))), "Version 2 is identical to version 1");
+            var shifted = New2(41, 1.25);
+            foreach (var point in points.Take(7))
+            {
+                var a = first.GenerateSurfaceTile(point);
+                var b = shifted.GenerateSurfaceTile(point);
+                Require(Math.Abs(a.Elevation - 1.25 - b.Elevation) < 1e-9 && Math.Abs(a.WaterSurface - 1.25 - b.WaterSurface) < 1e-9 && a.WaterDepth == b.WaterDepth && a.Biome == b.Biome && a.Resource == b.Resource && a.Mountain == b.Mountain, "Surface datum did not shift version 2 heights uniformly at " + point);
+            }
+        }
+
+        /// <summary>Version 2 grades a small core to the datum and blends a short shoulder, without draining water.</summary>
+        private static void FoundingGradeVersion2()
+        {
+            foreach (uint seed in new uint[] { 7, 41, 4242 })
+            {
+                var a = New2(seed);
+                var b = New2(seed);
+                var natural = New2(seed);
+                var village = new Village { Id = "test", Center = new Int2(-170, 151), Radius = 9 };
+                var points = Enumerable.Range(-32, 65).SelectMany(z => Enumerable.Range(-32, 65).Select(x => new Int2(village.Center.X + x, village.Center.Z + z))).ToArray();
+                foreach (var point in points.Where((p, index) => index % 13 == 0))
+                    a.TileAt(point);
+                a.PrepareFoundingTerrain(village);
+                b.PrepareFoundingTerrain(village);
+                var profile = b.SurfacePlateaus.Single();
+                Require(profile.CoreRadius == village.Radius + 2 && profile.Shoulder >= 8 && profile.Shoulder <= 20, "Version 2 plateau is not radius + 2 with an 8 to 20 tile shoulder");
+                foreach (var point in points)
+                {
+                    var left = a.GetTile(point) ?? a.GenerateSurfaceTile(point);
+                    var right = b.GenerateSurfaceTile(point);
+                    Require(left.Elevation == right.Elevation && left.WaterDepth == right.WaterDepth && left.WaterSurface == right.WaterSurface && left.Water == right.Water && left.Mountain == right.Mountain, "Exploration before founding changed version 2 grading at " + point);
+                    int ring = Chebyshev(point, village.Center);
+                    if (ring <= profile.CoreRadius)
+                        Require(right.Water ? right.WaterSurface == 0 : right.Elevation == 0, "Version 2 core is not graded to the datum at " + point);
+                    if (ring < profile.CoreRadius + profile.Shoulder / 2)
+                        Require(!right.Mountain, "Version 2 grading left rock beside the walls at " + point);
+                    if (ring < profile.CoreRadius + profile.Shoulder)
+                        Require(!right.Mountain || right.Landform != "outcrop" && right.Landform != "ridge", "Version 2 relief rock stands inside the graded shoulder at " + point);
+                    var raw = natural.GenerateSurfaceTile(point);
+                    Require(right.Water == raw.Water && right.WaterDepth == raw.WaterDepth, "Version 2 grading drained or deepened water at " + point);
+                    if (ring > profile.CoreRadius + profile.Shoulder)
+                        Require(Fingerprint(right) == Fingerprint(raw), "Version 2 grading reached beyond its shoulder at " + point);
+                    var next = b.GenerateSurfaceTile(new Int2(point.X + 1, point.Z));
+                    if (!right.Water && !next.Water && !right.Mountain && !next.Mountain)
+                        Require(Math.Abs(right.Elevation - next.Elevation) <= 0.65, "Version 2 shoulder has a blocked dry seam at " + point);
+                }
             }
         }
 
