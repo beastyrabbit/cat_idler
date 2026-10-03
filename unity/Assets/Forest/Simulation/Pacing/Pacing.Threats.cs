@@ -63,8 +63,17 @@ namespace IdleCatForest.Simulation
         public int CreatureAggroTiles = 5;
         public double CreatureReplanSeconds = 1;
 
+        /// <summary>
+        /// Demo (D15, D16): a scripted fox band attacks at minute 15 after a two-minute warning, and raids
+        /// never kill a cat. A cleared dungeon floor restocks after the classic 10 minutes. The random raid
+        /// trigger keeps its classic grace, so no unscripted raid falls inside a demo session.
+        /// </summary>
         partial void DemoThreats()
         {
+            DemoRaidAtSeconds = 15 * 60;
+            RaidWarningSeconds = 120;
+            RaidCanKill = false;
+            FloorRestockSeconds = 600;
         }
     }
 }

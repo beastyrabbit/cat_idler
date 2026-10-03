@@ -85,9 +85,12 @@ namespace IdleCatForest.Simulation
         public double SourceExclusionSeconds = 60;
         public int BuildersPerSite = 2;
 
+        /// <summary>
+        /// Demo equals classic: work durations and yields are tuned per recipe in DemoContent (W2-10), and
+        /// regrowth only matters after the demo's half hour.
+        /// </summary>
         partial void DemoJobs()
         {
-            // Demo equals classic in Wave 1.
         }
     }
 }

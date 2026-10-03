@@ -32,6 +32,11 @@ namespace IdleCatForest.Simulation
         public double MigrationFoodPerCat = 4;
         public double MigrationWaterPerCat = 5;
         public int MigrationPopulationCap = 200;
+        /// <summary>
+        /// Whether a wanderer only comes while a bed is free. When true, a missing bed postpones the visit
+        /// until one frees up instead of spending the interval.
+        /// </summary>
+        public bool MigrationRequiresFreeBed = false;
         /// <summary>How long an arrived wanderer may stay without a bed.</summary>
         public double ProbationSeconds = 36 * 3600;
 
@@ -41,8 +46,24 @@ namespace IdleCatForest.Simulation
         public double HousingFoodPerCat = 3;
         public double HousingWaterPerCat = 4;
 
+        /// <summary>
+        /// Demo (D6): the first pregnancy around minute 10 to 12 and a kitten about 8 minutes later, the first
+        /// wanderer at minute 8 and another every 6 minutes while beds and food hold. Aging keeps the classic
+        /// hours, so a demo kitten stays a kitten for the whole session.
+        /// </summary>
         partial void DemoPopulation()
         {
+            BreedingCheckSeconds = 60;
+            BreedingAfterFoundingSeconds = 5 * 60;
+            BreedChanceBase = 0.2;
+            GestationSeconds = 8 * 60;
+            MigrationFirstAtSeconds = 8 * 60;
+            MigrationIntervalSeconds = 6 * 60;
+            MigrationRequiresFreeBed = true;
+            ProbationSeconds = 2 * 3600;
+            // The player is asked to place the first den around minute 3 to 7; after minute 10 the leader
+            // keeps housing one step ahead of growth.
+            HousingPlanAfterSeconds = 10 * 60;
         }
     }
 }
