@@ -177,7 +177,7 @@ namespace IdleCatForest.Tests
             game.UI.ClosePanel();
 
             var empty = new[] { new Vector2(4, 4), new Vector2(Screen.width - 4, 4), new Vector2(4, Screen.height - 4), new Vector2(Screen.width - 4, Screen.height - 4) }
-                .First(p => view.SubjectAt(p).IsNone);
+                .First(p => view.SelectableAt(p).IsNone);
             Click(empty);
             UiTestKit.Tick(game);
             Assert.That(view.SelectedSubject.IsNone, Is.True, "Clicking empty ground deselects.");

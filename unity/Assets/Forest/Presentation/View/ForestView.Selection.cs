@@ -12,9 +12,6 @@ namespace IdleCatForest.Presentation
     /// </summary>
     public sealed partial class ForestView
     {
-        /// <summary>A cat within this many screen points of the click is picked before anything under it.</summary>
-        private const float CatPickPoints = 24;
-
         public string SelectedCatId { get; private set; } = "";
         public string SelectedBuildingId { get; private set; } = "";
         public string SelectedPileId { get; private set; } = "";
@@ -116,46 +113,35 @@ namespace IdleCatForest.Presentation
         }
 
         /// <summary>
-        /// What a click at this screen point selects: a cat near the pointer first, then a building whose drawn
-        /// model the ray hits (roofs included) or whose footprint holds the ground point, then a free stockpile.
-        /// Station stores and food containers belong to their building. W2-18's hover pick wins when it has one.
+        /// What a click at this screen point selects. W2-18's render-based pick (<see cref="SubjectAt"/>, or the hover
+        /// pick when the pointer has not moved) decides; a station store or food container selects its building, a
+        /// dungeon entrance selects nothing (it has no card yet), and open ground falls back to the building footprint
+        /// or free stockpile under the ground point.
         /// </summary>
-        internal Subject SubjectAt(Vector2 screen)
+        internal Subject SelectableAt(Vector2 screen)
         {
             var village = Game.Selected;
             if (village == null || Camera == null) return Subject.None;
-            if (!HoveredSubject.IsNone) return HoveredSubject;
+            var picked = HoveredSubject.IsNone ? SubjectAt(screen) : HoveredSubject;
+            if (picked.Kind == SubjectKind.Pile)
+            {
+                var pile = village.Stockpiles.Find(p => p.Id == picked.Id);
+                if (pile != null && pile.ManagedBy != "" && village.Buildings.Exists(b => b.Id == pile.ManagedBy))
+                    return new Subject(SubjectKind.Building, pile.ManagedBy);
+                if (pile == null || !Pickable(pile)) picked = Subject.None;
+            }
+            if (picked.Kind == SubjectKind.Entrance) return Subject.None;
+            if (!picked.IsNone) return picked;
+
             int level = RenderedLevel;
-            float pickPixels = CatPickPoints * (Screen.dpi >= 160 ? 2 : 1);
-            Cat nearest = null; float best = pickPixels;
-            foreach (var c in village.Cats)
-            {
-                if (!c.Alive || c.Position.Level != level || c.ControlledBy != "") continue;
-                var world = entities.TryGetValue("cat:" + c.Id, out var go) && go != null ? go.transform.position : Position(c);
-                var point = Camera.WorldToScreenPoint(world + Vector3.up * .25f);
-                if (point.z <= 0) continue;
-                float distance = Vector2.Distance(screen, point);
-                if (distance < best) { best = distance; nearest = c; }
-            }
-            if (nearest != null) return new Subject(SubjectKind.Cat, nearest.Id);
-
             var ray = Camera.ScreenPointToRay(screen);
-            Building hit = null; float hitDistance = float.MaxValue;
-            foreach (var b in village.Buildings)
-            {
-                if (b.Position.Level != level || !entities.TryGetValue("building:" + b.Id, out var go) || go == null) continue;
-                foreach (var renderer in go.GetComponentsInChildren<Renderer>())
-                    if (renderer.enabled && renderer.bounds.IntersectRay(ray, out float d) && d < hitDistance) { hitDistance = d; hit = b; }
-            }
-            if (hit != null) return new Subject(SubjectKind.Building, hit.Id);
-
             var ground = TerrainRaycast(ray, out var terrain) ? terrain : new Plane(Vector3.up, Vector3.zero).Raycast(ray, out float flat) ? ray.GetPoint(flat) : Vector3.positiveInfinity;
             if (float.IsInfinity(ground.x)) return Subject.None;
             var tile = new Int2(Mathf.RoundToInt(ground.x), Mathf.RoundToInt(ground.z), level);
             var footprint = village.Buildings.Find(p => Covers(p.Position, p.Width, p.Depth, tile));
             if (footprint != null) return new Subject(SubjectKind.Building, footprint.Id);
-            var pile = village.Stockpiles.Find(p => p.ManagedBy == "" && Pickable(p) && Covers(p.Position, p.Width, p.Depth, tile));
-            return pile != null ? new Subject(SubjectKind.Pile, pile.Id) : Subject.None;
+            var free = village.Stockpiles.Find(p => p.ManagedBy == "" && Pickable(p) && Covers(p.Position, p.Width, p.Depth, tile));
+            return free != null ? new Subject(SubjectKind.Pile, free.Id) : Subject.None;
         }
 
         private static bool Pickable(Stockpile p) => p.Kind == "storage" || p.Kind == "gather" || p.Kind == "fishing" || p.Kind == "spill";
@@ -177,7 +163,7 @@ namespace IdleCatForest.Presentation
         {
             var ui = Game.UI;
             if (!WorldReady || ui == null || ui.HasPlacement || DirectControl) return false;
-            var subject = SubjectAt(pointer.PressPosition);
+            var subject = SelectableAt(pointer.PressPosition);
             if (subject.Kind == SubjectKind.Pile) InspectPile(subject.Id);
             ui.Select(subject);
             return !subject.IsNone;

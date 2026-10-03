@@ -16,7 +16,7 @@ namespace IdleCatForest.Presentation
         public const float FeedbackSeconds = 6;
         /// <summary>Narrower than this beside the dock, the line moves above the dock.</summary>
         public const float MinimumRoom = 180;
-        public const string Legend = "WASD pan · wheel zoom · click to inspect · Tab to control · Space pause";
+        public const string Legend = "Drag or WASD to pan · scroll or + − to zoom · Q/E rotate · H home · click a cat · Space pause";
 
         private readonly Label text;
         private float shownAt = -1;

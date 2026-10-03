@@ -307,7 +307,7 @@ namespace IdleCatForest.Presentation
                     ctx.Hud.Select(new Subject(SubjectKind.Pile, anchor));
                     return;
                 }
-                ctx.Game.View?.FocusVillage();
+                ctx.Game.View?.GoHome();
                 return;
             }
             if (!string.IsNullOrEmpty(section)) ctx.Hud.OpenPanel(section);

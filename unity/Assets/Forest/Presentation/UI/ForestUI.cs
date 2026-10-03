@@ -424,7 +424,7 @@ namespace IdleCatForest.Presentation
             LastActionFailed = !result.Success;
             LastActionAt = Time.unscaledTime;
             lastActionSeen = Game.LastAction;
-            if (result.Success && focus) Game.View.FocusVillage();
+            if (result.Success && focus) Game.View.GoHome();
             if (OpenSection != "") drawer.Render();
             foreach (var part in parts)
                 if (part is HintLine hint) hint.Refresh();
