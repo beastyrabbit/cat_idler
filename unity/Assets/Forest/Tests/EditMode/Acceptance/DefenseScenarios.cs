@@ -21,6 +21,115 @@ namespace IdleCatForest.Acceptance
                     yield return new Scenario("regression.review_land_mover_" + kind + "_" + (returning ? "departing" : "arriving"), () => CachedLandMover(kind, returning));
                 }
             yield return new Scenario("regression.review_land_mover_public_expansion_reroutes_merchant_and_raid", MerchantExpansionReroute);
+            yield return new Scenario("defense.rally_sends_nearest_adults_without_direct_damage", RallySendsNearestAdults);
+            yield return new Scenario("defense.captain_rallies_automatically", CaptainRallies);
+            yield return new Scenario("defense.party_strength_drives_damage", PartyStrength);
+            yield return new Scenario("defense.renewable_raid_trigger_needs_no_materials", RenewableTrigger);
+            yield return new Scenario("defense.breach_casualty_dies_from_raid", BreachCasualty);
+        }
+
+        // ---- W2-09: rally, captain, parties and the renewable trigger (classic profile) ----
+
+        static Raid HoldingRaid(World w, Village v, Int2 at, double health = 100000)
+        {
+            var raid = new Raid { Id = w.Id("held-raid"), Position = at, Health = health, Kind = "fox", Members = 3, MaxHealth = health, Strength = 30 };
+            v.Raids.Add(raid);
+            return raid;
+        }
+
+        static void RallySendsNearestAdults()
+        {
+            var w = World.Create(41);
+            var v = w.Villages[0];
+            foreach (var cat in v.Cats)
+                cat.Skills.RemoveAll(s => s.Resource == "fight");
+            var gate = new Int2(v.Center.X, v.Center.Z + v.Radius - 1);
+            var raid = HoldingRaid(w, v, gate);
+            double health = raid.Health;
+            double minAge = w.CurrentPacing().WorkerMinAgeHours;
+            var expected = v.Cats.Where(c => c.Alive && c.ControlledBy == "" && c.AgeHours >= minAge && c.Position.Level == 0 && c.Migration != "arriving" && c.Migration != "departing" && c.Health > 15 && !c.Goal.StartsWith(GoalKey.NeedPrefix, StringComparison.Ordinal) && !v.Routes.Any(r => r.CatId == c.Id))
+                .OrderBy(c => Int2.Distance(c.Position, gate)).ThenBy(c => c.Id, StringComparer.Ordinal).Take(4).ToList();
+            var result = Act(w, v, new GameAction { Kind = "DefendRaid" });
+            Check(result.Code == "rallied" && raid.Health == health, "Rallying must not damage the raid directly: code=" + result.Code + " health=" + raid.Health);
+            var rallied = v.Cats.Where(c => c.RalliedTo == raid.Id).ToList();
+            Check(rallied.Count == 4 && expected.All(rallied.Contains), "The four nearest eligible adults must be rallied: " + string.Join(",", rallied.Select(c => c.Name)));
+            Check(rallied.All(c => c.Goal == GoalKey.Defending && c.JobId == "" && c.BuildingId == "" && !v.Jobs.Any(j => !j.Completed && j.CatId == c.Id)), "Rallied cats must drop their work and defend");
+            var again = w.Apply(Context(v), new GameAction { Kind = "DefendRaid" });
+            Check(!again.Success && again.Code == "rally_cooldown", "A second rally inside the cooldown must be refused: " + again.Code);
+            var start = rallied.ToDictionary(c => c, c => Int2.Distance(c.Position, gate));
+            w.Step(4);
+            Check(rallied.Count(c => Int2.Distance(c.Position, gate) < start[c] || Int2.Distance(c.Position, gate) <= 1) >= 3, "Rallied cats must physically move toward the raiders");
+            w.Step(57);
+            Check(w.Apply(Context(v), new GameAction { Kind = "DefendRaid" }).Success, "The rally must be available again after its 60 s cooldown");
+            Valid(w);
+        }
+
+        static void CaptainRallies()
+        {
+            var w = World.Create(41);
+            var v = w.Villages[0];
+            var captain = v.Cats.First(c => c.Alive && c.OfficerRole == "");
+            captain.OfficerRole = "captain";
+            v.Officers.Add(new Officer { Role = "captain", CatId = captain.Id });
+            var raid = HoldingRaid(w, v, new Int2(v.Center.X, v.Center.Z + v.Radius - 1));
+            w.Step(1.5);
+            Check(v.Cats.Count(c => c.RalliedTo == raid.Id) > 0, "A Captain must rally defenders against an active raid without a click");
+        }
+
+        static (double damage, double health) StrengthBattle(double strength)
+        {
+            var w = Fixture(out var v, out var c);
+            c.Position = v.Center;
+            c.X = 0;
+            c.Z = 0;
+            c.Skills.Add(new Stack("fight", 10));
+            c.BuildingId = "";
+            var raid = new Raid { Id = w.Id("raid"), Position = v.Center, Strength = strength, Health = 1000, MaxHealth = 1000, Members = 3, Kind = "fox" };
+            v.Raids.Add(raid);
+            w.Step(30);
+            return (1000 - raid.Health, 100 - c.Health);
+        }
+
+        static void PartyStrength()
+        {
+            var weak = StrengthBattle(30);
+            var strong = StrengthBattle(60);
+            // Health regeneration offsets both sides equally, so the doubled strength shows in the difference.
+            double regen = 30 * World.Create(41).CurrentPacing().HealthRegenPerSecond;
+            Check(weak.health > 0 && Math.Abs((strong.health + regen) / (weak.health + regen) - 2) < 0.05, "Raider strength must drive the injury it deals: weak=" + weak.health + " strong=" + strong.health);
+            Check(Math.Abs(strong.damage - weak.damage) < 1e-6, "Raider strength must not change the defender's own blows");
+        }
+
+        static void RenewableTrigger()
+        {
+            var w = World.Create(41);
+            var v = w.Villages[0];
+            var pace = w.CurrentPacing();
+            foreach (var pile in v.Stockpiles)
+                pile.Goods.RemoveAll(s => s.Resource == "materials" || s.Resource == "refined");
+            v.FoundedAt = -(pace.RaidGraceSeconds + 10);
+            Check(v.Cats.Count(c => c.Alive) >= pace.RaidMinCats, "Fixture: the founding colony must be large enough to draw raiders");
+            var spawn = typeof(World).GetMethod("MaybeSpawnRaid", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            for (int i = 0; i < 400 && v.Raids.Count == 0; i++)
+                spawn.Invoke(w, new object[] { v });
+            Check(v.Raids.Count == 1, "Game time and colony size alone must eventually draw a raid, without stored materials");
+            var raid = v.Raids[0];
+            Check(raid.Members >= 2 && raid.Strength > 0 && raid.MaxHealth == raid.Health, "Natural raids arrive as a party: members=" + raid.Members);
+        }
+
+        static void BreachCasualty()
+        {
+            var w = Fixture(out var v, out var c);
+            c.Skills.RemoveAll(s => s.Resource == "fight");
+            c.ControlledBy = "";
+            c.Position = v.Center;
+            c.X = v.Center.X;
+            c.Z = v.Center.Z;
+            c.Health = 5;
+            var raid = new Raid { Id = w.Id("raid"), Position = v.Center, Health = 1000 };
+            v.Raids.Add(raid);
+            w.Step(1);
+            Check(!c.Alive && v.Events.Any(e => e.Kind == "death" && e.EntityId == c.Id && e.Text.Contains("raid")), "A cat killed in a classic raid breach must die from the raid, not from needs");
         }
         static void RaidConsequences()
         {
