@@ -117,7 +117,7 @@ tag and the path of the wave report under `artifacts/demo/`.
 |---|---|---|---|---|---|
 | W0 | Guardrails: compile gate, worktrees, Unity slots, captures, CI, demo brief, seams | 5 (1 integration) | Done (2026-10-02; 4 of 4 merged) | `demo-w0` | `artifacts/demo/wave-0/report.md` |
 | W1 | Behaviour-neutral splits and every frozen contract | 9 (1 integration) | Done (2026-10-02; 8 of 8 merged) | `demo-w1` | `artifacts/demo/wave-1/report.md` |
-| W2 | Core rebuild in parallel; staged integration A, B, C | 29 (3 integration) | In progress: W2-INT-a done (2026-10-03; W2-01 to W2-10 merged, simulation wired, demo timing green); W2-INT-b done (2026-10-03; W2-11 to W2-16 merged: persistence, game loop, Glass chrome, tethered card, copy layer, widgets; copy coverage and UI PlayMode green); W2-INT-c pending | `demo-w2a`, `demo-w2b`, `demo-w2` | `artifacts/demo/wave-2/report.md` |
+| W2 | Core rebuild in parallel; staged integration A, B, C | 29 (3 integration) | In progress: W2-INT-a done (2026-10-03; W2-01 to W2-10 merged, simulation wired, demo timing green); W2-INT-b done (2026-10-03; W2-11 to W2-16 merged: persistence, game loop, Glass chrome, tethered card, copy layer, widgets; copy coverage and UI PlayMode green); W2-INT-c done (2026-10-03; W2-17 to W2-21 and W2-23 to W2-26 merged: lighting, camera and input, terrain, forest, FX, craft buildings, construction and resource art, dungeon kit and creatures, articulated cat; art manifests regenerated; new single-player worlds are the Mosslight demo colony; W2-22 had no commit and is carried to Wave 3) | `demo-w2a`, `demo-w2b`, `demo-w2` | `artifacts/demo/wave-2/report.md` |
 | W3 | Features: milestones, shell, settings, demo boundary, build mode, drawers, direct control, animation, art hookup, FX, markers, audio, art | 22 (1 integration) | Not started | `demo-w3` | `artifacts/demo/wave-3/report.md` |
 | W4 | Polish and ship-readiness, Windows (conditional), playtest punch lists | 12 (1 integration) | Not started | `demo-w4` | `artifacts/demo/wave-4/report.md` |
 | W5 | Docs, store page, trailer, release candidate | 4 (1 integration) | Not started | `demo-w5` | `artifacts/demo/wave-5/report.md` |
@@ -591,8 +591,10 @@ founds the player's colony on generation version 2 (`World.DemoSeed` 16, `Defaul
 `MaxColonyNameLength` 48, `ColonyRevealRadius` 34). `World.Validate` accepts generation versions 0 to 2. A
 demo-profile founding owns `DemoContent.FoundingStudies` (the Research Hut) and the Leader waits one
 `LeaderStudyIntervalSeconds` before its first study, so the first study is the player's. Every new
-single-player world must use `CreateColony(World.DemoSeed, name, Pacing.DemoProfile, now)`; the switch in
-`AuthorityRuntime` and `ForestGame` is W2-INT-b's or W3-04's (both files belong to W2-11 and W2-12).
+single-player world must use `CreateColony(World.DemoSeed, name, Pacing.DemoProfile, now)`. W2-INT-c made
+it the default: a missing local save becomes the "Mosslight" colony on the given seed (`ForestGame`
+defaults to `World.DemoSeed`; `LocalAuthority.OpenClassic` and `CreateNew(path, seed, classic: true)` keep the
+classic founding, which the named capture fixtures use). W3-04's title flow passes the player's name.
 `World.Create` stays on version 1 for the server and tooling.
 
 **Identifier constants added.**
@@ -694,8 +696,8 @@ classes `has-minimap` (width 1600 and up), `compact` (below 1600), `narrow` (bel
 `Resources/UI/Fonts` and `Resources/UI/Icons` (deterministic metas from `tools/ui-icons`). Slot order back to
 front: chip, pills, hint, drawer, dock, card, seal, toasts, mode, reins, objective, modal. `UiState.Bind`
 binds Escape as text field (Modal + 10), popover, placement, drawer, selection. `ForestUI.ChipBounds`,
-`IsNarrow`, `PanelScale`; `SectionRegistry.Dock` with groups; `DrawerHost.SummaryOf`. The Space and 1/2/3
-bindings exist but only fire once `KeyMap` marks them live (W2-18, merged in W2-INT-c).
+`IsNarrow`, `PanelScale`; `SectionRegistry.Dock` with groups; `DrawerHost.SummaryOf`. Space and 1/2/3 are
+live since W2-18 (merged in W2-INT-c).
 
 **Tethered card (W2-14).** The only inspector. `ForestUI.Select(Subject)` handles cats, buildings and
 piles; `ForestView.InspectPile`, `SelectedPileId`, `SelectedSubject`; `TetheredCard.PlaceNear`, `Showing`,
@@ -718,3 +720,46 @@ added later fails until its text is written. Every Wave 2 code above has authore
 `AttentionPopover`, `Toasts` (bodies use `UiText.EventLine`). Scenario prefix: `AttentionScenarios.cs`
 owns `attention.*`.
 
+### 3.11 Wave 2 view, input and art additions (W2-INT-c)
+
+**World creation.** `AuthorityRuntime.OpenLocal(path, seed, requireNew, classic = false)`,
+`LocalAuthority.OpenClassic(path, seed)`, `LocalAuthority.CreateNew(path, seed, classic = false)`;
+internal test seam `ForestGame.InitialClassicWorld` (fixed-coordinate PlayMode fixtures only). `forest.sh capture`
+defaults to `--seed 16`.
+
+**Lighting (W2-17).** `LookProfile` (`Resources/ForestLook.asset`, editor command `forest_look_assets`),
+`LightingRig` (sun or moon from `DayClock.DayFraction`, linear fog that follows the camera, gradient sky in
+direct control, underground Exp2 fog and a lantern), `LookClock.DayFraction(World)`. Quality levels Low,
+Medium, High (default); `GameSettings.Quality` picks the level. Fog stripping keeps Linear and Exp2; the scene
+has fog on. `FOREST_LOOK_HOUR` and `FOREST_LOOK_DAY_SCALE` move only the look clock.
+
+**Camera, input and picking (W2-18, W2-INT-c).** Every key in 3.5 is live; `+`, `=` and `-` come from typed
+text (`KeyMap.Text`, `TextBinding`). New router members: `ScrollStyle`, `ReadsAsTrackpad`, `TrackpadScrolling`,
+`PrimaryDragging`, `AnyInput`, `Dispose()`. Placement fires on `PrimaryClick` (release without a drag); left
+drags pan (`PrimaryDragStart/Drag/DragEnd` at World); `PrimaryPress` is unbound. View: public `SubjectAt`
+(render-based pick: cats by screen distance, then buildings, piles and dungeon entrances by rendered bounds),
+`GoHome`, `RotateView`, `FocusSelected`, `PlayIntro`, `IntroPlaying`; `DefaultZoom` 8.5, `MinZoom` 3.5,
+`MaxZoom` 22. The world click is `ForestView.SelectableAt` (Selection priority): station stores select their
+building, entrances select nothing yet, open ground falls back to the footprint. `InputReplay` is an opt-in
+evidence tool (`--forest-input-replay`).
+
+**Terrain (W2-19).** 16x16 chunked heightfield with smooth normals and a fogged unexplored edge
+(`Resources/ForestTerrain.shader`, `WorldSkirt`); no MeshColliders, `TerrainRaycast` marches the heightfield.
+Internal `TerrainWindow`, `TerrainChunkCount`, `TryTerrainSample`, `SurfaceHeightAt`, `TerrainSkirtColor`,
+`TerrainWorkMilliseconds`.
+
+**Forest and static props (W2-20).** `StaticProps` draws trees, rocks, roads, fences and scatter with
+`Graphics.RenderMeshInstanced` per chunk; `Canopy` grows the forest past the explored edge. Reconcile runs only
+when `Game.Revision`, the world, village, level or ground centre change (`ForceReconcile` always runs).
+Internal `TryGetStaticProp`, `BuildStaticPropColliders`; cargo, pile-goods and work markers are pooled.
+
+**FX (W2-21).** `ForestFx` (`Burst`, `Float`, `Punch`, `FxKind`), `WorldEventFeed` (`ForestView.Feed`; typed
+events listed in the W2-21 handoff), emotes, blob shadows, ambient life; generated `Resources/Fx/**` (editor
+command `forest_fx_assets`).
+
+**Art (W2-23 to W2-26).** Old kit 83 assets (new `cat_kitten`; `cat` and `cat_kitten` have 19 articulated
+parts plus `CarryBack`/`CarryMouth`; the smithy has a `ChimneyTop` empty), world kit 42 assets (construction
+stages 0 to 2, resource nodes, saplings, stumps, stairwell, brazier, roots, loot chests, fox raider, stone
+guardian, elder scarf). Articulated world assets export one mesh per named part; `build_world.py` runs each
+world module's `CHECKS` and `CONTRACT_CHECKERS` and a universal upward-face check. Export of anchor empties is
+in `kit/helpers.export_one`. None of the new world art is wired into `ForestView` yet (W3-13, W3-14).
