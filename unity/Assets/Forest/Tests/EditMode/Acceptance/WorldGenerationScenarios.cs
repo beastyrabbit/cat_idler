@@ -34,7 +34,7 @@ namespace IdleCatForest.Acceptance
                     var w = New(seed);
                     for (int z = -150; z <= 150; z += 3)
                         for (int x = -150; x <= 150; x += 3)
-                            text.Append(Fingerprint(w.GenerateSurfaceTile(new Int2(x, z)))).Append(':').Append(w.GenerateSurfaceTile(new Int2(x, z)).FishCapacity).Append('\n');
+                            text.Append(Fingerprint(w.GenerateSurfaceTile(new Int2(x, z)))).Append(':').Append(Q(w.GenerateSurfaceTile(new Int2(x, z)).FishCapacity)).Append('\n');
                 }
                 string actual = Sha256(text.ToString());
                 Require(actual == Version1SampleHash, "Version 1 terrain samples changed: " + actual);
@@ -50,7 +50,7 @@ namespace IdleCatForest.Acceptance
             });
         }
 
-        const string Version1SampleHash = "5a8c602dbb4371f5a210a11072b1ab62631ce2cec3d25cfc353df5b310c83913";
+        const string Version1SampleHash = "9b4a167531ae7d5a483cf394ebec71071135758635bea13d530c7a21fa5eea26";
         private static World New(uint seed = 41) => new World { Seed = seed, RandomState = 1234, GenerationVersion = 1 };
         private static string Sha256(string value)
         {
@@ -62,7 +62,10 @@ namespace IdleCatForest.Acceptance
             if (!value)
                 throw new InvalidOperationException(message);
         }
-        private static string Fingerprint(Tile t) => t.Biome + ":" + t.Landform + ":" + t.Resource + ":" + t.Amount + ":" + t.Elevation.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ":" + t.WaterSurface.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ":" + t.WaterDepth.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ":" + t.Water + ":" + t.Mountain;
+        private static string Fingerprint(Tile t) => t.Biome + ":" + t.Landform + ":" + t.Resource + ":" + Q(t.Amount) + ":" + Q(t.Elevation) + ":" + Q(t.WaterSurface) + ":" + Q(t.WaterDepth) + ":" + t.Water + ":" + t.Mountain;
+        // CoreCLR prints negative zero as "-0" and Mono (Unity) as "0", so the same world hashed differently under
+        // Unity EditMode. Adding +0.0 turns -0 into +0; the rounding keeps "R" free of last-digit noise.
+        private static string Q(double value) => (Math.Round(value, 9) + 0.0).ToString("R", System.Globalization.CultureInfo.InvariantCulture);
 
         private static void ElevationAndBiomes()
         {

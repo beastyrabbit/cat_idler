@@ -17,7 +17,7 @@ namespace IdleCatForest.Acceptance
     {
         // SHA-256 of the founded layout of World.Create(41), recorded before generation version 2
         // existed. A change here means classic geometry moved and every classic coordinate is suspect.
-        const string ClassicLayoutHash41 = "d87c8aa9b8fd592c765894e0b50c102ae8338efae0e2d6edff5fe4a00a766c04";
+        const string ClassicLayoutHash41 = "47a6476bcc2eb054485321e9a285cbbbaa88f6a58457c1175c75f536ac18fedb";
 
         // The starter resources every founding upgrades to a 200-unit deposit.
         static readonly string[] StarterResources = { "logs", "stone", "food", "fibre", "ore", "clay", "sand", "gem" };
@@ -49,7 +49,8 @@ namespace IdleCatForest.Acceptance
             yield return new Scenario("founding.colony_refounds_after_extinction", RefoundsAfterExtinction);
         }
 
-        private static string R(double value) => value.ToString("R", CultureInfo.InvariantCulture);
+        // CoreCLR prints negative zero as "-0" and Mono (Unity) as "0"; adding +0.0 turns -0 into +0 so both hash alike.
+        private static string R(double value) => (Math.Round(value, 9) + 0.0).ToString("R", CultureInfo.InvariantCulture);
         private static string P(Int2 p) => p.X.ToString(CultureInfo.InvariantCulture) + "," + p.Z.ToString(CultureInfo.InvariantCulture) + "," + p.Level.ToString(CultureInfo.InvariantCulture);
         private static string Goods(IEnumerable<Stack> stacks) => string.Join(";", stacks.Select(s => s.Resource + "=" + R(s.Amount)));
         internal static int Ring(Village v, Int2 p) => Math.Max(Math.Abs(p.X - v.Center.X), Math.Abs(p.Z - v.Center.Z));
@@ -242,7 +243,8 @@ namespace IdleCatForest.Acceptance
         }
 
         /// <summary>Geometry and identities a founding produces; actor entropy and stats are deliberately excluded.</summary>
-        internal static string LayoutHash(World w)
+        internal static string LayoutHash(World w) => Sha(LayoutText(w));
+        internal static string LayoutText(World w)
         {
             var text = new StringBuilder();
             text.Append("gen=").Append(w.GenerationVersion).Append('\n');
@@ -272,8 +274,12 @@ namespace IdleCatForest.Acceptance
                 foreach (var s in d.Stairs)
                     text.Append("stair ").Append(P(s.From)).Append(' ').Append(P(s.To)).Append(' ').Append(string.Join(" ", s.Opening.Select(P))).Append('\n');
             }
+            return text.ToString();
+        }
+        private static string Sha(string text)
+        {
             using (var sha = SHA256.Create())
-                return string.Concat(sha.ComputeHash(Encoding.UTF8.GetBytes(text.ToString())).Select(b => b.ToString("x2", CultureInfo.InvariantCulture)));
+                return string.Concat(sha.ComputeHash(Encoding.UTF8.GetBytes(text)).Select(b => b.ToString("x2", CultureInfo.InvariantCulture)));
         }
     }
 }
