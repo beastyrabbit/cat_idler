@@ -64,7 +64,11 @@ namespace IdleCatForest.Presentation
         {
             TickInput();
             if (!WorldReady) return;
-            if (villageId != Game.Selected.Id) { ClearWorld(); villageId = Game.Selected.Id; focus = At(Game.Selected.Center); }
+            if (villageId != Game.Selected.Id)
+            {
+                ClearWorld(); villageId = Game.Selected.Id; focus = At(Game.Selected.Center); followCatId = ""; SnapManagementCamera();
+                if (IntroWanted()) PlayIntro();
+            }
             if (!DirectControl && followSelectedCat && SelectedCat != null && SelectedCat.Position.Level != viewedLevel) { viewedLevel = SelectedCat.Position.Level; focus = Position(SelectedCat); nextReconcile = 0; }
             NotifyLevelChange();
             if (Time.unscaledTime >= nextReconcile) { Reconcile(); nextReconcile = Time.unscaledTime + .2f; }
@@ -77,6 +81,7 @@ namespace IdleCatForest.Presentation
             }
             ApplyContinuousInput();
             UpdateCamera();
+            UpdateHover();
             UpdateSelection();
             float dt = Time.unscaledDeltaTime;
             UpdateLighting(dt);
