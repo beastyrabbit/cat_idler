@@ -56,7 +56,8 @@ namespace IdleCatForest.Simulation
         partial void DemoPopulation()
         {
             BreedingCheckSeconds = 60;
-            BreedingAfterFoundingSeconds = 5 * 60;
+            // The demo colony founds with a spare den, so beds are free at once; the window itself sets the beat.
+            BreedingAfterFoundingSeconds = 10 * 60;
             BreedChanceBase = 0.2;
             GestationSeconds = 8 * 60;
             MigrationFirstAtSeconds = 8 * 60;

@@ -358,7 +358,7 @@ namespace IdleCatForest.Acceptance
             ["NeedsHealthFloor"] = 10,
             ["FishRegenPerHour"] = 12,
             ["BreedingCheckSeconds"] = 60,
-            ["BreedingAfterFoundingSeconds"] = 300,
+            ["BreedingAfterFoundingSeconds"] = 600,
             ["BreedChanceBase"] = 0.2,
             ["GestationSeconds"] = 480,
             ["MigrationFirstAtSeconds"] = 480,

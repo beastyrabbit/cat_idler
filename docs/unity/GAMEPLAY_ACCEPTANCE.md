@@ -64,7 +64,7 @@ Both profiles draw the mother with the seeded roll from settled residents of par
 
 ## Pacing profiles
 
-Every pacing number lives in the `Pacing` partial classes under `Simulation/Pacing/`. A world's saved `PacingProfile` selects the table. `classic` keeps the numbers above for the mechanics scenarios, the campaigns and the server. `demo` is for new single-player worlds and compresses the timers to fit the 25 to 35 minute demo journey in `docs/DEMO.md`. The `demo_pacing.*` scenarios pin both tables field by field. The `demo_timing.*` scenarios, which only run with `--include-demo-timing`, measure the journey on seed 41 and print a `demo.curve` line.
+Every pacing number lives in the `Pacing` partial classes under `Simulation/Pacing/`. A world's saved `PacingProfile` selects the table. `classic` keeps the numbers above for the mechanics scenarios, the campaigns and the server. `demo` is for new single-player worlds and compresses the timers to fit the 25 to 35 minute demo journey in `docs/DEMO.md`. The `demo_pacing.*` scenarios pin both tables field by field. The `demo_timing.*` scenarios, which only run with `--include-demo-timing`, measure the journey on the demo colony (`World.CreateColony(World.DemoSeed, ...)`) and print a `demo.curve` line.
 
 Durations in the table are simulated time, which is real time at 1×. `DayScale` changes only the clock the player reads: in the demo, one simulated minute shows as one game hour.
 
@@ -76,7 +76,7 @@ Durations in the table are simulated time, which is real time at 1×. `DayScale`
 | `EatRestorePerServing`, `DrinkRestorePerServing`, `HealRestorePerServing` | 50, 50, 25 | 400, 400, 200 | These count points per unit consumed. Each trip still restores the classic 50 (meal, drink) or 25 (herbs). |
 | `NeedsCanKill`, `NeedsHealthFloor` | true, 0 | false, 10 | No starvation deaths in the demo. Need damage stops at critical health (D16). |
 | `FishRegenPerHour` | 0.5 | 12 | A fished-out spot refills in about two hours. |
-| `BreedingAfterFoundingSeconds`, `BreedingCheckSeconds`, `BreedChanceBase` | 36 h, 1 h, 0.001 | 5 min, 1 min, 0.2 | The breeding window opens at minute 5. A pregnancy is likely by minute 10 to 12 once a bed is free. |
+| `BreedingAfterFoundingSeconds`, `BreedingCheckSeconds`, `BreedChanceBase` | 36 h, 1 h, 0.001 | 10 min, 1 min, 0.2 | The breeding window opens at minute 10. The demo colony founds with a spare den, so a pregnancy follows within a few minutes and a kitten 8 minutes later (W2-INT-a measured pregnancy and kitten on the demo seed). |
 | `GestationSeconds` | 18 h | 8 min | The first kitten arrives around minute 18 to 22. |
 | `MigrationFirstAtSeconds`, `MigrationIntervalSeconds` | 30 h, 12 h | 8 min, 6 min | A wanderer reaches the gate at minute 8, then another every 6 minutes. |
 | `MigrationRequiresFreeBed` | false | true | Wanderers come only while beds and food hold. A missing bed postpones the visit instead of using up the interval. |
