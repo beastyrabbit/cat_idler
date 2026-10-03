@@ -4,13 +4,14 @@ namespace IdleCatForest.Simulation
 {
     public partial class World
     {
-        /// <summary>Walks to a carried item's source; the item then travels as output.</summary>
-        private void TickJobItemFetch(Cat c, Job j, double dt)
+        /// <summary>Walks to a carried item's source; the item then travels as output and an emptied spill goes away.</summary>
+        private void TickJobItemFetch(Village v, Cat c, Job j, double dt)
         {
             if (!Move(c, j.Position, dt))
                 return;
             j.Phase = JobPhase.OutputDelivery;
             c.Path.Clear();
+            PruneSpill(v, v.Stockpiles.Find(s => s.Id == j.SourceId), j);
         }
 
         /// <summary>Observes around the scout, follows the survey path and returns notes to the village centre.</summary>
@@ -49,13 +50,14 @@ namespace IdleCatForest.Simulation
                         if (!other.Contacts.Contains(v.Id))
                             other.Contacts.Add(v.Id);
                     }
-                    Note(v, "discovery", c.ScoutNotes.Count + " notes delivered to shrine", c.Id);
+                    Note(v, EventKind.Discovery, c.ScoutNotes.Count + " notes delivered to shrine", c.Id);
                     c.ScoutNotes.Clear();
                     Finish(v, c, j);
                 }
                 return;
             }
-            if (Move(c, j.Position, dt))
+            // An unreachable waypoint is skipped like a reached one instead of holding the scout until its time limit.
+            if (Move(c, j.Position, dt) || c.HasFailedPath && c.FailedPathDestination.Equals(j.Position) && c.BlockedReason == Blocked.BlockedRoute)
             {
                 if (j.Path.Count > 0 && j.PathIndex + 1 < j.Path.Count)
                 {

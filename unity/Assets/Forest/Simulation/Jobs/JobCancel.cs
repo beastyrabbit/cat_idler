@@ -37,6 +37,14 @@ namespace IdleCatForest.Simulation
                     Release(job.Id + ":resume");
                     if (job.Kind == JobKind.Build)
                         Release(job.TargetId);
+                    // Inputs of unfinished production stay at the station for its next batch instead of spilling.
+                    var station = job.Kind == JobKind.Production && job.Phase != JobPhase.OutputDelivery ? v.Buildings.Find(b => b.Id == job.TargetId) : null;
+                    if (station != null)
+                    {
+                        foreach (var input in job.Local)
+                            Add(station.Inputs, input.Resource, input.Amount);
+                        job.Local.Clear();
+                    }
                     if (job.Local.Count > 0)
                         Spill(v, job.Position, job.Local);
                     foreach (var itemId in job.ItemIds)
@@ -45,14 +53,7 @@ namespace IdleCatForest.Simulation
                         if (item != null)
                         {
                             var source = job.Phase == JobPhase.ItemFetch ? v.Stockpiles.Find(p => p.Id == job.SourceId) : null;
-                            if (source != null)
-                            {
-                                item.LocationId = source.Id;
-                                continue;
-                            }
-                            var spill = new Stockpile { Id = Id("spill"), Kind = "spill", Width = 1, Depth = 1, Position = job.Phase == JobPhase.ItemFetch ? job.Position : c.Position, Capacity = Pace.ItemSpillPileCapacity };
-                            v.Stockpiles.Add(spill);
-                            item.LocationId = spill.Id;
+                            item.LocationId = (source ?? SpillPile(v, job.Phase == JobPhase.ItemFetch ? job.Position : c.Position, Pace.ItemSpillPileCapacity)).Id;
                         }
                     }
                     job.ItemIds.Clear();
@@ -81,7 +82,7 @@ namespace IdleCatForest.Simulation
             c.BuildingId = v.Routes.FirstOrDefault(r => r.CatId == c.Id)?.Id ?? "";
             c.ResumeJobId = "";
             c.Path.Clear();
-            c.Goal = c.BuildingId == "" ? "idle" : "transport returning";
+            c.Goal = c.BuildingId == "" ? GoalKey.Idle : GoalKey.TransportReturning;
         }
         private void Finish(Village v, Cat c, Job j)
         {
@@ -89,7 +90,7 @@ namespace IdleCatForest.Simulation
             Release(j.Id);
             c.JobId = "";
             c.Path.Clear();
-            c.Goal = "idle";
+            c.Goal = GoalKey.Idle;
             c.BlockedReason = "";
             string labor = j.Kind == JobKind.Production ? RecipeOf(j.RecipeId)?.Labor ?? "process" : JobLabor(j.Kind);
             if (Catalog.Labors.Contains(labor))
@@ -103,7 +104,9 @@ namespace IdleCatForest.Simulation
             }
             foreach (var item in v.Items.Where(i => c.Equipment.Contains(i.Id) && i.Kind == "tool"))
                 item.Condition = Math.Max(0, item.Condition - Pace.ToolWearPerJob);
-            Note(v, "completed", c.Name + " completed " + j.Kind, j.Id);
+            Note(v, EventKind.Completed, c.Name + " completed " + j.Kind, j.Id);
+            if (j.Kind == JobKind.Haul)
+                PruneSpill(v, v.Stockpiles.Find(s => s.Id == j.SourceId));
         }
     }
 }
