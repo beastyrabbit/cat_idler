@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Globalization;
 
 namespace IdleCatForest.Simulation
 {
@@ -7,7 +8,7 @@ namespace IdleCatForest.Simulation
         /// <summary>Stable snake_case reason or outcome (see <see cref="ResultCode"/>); "" until a handler sets one.</summary>
         public string Code = "";
 
-        /// <summary>Typed details for the code (resource, need, have, target ...); null when there are none.</summary>
+        /// <summary>Typed details for the code (see <see cref="ResultArg"/>); null when there are none.</summary>
         public Dictionary<string, string> Args;
 
         /// <summary>A failure with a stable code, the existing English message and optional arguments.</summary>
@@ -20,6 +21,17 @@ namespace IdleCatForest.Simulation
         /// </summary>
         public static ActionResult Ok(string code, string entityId, params (string key, string value)[] args) =>
             new ActionResult { Success = true, Code = code ?? "", EntityId = entityId ?? "", Args = ToArgs(args) };
+
+        /// <summary>Sets <see cref="Code"/> when a helper outside the action files left it empty; returns this result.</summary>
+        public ActionResult Coded(string code)
+        {
+            if (string.IsNullOrEmpty(Code))
+                Code = code ?? "";
+            return this;
+        }
+
+        /// <summary>A number as an argument value: invariant culture, no group separator, at most four decimals.</summary>
+        public static string Number(double value) => value.ToString("0.####", CultureInfo.InvariantCulture);
 
         private static Dictionary<string, string> ToArgs((string key, string value)[] args)
         {
