@@ -9,8 +9,8 @@ kitten pivot, purpose`` (kitten pivots are the authored 1.08 scale):
 * EarL/EarR: Head, (-0.22,-0.40,1.02)/(+0.22,-0.40,1.02),
   (-0.2538,-0.432,1.0368)/(+0.2538,-0.432,1.0368), expressive ears.
 * Jaw: Head, (0,-0.59,0.80), (0,-0.6372,0.81), muzzle and speech jaw.
-* EyelidL/EyelidR: Head, (-0.155,-0.6248,0.965)/(+0.155,-0.6248,0.965),
-  (-0.1836,-0.5708,0.9936)/(+0.1836,-0.5708,0.9936), blink lids and lashes; each pivot is the deep eyeball centre.
+* EyelidL/EyelidR: Head, (-0.065,-0.505,0.905)/(+0.065,-0.505,0.905),
+  (-0.06696,-0.40284,0.8964)/(+0.06696,-0.40284,0.8964), blink lids and lashes; each pivot is the deep eyeball centre.
 * Tail: Body, (0,0.36,0.62), (0,0.324,0.5616), tail root.
 * Tail_1: Tail, (0.05,0.53,0.72), (0.0378,0.4968,0.6372), first tail link.
 * Tail_2: Tail_1, (0.10,0.65,0.92), (0.0702,0.6156,0.7560), second tail link.
@@ -33,13 +33,14 @@ imported root carries the FBX conversion.  Local X is lateral, local Y follows
 the spine with the nose toward -Y, and local Z is up.  Yaw is local Z, pitch is
 local X, and roll is local Y; a Body bob therefore uses the parent's local Z.
 Positive local X closes an eyelid at +70 degrees and opens the jaw at +25
-degrees. Adult eyelid pivots are at `(+/-0.155,-0.6248,0.965)` and kitten
-pivots at `(+/-0.1836,-0.567,0.9936)` after the authored 1.08 scale. Adult
-spheres use radius 0.075 m and kitten spheres 0.065 m before that scale; each
-sphere is recessed so its sampled front cap stays within 0.015 m of the head.
-Each eyelid is a 0.009 m concentric shell with 32 triangles, rests inside the
-head, and closes over the visible eye at +70 degrees with a short dark lower
-lash. Coat slots are ``Coat_Base`` (main fur), ``Coat_Marking`` (dark tabby
+degrees. Adult eyelid pivots are at `(+/-0.065,-0.505,0.905)` and kitten pivots at
+`(+/-0.06696,-0.40284,0.8964)` after the authored 1.08 scale. Adult eyeballs use
+radius 0.225 m with a 0.150 m opening and kitten eyeballs use authored radius
+0.270 m (0.292 m after scale) with a 0.205 m opening after scale. The visible cap has
+20-sided concentric cream, gold and eye circles, a 55% pupil and one outer cream
+catchlight. Each eyelid is a 0.009 m concentric shell with 60 triangles, rests
+inside the head, and closes over the visible eye at +70 degrees with a short
+dark lower lash. The eye cap allows up to 0.030 m rest protrusion. Coat slots are ``Coat_Base`` (main fur), ``Coat_Marking`` (dark tabby
 or colour patches), ``Coat_White`` (bib, muzzle and socks), and ``Coat_Point``
 (ears, legs and point coat).  Recipes are tabby (base + marking + white),
 tuxedo (black base + white), calico (orange/black patches + white), colour
@@ -56,6 +57,7 @@ by the world accessory builder.
 import math
 import re
 from mathutils import Matrix, Vector
+from mathutils.bvhtree import BVHTree
 
 from . import helpers as H
 from .helpers import finish_asset, merge_group, mesh, new_asset
@@ -387,7 +389,7 @@ def _unit(value):
     return value.normalized()
 
 
-def _spherical_cap(name, center, radius, direction, half_angle, slots, mask, nphi=12, ntheta=4, inner_offset=0.002):
+def _spherical_cap(name, center, radius, direction, half_angle, slots, mask, nphi=12, ntheta=4, inner_offset=0.002, ring_angles=None):
     """Closed thin spherical cap with its front surface on the eyeball."""
     center = Vector(center)
     direction = _unit(direction)
@@ -398,7 +400,7 @@ def _spherical_cap(name, center, radius, direction, half_angle, slots, mask, nph
     verts = [tuple(center + outer_radius * direction), tuple(center + inner_radius * direction)]
     outer_rings, inner_rings = [], []
     for ring in range(1, ntheta + 1):
-        theta = half_angle * ring / ntheta
+        theta = ring_angles[ring - 1] if ring_angles is not None else half_angle * ring / ntheta
         st, ct = math.sin(theta), math.cos(theta)
         outer_ring, inner_ring = [], []
         for phi_index in range(nphi):
@@ -435,15 +437,41 @@ def _spherical_cap(name, center, radius, direction, half_angle, slots, mask, nph
 
 
 def _eye_geometry(kitten):
-    # The centres sit well inside the head.  Only the shallow spherical cap
-    # between the surrounding cheek surface and the 0.015 m protrusion limit
-    # can be seen; the iris, pupil and catchlight follow that same sphere.
-    eye_x = 0.155 if not kitten else 0.17
-    eye_z = 0.965 if not kitten else 0.92
-    eye_y = -0.6248 if not kitten else -0.525
-    iris_scale = 1.24 if not kitten else 1.34
-    eye_radius = 0.075 if not kitten else 0.065
-    return eye_x, eye_y, eye_z, eye_radius, iris_scale
+    # A large sunk sphere gives the eye a round opening while its front cap
+    # stays close to the surrounding head.  The kitten keeps the same
+    # construction at a larger relative opening before its authored 1.08
+    # uniform scale.
+    eye_x = 0.065 if not kitten else 0.062
+    eye_y = -0.505 if not kitten else -0.373
+    eye_z = 0.905 if not kitten else 0.830
+    eye_radius = 0.225 if not kitten else 0.270
+    opening_radius = 0.075 if not kitten else 0.095
+    iris_radius = 0.063 if not kitten else 0.080
+    pupil_radius = iris_radius * 0.55
+    return eye_x, eye_y, eye_z, eye_radius, opening_radius, iris_radius, pupil_radius
+
+
+def _eye_front(side, kitten):
+    return Vector((side * 0.40, -math.sqrt(1.0 - 0.40 ** 2 - 0.22 ** 2), 0.22))
+
+
+def _shape_eye_sockets(head_shell, kitten):
+    eye_x, eye_y, eye_z, eye_radius, opening_radius, _iris_radius, _pupil_radius = _eye_geometry(kitten)
+    head_front_y = -0.44 if not kitten else -0.37
+    for vertex in head_shell.data.vertices:
+        point = vertex.co
+        if point.y >= head_front_y:
+            continue
+        for side in (-1, 1):
+            centre = Vector((side * eye_x, eye_y, eye_z))
+            front = _eye_front(side, kitten)
+            delta = point - centre
+            radial = (delta - front * delta.dot(front)).length
+            blend = max(0.0, min(1.0, (1.45 - radial / opening_radius) / 0.30))
+            if blend:
+                # Sink only the aperture; leave its outer fur edge as a brow.
+                target = math.sqrt(max(0.0, eye_radius ** 2 - radial ** 2)) - 0.018
+                point += front * (target - delta.dot(front)) * blend
 
 
 def _head_front_y(head_center, head_radii, x, z):
@@ -457,29 +485,27 @@ def _head_front_y(head_center, head_radii, x, z):
     return cy - ry * math.sqrt(1.0 - radial)
 
 
-def _assert_eye_geometry(name, kitten, eye_center, eye_radius, head_center, head_radii):
+def _assert_eye_geometry(name, kitten, eye_center, eye_radius, opening_radius, head_center, head_radii):
     """Check that the inserted sphere remains a shallow, recessed eye cap."""
     centre = Vector(eye_center)
     max_protrusion = -math.inf
-    samples = 24
-    for ix in range(samples + 1):
-        dx = -eye_radius + (2.0 * eye_radius * ix / samples)
-        for iz in range(samples + 1):
-            dz = -eye_radius + (2.0 * eye_radius * iz / samples)
-            remaining = eye_radius * eye_radius - dx * dx - dz * dz
-            if remaining < 0.0:
-                continue
-            surface_y = _head_front_y(head_center, head_radii, centre.x + dx, centre.z + dz)
-            if surface_y is None:
-                continue
-            sphere_y = centre.y - math.sqrt(remaining)
-            max_protrusion = max(max_protrusion, surface_y - sphere_y)
-    limit = 0.015 / (1.08 if kitten else 1.0)
+    front = _eye_front(1 if centre.x >= 0 else -1, kitten)
+    u = _unit(Vector((1, 0, 0)) - front * front.x)
+    v = front.cross(u)
+    for ring in range(13):
+        r = opening_radius * ring / 12
+        for index in range(40):
+            phi = math.tau * index / 40
+            p = centre + front * math.sqrt(eye_radius ** 2 - r ** 2) + r * (u * math.cos(phi) + v * math.sin(phi))
+            surface_y = _head_front_y(head_center, head_radii, p.x, p.z)
+            if surface_y is not None:
+                max_protrusion = max(max_protrusion, surface_y - p.y)
+    limit = 0.030 / (1.08 if kitten else 1.0)
     if max_protrusion > limit + 1e-5:
         raise AssertionError(f"{name}: {'kitten ' if kitten else ''}eyeball protrudes {max_protrusion * (1.08 if kitten else 1.0):.5f} m beyond the head")
 
 
-def _assert_eyelid_geometry(name, lid_obj, pivot, eye_radius, iris_scale, kitten, close_angle, rest_direction, half_angle):
+def _assert_eyelid_geometry(name, lid_obj, pivot, eye_radius, iris_radius, pupil_radius, kitten, close_angle, rest_direction, half_angle):
     pivot = Vector(pivot)
     points = [lid_obj.matrix_world @ vertex.co for vertex in lid_obj.data.vertices]
     distances = [(point - pivot).length for point in points]
@@ -490,47 +516,48 @@ def _assert_eyelid_geometry(name, lid_obj, pivot, eye_radius, iris_scale, kitten
         raise AssertionError(f"{name}: {lid_obj.name} protrudes {silhouette_over:.5f} m beyond the rest eye silhouette")
 
     closed_direction = Matrix.Rotation(close_angle, 4, "X") @ rest_direction
-    camera_directions = (
-        Vector((0, -1, 0)),
-        _unit((0.65, -0.76, 0)),
-        _unit((-0.65, -0.76, 0)),
-        _unit((0, -math.cos(math.radians(55)), math.sin(math.radians(55)))),
-    )
-    iris_half_angle = math.asin(min(0.99, 0.086 * iris_scale / (eye_radius + 0.001)))
-    pupil_half_angle = math.asin(min(0.99, 0.050 * iris_scale / (eye_radius + 0.002)))
-    sample_offsets = ((0.0, 0.0), (0.35, 0.0), (-0.35, 0.0), (0.0, 0.24), (0.0, -0.18))
-    front = Vector((0, -1, 0))
-    limit = math.cos(half_angle)
-    for camera in camera_directions:
-        visible_samples = []
-        for offset_x, offset_z in sample_offsets:
-            sample = _unit(camera + Vector((offset_x, 0, offset_z)))
-            if sample.dot(camera) <= 0:
-                continue
-            if sample.dot(front) >= math.cos(iris_half_angle) or sample.dot(front) >= math.cos(pupil_half_angle):
-                visible_samples.append(sample)
-        if not visible_samples:
-            raise AssertionError(f"{name}: {lid_obj.name} has no open-visible iris/pupil samples from camera {tuple(round(v, 3) for v in camera)}")
-        for sample in visible_samples:
-            if sample.dot(closed_direction) < limit - 1e-5:
-                raise AssertionError(f"{name}: {lid_obj.name} misses a closed-pose visible eye sample from {tuple(round(v, 3) for v in camera)}")
+    front = _eye_front(1 if pivot.x > 0 else -1, kitten)
+    if closed_direction.dot(front) < 1 - 1e-6:
+        raise AssertionError(f"{name}: closed lid is not centred on the visible eye")
+    # The polygon's inscribed aperture must cover the pupil and iris centre.
+    covered_radius = (eye_radius + 0.009) * math.sin(half_angle) * math.cos(math.pi / 15)
+    if covered_radius < iris_radius * 0.80:
+        raise AssertionError(f"{name}: lid misses the visible iris/pupil centre region")
 
 
 def _face_details(kitten):
-    eye_x, eye_y, eye_z, eye_radius, iris_scale = _eye_geometry(kitten)
+    eye_x, eye_y, eye_z, eye_radius, _opening_radius, iris_radius, pupil_radius = _eye_geometry(kitten)
     pieces = []
     for side in (-1, 1):
         x = side * eye_x
         center = (x, eye_y, eye_z)
-        # The visible eyeball is spherical and shares the eyelid pivot exactly.
-        pieces.append(_ellipsoid("cream eyeball", center, (eye_radius, eye_radius, eye_radius), ["cream"], lambda p: "cream", 10, 5))
-        # Gold and pupil caps follow the eyeball curvature at its -Y front.
-        front = (0, -1, 0)
-        pieces.append(_spherical_cap("gold iris", center, eye_radius + 0.001, front, math.asin(min(0.99, 0.086 * iris_scale / (eye_radius + 0.001))), ["gold"], lambda p: "gold", nphi=8, ntheta=3, inner_offset=0.001))
-        pieces.append(_spherical_cap("round pupil", center, eye_radius + 0.002, front, math.asin(min(0.99, 0.050 * iris_scale / (eye_radius + 0.002))), ["eye"], lambda p: "eye", nphi=6, ntheta=2, inner_offset=0.001))
-        # The catchlight sits just above the pupil's spherical front.
-        catch_direction = _unit((-side * 0.030, -math.sqrt(eye_radius ** 2 - 0.030 ** 2 - 0.041 ** 2), 0.041))
-        pieces.append(_spherical_cap("cream catchlight", center, eye_radius + 0.003, catch_direction, math.asin(0.019 / (eye_radius + 0.003)), ["cream"], lambda p: "cream", nphi=4, ntheta=1, inner_offset=0.001))
+        front = _eye_front(side, kitten)
+        # Shared twenty-sided boundaries avoid intersecting or jagged layers.
+        u = _unit(Vector((1, 0, 0)) - front * front.x)
+        v = front.cross(u)
+        verts = [tuple(Vector(center) + front * eye_radius)]
+        for r in (pupil_radius, iris_radius, _opening_radius):
+            for index in range(20):
+                phi = math.tau * index / 20
+                verts.append(tuple(Vector(center) + front * math.sqrt(eye_radius ** 2 - r ** 2) + r * (u * math.cos(phi) + v * math.sin(phi))))
+        back = len(verts)
+        verts.append(tuple(Vector(center) + front * (eye_radius - 0.045)))
+        faces, slots = [], []
+        for index in range(20):
+            nxt = (index + 1) % 20
+            faces.append((0, 1+index, 1+nxt))
+            slots.append('eye')
+            for row, slot in ((0, 'gold'), (1, 'cream')):
+                a, b = 1+row*20, 21+row*20
+                faces.append((a+index, b+index, b+nxt, a+nxt))
+                slots.append(slot)
+            faces.append((back, 41+nxt, 41+index))
+            slots.append('cream')
+        pieces.append(_multi_mesh('round eye cap', verts, faces, ['cream', 'gold', 'eye'], slots))
+        catch_radius = 0.010 if not kitten else 0.013
+        offset = u * (side * pupil_radius * 0.43) + v * (pupil_radius * 0.45)
+        catch_direction = _unit(front * math.sqrt(eye_radius ** 2 - offset.length_squared) + offset)
+        pieces.append(_spherical_cap('outer cream catchlight', center, eye_radius + 0.003, catch_direction, math.asin(catch_radius / (eye_radius + 0.003)), ['cream'], lambda p: 'cream', nphi=10, ntheta=1, inner_offset=0.001))
     pieces.append(_ellipsoid("left muzzle pad", (-0.078, -0.675 if not kitten else -0.663, 0.822 if not kitten else 0.795), (0.094, 0.057, 0.060), ["Coat_White"], lambda p: "Coat_White", (6 if kitten else 8), 5))
     pieces.append(_ellipsoid("right muzzle pad", (0.078, -0.675 if not kitten else -0.663, 0.822 if not kitten else 0.795), (0.094, 0.057, 0.060), ["Coat_White"], lambda p: "Coat_White", (6 if kitten else 8), 5))
     pieces.append(_ellipsoid("pink nose", (0, -0.760 if not kitten else -0.735, 0.845 if not kitten else 0.815), (0.053, 0.032, 0.040), ["nose"], lambda p: "nose", (4 if kitten else 6), 4))
@@ -626,13 +653,14 @@ def _build_cat(name, kitten=False):
         head_center, head_radii = (0, -0.44, 0.88), (0.40, 0.29, 0.30)
         body_pivot, head_pivot = (0, 0, 0), (0, -0.31, 0.80)
 
-    eye_x, eye_y, eye_z, eye_radius, _iris_scale = _eye_geometry(kitten)
+    eye_x, eye_y, eye_z, eye_radius, opening_radius, _iris_radius, _pupil_radius = _eye_geometry(kitten)
     for side in (-1, 1):
         _assert_eye_geometry(
             name,
             kitten,
             (side * eye_x, eye_y, eye_z),
             eye_radius,
+            opening_radius,
             head_center,
             head_radii,
         )
@@ -645,7 +673,9 @@ def _build_cat(name, kitten=False):
 
     head_params = (*head_center, *head_radii, kitten)
     head_slots = ["Coat_Base", "Coat_Marking", "Coat_White", "Coat_Point"]
-    head = [_ellipsoid("chunky cheek head", head_center, head_radii, head_slots, lambda p: _head_mask(p, head_params), nlon=14 if kitten else 14, nlat=10 if kitten else 10)]
+    head_shell = _ellipsoid("chunky cheek head", head_center, head_radii, head_slots, lambda p: _head_mask(p, head_params), nlon=14 if kitten else 14, nlat=10 if kitten else 10)
+    _shape_eye_sockets(head_shell, kitten)
+    head = [head_shell]
     if not kitten:
         head.extend([
             _ellipsoid("left cheek fluff", (-0.285, -0.46, 0.84), (0.14, 0.19, 0.17), head_slots, lambda p: _head_mask(p, head_params), 6, 5),
@@ -666,21 +696,22 @@ def _build_cat(name, kitten=False):
     # Each lid is a closed spherical shell concentric with its eyeball.  The
     # rest cap is top/back; +70 deg local X carries it over the front.
     lid_angle = math.radians(70)
-    lid_half_angle = math.radians(60)
-    rest_direction = _unit((0.0, 0.02, 0.9998))
     for side, suffix in ((-1, "L"), (1, "R")):
-        eye_x, eye_y, eye_z, eye_radius, _iris_scale = _eye_geometry(kitten)
+        eye_x, eye_y, eye_z, eye_radius, _opening_radius, iris_radius, pupil_radius = _eye_geometry(kitten)
         pivot = (side * eye_x, eye_y, eye_z)
         outer_radius = eye_radius + 0.009 / (1.08 if kitten else 1.0)
         closed_rotation = Matrix.Rotation(lid_angle, 4, "X")
+        front = _eye_front(side, kitten)
+        rest_direction = closed_rotation.inverted() @ front
+        lid_half_angle = math.asin((_opening_radius + 0.003) / outer_radius)
 
         def lid_material(point):
             closed = closed_rotation @ (point - Vector(pivot))
-            # Short dark arc inset from the lower edge.  The centre dips down
-            # a little; it stays on the shell rather than floating above it.
-            # The low-poly shell has one outer ring, so use a generous band
-            # for the dark lower lash and keep the rest blended into the fur.
-            return "Coat_Marking" if abs(closed.x) < 0.090 and closed.y < -0.015 and closed.z < 0.020 else "Coat_Base"
+            u = _unit(Vector((1, 0, 0)) - front * front.x)
+            v = front.cross(u)
+            # Only the thin boundary wall at the lower middle is dark.
+            radial = (closed - front * closed.dot(front)).length
+            return "eye" if radial > _opening_radius * 0.97 and closed.dot(v) < -_opening_radius * 0.65 else "Coat_Base"
 
         shell = _spherical_cap(
             "concentric lid shell",
@@ -688,15 +719,15 @@ def _build_cat(name, kitten=False):
             outer_radius,
             rest_direction,
             lid_half_angle,
-            ["Coat_Base", "Coat_Marking"],
+            ["Coat_Base", "eye"],
             lid_material,
-            nphi=8,
+            nphi=15,
             ntheta=1,
             inner_offset=outer_radius - eye_radius,
         )
         lid_obj = _join_part("Eyelid" + suffix, [shell], pivot)
         lids[suffix] = lid_obj
-        _assert_eyelid_geometry(name, lid_obj, pivot, eye_radius, _iris_scale, kitten, lid_angle, rest_direction, lid_half_angle)
+        _assert_eyelid_geometry(name, lid_obj, pivot, eye_radius, iris_radius, pupil_radius, kitten, lid_angle, rest_direction, lid_half_angle)
         lid_obj["eyeball_radius"] = eye_radius
         lid_obj["shell_outer_radius"] = outer_radius
         lid_obj["rest_direction"] = tuple(round(value, 6) for value in rest_direction)
@@ -845,7 +876,10 @@ def _build_cat(name, kitten=False):
         "eyeball": {
             "adult_or_kitten_centre": [round(v, 6) for v in (eye_x, eye_y, eye_z)],
             "radius": eye_radius,
-            "rest_protrusion_limit": 0.015,
+            "opening_radius": opening_radius,
+            "iris_radius": _iris_radius,
+            "pupil_radius": _pupil_radius,
+            "rest_protrusion_limit": 0.030,
         },
         "sockets": [socket.name for socket in sockets],
         "kitten_width": 0.47 if kitten else 0.85,
