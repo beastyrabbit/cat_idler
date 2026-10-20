@@ -1,0 +1,5 @@
+# >>> bytefleet:mcp — managed by ByteFleet, do not edit between the markers >>>
+[mcp_servers.bevy]
+command = "bevy_brp_mcp"
+args = []
+# <<< bytefleet:mcp <<<

@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "bevy": {
+      "type": "stdio",
+      "command": "bevy_brp_mcp",
+      "args": []
+    }
+  }
+}
