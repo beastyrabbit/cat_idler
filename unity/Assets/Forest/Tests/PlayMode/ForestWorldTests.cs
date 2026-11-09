@@ -30,6 +30,43 @@ namespace IdleCatForest.Tests
             if (game != null) UnityEngine.Object.Destroy(game.gameObject); yield return null;
             if (Directory.Exists(directory)) Directory.Delete(directory, true);
         }
+        [UnityTest] public IEnumerator StockpileCargoShowsReportedQuantityWithoutRevealingUncountedGoods()
+        {
+            var pile = game.Selected.Stockpiles.First(p => p.Kind == "storage");
+            pile.Report.Clear(); pile.Report.Add(new Stack("logs", 1));
+            pile.Goods.Clear(); pile.Goods.Add(new Stack("logs", 100));
+            void Refresh() => typeof(ForestView).GetMethod("Reconcile", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(game.View, null);
+            int Bundles() => UnityEngine.Object.FindObjectsByType<Transform>(FindObjectsSortMode.None).Count(t => t.name.StartsWith("pilegoods:" + pile.Id + ":logs", StringComparison.Ordinal));
+            Refresh(); yield return null;
+            Assert.That(Bundles(), Is.EqualTo(1), "Unreported goods must not leak through the visual pile.");
+            pile.Report[0].Amount = 100;
+            Refresh(); yield return null;
+            Assert.That(Bundles(), Is.EqualTo(3), "A large counted stock must look fuller than one log, with a bounded prop budget.");
+            pile.Report[0].Amount = 1;
+            Refresh(); yield return null;
+            Assert.That(Bundles(), Is.EqualTo(1), "Spent reported stock must remove its extra bundles.");
+            pile.Report.Clear();
+            Refresh(); yield return null;
+            Assert.That(Bundles(), Is.Zero, "An empty report must remove all resource bundles.");
+        }
+        [UnityTest] public IEnumerator StockpileDesignationShowsItsActualGroundFootprintAndKeepsItsAccessPoint()
+        {
+            var pile = game.Selected.Stockpiles.First(p => p.Kind == "storage");
+            pile.Width = 4; pile.Depth = 2;
+            typeof(ForestView).GetMethod("Reconcile", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(game.View, null);
+            yield return null;
+            var visual = GameObject.Find("pile:" + pile.Id);
+            Assert.That(visual.transform.position.x, Is.EqualTo(pile.Position.X).Within(.001f), "The visible crates must remain at the authoritative transfer point.");
+            Assert.That(visual.transform.position.z, Is.EqualTo(pile.Position.Z).Within(.001f));
+            var outline = visual.GetComponent<LineRenderer>();
+            Assert.That(outline, Is.Not.Null, "The player must see the designated storage extent.");
+            Assert.That(outline.loop, Is.True);
+            var corners = Enumerable.Range(0, outline.positionCount).Select(outline.GetPosition).ToArray();
+            Assert.That(corners.Max(p => p.x) - corners.Min(p => p.x), Is.EqualTo(4).Within(.001f));
+            Assert.That(corners.Max(p => p.z) - corners.Min(p => p.z), Is.EqualTo(2).Within(.001f));
+            Assert.That((corners.Max(p => p.x) + corners.Min(p => p.x)) * .5f, Is.EqualTo(pile.Position.X + 1.5f).Within(.001f));
+            Assert.That((corners.Max(p => p.z) + corners.Min(p => p.z)) * .5f, Is.EqualTo(pile.Position.Z + .5f).Within(.001f));
+        }
         [UnityTest] public IEnumerator WorldPanelDispatchesPhysicalExplorerAndShowsDiscoveredFloor()
         {
             var cat = game.Selected.Cats[0]; cat.Skills.Add(new Stack("fight", 12));
@@ -60,6 +97,52 @@ namespace IdleCatForest.Tests
             Assert.That(selection.GetPosition(0).y, Is.EqualTo((float)cat.Y + .08f).Within(.01f), "The selection must sit on the cat's actual floor");
             game.View.ViewLevel(0); yield return null; yield return null;
             Assert.That(game.View.RenderedLevel, Is.EqualTo(0), "An inspected explorer must not override an explicit surface view");
+        }
+        [UnityTest] public IEnumerator WorkplaceNavigationReturnsFromDungeonToTheBuildingsOwnLevel()
+        {
+            var floor = game.CurrentWorld.Dungeons.First().Floors.First();
+            game.Selected.Known.Add(floor.Spawn);
+            game.View.ViewLevel(floor.Level);
+            Assert.That(game.View.RenderedLevel, Is.EqualTo(floor.Level));
+            var building = game.Selected.Buildings.First(b => b.Kind == "wood_cutter");
+            game.UI.OpenPanel("Work");
+            var button = game.GetComponent<UIDocument>().rootVisualElement.Query<Button>().ToList().First(b => b.text.StartsWith("wood cutter · ", StringComparison.Ordinal));
+            using (var e = NavigationSubmitEvent.GetPooled()) { e.target = button; button.SendEvent(e); }
+            Assert.That(game.View.SelectedBuilding, Is.SameAs(building));
+            Assert.That(game.View.RenderedLevel, Is.EqualTo(building.Position.Level), "Inspecting a workplace must reveal the floor that contains it.");
+            yield return null; yield return null;
+            Assert.That(GameObject.Find("building:" + building.Id), Is.Not.Null, "The workplace must be rendered beside its inspector.");
+            var center = new Vector3(building.Position.X + (building.Width - 1) * .5f, (float)game.CurrentWorld.WalkHeight(building.Position), building.Position.Z + (building.Depth - 1) * .5f);
+            var screen = game.View.Camera.WorldToViewportPoint(center);
+            Assert.That(screen.x, Is.GreaterThan(game.UI.WorldLeftFraction + .03f));
+            Assert.That(screen.y, Is.InRange(.3f, .7f));
+        }
+        [UnityTest] public IEnumerator TetheredInspectorHidesSubjectsOnOtherFloors()
+        {
+            var root = game.GetComponent<UIDocument>().rootVisualElement;
+            root.style.flexGrow = 0;
+            root.style.width = root.style.maxWidth = 1000;
+            root.style.height = root.style.maxHeight = 620;
+            var floor = game.CurrentWorld.Dungeons.First().Floors.First();
+            game.Selected.Known.Add(floor.Spawn);
+            var cat = game.Selected.Cats.First(c => c.Alive);
+            cat.Position = floor.Spawn; cat.X = floor.Spawn.X; cat.Z = floor.Spawn.Z;
+            cat.Y = game.CurrentWorld.WalkHeight(floor.Spawn); cat.HasHeight = true;
+            game.View.InspectCat(cat.Id);
+            yield return null; yield return null; yield return null;
+            var tether = game.GetComponent<UIDocument>().rootVisualElement.Q<VisualElement>(className: "tethered-inspector");
+            Assert.That(tether.resolvedStyle.display, Is.EqualTo(DisplayStyle.Flex));
+            game.View.ViewLevel(0);
+            yield return null; yield return null;
+            Assert.That(tether.resolvedStyle.display, Is.EqualTo(DisplayStyle.None), "An underground cat must not leave a floating label over the surface.");
+            Assert.That(game.View.SelectedCat, Is.SameAs(cat), "Changing floors keeps inspection available without misplacing its world label.");
+            var building = game.Selected.Buildings.First(b => b.Kind == "wood_cutter");
+            game.View.InspectBuilding(building.Id);
+            yield return null; yield return null;
+            Assert.That(tether.resolvedStyle.display, Is.EqualTo(DisplayStyle.Flex));
+            game.View.ViewLevel(floor.Level);
+            yield return null; yield return null;
+            Assert.That(tether.resolvedStyle.display, Is.EqualTo(DisplayStyle.None), "Surface workplaces must not leave labels over dungeon rooms.");
         }
         [UnityTest] public IEnumerator TerrainMeshesHaveDepthAndCameraCannotGenerateTiles()
         {

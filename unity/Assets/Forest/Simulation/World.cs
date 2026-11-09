@@ -335,6 +335,43 @@ namespace IdleCatForest.Simulation
             }
             return false;
         }
+        private Int2? ProductionInputAccess(Village v, Stockpile pile, Int2 from, Int2 station) => StockpileAccess(v, pile, from, station);
+        private Int2? StockpileAccess(Village v, Stockpile pile, Int2 from, Int2? onward = null)
+        {
+            if (onward.HasValue && !Walkable(v, onward.Value))
+                return null;
+            var positions = new List<Int2>();
+            for (int z = 0; z < pile.Depth; z++)
+                for (int x = 0; x < pile.Width; x++)
+                    positions.Add(new Int2(pile.Position.X + x, pile.Position.Z + z, pile.Position.Level));
+            foreach (var at in positions.OrderBy(p => p.Equals(pile.Position) ? 0 : 1).ThenBy(p => Int2.Distance(from, p)).ThenBy(p => p.Z).ThenBy(p => p.X))
+                if (Walkable(v, at) && Path(from, at, v) != null && (!onward.HasValue || Path(at, onward.Value, v) != null))
+                    return at;
+            return null;
+        }
+        private bool Reserve(Village v, string ownerId, string resource, double amount, Int2 from, Int2 station)
+        {
+            if (amount <= 0 || !Finite(amount) || Available(v, resource) + 1e-9 < amount)
+                return false;
+            // A recipe claims its complete reachable bill or nothing. Other work retains
+            // the public reservation API, which has no actor or delivery context.
+            var claims = new List<Reservation>();
+            foreach (var pile in v.Stockpiles.OrderBy(s => s.Id, StringComparer.Ordinal))
+            {
+                double free = Amount(pile.Goods, resource) - Reservations.Where(r => r.PileId == pile.Id && r.Resource == resource).Sum(r => r.Amount);
+                double take = Math.Min(amount, Math.Max(0, free));
+                if (take <= 0 || !ProductionInputAccess(v, pile, from, station).HasValue)
+                    continue;
+                claims.Add(new Reservation { OwnerId = ownerId, VillageId = v.Id, PileId = pile.Id, Resource = resource, Amount = take });
+                amount -= take;
+                if (amount < 1e-9)
+                {
+                    Reservations.AddRange(claims);
+                    return true;
+                }
+            }
+            return false;
+        }
         public void Release(string ownerId) => Reservations.RemoveAll(r => r.OwnerId == ownerId);
         public static bool Finite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
         private bool Spend(Village v, string resource, double amount)
@@ -561,11 +598,11 @@ namespace IdleCatForest.Simulation
             return c.Position.Equals(destination);
         }
         public bool Crossable(Int2 a, Int2 b) => Crossable(a, b, null, 0);
-        private bool Crossable(Int2 a, Int2 b, Village expanding, int expansionRadius)
+        private bool Crossable(Int2 a, Int2 b, Village expanding, int expansionRadius, bool checkElevation = true)
         {
             if (a.Level != b.Level)
                 return DungeonEdge(a, b);
-            if (GenerationVersion > 0 && Math.Abs(WalkHeight(a) - WalkHeight(b)) > .65)
+            if (checkElevation && GenerationVersion > 0 && Math.Abs(WalkHeight(a) - WalkHeight(b)) > .65)
                 return false;
             foreach (var v in Villages)
             {
@@ -681,6 +718,7 @@ namespace IdleCatForest.Simulation
                 foreach (var c in v.Cats.Where(c => c.Alive))
                     if (v.Jobs.Count(j => !j.Completed && j.CatId == c.Id) > 1)
                         errors.Add("Double work owner " + c.Id);
+                ValidateEquipment(v, errors);
             }
             return errors;
         }

@@ -25,25 +25,31 @@ namespace IdleCatForest.Simulation
                     else if (c.Goal == "player_rest")
                     {
                         var den = v.Buildings.Find(b => b.Id == c.BedId && b.Completed);
-                        if (den != null && Int2.Distance(c.Position, den.Position) <= 1)
+                        if (den != null && CanReachControlledDestination(v, c, den.Position))
                             c.Rest = Math.Min(100, c.Rest + SpendActorTime(c) * 0.15 * Service(v, "beds", "restRecovery", 1));
                         else
                             c.Goal = "player_control";
                     }
                 }
         }
+        private bool CanReachControlledDestination(Village village, Cat cat, Int2 destination)
+        {
+            return cat.Position.Level == destination.Level && Int2.Distance(cat.Position, destination) <= 1
+                && Math.Abs(cat.X - destination.X) + Math.Abs(cat.Z - destination.Z) <= 1 + 1e-8
+                && GetTile(destination) != null && Walkable(village, destination) && Crossable(cat.Position, destination);
+        }
         private ActionResult ControlledNeed(Village v, Cat c, string mode)
         {
             if (mode == "rest")
             {
                 var den = v.Buildings.Find(b => b.Id == c.BedId && b.Completed);
-                if (den == null || Int2.Distance(c.Position, den.Position) > 1)
+                if (den == null || !CanReachControlledDestination(v, c, den.Position))
                     return ActionResult.Fail("Rest at this cat's reserved Den bed");
                 c.Path.Clear();
                 c.Goal = "player_rest";
                 return ActionResult.Ok();
             }
-            if (Int2.Distance(c.Position, v.Center) > 1)
+            if (!CanReachControlledDestination(v, c, v.Center))
                 return ActionResult.Fail("Carry the serving to the shrine dining area");
             var choices = mode == "drink" ? (!c.PersonalBrewUsed && Available(v, "water") >= 0.75 ? new[] { "water", "brew" } : new[] { "water" }) : new[] { "fish", "preserves", "food" };
             var serving = c.Cargo.FirstOrDefault(s => choices.Contains(s.Resource) && s.Amount >= (s.Resource == "brew" ? 0.25 : s.Resource == "water" && c.PersonalBrewUsed ? 0.75 : 1));

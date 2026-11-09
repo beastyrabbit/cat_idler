@@ -15,6 +15,9 @@ namespace IdleCatForest.Acceptance
             yield return new Scenario("regression.dungeons_stairs_require_physical_time", PhysicalStairs);
             yield return new Scenario("regression.dungeons_combat_loot_return_chain", ExpeditionChain);
             yield return new Scenario("regression.dungeons_recall_carries_goods_home", RecallGoods);
+            yield return new Scenario("regression.dungeons_return_low_needs_finishes_delivery", LowNeedsDelivery);
+            yield return new Scenario("regression.dungeons_return_recall_releases_direct_control", RecallControlledExplorer);
+            yield return new Scenario("regression.dungeons_recall_respects_other_players_control_lease", RecallRespectsControlLease);
             yield return new Scenario("regression.dungeons_needs_force_safe_return", NeedsReturn);
             yield return new Scenario("regression.dungeons_wall_blocks_combat", WallCombat);
             yield return new Scenario("regression.dungeons_direct_control_release_returns", DirectRelease);
@@ -152,6 +155,78 @@ namespace IdleCatForest.Acceptance
             for (int i = 0; i < 60 && f.World.IsDungeonExplorer(f.Cat); i++) f.World.Step(1);
             Check(f.Cat.Position.Level == 0 && f.Cat.DungeonId == "" && f.Cat.Cargo.Count == 0, "Recall must retrace stairs and unload cargo");
             Check(Math.Abs(f.World.Total(f.Village, "gem") - before - 2) < 1e-8, "Recall transfers the two carried gems into storage without creating or losing goods");
+        }
+
+        private static void LowNeedsDelivery()
+        {
+            var f = Fixture();
+            Place(f.World, f.Cat, f.Site.Floors[0].Spawn);
+            f.Cat.DungeonId = f.Site.Id;
+            f.Cat.DungeonPhase = "exploring";
+            f.Cat.Cargo.Add(new Stack("gem", 2));
+            f.Cat.Thirst = 29;
+            double before = f.Village.Stockpiles.Sum(p => p.Goods.Where(s => s.Resource == "gem").Sum(s => s.Amount));
+            bool unloading = false;
+            for (int i = 0; i < 60 && f.World.IsDungeonExplorer(f.Cat); i++)
+            {
+                f.World.Step(1);
+                unloading |= f.Cat.DungeonPhase == "unloading";
+            }
+            Check(unloading, "A thirsty explorer must physically return home and start carrying its recovered goods to storage");
+            Check(f.Cat.Alive && !f.World.IsDungeonExplorer(f.Cat) && !f.Cat.Cargo.Any(s => s.Resource == "gem"), "Low needs must not repeatedly send an unloading cat back to the shrine instead of completing delivery");
+            Check(Math.Abs(f.Village.Stockpiles.Sum(p => p.Goods.Where(s => s.Resource == "gem").Sum(s => s.Amount)) - before - 2) < 1e-8, "The same two carried gems must reach physical storage before the explorer seeks care");
+            Check(f.Cat.Goal == "need_drink" || f.Cat.Thirst > 29, "Finishing the expedition must release the thirsty cat to fetch a real serving of water");
+        }
+
+        private static void RecallControlledExplorer()
+        {
+            var f = Fixture();
+            var identity = new PlayerContext { PlayerId = "dungeon-recall", VillageId = f.Village.Id };
+            Check(f.World.Apply(identity, new GameAction { Kind = "EnterCatControl", CatId = f.Cat.Id }).Success, "Take direct control before descending");
+            Check(f.World.Apply(identity, new GameAction { Kind = "MoveCat", CatId = f.Cat.Id, Position = new Int2(1, 0) }).Success, "Walk onto the physical entrance stair");
+            f.World.Step(4);
+            Check(f.Cat.Position.Level == -1 && f.Cat.DungeonPhase == "manual", "The controlled explorer reaches the real lower landing");
+            f.Cat.Cargo.Add(new Stack("gem", 2));
+            Check(f.World.Apply(identity, new GameAction { Kind = "MoveCat", CatId = f.Cat.Id, Position = new Int2(1, 0) }).Success, "Begin an unfinished edge farther into the dungeon");
+            f.World.Step(.05);
+            var position = f.Cat.Position;
+            double x = f.Cat.X, y = f.Cat.Y, z = f.Cat.Z;
+            double before = f.Village.Stockpiles.Sum(p => p.Goods.Where(s => s.Resource == "gem").Sum(s => s.Amount));
+            Check(f.World.Apply(identity, new GameAction { Kind = "RecallExplorer", CatId = f.Cat.Id }).Success, "Recall accepts the directly controlled explorer");
+            Check(f.Cat.ControlledBy == "" && f.Cat.ControlLeaseUntil <= f.World.TimeSeconds && f.Cat.Path.Count == 0, "Successful recall must relinquish direct control and its pending movement command");
+            Check(f.Cat.Position.Equals(position) && f.Cat.X == x && f.Cat.Y == y && f.Cat.Z == z && f.Cat.Cargo.Sum(s => s.Amount) == 2, "Recall preserves the explorer's exact unfinished movement and finite cargo");
+            f.World.Step(.05);
+            Check(f.Cat.X < x && f.Cat.Position.Equals(position) && f.Cat.Position.Level == -1, "Recall physically retraces its unfinished edge rather than continuing the old direct command");
+            for (int i = 0; i < 60 && f.World.IsDungeonExplorer(f.Cat); i++) f.World.Step(1);
+            Check(!f.World.IsDungeonExplorer(f.Cat) && f.Cat.Position.Level == 0 && f.Cat.Cargo.Count == 0, "The recalled cat must physically return through stairs and finish delivery");
+            Check(Math.Abs(f.Village.Stockpiles.Sum(p => p.Goods.Where(s => s.Resource == "gem").Sum(s => s.Amount)) - before - 2) < 1e-8, "Recall delivers the same cargo once after releasing direct control");
+        }
+
+        private static void RecallRespectsControlLease()
+        {
+            var f = Fixture();
+            var owner = new PlayerContext { PlayerId = "dungeon-owner", VillageId = f.Village.Id };
+            var other = new PlayerContext { PlayerId = "dungeon-neighbor", VillageId = f.Village.Id };
+            Check(f.World.Apply(owner, new GameAction { Kind = "EnterCatControl", CatId = f.Cat.Id }).Success, "The first player controls the communal explorer");
+            Check(f.World.Apply(owner, new GameAction { Kind = "MoveCat", CatId = f.Cat.Id, Position = new Int2(1, 0) }).Success, "The control holder starts descending");
+            f.World.Step(4);
+            Check(f.Cat.Position.Level == -1 && f.Cat.DungeonPhase == "manual", "The same explorer reaches the lower landing");
+            f.Cat.Cargo.Add(new Stack("gem", 2));
+            Check(f.World.Apply(owner, new GameAction { Kind = "MoveCat", CatId = f.Cat.Id, Position = new Int2(1, 0) }).Success, "The control holder begins another edge");
+            f.World.Step(.05);
+            var position = f.Cat.Position;
+            var path = f.Cat.Path.ToArray();
+            double x = f.Cat.X, y = f.Cat.Y, z = f.Cat.Z, lease = f.Cat.ControlLeaseUntil;
+            string phase = f.Cat.DungeonPhase, target = f.Cat.DungeonTargetId, goal = f.Cat.Goal;
+            var recall = new GameAction { Kind = "RecallExplorer", CatId = f.Cat.Id };
+            Check(!f.World.Apply(other, recall).Success, "Another player must not recall an explorer with an active control lease");
+            Check(f.Cat.ControlledBy == owner.PlayerId && f.Cat.ControlLeaseUntil == lease && f.Cat.Path.SequenceEqual(path), "Rejected recall preserves the holder's lease and pending command");
+            Check(f.Cat.Position.Equals(position) && f.Cat.X == x && f.Cat.Y == y && f.Cat.Z == z && f.Cat.Cargo.Count == 1 && f.Cat.Cargo[0].Resource == "gem" && f.Cat.Cargo[0].Amount == 2, "Rejected recall preserves exact physical position and finite cargo");
+            Check(f.Cat.DungeonPhase == phase && f.Cat.DungeonTargetId == target && f.Cat.Goal == goal, "Rejected recall preserves the expedition and current goal");
+
+            f.Cat.ControlLeaseUntil = f.World.TimeSeconds;
+            Check(f.World.Apply(other, recall).Success, "An expired control lease must not prevent communal recall");
+            Check(f.Cat.ControlledBy == "" && f.Cat.Path.Count == 0 && f.Cat.DungeonPhase == "returning", "Accepted recall releases expired control and starts physical return");
         }
 
         private static void NeedsReturn()

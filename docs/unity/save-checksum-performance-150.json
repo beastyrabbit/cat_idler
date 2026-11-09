@@ -1,0 +1,401 @@
+{
+  "schema": "idle-cat-forest-save-checksum-comparison-v1",
+  "inputs": {
+    "artifacts/tests/hourly-save-encoding-baseline150-performance.json": "f07eb0b556bcfc4b38b92ce66b318303be4fcefa029a6bf9f1fa07a19576258b",
+    "artifacts/tests/hourly-save-encoding-candidate150-performance.json": "9f52035eb12b9f8fe15d154ab7c1b5ff92c5080dfacf9375562435d2d76110ae"
+  },
+  "quantileSemantics": "Sorted floor(q*N), capped at last index; no interpolation.",
+  "conditions": "Separate untouched 150-cat worlds with matching initial simulation state except epoch/player metadata; local management view at 1x and 2400x1500 on Apple M1 Max. Same opt-in profiling in both packages, no input or capture during sampling, no owned Unity/.NET runners; unrelated host load uncontrolled.",
+  "managedChecksumAllocation": {
+    "payloadUtf8Bytes": 2097159,
+    "baselineAllocatedBytes": 2098800,
+    "candidateAllocatedBytes": 13992,
+    "reductionPercent": 99.33333333333333,
+    "scope": ".NET10 focused warm checksum call on prebuilt synthetic payload; excludes input string, JSON encoding, envelope and disk. Not a Unity allocation measurement."
+  },
+  "smokeSeconds": 0.16160929086618125,
+  "native": {
+    "baseline150": {
+      "packageManifestSha256": "34123eaeb2764177cc735a2caae74be932f61b1507a0939b733fb1a9abfe9c0b",
+      "saveCount": 29,
+      "totalMilliseconds": {
+        "count": 29,
+        "min": 64.3789,
+        "median": 67.9032,
+        "p95": 71.793,
+        "max": 72.414
+      },
+      "stages": {
+        "LockWait": {
+          "count": 29,
+          "min": 0.0,
+          "median": 0.0,
+          "p95": 0.0002,
+          "max": 0.0002
+        },
+        "Validation": {
+          "count": 29,
+          "min": 0.1894,
+          "median": 0.201,
+          "p95": 0.2252,
+          "max": 0.9876
+        },
+        "PayloadEncode": {
+          "count": 29,
+          "min": 37.1816,
+          "median": 39.923500000000004,
+          "p95": 42.017900000000004,
+          "max": 42.5086
+        },
+        "PayloadUtf8Hash": {
+          "count": 29,
+          "min": 9.919,
+          "median": 10.361,
+          "p95": 12.8126,
+          "max": 12.825700000000001
+        },
+        "EnvelopeEncode": {
+          "count": 29,
+          "min": 10.461400000000001,
+          "median": 13.581000000000001,
+          "p95": 14.5693,
+          "max": 14.8696
+        },
+        "TempSetupProtection": {
+          "count": 29,
+          "min": 0.5303,
+          "median": 0.6306,
+          "p95": 3.2677,
+          "max": 3.3661000000000003
+        },
+        "EnvelopeUtf8Write": {
+          "count": 29,
+          "min": 0.6878000000000001,
+          "median": 0.9115000000000001,
+          "p95": 0.9975,
+          "max": 1.0027000000000001
+        },
+        "FlushClose": {
+          "count": 29,
+          "min": 0.5044000000000001,
+          "median": 0.9573,
+          "p95": 1.5297,
+          "max": 1.8052000000000001
+        },
+        "MoveReplace": {
+          "count": 29,
+          "min": 0.5825,
+          "median": 0.6854,
+          "p95": 0.9145000000000001,
+          "max": 1.2478
+        },
+        "DirectorySync": {
+          "count": 29,
+          "min": 0.025900000000000003,
+          "median": 0.039,
+          "p95": 0.054,
+          "max": 0.666
+        }
+      },
+      "payloadBytes": {
+        "count": 29,
+        "min": 1745087,
+        "median": 1745898,
+        "p95": 1747138,
+        "max": 1747473
+      },
+      "envelopeBytes": {
+        "count": 29,
+        "min": 2023374,
+        "median": 2024359,
+        "p95": 2025863,
+        "max": 2026222
+      },
+      "frameP50": 16.67249870300293,
+      "frameP95": 33.36150360107422,
+      "stepP50": 0.4297,
+      "stepP95": 1.2129,
+      "frames": 3600,
+      "steps": 2988,
+      "economyTicks": 149,
+      "processor": "Apple M1 Max",
+      "graphics": "Apple M1 Max",
+      "workingCats": 10,
+      "maximumArithmeticErrorMilliseconds": 1.4210854715202004e-14,
+      "joinedFollowingIntervals": [
+        {
+          "sequence": 16,
+          "frameIndex": 4156,
+          "followingIntervalMilliseconds": 83.34029388427734
+        },
+        {
+          "sequence": 17,
+          "frameIndex": 4424,
+          "followingIntervalMilliseconds": 82.57833099365234
+        },
+        {
+          "sequence": 18,
+          "frameIndex": 4691,
+          "followingIntervalMilliseconds": 83.32424926757812
+        },
+        {
+          "sequence": 19,
+          "frameIndex": 4945,
+          "followingIntervalMilliseconds": 83.39379119873047
+        },
+        {
+          "sequence": 20,
+          "frameIndex": 5198,
+          "followingIntervalMilliseconds": 99.37945556640625
+        },
+        {
+          "sequence": 21,
+          "frameIndex": 5455,
+          "followingIntervalMilliseconds": 100.01174926757812
+        },
+        {
+          "sequence": 22,
+          "frameIndex": 5723,
+          "followingIntervalMilliseconds": 100.03288269042969
+        },
+        {
+          "sequence": 23,
+          "frameIndex": 5982,
+          "followingIntervalMilliseconds": 99.45478820800781
+        },
+        {
+          "sequence": 24,
+          "frameIndex": 6247,
+          "followingIntervalMilliseconds": 83.32191467285156
+        },
+        {
+          "sequence": 25,
+          "frameIndex": 6501,
+          "followingIntervalMilliseconds": 82.64716339111328
+        },
+        {
+          "sequence": 26,
+          "frameIndex": 6745,
+          "followingIntervalMilliseconds": 83.38420867919922
+        },
+        {
+          "sequence": 27,
+          "frameIndex": 7007,
+          "followingIntervalMilliseconds": 83.33262634277344
+        },
+        {
+          "sequence": 28,
+          "frameIndex": 7265,
+          "followingIntervalMilliseconds": 83.67250061035156
+        },
+        {
+          "sequence": 29,
+          "frameIndex": 7508,
+          "followingIntervalMilliseconds": 99.78057861328125
+        }
+      ]
+    },
+    "candidate150": {
+      "packageManifestSha256": "ec5a266f6d5e304d4497dea0982ac464a8505cb07cf2f2f4323ebfd87869c39f",
+      "saveCount": 29,
+      "totalMilliseconds": {
+        "count": 29,
+        "min": 60.7306,
+        "median": 67.9744,
+        "p95": 72.0848,
+        "max": 72.0931
+      },
+      "stages": {
+        "LockWait": {
+          "count": 29,
+          "min": 0.0,
+          "median": 0.0,
+          "p95": 0.0001,
+          "max": 0.0001
+        },
+        "Validation": {
+          "count": 29,
+          "min": 0.1879,
+          "median": 0.21030000000000001,
+          "p95": 1.0302,
+          "max": 1.2292
+        },
+        "PayloadEncode": {
+          "count": 29,
+          "min": 37.0974,
+          "median": 40.379200000000004,
+          "p95": 42.048700000000004,
+          "max": 42.216300000000004
+        },
+        "PayloadUtf8Hash": {
+          "count": 29,
+          "min": 9.4397,
+          "median": 10.1539,
+          "p95": 12.257100000000001,
+          "max": 13.0699
+        },
+        "EnvelopeEncode": {
+          "count": 29,
+          "min": 10.3917,
+          "median": 13.4985,
+          "p95": 14.4572,
+          "max": 14.5911
+        },
+        "TempSetupProtection": {
+          "count": 29,
+          "min": 0.261,
+          "median": 0.7237,
+          "p95": 0.8569,
+          "max": 1.075
+        },
+        "EnvelopeUtf8Write": {
+          "count": 29,
+          "min": 0.8358,
+          "median": 0.9086000000000001,
+          "p95": 1.5168000000000001,
+          "max": 1.7176
+        },
+        "FlushClose": {
+          "count": 29,
+          "min": 0.5593,
+          "median": 1.0178,
+          "p95": 2.6211,
+          "max": 7.701700000000001
+        },
+        "MoveReplace": {
+          "count": 29,
+          "min": 0.5693,
+          "median": 0.6693,
+          "p95": 0.908,
+          "max": 0.9281
+        },
+        "DirectorySync": {
+          "count": 29,
+          "min": 0.0227,
+          "median": 0.0364,
+          "p95": 0.0551,
+          "max": 0.0776
+        }
+      },
+      "payloadBytes": {
+        "count": 29,
+        "min": 1745087,
+        "median": 1745898,
+        "p95": 1747138,
+        "max": 1747473
+      },
+      "envelopeBytes": {
+        "count": 29,
+        "min": 2023374,
+        "median": 2024359,
+        "p95": 2025863,
+        "max": 2026222
+      },
+      "frameP50": 17.08475112915039,
+      "frameP95": 34.16287612915039,
+      "stepP50": 0.4491,
+      "stepP95": 1.3428,
+      "frames": 3600,
+      "steps": 3003,
+      "economyTicks": 150,
+      "processor": "Apple M1 Max",
+      "graphics": "Apple M1 Max",
+      "workingCats": 10,
+      "maximumArithmeticErrorMilliseconds": 1.4210854715202004e-14,
+      "joinedFollowingIntervals": [
+        {
+          "sequence": 13,
+          "frameIndex": 2745,
+          "followingIntervalMilliseconds": 83.32183074951172
+        },
+        {
+          "sequence": 14,
+          "frameIndex": 2959,
+          "followingIntervalMilliseconds": 83.31612396240234
+        },
+        {
+          "sequence": 15,
+          "frameIndex": 3173,
+          "followingIntervalMilliseconds": 83.36862182617188
+        },
+        {
+          "sequence": 16,
+          "frameIndex": 3385,
+          "followingIntervalMilliseconds": 83.64208221435547
+        },
+        {
+          "sequence": 17,
+          "frameIndex": 3592,
+          "followingIntervalMilliseconds": 83.30891418457031
+        },
+        {
+          "sequence": 18,
+          "frameIndex": 3801,
+          "followingIntervalMilliseconds": 82.93612670898438
+        },
+        {
+          "sequence": 19,
+          "frameIndex": 4023,
+          "followingIntervalMilliseconds": 83.3807144165039
+        },
+        {
+          "sequence": 20,
+          "frameIndex": 4234,
+          "followingIntervalMilliseconds": 82.41554260253906
+        },
+        {
+          "sequence": 21,
+          "frameIndex": 4442,
+          "followingIntervalMilliseconds": 83.31712341308594
+        },
+        {
+          "sequence": 22,
+          "frameIndex": 4653,
+          "followingIntervalMilliseconds": 100.04154968261719
+        },
+        {
+          "sequence": 23,
+          "frameIndex": 4864,
+          "followingIntervalMilliseconds": 82.814453125
+        },
+        {
+          "sequence": 24,
+          "frameIndex": 5070,
+          "followingIntervalMilliseconds": 83.37983703613281
+        },
+        {
+          "sequence": 25,
+          "frameIndex": 5277,
+          "followingIntervalMilliseconds": 83.30282592773438
+        },
+        {
+          "sequence": 26,
+          "frameIndex": 5483,
+          "followingIntervalMilliseconds": 83.13258361816406
+        },
+        {
+          "sequence": 27,
+          "frameIndex": 5699,
+          "followingIntervalMilliseconds": 83.33745574951172
+        },
+        {
+          "sequence": 28,
+          "frameIndex": 5912,
+          "followingIntervalMilliseconds": 83.05770874023438
+        },
+        {
+          "sequence": 29,
+          "frameIndex": 6123,
+          "followingIntervalMilliseconds": 100.45446014404297
+        }
+      ]
+    }
+  },
+  "limits": [
+    "Native elapsed samples include preemption and profiling overhead; they do not isolate CPU or prove causal speedup.",
+    "Independent histories and differing sample windows must not be aligned positionally.",
+    "Only retained adjacent frames can be joined; initialization and post-report saves are absent.",
+    "Prepared finite fixtures do not establish mature-economy throughput, remote throughput or population scaling.",
+    "Exact v1 bytes and strict reads, validation, locks and durability remain required."
+  ]
+}

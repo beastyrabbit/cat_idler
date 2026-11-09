@@ -1,0 +1,554 @@
+{
+  "basis": "Separate opt-in native profiling session; elapsed main-thread scopes, with host preemption and instrumentation overhead.",
+  "rawReport": "artifacts/hourly-interaction-20261022/profile150/evidence/performance-preserved.json",
+  "rawSha256": "8568906154f6e1167a336b9d34d780e3f328ac9bae263bb3a993bb6ba47ce33e",
+  "metadata": "artifacts/tests/hourly-interaction-profile150.json",
+  "metadataSha256": "d0d6802d3c7a193f583f227fc43d8fdd86616186151317442a9122ff9184c510",
+  "semantics": "Elapsed main-thread scope milliseconds by frameIndex, including any host preemption within a scope. Game, View and UI include nested phases; durations are not additive. followingIntervalMilliseconds is the interval observed at followingFrameIndex. The unfinished current frame is omitted. Evidence writes include profiling overhead and appear in a later report. These scopes do not isolate GPU, rendering, frame-limiter waits or host scheduling.",
+  "completedFrameCount": 3600,
+  "firstFrameIndex": 4239,
+  "lastFrameIndex": 7838,
+  "lastFollowingFrameIndex": 7839,
+  "contiguousFrameIndices": true,
+  "followingIntervalsMilliseconds": {
+    "count": 3600,
+    "p50": 16.987422943115234,
+    "p95": 33.83721160888672,
+    "maximum": 101.00116729736328
+  },
+  "pairedIntervalTotalMilliseconds": 86649.92349720001,
+  "slowFollowingIntervalThresholdMilliseconds": 25,
+  "slowFollowingIntervalCount": 1515,
+  "phases": {
+    "Game": {
+      "totalCalls": 3600,
+      "activeFrameMilliseconds": {
+        "count": 3600,
+        "p50": 0.0046,
+        "p95": 1.2626,
+        "maximum": 71.8925
+      },
+      "slowFollowingIntervalActiveFrameCount": 1515,
+      "activeSlowFollowingIntervalMilliseconds": {
+        "count": 1515,
+        "p50": 0.4459,
+        "p95": 1.3648,
+        "maximum": 71.8925
+      }
+    },
+    "Simulation": {
+      "totalCalls": 1733,
+      "activeFrameMilliseconds": {
+        "count": 1716,
+        "p50": 0.4599,
+        "p95": 1.3523,
+        "maximum": 4.0385
+      },
+      "slowFollowingIntervalActiveFrameCount": 917,
+      "activeSlowFollowingIntervalMilliseconds": {
+        "count": 917,
+        "p50": 0.4658,
+        "p95": 1.3694,
+        "maximum": 3.5845
+      }
+    },
+    "Save": {
+      "totalCalls": 17,
+      "activeFrameMilliseconds": {
+        "count": 17,
+        "p50": 67.5721,
+        "p95": 70.9595,
+        "maximum": 70.9595
+      },
+      "slowFollowingIntervalActiveFrameCount": 17,
+      "activeSlowFollowingIntervalMilliseconds": {
+        "count": 17,
+        "p50": 67.5721,
+        "p95": 70.9595,
+        "maximum": 70.9595
+      }
+    },
+    "Evidence": {
+      "totalCalls": 8,
+      "activeFrameMilliseconds": {
+        "count": 8,
+        "p50": 62.7786,
+        "p95": 71.4495,
+        "maximum": 71.4495
+      },
+      "slowFollowingIntervalActiveFrameCount": 8,
+      "activeSlowFollowingIntervalMilliseconds": {
+        "count": 8,
+        "p50": 62.7786,
+        "p95": 71.4495,
+        "maximum": 71.4495
+      }
+    },
+    "View": {
+      "totalCalls": 3600,
+      "activeFrameMilliseconds": {
+        "count": 3600,
+        "p50": 0.873,
+        "p95": 3.3799,
+        "maximum": 13.0506
+      },
+      "slowFollowingIntervalActiveFrameCount": 1515,
+      "activeSlowFollowingIntervalMilliseconds": {
+        "count": 1515,
+        "p50": 0.8911,
+        "p95": 3.6243,
+        "maximum": 13.0506
+      }
+    },
+    "Reconcile": {
+      "totalCalls": 407,
+      "activeFrameMilliseconds": {
+        "count": 407,
+        "p50": 1.893,
+        "p95": 3.1395,
+        "maximum": 12.1134
+      },
+      "slowFollowingIntervalActiveFrameCount": 202,
+      "activeSlowFollowingIntervalMilliseconds": {
+        "count": 202,
+        "p50": 1.9316,
+        "p95": 3.3526,
+        "maximum": 12.1134
+      }
+    },
+    "Animate": {
+      "totalCalls": 3600,
+      "activeFrameMilliseconds": {
+        "count": 3600,
+        "p50": 0.748,
+        "p95": 1.6655,
+        "maximum": 4.3262
+      },
+      "slowFollowingIntervalActiveFrameCount": 1515,
+      "activeSlowFollowingIntervalMilliseconds": {
+        "count": 1515,
+        "p50": 0.7693,
+        "p95": 1.7453,
+        "maximum": 4.2398
+      }
+    },
+    "InputCamera": {
+      "totalCalls": 3600,
+      "activeFrameMilliseconds": {
+        "count": 3600,
+        "p50": 0.0699,
+        "p95": 0.0799,
+        "maximum": 0.9487
+      },
+      "slowFollowingIntervalActiveFrameCount": 1515,
+      "activeSlowFollowingIntervalMilliseconds": {
+        "count": 1515,
+        "p50": 0.0716,
+        "p95": 0.0814,
+        "maximum": 0.9487
+      }
+    },
+    "UI": {
+      "totalCalls": 3600,
+      "activeFrameMilliseconds": {
+        "count": 3600,
+        "p50": 0.019,
+        "p95": 0.0289,
+        "maximum": 0.9917
+      },
+      "slowFollowingIntervalActiveFrameCount": 1515,
+      "activeSlowFollowingIntervalMilliseconds": {
+        "count": 1515,
+        "p50": 0.0193,
+        "p95": 0.0257,
+        "maximum": 0.9917
+      }
+    },
+    "Rebuild": {
+      "totalCalls": 0,
+      "activeFrameMilliseconds": {
+        "count": 0
+      },
+      "slowFollowingIntervalActiveFrameCount": 0,
+      "activeSlowFollowingIntervalMilliseconds": {
+        "count": 0
+      }
+    },
+    "Live": {
+      "totalCalls": 3600,
+      "activeFrameMilliseconds": {
+        "count": 3600,
+        "p50": 0.0185,
+        "p95": 0.022,
+        "maximum": 0.926
+      },
+      "slowFollowingIntervalActiveFrameCount": 1515,
+      "activeSlowFollowingIntervalMilliseconds": {
+        "count": 1515,
+        "p50": 0.0187,
+        "p95": 0.0224,
+        "maximum": 0.926
+      }
+    },
+    "Terrain": {
+      "totalCalls": 9,
+      "activeFrameMilliseconds": {
+        "count": 9,
+        "p50": 8.4034,
+        "p95": 9.9596,
+        "maximum": 9.9596
+      },
+      "slowFollowingIntervalActiveFrameCount": 9,
+      "activeSlowFollowingIntervalMilliseconds": {
+        "count": 9,
+        "p50": 8.4034,
+        "p95": 9.9596,
+        "maximum": 9.9596
+      }
+    }
+  },
+  "fiveLargestFollowingIntervals": [
+    {
+      "frameIndex": 7280,
+      "followingFrameIndex": 7281,
+      "followingIntervalMilliseconds": 101.00116729736328,
+      "phases": [
+        {
+          "phase": "Game",
+          "calls": 1,
+          "milliseconds": 68.9907
+        },
+        {
+          "phase": "Simulation",
+          "calls": 1,
+          "milliseconds": 0.4408
+        },
+        {
+          "phase": "Save",
+          "calls": 1,
+          "milliseconds": 68.5434
+        },
+        {
+          "phase": "Evidence",
+          "calls": 0,
+          "milliseconds": 0.0
+        },
+        {
+          "phase": "View",
+          "calls": 1,
+          "milliseconds": 0.8165
+        },
+        {
+          "phase": "Reconcile",
+          "calls": 0,
+          "milliseconds": 0.0
+        },
+        {
+          "phase": "Animate",
+          "calls": 1,
+          "milliseconds": 0.7197
+        },
+        {
+          "phase": "InputCamera",
+          "calls": 1,
+          "milliseconds": 0.0662
+        },
+        {
+          "phase": "UI",
+          "calls": 1,
+          "milliseconds": 0.0167
+        },
+        {
+          "phase": "Rebuild",
+          "calls": 0,
+          "milliseconds": 0.0
+        },
+        {
+          "phase": "Live",
+          "calls": 1,
+          "milliseconds": 0.0164
+        },
+        {
+          "phase": "Terrain",
+          "calls": 0,
+          "milliseconds": 0.0
+        }
+      ]
+    },
+    {
+      "frameIndex": 5825,
+      "followingFrameIndex": 5826,
+      "followingIntervalMilliseconds": 100.60191345214844,
+      "phases": [
+        {
+          "phase": "Game",
+          "calls": 1,
+          "milliseconds": 68.5528
+        },
+        {
+          "phase": "Simulation",
+          "calls": 1,
+          "milliseconds": 1.4639
+        },
+        {
+          "phase": "Save",
+          "calls": 1,
+          "milliseconds": 67.0803
+        },
+        {
+          "phase": "Evidence",
+          "calls": 0,
+          "milliseconds": 0.0
+        },
+        {
+          "phase": "View",
+          "calls": 1,
+          "milliseconds": 0.8003
+        },
+        {
+          "phase": "Reconcile",
+          "calls": 0,
+          "milliseconds": 0.0
+        },
+        {
+          "phase": "Animate",
+          "calls": 1,
+          "milliseconds": 0.6939
+        },
+        {
+          "phase": "InputCamera",
+          "calls": 1,
+          "milliseconds": 0.0762
+        },
+        {
+          "phase": "UI",
+          "calls": 1,
+          "milliseconds": 0.0179
+        },
+        {
+          "phase": "Rebuild",
+          "calls": 0,
+          "milliseconds": 0.0
+        },
+        {
+          "phase": "Live",
+          "calls": 1,
+          "milliseconds": 0.0176
+        },
+        {
+          "phase": "Terrain",
+          "calls": 0,
+          "milliseconds": 0.0
+        }
+      ]
+    },
+    {
+      "frameIndex": 5409,
+      "followingFrameIndex": 5410,
+      "followingIntervalMilliseconds": 100.4447021484375,
+      "phases": [
+        {
+          "phase": "Game",
+          "calls": 1,
+          "milliseconds": 70.6965
+        },
+        {
+          "phase": "Simulation",
+          "calls": 1,
+          "milliseconds": 0.4563
+        },
+        {
+          "phase": "Save",
+          "calls": 1,
+          "milliseconds": 70.2334
+        },
+        {
+          "phase": "Evidence",
+          "calls": 0,
+          "milliseconds": 0.0
+        },
+        {
+          "phase": "View",
+          "calls": 1,
+          "milliseconds": 0.8661
+        },
+        {
+          "phase": "Reconcile",
+          "calls": 0,
+          "milliseconds": 0.0
+        },
+        {
+          "phase": "Animate",
+          "calls": 1,
+          "milliseconds": 0.7524
+        },
+        {
+          "phase": "InputCamera",
+          "calls": 1,
+          "milliseconds": 0.0727
+        },
+        {
+          "phase": "UI",
+          "calls": 1,
+          "milliseconds": 0.018
+        },
+        {
+          "phase": "Rebuild",
+          "calls": 0,
+          "milliseconds": 0.0
+        },
+        {
+          "phase": "Live",
+          "calls": 1,
+          "milliseconds": 0.0175
+        },
+        {
+          "phase": "Terrain",
+          "calls": 0,
+          "milliseconds": 0.0
+        }
+      ]
+    },
+    {
+      "frameIndex": 6866,
+      "followingFrameIndex": 6867,
+      "followingIntervalMilliseconds": 100.4210433959961,
+      "phases": [
+        {
+          "phase": "Game",
+          "calls": 1,
+          "milliseconds": 68.5806
+        },
+        {
+          "phase": "Simulation",
+          "calls": 1,
+          "milliseconds": 0.4723
+        },
+        {
+          "phase": "Save",
+          "calls": 1,
+          "milliseconds": 68.1006
+        },
+        {
+          "phase": "Evidence",
+          "calls": 0,
+          "milliseconds": 0.0
+        },
+        {
+          "phase": "View",
+          "calls": 1,
+          "milliseconds": 0.8521
+        },
+        {
+          "phase": "Reconcile",
+          "calls": 0,
+          "milliseconds": 0.0
+        },
+        {
+          "phase": "Animate",
+          "calls": 1,
+          "milliseconds": 0.7431
+        },
+        {
+          "phase": "InputCamera",
+          "calls": 1,
+          "milliseconds": 0.075
+        },
+        {
+          "phase": "UI",
+          "calls": 1,
+          "milliseconds": 0.018
+        },
+        {
+          "phase": "Rebuild",
+          "calls": 0,
+          "milliseconds": 0.0
+        },
+        {
+          "phase": "Live",
+          "calls": 1,
+          "milliseconds": 0.0177
+        },
+        {
+          "phase": "Terrain",
+          "calls": 0,
+          "milliseconds": 0.0
+        }
+      ]
+    },
+    {
+      "frameIndex": 4344,
+      "followingFrameIndex": 4345,
+      "followingIntervalMilliseconds": 100.0359115600586,
+      "phases": [
+        {
+          "phase": "Game",
+          "calls": 1,
+          "milliseconds": 69.158
+        },
+        {
+          "phase": "Simulation",
+          "calls": 1,
+          "milliseconds": 0.4914
+        },
+        {
+          "phase": "Save",
+          "calls": 1,
+          "milliseconds": 68.6603
+        },
+        {
+          "phase": "Evidence",
+          "calls": 0,
+          "milliseconds": 0.0
+        },
+        {
+          "phase": "View",
+          "calls": 1,
+          "milliseconds": 0.8544
+        },
+        {
+          "phase": "Reconcile",
+          "calls": 0,
+          "milliseconds": 0.0
+        },
+        {
+          "phase": "Animate",
+          "calls": 1,
+          "milliseconds": 0.7428
+        },
+        {
+          "phase": "InputCamera",
+          "calls": 1,
+          "milliseconds": 0.0725
+        },
+        {
+          "phase": "UI",
+          "calls": 1,
+          "milliseconds": 0.0179
+        },
+        {
+          "phase": "Rebuild",
+          "calls": 0,
+          "milliseconds": 0.0
+        },
+        {
+          "phase": "Live",
+          "calls": 1,
+          "milliseconds": 0.0175
+        },
+        {
+          "phase": "Terrain",
+          "calls": 0,
+          "milliseconds": 0.0
+        }
+      ]
+    }
+  ],
+  "limits": [
+    "Parent and nested phase times must not be added.",
+    "Associations with following intervals do not establish causation.",
+    "GPU, rendering, frame-limiter waits, host scheduling and all Unity layout are not isolated.",
+    "Profiling adds allocations, serialization and disk work; this is not an ordinary performance benchmark.",
+    "No performance gain is claimed."
+  ]
+}

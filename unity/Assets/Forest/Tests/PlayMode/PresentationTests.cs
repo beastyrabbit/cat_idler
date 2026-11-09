@@ -203,6 +203,200 @@ namespace IdleCatForest.Tests
         }
 
         [UnityTest]
+        public IEnumerator FarmGrowthKeepsBedsFixedAcrossAllCropMappings()
+        {
+            game.View.enabled = false;
+            int index = 0;
+            foreach (string crop in new[] { "grain", "herbs", "catnip" })
+            {
+                var farm = DesignateGrowthFarm(crop, index++);
+                RefreshFarmSnapshot();
+                var plot = GameObject.Find("farm:" + farm.Id + ":0:0");
+                var soil = VisibleFarmBounds(plot);
+                farm.Growth = 1;
+                RefreshFarmSnapshot();
+                var early = VisibleFarmBounds(plot);
+                Assert.That(early.size.x, Is.EqualTo(soil.size.x).Within(1e-5), crop + " timber and soil must not expand when the first work unit arrives.");
+                Assert.That(early.size.z, Is.EqualTo(soil.size.z).Within(1e-5), crop + " designated bed depth must remain fixed.");
+                string asset = GrowthAsset(crop);
+                var bed = FarmPart(plot, asset, "Bed");
+                Assert.That(bed.gameObject.activeInHierarchy, Is.True);
+                Assert.That(bed.localScale, Is.EqualTo(Vector3.one));
+                Assert.That(plot.transform.localScale, Is.EqualTo(Vector3.one));
+                Assert.That(plot.transform.Find(asset), Is.Not.Null, "Each maintained crop must use its existing authored asset.");
+            }
+            yield break;
+        }
+
+        [UnityTest]
+        public IEnumerator FarmGrowthUsesNormalizedWorkForReadablePlantsAndClampsSnapshots()
+        {
+            game.View.enabled = false;
+            var crops = new[] { "grain", "herbs", "catnip" };
+            var cycles = new[] { 7200.0, 120.0, 300.0 };
+            for (int i = 0; i < crops.Length; i++)
+            {
+                var farm = DesignateGrowthFarm(crops[i], i);
+                farm.CycleSeconds = cycles[i];
+                farm.Growth = 1;
+                RefreshFarmSnapshot();
+                var plot = GameObject.Find("farm:" + farm.Id + ":0:0");
+                var early = VisibleFarmBounds(plot);
+                farm.Growth = farm.CycleSeconds / 2;
+                RefreshFarmSnapshot();
+                var half = VisibleFarmBounds(plot);
+                Assert.That(half.size.y, Is.GreaterThan(early.size.y + .08f), crops[i] + " one work unit and half of its own cycle need visibly different plant heights.");
+                string asset = GrowthAsset(crops[i]);
+                var plants = FarmPart(plot, asset, "Plants");
+                var ripe = FarmPart(plot, asset, "Ripe");
+                var rootedAt = plants.position;
+                var bedBounds = FarmPart(plot, asset, "Bed").GetComponent<Renderer>().bounds;
+                Assert.That(plants.gameObject.activeInHierarchy, Is.True);
+                Assert.That(ripe.gameObject.activeInHierarchy, Is.False, "Half-grown crops must not carry ripe heads or flowers.");
+                var halfScale = plants.localScale;
+                farm.Growth = farm.CycleSeconds * .75;
+                RefreshFarmSnapshot();
+                Assert.That(ripe.gameObject.activeInHierarchy, Is.True, "The final quarter shows the authored crop identity.");
+                farm.Growth = farm.CycleSeconds;
+                RefreshFarmSnapshot();
+                var full = VisibleFarmBounds(plot);
+                Assert.That(plants.localScale.x, Is.GreaterThan(halfScale.x));
+                farm.Growth = farm.CycleSeconds * 2;
+                RefreshFarmSnapshot();
+                Assert.That(VisibleFarmBounds(plot).size.y, Is.EqualTo(full.size.y).Within(1e-5), "Over-complete snapshots clamp to the full plant.");
+                Assert.That(plants.localScale, Is.EqualTo(Vector3.one));
+                Assert.That(plants.position, Is.EqualTo(rootedAt), "Growth must leave the shared authored soil pivot rooted.");
+                Assert.That(FarmPart(plot, asset, "Bed").GetComponent<Renderer>().bounds, Is.EqualTo(bedBounds));
+                farm.CycleSeconds = .5;
+                farm.Growth = .5;
+                RefreshFarmSnapshot();
+                Assert.That(plants.localScale, Is.EqualTo(halfScale), "Cycles below one use the same minimum denominator as authoritative farm phases.");
+                farm.Growth = -1;
+                RefreshFarmSnapshot();
+                Assert.That(plants.gameObject.activeSelf, Is.False);
+                Assert.That(ripe.gameObject.activeSelf, Is.False);
+                farm.Growth = 0;
+                RefreshFarmSnapshot();
+                Assert.That(VisibleFarmBounds(plot), Is.EqualTo(bedBounds), "A zero-growth empty crop shows only its fixed bed.");
+            }
+            yield break;
+        }
+
+        [UnityTest]
+        public IEnumerator FarmGrowthRetainsRipeCropUntilItsFinalPhysicalPickup()
+        {
+            game.View.enabled = false;
+            var world = game.CurrentWorld;
+            var village = game.Selected;
+            var farm = DesignateGrowthFarm("grain", 0, 2);
+            var worker = village.Cats.First(c => c.Alive && c.Id != village.LeaderId);
+            foreach (var cat in village.Cats.Where(c => c != worker))
+            {
+                cat.ControlledBy = "fixture-held";
+                cat.ControlLeaseUntil = 10000000;
+            }
+            worker.Hunger = worker.Thirst = worker.Rest = worker.Health = 100;
+            worker.Position = farm.Position; worker.X = farm.Position.X; worker.Z = farm.Position.Z;
+            var assigned = game.Send(new GameAction { Kind = "AssignWorker", TargetId = farm.Id, CatId = worker.Id }).Result;
+            Assert.That(assigned.Success, Is.True, assigned.Error);
+            RefreshFarmSnapshot();
+            var plot = GameObject.Find("farm:" + farm.Id + ":0:0");
+            var bare = VisibleFarmBounds(plot);
+            // Disclosed bounded setup credit, not a claim to have played a full crop cycle.
+            Assert.That(farm.CycleSeconds, Is.EqualTo(7200));
+            farm.Growth = farm.CycleSeconds - .1;
+            for (int step = 0; step < 100 && farm.Harvest == 0; step++) world.Step(World.SimulationStepSeconds);
+            Assert.That(farm.Growth, Is.Zero);
+            Assert.That(farm.Harvest, Is.EqualTo(16).Within(1e-8), "Actual remaining work at the plot must create the finite two-tile crop before any pickup.");
+            Assert.That(worker.Cargo, Is.Empty);
+            RefreshFarmSnapshot();
+            var ripe = VisibleFarmBounds(plot);
+            Assert.That(ripe.size.y, Is.GreaterThan(bare.size.y + .08f), "Growth resets at harvest, but the uncollected crop must stay visibly ripe.");
+            var plants = FarmPart(plot, "grain_plot", "Plants");
+            var heads = FarmPart(plot, "grain_plot", "Ripe");
+            Assert.That(plants.gameObject.activeSelf && heads.gameObject.activeSelf, Is.True);
+            world.Step(World.SimulationStepSeconds);
+            Assert.That(farm.Harvest, Is.EqualTo(8).Within(1e-8));
+            Assert.That(World.Amount(worker.Cargo, "grain"), Is.EqualTo(8));
+            RefreshFarmSnapshot();
+            Assert.That(VisibleFarmBounds(plot), Is.EqualTo(ripe), "A partial physical pickup leaves the remaining crop ripe.");
+            for (int step = 0; step < 400 && worker.Cargo.Count > 0; step++) world.Step(World.SimulationStepSeconds);
+            var output = village.Stockpiles.Single(p => p.ManagedBy == farm.Id);
+            Assert.That(worker.Position, Is.EqualTo(farm.Handoff));
+            Assert.That(worker.Cargo, Is.Empty);
+            Assert.That(World.Amount(output.Goods, "grain"), Is.EqualTo(8));
+            Assert.That(farm.Harvest, Is.EqualTo(8));
+            RefreshFarmSnapshot();
+            Assert.That(VisibleFarmBounds(plot), Is.EqualTo(ripe));
+            for (int step = 0; step < 400 && farm.Harvest > 0; step++) world.Step(World.SimulationStepSeconds);
+            Assert.That(worker.Position, Is.EqualTo(farm.Position));
+            Assert.That(farm.Harvest, Is.Zero);
+            Assert.That(farm.Growth, Is.Zero);
+            Assert.That(World.Amount(worker.Cargo, "grain"), Is.EqualTo(8));
+            RefreshFarmSnapshot();
+            Assert.That(plants.gameObject.activeSelf || heads.gameObject.activeSelf, Is.False, "After the last pickup, crop remains on its cat rather than regrowing on the bed.");
+            Assert.That(VisibleFarmBounds(plot), Is.EqualTo(bare));
+            for (int step = 0; step < 400 && worker.Cargo.Count > 0; step++) world.Step(World.SimulationStepSeconds);
+            Assert.That(worker.Position, Is.EqualTo(farm.Handoff));
+            Assert.That(worker.Cargo, Is.Empty);
+            Assert.That(World.Amount(output.Goods, "grain"), Is.EqualTo(16));
+            Assert.That(farm.WorkerId, Is.EqualTo(worker.Id));
+            Assert.That(worker.BuildingId, Is.EqualTo(farm.Id));
+            RefreshFarmSnapshot();
+            Assert.That(VisibleFarmBounds(plot), Is.EqualTo(bare));
+            yield break;
+        }
+
+        private Farm DesignateGrowthFarm(string crop, int index, int width = 1)
+        {
+            var world = game.CurrentWorld; var village = game.Selected;
+            var origin = new Int2(village.Center.X + village.Radius + 6, village.Center.Z + index * 3);
+            for (int x = village.Radius + 1; x <= village.Radius + 10; x++)
+                for (int z = -4; z <= 9; z++)
+                {
+                    var at = new Int2(village.Center.X + x, village.Center.Z + z);
+                    var tile = world.TileAt(at);
+                    tile.Wall = tile.Water = tile.Mountain = tile.Road = tile.Rail = false;
+                    tile.ClaimId = tile.Resource = ""; tile.Amount = 0;
+                    if (!village.Known.Contains(at)) village.Known.Add(at);
+                }
+            if (!village.Buildings.Any(b => b.Kind == "field" && b.Completed))
+                village.Buildings.Add(new Building { Id = world.Id("growth-fixture-field"), Kind = "field", Position = new Int2(origin.X, village.Center.Z - 4), Completed = true });
+            var result = game.Send(new GameAction { Kind = "DesignateFarm", Resource = crop, Position = origin, End = new Int2(origin.X + width - 1, origin.Z) }).Result;
+            Assert.That(result.Success, Is.True, result.Error);
+            return village.Farms.Single(f => f.Id == result.EntityId);
+        }
+
+        private void RefreshFarmSnapshot()
+        {
+            string before = Authority.WireJson.Encode(game.CurrentWorld);
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            var reconcile = typeof(ForestView).GetMethod("Reconcile", flags);
+            reconcile.Invoke(game.View, null);
+            reconcile.Invoke(game.View, null);
+            Assert.That(Authority.WireJson.Encode(game.CurrentWorld), Is.EqualTo(before), "Repeated paused presentation refreshes must preserve the complete authoritative snapshot.");
+        }
+
+        private static string GrowthAsset(string crop) => crop == "grain" ? "grain_plot" : crop == "catnip" ? "catnip_plot" : "herb_plot";
+
+        private static Transform FarmPart(GameObject plot, string asset, string part)
+        {
+            var found = plot.GetComponentsInChildren<Transform>(true).SingleOrDefault(t => t.name == asset + "_" + part);
+            Assert.That(found, Is.Not.Null, asset + " needs an authored " + part + " mesh with its shared soil pivot.");
+            return found;
+        }
+
+        private static Bounds VisibleFarmBounds(GameObject plot)
+        {
+            Assert.That(plot, Is.Not.Null, "The designated plot must be rendered before checking growth.");
+            var renderers = plot.GetComponentsInChildren<Renderer>().Where(r => r.enabled && r.gameObject.activeInHierarchy).ToArray();
+            Assert.That(renderers, Is.Not.Empty, "The plot must retain visible authored geometry.");
+            var bounds = renderers[0].bounds;
+            foreach (var renderer in renderers.Skip(1)) bounds.Encapsulate(renderer.bounds);
+            return bounds;
+        }
+
+        [UnityTest]
         public IEnumerator ExistingResourceViewChangesWhenInfrastructureReplacesIt()
         {
             var tile = game.CurrentWorld.Tiles.First(t => game.Selected.Known.Contains(t.Position) && t.Resource == "logs" && t.Amount > 0 && !t.Wall && !t.Road);

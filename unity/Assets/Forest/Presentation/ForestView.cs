@@ -84,26 +84,50 @@ namespace IdleCatForest.Presentation
         }
 
         public void InspectCat(string id) { SelectedCatId = id; SelectedBuildingId = ""; followSelectedCat = true; var cat = SelectedCat; if (cat != null && !DirectControl) { viewedLevel = cat.Position.Level; focus = Position(cat); nextReconcile = 0; } }
-        public void InspectBuilding(string id) { SelectedBuildingId = id; SelectedCatId = ""; var b = SelectedBuilding; if (b != null && !DirectControl) focus = At(b.Position) + new Vector3((b.Width - 1) * .5f, 0, (b.Depth - 1) * .5f); }
+        public void InspectBuilding(string id)
+        {
+            SelectedBuildingId = id; SelectedCatId = ""; followSelectedCat = false;
+            var b = SelectedBuilding;
+            if (b != null && !DirectControl)
+            {
+                viewedLevel = b.Position.Level;
+                focus = At(b.Position) + new Vector3((b.Width - 1) * .5f, 0, (b.Depth - 1) * .5f);
+                nextReconcile = 0;
+            }
+        }
         public void EnterSelectedCat() { if (SelectedCat != null) Game.Act(new GameAction { Kind = "EnterCatControl", CatId = SelectedCat.Id }); }
         public void LeaveCat() { var cat = ControlledCat; if (cat != null) Game.Act(new GameAction { Kind = "LeaveCatControl", CatId = cat.Id }); }
 
         private void Update()
         {
             if (Game.Selected == null || Game.CurrentWorld == null) return;
+            long phase = Game.StartFramePhase();
+            try { UpdateFrame(); }
+            finally { Game.EndFramePhase(FramePhase.View, phase); }
+        }
+
+        private void UpdateFrame()
+        {
             if (villageId != Game.Selected.Id) { ClearWorld(); villageId = Game.Selected.Id; focus = At(Game.Selected.Center); }
             if (!DirectControl && followSelectedCat && SelectedCat != null && SelectedCat.Position.Level != viewedLevel) { viewedLevel = SelectedCat.Position.Level; focus = Position(SelectedCat); nextReconcile = 0; }
-            if (Time.unscaledTime >= nextReconcile) { Reconcile(); nextReconcile = Time.unscaledTime + .2f; }
-            AnimateCats();
+            if (Time.unscaledTime >= nextReconcile)
+            {
+                long phase = Game.StartFramePhase();
+                try { Reconcile(); nextReconcile = Time.unscaledTime + .2f; }
+                finally { Game.EndFramePhase(FramePhase.Reconcile, phase); }
+            }
+            long animate = Game.StartFramePhase();
+            try { AnimateCats(); }
+            finally { Game.EndFramePhase(FramePhase.Animate, animate); }
             var controlled = ControlledCat;
             if (controlled != null && Time.unscaledTime >= nextHeartbeat)
             {
                 Game.Act(new GameAction { Kind = "KeepCatControl", CatId = controlled.Id });
                 nextHeartbeat = Time.unscaledTime + 1;
             }
-            ReadInput();
-            UpdateCamera();
-            UpdateSelection();
+            long input = Game.StartFramePhase();
+            try { ReadInput(); UpdateCamera(); UpdateSelection(); }
+            finally { Game.EndFramePhase(FramePhase.InputCamera, input); }
         }
 
         private void ReadInput()
@@ -126,7 +150,7 @@ namespace IdleCatForest.Presentation
                     if (creature != null) { Game.Act(new GameAction { Kind = "AttackCreature", CatId = controlled.Id, TargetId = creature.Id }); }
                     else
                     {
-                    var pile = Game.Selected.Stockpiles.Where(p => Int2.Distance(p.Position, controlled.Position) <= 1).OrderBy(p => Int2.Distance(p.Position, controlled.Position)).FirstOrDefault();
+                    var pile = Game.Selected.Stockpiles.Where(p => Game.CurrentWorld.CanInteractWithPile(Game.Selected, controlled, p)).OrderBy(p => Int2.Distance(p.Position, controlled.Position)).FirstOrDefault();
                     Game.Act(new GameAction { Kind = "InteractCat", CatId = controlled.Id, TargetId = pile?.Id ?? "", Resource = pile?.Report.FirstOrDefault(s => s.Amount > 0)?.Resource ?? "food", Amount = 1 });
                     }
                 }
@@ -176,6 +200,7 @@ namespace IdleCatForest.Presentation
             if (mouse.leftButton.wasPressedThisFrame && !onUI)
             {
                 if (Game.UI != null && Game.UI.HasPlacement) { TileClicked?.Invoke(CursorTile); return; }
+                Game.UI?.CancelFarmReveal();
                 var cat = Game.Selected.Cats.Where(c => c.Alive && c.Position.Level == RenderedLevel).OrderBy(c => Vector2.Distance(new Vector2((float)c.X, (float)c.Z), new Vector2(CursorTile.X, CursorTile.Z))).FirstOrDefault();
                 if (cat != null && Vector2.Distance(new Vector2((float)cat.X, (float)cat.Z), new Vector2(CursorTile.X, CursorTile.Z)) < .8f) { InspectCat(cat.Id); Game.UI?.OpenPanel("Inspect"); }
                 else
@@ -183,6 +208,11 @@ namespace IdleCatForest.Presentation
                     var b = Game.Selected.Buildings.Find(p => p.Position.Level == RenderedLevel && CursorTile.X >= p.Position.X && CursorTile.X < p.Position.X + p.Width && CursorTile.Z >= p.Position.Z && CursorTile.Z < p.Position.Z + p.Depth);
                     InspectBuilding(b?.Id ?? "");
                     if (b != null) Game.UI?.OpenPanel("Inspect");
+                    else if (!DirectControl)
+                    {
+                        var farm = Game.Selected.Farms.Find(p => p.Position.Level == RenderedLevel && CursorTile.X >= p.Position.X && CursorTile.X < p.Position.X + p.Width && CursorTile.Z >= p.Position.Z && CursorTile.Z < p.Position.Z + p.Depth);
+                        if (farm != null) Game.UI?.InspectFarm(farm.Id);
+                    }
                 }
             }
         }
@@ -232,7 +262,12 @@ namespace IdleCatForest.Presentation
             var center = ControlledCat == null ? focus : Position(ControlledCat);
             groundCenter = new Int2(Mathf.RoundToInt(center.x / 8) * 8, Mathf.RoundToInt(center.z / 8) * 8, level);
             int signature = TerrainSignature();
-            if (signature != terrainSignature) { MakeGround(); terrainSignature = signature; }
+            if (signature != terrainSignature)
+            {
+                long phase = Game.StartFramePhase();
+                try { MakeGround(); terrainSignature = signature; }
+                finally { Game.EndFramePhase(FramePhase.Terrain, phase); }
+            }
             foreach (var b in v.Buildings.Where(b => b.Position.Level == level))
             {
                 var go = Entity("building:" + b.Id, b.Kind, At(b.Position) + new Vector3((b.Width - 1) * .5f, 0, (b.Depth - 1) * .5f), Mathf.Min(b.Width, b.Depth) * .92f);
@@ -251,16 +286,49 @@ namespace IdleCatForest.Presentation
             foreach (var pile in v.Stockpiles.Where(p => p.Position.Level == level))
             {
                 if (pile.Kind != "storage") continue;
-                Entity("pile:" + pile.Id, "stockpile", At(pile.Position), 1.25f);
+                var pileCenter = At(pile.Position) + new Vector3((pile.Width - 1) * .5f, 0, (pile.Depth - 1) * .5f);
+                // Crates mark the same access point used by hauling and direct control.
+                var accessPoint = At(pile.Position);
+                var pileVisual = Entity("pile:" + pile.Id, "stockpile", accessPoint, 1.25f);
+                var outline = pileVisual.GetComponent<LineRenderer>();
+                if (outline == null)
+                {
+                    outline = pileVisual.AddComponent<LineRenderer>();
+                    outline.sharedMaterial = Material("storage designation", new Color(.75f, .68f, .43f), true);
+                    outline.positionCount = 4; outline.loop = true; outline.useWorldSpace = true;
+                    outline.startWidth = outline.endWidth = .035f;
+                    outline.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+                    outline.receiveShadows = false;
+                }
+                var half = new Vector3(pile.Width * .5f, 0, pile.Depth * .5f);
+                var basePoint = pileCenter + Vector3.up * .045f;
+                outline.SetPositions(new[] { basePoint + new Vector3(-half.x, 0, -half.z), basePoint + new Vector3(-half.x, 0, half.z), basePoint + new Vector3(half.x, 0, half.z), basePoint + new Vector3(half.x, 0, -half.z) });
                 int i = 0;
                 foreach (var stack in pile.Report.Where(s => s.Amount > 0).Take(5))
                 {
-                    Entity("pilegoods:" + pile.Id + ":" + stack.Resource, "cargo_" + stack.Resource.ToLowerInvariant(), At(pile.Position) + new Vector3((i % 2) * .35f - .2f, .35f + i / 2 * .18f, 0), .32f); i++;
+                    // Coarse bundles use only the Accountant's report, never hidden live goods.
+                    int bundles = stack.Amount >= 32 ? 3 : stack.Amount >= 8 ? 2 : 1;
+                    for (int layer = 0; layer < bundles; layer++)
+                        Entity("pilegoods:" + pile.Id + ":" + stack.Resource + (layer == 0 ? "" : ":" + layer), "cargo_" + stack.Resource.ToLowerInvariant(), accessPoint + new Vector3((i % 3) * .38f - .38f, .35f + layer * .22f, (i / 3) * .38f - .19f), .32f);
+                    i++;
                 }
             }
             foreach (var f in v.Farms.Where(f => f.Position.Level == level))
                 for (int x = 0; x < f.Width; x++) for (int z = 0; z < f.Depth; z++)
-                    Entity("farm:" + f.Id + ":" + x + ":" + z, f.Crop == "grain" ? "grain_plot" : f.Crop == "catnip" ? "catnip_plot" : "herb_plot", At(new Int2(f.Position.X + x, f.Position.Z + z)), .85f + (float)Math.Min(1, f.Growth) * .15f);
+                {
+                    string asset = f.Crop == "grain" ? "grain_plot" : f.Crop == "catnip" ? "catnip_plot" : "herb_plot";
+                    // Normalize the complete authored asset once, keeping every bed at tile width.
+                    var plot = Entity("farm:" + f.Id + ":" + x + ":" + z, asset, At(new Int2(f.Position.X + x, f.Position.Z + z)), 1);
+                    var model = plot.transform.GetChild(0);
+                    var plants = model.Find(asset + "_Plants");
+                    var ripe = model.Find(asset + "_Ripe");
+                    float fraction = f.Harvest > 0 ? 1 : (float)Math.Clamp(f.Growth / Math.Max(1, f.CycleSeconds), 0, 1);
+                    var scale = Vector3.one * Mathf.Lerp(.25f, 1, fraction);
+                    bool visible = fraction > 0;
+                    // Absolute scales preserve the shared soil pivots across repeated refreshes.
+                    if (plants != null) { plants.localScale = scale; plants.gameObject.SetActive(visible); }
+                    if (ripe != null) { ripe.localScale = scale; ripe.gameObject.SetActive(visible && fraction >= .75f); }
+                }
             var known = new HashSet<Int2>(v.Known);
             var tiles = world.Tiles.ToDictionary(t => t.Position);
             bool Wall(Int2 p) => known.Contains(p) && tiles.TryGetValue(p, out var t) && t.Wall;

@@ -243,6 +243,9 @@ namespace IdleCatForest.Simulation
         {
             if (cat == null || !cat.Alive || !village.Cats.Contains(cat) || !IsDungeonExplorer(cat))
                 return ActionResult.Fail("Choose a living explorer in this village");
+            cat.ControlledBy = "";
+            cat.ControlLeaseUntil = 0;
+            cat.Path.Clear();
             cat.DungeonPhase = "returning";
             cat.DungeonTargetId = "";
             cat.Goal = "returning from dungeon";
@@ -296,7 +299,7 @@ namespace IdleCatForest.Simulation
                             FightDungeon(village, cat, target);
                         continue;
                     }
-                    if (cat.DungeonPhase == "manual" || cat.Health < 50 || cat.Hunger < 30 || cat.Thirst < 30 || cat.Rest < 30)
+                    if (cat.DungeonPhase != "returning" && cat.DungeonPhase != "unloading" && (cat.DungeonPhase == "manual" || cat.Health < 50 || cat.Hunger < 30 || cat.Thirst < 30 || cat.Rest < 30))
                         RetreatDungeon(cat, "expedition_return_for_safety");
                     if (cat.DungeonPhase == "returning" || cat.DungeonPhase == "unloading")
                     {

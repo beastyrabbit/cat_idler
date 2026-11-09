@@ -15,6 +15,36 @@ namespace IdleCatForest.Acceptance
     {
         public static IEnumerable<Scenario> Cases()
         {
+            var primaryQueueCases = new List<Scenario>();
+            PrimaryQueueContinuityScenarios.Run((name, body) => primaryQueueCases.Add(new Scenario(name, body)),
+                (condition, reason) => { if (!condition) throw new InvalidOperationException(reason); });
+            foreach (var scenario in primaryQueueCases) yield return scenario;
+            yield return new Scenario("acceptance.renewable_grain_two_cycles_steward_mill", () => RenewableGrainScenarios.RunChain());
+            foreach (var scenario in ComposedWorkshopScenarios.Cases()) yield return scenario;
+            foreach (var scenario in EquipmentRetrievalScenarios.Cases()) yield return scenario;
+            foreach (var scenario in EquipmentAccessScenarios.Cases()) yield return scenario;
+            foreach (var scenario in NeedsAccessScenarios.Cases()) yield return scenario;
+            foreach (var scenario in AccountantAccessScenarios.Cases()) yield return scenario;
+            foreach (var scenario in OfficerDelegationScenarios.Cases()) yield return scenario;
+            foreach (var scenario in WorkshopSupplyScenarios.Cases()) yield return scenario;
+            foreach (var scenario in OfficerPrerequisiteScenarios.Cases()) yield return scenario;
+            foreach (var scenario in ReachableOfficerRecipeScenarios.Cases()) yield return scenario;
+            foreach (var scenario in ReachableStaffingScenarios.Cases()) yield return scenario;
+            foreach (var scenario in ReachableMaterialScenarios.Cases()) yield return scenario;
+            foreach (var scenario in PausedOfficerLaborScenarios.Cases()) yield return scenario;
+            foreach (var scenario in DefenseOrderScenarios.Cases()) yield return scenario;
+            foreach (var scenario in CaptainPreparationScenarios.Cases()) yield return scenario;
+            foreach (var scenario in IdleAiRevisionScenarios.Cases()) yield return scenario;
+            foreach (var scenario in WorkshopPauseRevisionScenarios.Cases()) yield return scenario;
+            foreach (var scenario in ControlRevisionScenarios.Cases()) yield return scenario;
+            foreach (var scenario in DefenseRevisionScenarios.Cases()) yield return scenario;
+            foreach (var scenario in ProgressionRevisionScenarios.Cases()) yield return scenario;
+            foreach (var scenario in EconomyRevisionScenarios.Cases()) yield return scenario;
+            foreach (var scenario in ReachableCarrierScenarios.Cases()) yield return scenario;
+            foreach (var scenario in HaulAccessScenarios.Cases()) yield return scenario;
+            foreach (var scenario in DeliveryRecoveryScenarios.Cases()) yield return scenario;
+            foreach (var scenario in LifeRevisionScenarios.Cases()) yield return scenario;
+            foreach (var scenario in TransportRevisionScenarios.Cases()) yield return scenario;
             foreach (var scenario in DungeonScenarios.Cases()) yield return scenario;
             foreach (var scenario in SpatialScenarios.Cases()) yield return scenario;
             foreach (var scenario in WorldGenerationScenarios.Cases()) yield return scenario;
@@ -136,6 +166,12 @@ namespace IdleCatForest.Acceptance
             yield return new Scenario("regression.selected_quarry_resource", QuarryResource);
             yield return new Scenario("regression.medicine_and_brew_consumption", ProcessedNeeds);
             yield return new Scenario("regression.direct_control_leaves_recoverable_cargo", ControlledCargo);
+            foreach (string obstruction in new[] { "fence", "wall", "moving_away", "missing_tile" })
+                foreach (bool deposit in new[] { false, true })
+                {
+                    string blockedBy = obstruction; bool delivering = deposit;
+                    yield return new Scenario("regression.direct_storage_access_" + blockedBy + (delivering ? "_deposit" : "_pickup"), () => ControlledStorageAccess(blockedBy, delivering));
+                }
             yield return new Scenario("regression.review_scaffold_preserves_controlled_food", () => ControlledScaffoldCargo("food"));
             yield return new Scenario("regression.review_scaffold_preserves_surplus_planks", () => ControlledScaffoldCargo("planks"));
             yield return new Scenario("regression.review_new_building_preserves_controlled_food", () => ControlledScaffoldCargo("food", true));
@@ -904,8 +940,12 @@ namespace IdleCatForest.Acceptance
         static void ContinuousCombatBudget()
         {
             var w = ContinuousFixture(out var v, out var c, true); foreach (var cat in v.Cats) cat.Skills.Clear(); c.Skills.Add(new Stack("fight", 1)); var job = v.Jobs.Single();
+            v.Officers.Add(new Officer { Role = "captain", CatId = v.Cats[1].Id });
             var first = new Raid { Id = w.Id("first-raid"), Position = c.Position }; var second = new Raid { Id = w.Id("second-raid"), Position = c.Position }; v.Raids.Add(first); v.Raids.Add(second);
             w.Step(0.05); Near(job.Progress, 0.05, "Existing work lost the first actor quantum"); Near(first.Health + second.Health, 60, "Work and combat each received the same cat's full quantum");
+            Check(!job.Completed && c.JobId == job.Id, "Captain silently took an occupied worker");
+            Act(w, v, new GameAction { Kind = "AssignWorker", CatId = c.Id });
+            Act(w, v, new GameAction { Kind = "DefendRaid", CatId = c.Id, TargetId = first.Id });
             w.Step(0.05); Check(first.Health < 30 && second.Health == 30, "One cat attacked two raids with the same quantum: first=" + first.Health + " second=" + second.Health + " goal=" + c.Goal + " path=" + c.Path.Count); Valid(w);
         }
         static void ContinuousTransportInterruption(bool shipping)
@@ -1041,7 +1081,11 @@ namespace IdleCatForest.Acceptance
         static void Accounting()
         {
             var w = Fixture(out var v, out var c); var b = Station(w, v, "accounting_tent"); v.Research.Add("basic_tools"); Act(w, v, new GameAction { Kind = "AssignOfficer", Role = "accountant", CatId = c.Id }); Act(w, v, new GameAction { Kind = "AssignWorker", BuildingId = b.Id, CatId = c.Id });
-            var unreachable = new Stockpile { Id = "aaa-unreachable", Position = new Int2(-3, 2) }; v.Stockpiles.Insert(0, unreachable); w.TileAt(unreachable.Position).Wall = true; w.Step(90);
+            var unreachable = new Stockpile { Id = "aaa-unreachable", Position = new Int2(-3, 2) }; v.Stockpiles.Insert(0, unreachable);
+            for (int z = 0; z < unreachable.Depth; z++)
+                for (int x = 0; x < unreachable.Width; x++)
+                    w.TileAt(new Int2(unreachable.Position.X + x, unreachable.Position.Z + z)).Wall = true;
+            w.Step(90);
             Check(v.Stockpiles.Any(p => p.Id != "aaa-unreachable" && p.CountedAt >= 0), "Unreachable pile starves all accounting rounds"); Check(unreachable.CountedAt < 0, "Unreachable pile falsely counted");
         }
         static void Mountain()
@@ -1063,9 +1107,15 @@ namespace IdleCatForest.Acceptance
         static (double damage, double health) Battle(bool equipped)
         {
             var w = Fixture(out var v, out var c); c.Position = v.Center; c.X = 0; c.Z = 0; c.Skills.Add(new Stack("fight", 10)); c.BuildingId = "";
-            var raid = new Raid { Id = w.Id("raid"), Position = v.Center, Strength = 50, Health = 1000 }; v.Raids.Add(raid);
             foreach (var kind in new[] { "weapon", "armor" }) v.Items.Add(new Item { Id = w.Id(kind), Kind = kind, Material = "metal", Quality = 4, VillageId = v.Id, LocationId = v.Stockpiles[0].Id });
-            if (equipped) foreach (var item in v.Items.ToArray()) Act(w, v, new GameAction { Kind = "EquipItem", CatId = c.Id, TargetId = item.Id });
+            if (equipped) foreach (var item in v.Items.ToArray())
+            {
+                var order = Act(w, v, new GameAction { Kind = "EquipItem", CatId = c.Id, TargetId = item.Id });
+                for (int tick = 0; tick < 60 && v.Jobs.Any(j => j.Id == order.EntityId && !j.Completed); tick++) w.Step(1);
+                Check(item.LocationId == c.Id && c.Equipment.Contains(item.Id), "Combat fixture failed to physically retrieve equipment");
+            }
+            var raid = new Raid { Id = w.Id("raid"), Position = c.Position, Strength = 50, Health = 1000 }; v.Raids.Add(raid);
+            Act(w, v, new GameAction { Kind = "DefendRaid", CatId = c.Id, TargetId = raid.Id });
             w.Step(30); return (1000 - raid.Health, c.Health);
         }
         static void Equipment() { var plain = Battle(false); var equipped = Battle(true); Check(equipped.damage > plain.damage * 1.1, "Weapon does not improve actual combat damage"); Check(equipped.health > plain.health, "Armor does not reduce actual combat injury"); }
@@ -1116,6 +1166,41 @@ namespace IdleCatForest.Acceptance
         {
             var w = Fixture(out var v, out var c); c.Thirst = 1; c.Cargo.Add(new Stack("logs", 8)); Act(w, v, new GameAction { Kind = "EnterCat", CatId = c.Id }); Act(w, v, new GameAction { Kind = "LeaveCat", CatId = c.Id }); w.Step(60);
             Check(c.Alive && c.Thirst > 35, "Leaving direct control with cargo prevents AI need recovery"); Near(Goods(w, v, "logs"), 8, "Direct-control cargo disappeared");
+        }
+        static void ControlledStorageAccess(string obstruction, bool deposit)
+        {
+            var w = Fixture(out var v, out var c); var pile = v.Stockpiles[0];
+            c.Position = new Int2(2, 2); c.X = 2; c.Z = 2;
+            World.Add(deposit ? c.Cargo : pile.Goods, "logs", 5);
+            Act(w, v, new GameAction { Kind = "EnterCat", CatId = c.Id });
+            if (obstruction == "fence") v.BoundaryEdges.Add(new BoundaryEdge { From = c.Position, To = pile.Position });
+            else if (obstruction == "wall") w.TileAt(pile.Position).Wall = true;
+            else if (obstruction == "missing_tile") w.Tiles.Remove(w.GetTile(pile.Position));
+            else
+            {
+                Act(w, v, new GameAction { Kind = "MoveCat", CatId = c.Id, Position = new Int2(0, -1) });
+                w.Step(.05);
+                Check(c.Position.Equals(new Int2(2, 2)) && c.Z < 2, "The cat must still be moving away from its old interaction anchor");
+            }
+            var action = new GameAction { Kind = "InteractCat", CatId = c.Id, TargetId = pile.Id, Resource = "logs", Amount = 5 };
+            int tiles = w.Tiles.Count;
+            Check(!w.Apply(Context(v), action).Success, "Direct storage " + (deposit ? "deposit" : "pickup") + " bypassed " + obstruction);
+            Check(w.Tiles.Count == tiles, "Testing interaction access must not generate terrain in an incomplete client projection");
+            Near(World.Amount(c.Cargo, "logs"), deposit ? 5 : 0, "Rejected interaction changed carried goods");
+            Near(World.Amount(pile.Goods, "logs"), deposit ? 0 : 5, "Rejected interaction changed stored goods");
+            if (obstruction == "fence") v.BoundaryEdges.Clear();
+            else if (obstruction == "wall") w.TileAt(pile.Position).Wall = false;
+            else if (obstruction == "missing_tile") w.TileAt(pile.Position);
+            else
+            {
+                Act(w, v, new GameAction { Kind = "MoveCat", CatId = c.Id, Position = new Int2(0, 1) });
+                w.Step(.05);
+                Near(c.Z, 2, "Turning back must physically restore interaction range");
+            }
+            Act(w, v, action);
+            Near(World.Amount(c.Cargo, "logs"), deposit ? 0 : 5, "Restored access did not transfer the finite cargo");
+            Near(World.Amount(pile.Goods, "logs"), deposit ? 5 : 0, "Restored access duplicated or lost stored goods");
+            Valid(w);
         }
         static void ControlledScaffoldCargo(string resource, bool planAfterControl = false)
         {
@@ -1248,12 +1333,14 @@ namespace IdleCatForest.Acceptance
         }
         static void ArmorUnequipStorage()
         {
-            var w = Fixture(out var v, out var c); v.Stockpiles[0].Accepts.AddRange(new[] { "food", "water" }); var destination = ArmorPile(w, v);
+            var w = Fixture(out var v, out var c); c.BuildingId = ""; v.Stockpiles[0].Accepts.AddRange(new[] { "food", "water" }); var destination = ArmorPile(w, v);
             var item = new Item { Id = w.Id("armor"), Kind = "armor", Material = "metal", Quality = 2, VillageId = v.Id, LocationId = destination.Id, Condition = 37.5, MaxCondition = 73 };
             v.Items.Add(item); string id = item.Id;
-            Act(w, v, new GameAction { Kind = "EquipItem", CatId = c.Id, TargetId = id });
+            var pickup = Act(w, v, new GameAction { Kind = "EquipItem", CatId = c.Id, TargetId = id });
+            for (int tick = 0; tick < 60 && v.Jobs.Any(j => j.Id == pickup.EntityId && !j.Completed); tick++) w.Step(1);
             Check(c.Equipment.Contains(id) && item.LocationId == c.Id, "Armor did not enter the selected cat's equipment slot");
-            Act(w, v, new GameAction { Kind = "UnequipItem", CatId = c.Id, TargetId = id });
+            var returning = Act(w, v, new GameAction { Kind = "UnequipItem", CatId = c.Id, TargetId = id });
+            for (int tick = 0; tick < 60 && v.Jobs.Any(j => j.Id == returning.EntityId && !j.Completed); tick++) w.Step(1);
             Check(v.Items.Count == 1 && v.Items.Single().Id == id && item.LocationId == destination.Id && !c.Equipment.Contains(id), "Unequipping lost exact armor identity or failed to use accepting storage");
             Near(item.Condition, 37.5, "Unequipping changed armor condition"); Near(item.MaxCondition, 73, "Unequipping changed armor maximum condition");
             Near(Goods(w, v, "armor"), 0, "Unequipping duplicated an exact item as scalar goods"); Valid(w);
@@ -1624,7 +1711,7 @@ namespace IdleCatForest.Acceptance
             if (effect == "tradeValue")
             { v.Trader.Phase = "trading"; v.Trader.Until = 10000; var item = new Item { Id = w.Id("ware"), Kind = "mug", Material = "wood", VillageId = v.Id, LocationId = v.Stockpiles[0].Id }; v.Items.Add(item); Act(w, v, new GameAction { Kind = "SellGoods", TargetId = item.Id }); return v.Coins; }
             if (new[] { "combatPower", "combatPowerMult", "barracksReadiness", "defensePower", "defenseMult", "wallDefense" }.Contains(effect))
-            { Station(w, v, "barracks"); Station(w, v, "walls"); c.Skills.Add(new Stack("fight", 10)); c.Position = v.Center; c.X = 0; c.Z = 0; c.Health = 60; var raid = new Raid { Id = w.Id("raid"), Position = v.Center, Health = 1000 }; v.Raids.Add(raid); w.Step(30); return effect == "defensePower" || effect == "defenseMult" || effect == "wallDefense" ? c.Health : 1000 - raid.Health; }
+            { Station(w, v, "barracks"); Station(w, v, "walls"); c.Skills.Add(new Stack("fight", 10)); c.Position = v.Center; c.X = 0; c.Z = 0; c.Health = 60; var raid = new Raid { Id = w.Id("raid"), Position = v.Center, Health = 1000 }; v.Raids.Add(raid); Act(w, v, new GameAction { Kind = "AssignWorker", CatId = c.Id }); Act(w, v, new GameAction { Kind = "DefendRaid", CatId = c.Id, TargetId = raid.Id }); w.Step(30); return effect == "defensePower" || effect == "defenseMult" || effect == "wallDefense" ? c.Health : 1000 - raid.Health; }
             if (effect == "constructionSpeed")
             { c.BuildingId = ""; World.Add(v.Stockpiles[0].Goods, "planks", 100); World.Add(v.Stockpiles[0].Goods, "blocks", 100); var planned = Act(w, v, new GameAction { Kind = "PlanBuilding", Name = "wood_cutter", Position = new Int2(-5, 1), CatId = c.Id }); w.Step(80); return v.Buildings.First(b => b.Id == planned.EntityId).Progress; }
             if (effect == "productionRate")

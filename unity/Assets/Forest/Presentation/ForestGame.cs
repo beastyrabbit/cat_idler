@@ -32,6 +32,8 @@ namespace IdleCatForest.Presentation
         public readonly System.Collections.Generic.List<double> EconomyMilliseconds = new System.Collections.Generic.List<double>();
         public ForestView View { get; private set; }
         public ForestUI UI { get; private set; }
+        public FrameTimingHistory FrameTimings { get; private set; } = new FrameTimingHistory(false);
+        public SaveTimingHistory SaveTimings { get; private set; } = new SaveTimingHistory(false);
         private LocalAuthority local;
         private WorldClient remote;
         private CancellationTokenSource cancellation;
@@ -61,6 +63,8 @@ namespace IdleCatForest.Presentation
                 SavePath = Argument("--forest-save", InitialSavePath.Length > 0 ? InitialSavePath : Path.Combine(Application.persistentDataPath, "unity", "world-v1.json"));
                 int seed = int.TryParse(Argument("--forest-seed", "4242"), out int n) ? n : 4242;
                 evidenceDirectory = Argument("--forest-evidence", "");
+                SaveTimings = new SaveTimingHistory(SaveTimingHistory.Requested(evidenceDirectory, args));
+                FrameTimings = new FrameTimingHistory(evidenceDirectory != "" && (Array.IndexOf(args, "--forest-profile-frames") >= 0 || SaveTimings.Enabled));
                 local = new LocalAuthority(SavePath, seed);
                 Status = "Local shared world · saved on this Mac";
                 ready = true;
@@ -75,6 +79,22 @@ namespace IdleCatForest.Presentation
         private void Update()
         {
             if (!ready || CurrentWorld == null) return;
+            FrameTimings.BeginFrame(Time.frameCount, Time.unscaledDeltaTime * 1000);
+            long phase = StartFramePhase();
+            try { UpdateFrame(); }
+            finally { EndFramePhase(FramePhase.Game, phase); }
+        }
+
+        public long StartFramePhase() => FrameTimings.Enabled ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+        public void EndFramePhase(FramePhase phase, long started)
+        {
+            if (!FrameTimings.Enabled || started == 0) return;
+            double milliseconds = (System.Diagnostics.Stopwatch.GetTimestamp() - started) * 1000d / System.Diagnostics.Stopwatch.Frequency;
+            FrameTimings.Add(Time.frameCount, phase, milliseconds);
+        }
+
+        private void UpdateFrame()
+        {
             if (evidenceDirectory != "" && !capturing)
             {
                 if (Keyboard.current?.f9Key.wasPressedThisFrame == true) StartCoroutine(CaptureEvidence(1));
@@ -85,8 +105,13 @@ namespace IdleCatForest.Presentation
             if (evidenceDirectory != "" && Time.unscaledTime >= nextEvidence)
             {
                 nextEvidence = Time.unscaledTime + 10;
-                Directory.CreateDirectory(evidenceDirectory);
-                File.WriteAllText(Path.Combine(evidenceDirectory, "performance.json"), JsonUtility.ToJson(MeasurePerformance(), true));
+                long phase = StartFramePhase();
+                try
+                {
+                    Directory.CreateDirectory(evidenceDirectory);
+                    File.WriteAllText(Path.Combine(evidenceDirectory, "performance.json"), JsonUtility.ToJson(MeasurePerformance(), true));
+                }
+                finally { EndFramePhase(FramePhase.Evidence, phase); }
             }
             if (remote != null) { Status = remote.Status; return; }
             accumulated += Math.Min(Time.unscaledDeltaTime, .25) * Speed;
@@ -96,7 +121,9 @@ namespace IdleCatForest.Presentation
                 count++;
                 var before = local.World.TimeSeconds;
                 var step = System.Diagnostics.Stopwatch.StartNew();
-                local.Advance(World.SimulationStepSeconds);
+                long phase = StartFramePhase();
+                try { local.Advance(World.SimulationStepSeconds); }
+                finally { EndFramePhase(FramePhase.Simulation, phase); }
                 if (local.World.TimeSeconds > before)
                 {
                     StepMilliseconds.Add(step.Elapsed.TotalMilliseconds);
@@ -160,7 +187,11 @@ namespace IdleCatForest.Presentation
                 remote = IsRemote,
                 directControl = View.DirectControl,
                 speed = Speed,
-                simulationStepSeconds = World.SimulationStepSeconds
+                simulationStepSeconds = World.SimulationStepSeconds,
+                frameTimingSemantics = FrameTimings.Enabled ? "Elapsed main-thread scope milliseconds by frameIndex, including any host preemption within a scope. Game, View and UI include nested phases; durations are not additive. followingIntervalMilliseconds is the interval observed at followingFrameIndex. The unfinished current frame is omitted. Evidence writes include profiling overhead and appear in a later report. These scopes do not isolate GPU, rendering, frame-limiter waits or host scheduling." : "",
+                frameTimings = FrameTimings.Enabled ? FrameTimings.Snapshot() : null,
+                saveTimingSemantics = SaveTimings.Enabled ? "Up to 128 call-scoped local saves. Stages are nonoverlapping elapsed main-thread milliseconds including host preemption; total also includes residual collection, unwinding and lock-release time. Failed stages may include stream unwinding before failure capture; unattempted rows are not completed work. Byte counts are UTF-8. Join frameIndex only to an available frame record for its following interval; pause, quit and initialization may have no retained pair. Initialization saves and saves after the last periodic report are absent. Measurements add overhead and do not isolate CPU scheduling or imply a performance gain." : "",
+                saveTimings = SaveTimings.Enabled ? SaveTimings.Snapshot() : null
             };
         }
 
@@ -170,6 +201,10 @@ namespace IdleCatForest.Presentation
             public int population, buildings, workingCats, reservations, frames, steps, economyTicks, width, height;
             public double frameP50, frameP95, stepP50, stepP95, economyP50, economyP95, speed, simulationStepSeconds;
             public string processor, graphics; public bool editor, remote, directControl;
+            public string frameTimingSemantics;
+            public FrameTimingSample[] frameTimings;
+            public string saveTimingSemantics;
+            public SaveTimingSample[] saveTimings;
         }
 
         public async Task<ActionResult> Send(GameAction action)
@@ -217,8 +252,33 @@ namespace IdleCatForest.Presentation
         public void Save()
         {
             if (local == null) return;
-            try { local.Save(); }
+            long phase = StartFramePhase();
+            SaveTiming timing = null;
+            try
+            {
+                if (SaveTimings.Enabled) local.Save(out timing);
+                else local.Save();
+            }
             catch (Exception e) { Status = "Save failed: " + e.Message; Debug.LogError(Status); }
+            finally
+            {
+                if (timing != null)
+                {
+                    try
+                    {
+                        SaveTimings.Add(Time.frameCount, new SaveTimingSample
+                        {
+                            success = timing.Success, failedStage = timing.FailedStage.ToString(),
+                            totalMilliseconds = timing.TotalMilliseconds, residualMilliseconds = timing.ResidualMilliseconds,
+                            payloadBytes = timing.PayloadBytes, envelopeBytes = timing.EnvelopeBytes,
+                            stages = timing.Stages.Select(stage => new SaveStageSample { stage = stage.Stage.ToString(),
+                                milliseconds = stage.Milliseconds, attempted = stage.Attempted, succeeded = stage.Succeeded }).ToArray()
+                        });
+                    }
+                    catch (Exception) { Debug.LogWarning("Could not retain save diagnostics."); }
+                }
+                EndFramePhase(FramePhase.Save, phase);
+            }
         }
 
         private void OnApplicationPause(bool pause) { if (pause) Save(); }

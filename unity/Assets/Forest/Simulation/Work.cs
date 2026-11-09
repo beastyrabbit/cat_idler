@@ -6,10 +6,11 @@ namespace IdleCatForest.Simulation
 {
     public partial class World
     {
-        private static string JobLabor(string kind) => kind == "water" ? "fetch_water" : kind == "logs" || kind == "replant" ? "woodcut" : kind == "fibre" ? "forage" : kind == "fish" ? "fishing" : kind == "offering" ? "ritual" : kind == "expand" || kind == "road" || kind == "rail" || kind == "bridge" || kind == "dock" ? "build" : kind;
+        private static string JobLabor(string kind) => kind == "defend_raid" ? "fight" : kind == "water" ? "fetch_water" : kind == "logs" || kind == "replant" ? "woodcut" : kind == "fibre" ? "forage" : kind == "fish" ? "fishing" : kind == "offering" ? "ritual" : kind == "expand" || kind == "road" || kind == "rail" || kind == "bridge" || kind == "dock" ? "build" : kind;
         private bool FreeWorker(Village v, Cat c) => c != null && !IsDungeonExplorer(c) && c.Position.Level == 0 && c.JobId == "" && c.BuildingId == "" && c.ControlledBy == "" && !v.Routes.Any(r => r.CatId == c.Id);
-        private Cat AvailableCat(Village v, string labor) => v.Cats.Where(c => c.Alive && c.AgeHours >= 12 && FreeWorker(v, c) && c.Migration != "arriving" && c.Migration != "departing")
-            .OrderByDescending(c => (c.Preferences.Contains(labor) ? 100 : 0) + (c.Boosted ? 20 : 0) + Amount(c.Skills, labor)).ThenBy(c => c.Id, StringComparer.Ordinal).FirstOrDefault();
+        private IEnumerable<Cat> AvailableCats(Village v, string labor) => v.Cats.Where(c => c.Alive && c.AgeHours >= 12 && FreeWorker(v, c) && c.Migration != "arriving" && c.Migration != "departing")
+            .OrderByDescending(c => (c.Preferences.Contains(labor) ? 100 : 0) + (c.Boosted ? 20 : 0) + Amount(c.Skills, labor)).ThenBy(c => c.Id, StringComparer.Ordinal);
+        private Cat AvailableCat(Village v, string labor) => AvailableCats(v, labor).FirstOrDefault();
         private void StartJob(Village v, Cat c, Job j)
         {
             if (c.JobId != "" || v.Jobs.Any(job => !job.Completed && job.CatId == c.Id))
@@ -92,10 +93,11 @@ namespace IdleCatForest.Simulation
                 return ActionResult.Fail("No available worker");
             if (kind == "train")
             {
-                var barracks = v.Buildings.Find(b => b.Kind == "barracks" && b.Completed);
+                var barracks = v.Buildings.Where(b => b.Kind == "barracks" && b.Completed && !b.Paused && Walkable(v, b.Position))
+                    .OrderBy(b => Int2.Distance(c.Position, b.Position)).ThenBy(b => b.Id, StringComparer.Ordinal).FirstOrDefault(b => Path(c.Position, b.Position, v) != null);
                 if (barracks == null)
-                    return ActionResult.Fail("Completed Barracks required");
-                StartJob(v, c, new Job { Kind = kind, Position = barracks.Position, RequiredWork = 120, Manual = manual });
+                    return ActionResult.Fail("Reachable completed unpaused Barracks required");
+                StartJob(v, c, new Job { Kind = kind, TargetId = barracks.Id, Position = barracks.Position, RequiredWork = 120, Manual = manual });
                 return ActionResult.Ok(c.JobId);
             }
             if (kind == "expand")
@@ -202,36 +204,83 @@ namespace IdleCatForest.Simulation
         }
         private ActionResult StartHaul(Village v, Cat c, Stockpile source)
         {
-            c = c ?? AvailableCat(v, "haul");
+            c = c ?? AvailableCats(v, "haul").FirstOrDefault(candidate => StockpileAccess(v, source, candidate.Position).HasValue);
             if (!FreeWorker(v, c))
                 return ActionResult.Fail("No available carrier");
-            var resource = source.Goods.FirstOrDefault(s => s.Amount > 0);
-            if (resource == null)
+            var access = StockpileAccess(v, source, c.Position);
+            if (!access.HasValue)
+                return ActionResult.Fail("Source unreachable");
+            bool unclaimedCargo = false;
+            foreach (var resource in source.Goods.Where(s => s.Amount > 0))
             {
-                var item = v.Items.Where(i => i.LocationId == source.Id).OrderBy(i => i.Id, StringComparer.Ordinal).FirstOrDefault();
-                if (item == null)
-                    return ActionResult.Fail("Empty source");
-                var itemStorage = Storage(v, ItemResource(item.Kind), 1, source.Position, source.Id);
+                double free = resource.Amount - Reservations.Where(r => r.PileId == source.Id && r.Resource == resource.Resource).Sum(r => r.Amount);
+                double amount = Math.Min(8, free);
+                if (amount <= 0)
+                    continue;
+                unclaimedCargo = true;
+                var destination = DeliveryStorage(v, resource.Resource, amount, access.Value, out var deliveryAccess, source.Id);
+                if (destination == null)
+                    continue;
+                string id = Id("job");
+                Reservations.Add(new Reservation { OwnerId = id, VillageId = v.Id, PileId = source.Id, Resource = resource.Resource, Amount = amount });
+                StartJob(v, c, new Job { Id = id, Kind = "haul", Phase = "fetch", SourceId = source.Id, TargetId = destination.Id, Position = deliveryAccess, Resource = resource.Resource, Amount = amount });
+                return ActionResult.Ok(id);
+            }
+            foreach (var item in v.Items.Where(i => i.LocationId == source.Id).OrderBy(i => i.Id, StringComparer.Ordinal))
+            {
+                unclaimedCargo = true;
+                var itemStorage = DeliveryStorage(v, ItemResource(item.Kind), 1, access.Value, out _, source.Id);
                 if (itemStorage == null)
-                    return ActionResult.Fail("No accepting destination");
-                if (Path(c.Position, source.Position, v) == null)
-                    return ActionResult.Fail("Source unreachable");
+                    continue;
                 var haul = new Job { Id = Id("job"), Kind = "haul", Phase = "item_fetch", SourceId = source.Id, TargetId = itemStorage.Id, Position = source.Position, Resource = ItemResource(item.Kind), Amount = 1, ItemIds = new List<string> { item.Id } };
                 StartJob(v, c, haul);
                 item.LocationId = haul.Id;
                 return ActionResult.Ok(haul.Id);
             }
-            double free = resource.Amount - Reservations.Where(r => r.PileId == source.Id && r.Resource == resource.Resource).Sum(r => r.Amount);
-            double amount = Math.Min(8, free);
-            if (amount <= 0)
-                return ActionResult.Fail("Cargo already claimed");
-            var destination = Storage(v, resource.Resource, amount, source.Position, source.Id);
-            if (destination == null)
-                return ActionResult.Fail("No accepting destination");
-            string id = Id("job");
-            Reservations.Add(new Reservation { OwnerId = id, VillageId = v.Id, PileId = source.Id, Resource = resource.Resource, Amount = amount });
-            StartJob(v, c, new Job { Id = id, Kind = "haul", Phase = "fetch", SourceId = source.Id, TargetId = destination.Id, Position = destination.Position, Resource = resource.Resource, Amount = amount });
-            return ActionResult.Ok(id);
+            return ActionResult.Fail(unclaimedCargo ? "No accepting destination" : source.Goods.Any(s => s.Amount > 0) ? "Cargo already claimed" : "Empty source");
+        }
+        private Stockpile DeliveryStorage(Village v, string resource, double amount, Int2 from, out Int2 access, string excludedId = null)
+        {
+            // Ordinary work and equipment may deliver inside an accepting
+            // physical footprint. Transport retains its own endpoint rules.
+            foreach (var pile in v.Stockpiles.Where(s => s.Kind == "storage" && (excludedId == null || s.Id != excludedId) && HasRoom(v, s, resource, amount)).OrderBy(s => Int2.Distance(s.Position, from)).ThenBy(s => s.Id, StringComparer.Ordinal))
+            {
+                var reachable = StockpileAccess(v, pile, from);
+                if (!reachable.HasValue)
+                    continue;
+                access = reachable.Value;
+                return pile;
+            }
+            access = default;
+            return null;
+        }
+        private Int2? DeliveryAccess(Village v, Cat c, Stockpile pile) => c.Path.Count > 0 && Contains(pile.Position, pile.Width, pile.Depth, c.Path[c.Path.Count - 1]) && Walkable(v, c.Path[c.Path.Count - 1])
+            ? c.Path[c.Path.Count - 1] : StockpileAccess(v, pile, c.Position);
+        private Int2? HaulSourceAccess(Village v, Cat c, Job j, Stockpile source)
+        {
+            // Keep the current physical endpoint while Move validates its remaining
+            // edges. Closed footprints retry once per second without losing claims.
+            Int2? access = c.Path.Count > 0 && Contains(source.Position, source.Width, source.Depth, c.Path[c.Path.Count - 1]) && Walkable(v, c.Path[c.Path.Count - 1])
+                ? c.Path[c.Path.Count - 1] : (Int2?)null;
+            if (!access.HasValue)
+            {
+                if (TimeSeconds + 1e-9 < j.NextStorageAttemptAt)
+                    return null;
+                access = StockpileAccess(v, source, c.Position);
+            }
+            if (!access.HasValue)
+            {
+                c.Path.Clear();
+                j.NextStorageAttemptAt = Math.Floor(TimeSeconds) + 1;
+                j.BlockedReason = c.BlockedReason = "blocked_route";
+                return null;
+            }
+            j.NextStorageAttemptAt = 0;
+            if (j.BlockedReason == "blocked_route")
+                j.BlockedReason = "";
+            if (c.BlockedReason == "blocked_route")
+                c.BlockedReason = "";
+            return access;
         }
         private Stockpile Spill(Village v, Int2 p, List<Stack> goods)
         {
@@ -256,6 +305,13 @@ namespace IdleCatForest.Simulation
             foreach (var route in v.Routes.Where(r => r.CatId == c.Id).ToArray())
                 CancelRoute(v, route.Id);
             var job = v.Jobs.Find(j => j.Id == c.JobId && !j.Completed);
+            if (job == null && c.JobId == "")
+                job = v.Jobs.Find(j => j.Id == c.ResumeJobId && !j.Completed && j.CatId == c.Id && IsEquipmentJob(j));
+            if (job != null && IsEquipmentJob(job))
+            {
+                CompleteEquipmentOrder(v, job, true);
+                job = null;
+            }
             if (job != null)
             {
                 bool preserve = job.Kind == "road" || job.Kind == "rail" || job.Kind == "expand";
@@ -366,6 +422,14 @@ namespace IdleCatForest.Simulation
         }
         private void TickJob(Village v, Cat c, Job j, double dt)
         {
+            if (IsEquipmentJob(j))
+            {
+                TickEquipment(v, c, j, dt);
+                return;
+            }
+            // Raids own defense movement and combat later in this same actor quantum.
+            if (j.Kind == "defend_raid")
+                return;
             if (!CanConstructJob(v, j))
             {
                 j.BlockedReason = c.BlockedReason = "foreign_territory";
@@ -411,6 +475,8 @@ namespace IdleCatForest.Simulation
                         j.BlockedReason = c.BlockedReason = "";
                 }
             }
+            if (j.Kind == "train" && !TrainingCanAdvance(v, c, j))
+                return;
             if (j.Kind == "production" && j.Phase != "output_delivery")
             {
                 var station = v.Buildings.Find(b => b.Id == j.TargetId);
@@ -421,6 +487,8 @@ namespace IdleCatForest.Simulation
                     c.Goal = "production paused";
                     return;
                 }
+                if (j.BlockedReason == "queue_paused")
+                    j.BlockedReason = "";
             }
             if (j.SuspendedCargoPileId != "")
             {
@@ -435,7 +503,19 @@ namespace IdleCatForest.Simulation
             c.Goal = j.Kind + " · " + j.Phase;
             if (j.Phase == "item_fetch")
             {
-                if (!Move(c, j.Position, dt))
+                Int2 pickup = j.Position;
+                if (j.Kind == "haul")
+                {
+                    var source = v.Stockpiles.Find(p => p.Id == j.SourceId);
+                    if (source != null)
+                    {
+                        var access = HaulSourceAccess(v, c, j, source);
+                        if (!access.HasValue)
+                            return;
+                        pickup = access.Value;
+                    }
+                }
+                if (!Move(c, pickup, dt))
                     return;
                 j.Phase = "output_delivery";
                 c.Path.Clear();
@@ -567,12 +647,12 @@ namespace IdleCatForest.Simulation
                     if (j.Kind == "haul" && c.BlockedReason == "blocked_route" && j.Local.Count == 0 && c.Cargo.Count > 0 && TimeSeconds + 1e-9 >= j.NextStorageAttemptAt)
                     {
                         var carried = c.Cargo[0];
-                        var alternate = Storage(v, carried.Resource, carried.Amount, c.Position, j.SourceId);
+                        var alternate = DeliveryStorage(v, carried.Resource, carried.Amount, c.Position, out var deliveryAccess, j.SourceId);
                         j.NextStorageAttemptAt = alternate == null ? Math.Floor(TimeSeconds) + 1 : 0;
                         if (alternate != null)
                         {
                             j.TargetId = alternate.Id;
-                            j.Position = alternate.Position;
+                            j.Position = deliveryAccess;
                             c.Path.Clear();
                             j.BlockedReason = c.BlockedReason = "";
                         }
@@ -632,11 +712,17 @@ namespace IdleCatForest.Simulation
                         if (missing > 1e-8)
                         {
                             double reserved = Reservations.Where(r => r.OwnerId == j.Id && r.Resource == required.Resource).Sum(r => r.Amount);
-                            if (reserved + 1e-8 < missing && !Reserve(v, j.Id, required.Resource, missing - reserved))
+                            if (reserved + 1e-8 < missing)
                             {
-                                j.BlockedReason = "missing_recipe_input";
-                                return;
+                                if (!planning)
+                                    return;
+                                if (!Reserve(v, j.Id, required.Resource, missing - reserved, c.Position, j.Position))
+                                {
+                                    j.BlockedReason = Available(v, required.Resource) + 1e-8 < missing - reserved ? "missing_recipe_input" : "input_unreachable";
+                                    return;
+                                }
                             }
+                            j.BlockedReason = "";
                             j.Phase = "fetch";
                             c.Path.Clear();
                             return;
@@ -789,6 +875,7 @@ namespace IdleCatForest.Simulation
                             queue.RemoveAt(0);
                             if (completed.Repeat)
                                 queue.Add(completed);
+                            MirrorPrimaryQueue(station, slot);
                         }
                     }
                 }
@@ -884,11 +971,21 @@ namespace IdleCatForest.Simulation
                 var pile = v.Stockpiles.Find(s => s.Id == j.DeliveryPileId && s.Kind == "storage");
                 if (pile != null && !HasRoom(v, pile, resource, cargo?.Amount ?? 1))
                     pile = null;
+                Int2? deliveryAccess = pile == null ? (Int2?)null : DeliveryAccess(v, c, pile);
+                if (pile != null && !deliveryAccess.HasValue)
+                {
+                    j.DeliveryPileId = "";
+                    c.Path.Clear();
+                    j.NextStorageAttemptAt = Math.Floor(TimeSeconds) + 1;
+                    j.BlockedReason = c.BlockedReason = "output_storage_full_or_unreachable";
+                    return;
+                }
                 if (pile == null && TimeSeconds + 1e-9 < j.NextStorageAttemptAt)
                     return;
                 if (pile == null)
                 {
-                    pile = Storage(v, resource, cargo?.Amount ?? 1, c.Position, j.Kind == "haul" ? j.SourceId : null);
+                    pile = DeliveryStorage(v, resource, cargo?.Amount ?? 1, c.Position, out var access, j.Kind == "haul" ? j.SourceId : null);
+                    deliveryAccess = pile == null ? (Int2?)null : access;
                     j.NextStorageAttemptAt = Math.Floor(TimeSeconds) + 1;
                 }
                 if (pile == null)
@@ -897,7 +994,14 @@ namespace IdleCatForest.Simulation
                     return;
                 }
                 j.DeliveryPileId = pile.Id;
-                if (!Move(c, pile.Position, dt))
+                bool arrived = Move(c, deliveryAccess.Value, dt);
+                // A chosen endpoint alone does not prove recovery. Move must
+                // accept the route or physically finish returning to its anchor.
+                if (arrived && c.BlockedReason == "output_storage_full_or_unreachable")
+                    c.BlockedReason = "";
+                if (j.BlockedReason == "output_storage_full_or_unreachable" && (arrived || c.BlockedReason == ""))
+                    j.BlockedReason = "";
+                if (!arrived)
                 {
                     if (c.BlockedReason == "blocked_route")
                     {
@@ -934,14 +1038,55 @@ namespace IdleCatForest.Simulation
                 j.BlockedReason = "source_changed";
                 return;
             }
-            if (!Move(c, pile.Position, dt))
+            bool productionInput = j.Kind == "production" && ownerId == j.Id;
+            bool haulInput = j.Kind == "haul" && ownerId == j.Id;
+            Int2 access = pile.Position;
+            if (haulInput)
+            {
+                var reachable = HaulSourceAccess(v, c, j, pile);
+                if (!reachable.HasValue)
+                    return;
+                access = reachable.Value;
+            }
+            else if (productionInput)
+            {
+                // Retain an in-flight access tile. Move validates each remaining edge;
+                // another footprint tile is selected when the old route fails.
+                Int2? reachable = c.Path.Count > 0 && Contains(pile.Position, pile.Width, pile.Depth, c.Path[c.Path.Count - 1]) && Walkable(v, c.Path[c.Path.Count - 1])
+                    ? c.Path[c.Path.Count - 1] : ProductionInputAccess(v, pile, c.Position, j.Position);
+                if (!reachable.HasValue)
+                {
+                    RetryProductionInput(c, j);
+                    return;
+                }
+                access = reachable.Value;
+            }
+            if (!Move(c, access, dt))
+            {
+                if (productionInput && c.BlockedReason == "blocked_route")
+                    RetryProductionInput(c, j);
                 return;
+            }
+            if (productionInput && (!Walkable(v, j.Position) || Path(c.Position, j.Position, v) == null))
+            {
+                RetryProductionInput(c, j);
+                return;
+            }
             double quantity = Math.Min(CarryCapacity(v, claim.Resource), claim.Amount);
             Add(pile.Goods, claim.Resource, -quantity);
             Add(c.Cargo, claim.Resource, quantity);
             claim.Amount -= quantity;
             if (claim.Amount <= 1e-9)
                 Reservations.Remove(claim);
+        }
+        private void RetryProductionInput(Cat c, Job j)
+        {
+            // Only unpicked recipe claims are replaceable. Carried/staged ingredients
+            // and the separately owned physical needs spill must retain their identity.
+            Release(j.Id);
+            j.Phase = "working";
+            j.BlockedReason = c.BlockedReason = "input_unreachable";
+            c.Path.Clear();
         }
         private Building ResolveScaffold(Village v, Cat c, Job j)
         {

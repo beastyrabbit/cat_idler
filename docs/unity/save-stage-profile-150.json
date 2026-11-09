@@ -1,0 +1,309 @@
+{
+  "scope": "Separate fresh expanded150 fixtures, ARM64 IL2CPP, Apple M1 Max, 2400x1500, local management 1x; no speedup claim",
+  "percentileRule": "Sorted values at floor(q*N), without interpolation; milliseconds unless explicitly bytes",
+  "inputs": {
+    "artifacts/tests/hourly-save-stages-profile150-performance.json": "1e4377b2b6b412d3ac97278619c7868ee7d10f4204613185515b583e194bbda4",
+    "artifacts/tests/hourly-save-stages-ordinary150-performance.json": "2c47dfd065efd3408a643fc9becb9bbf4ec548bc3cc2cade7c9e1da95c6a4ac7"
+  },
+  "packageManifestSha256": "b882b98107196f10573e59d15c262ab651ca06f2d5a52e909a10e3369815570f",
+  "profile": {
+    "saveCount": 29,
+    "allTenStagesSucceeded": true,
+    "totalMilliseconds": {
+      "count": 29,
+      "p50": 67.3471,
+      "p95": 71.0659,
+      "min": 57.3299,
+      "max": 71.06920000000001
+    },
+    "residualMilliseconds": {
+      "count": 29,
+      "p50": 0.0123,
+      "p95": 0.0184,
+      "min": 0.0099,
+      "max": 0.14070000000000002
+    },
+    "stagesMilliseconds": {
+      "LockWait": {
+        "count": 29,
+        "p50": 0.0001,
+        "p95": 0.0001,
+        "min": 0.0,
+        "max": 0.0002
+      },
+      "Validation": {
+        "count": 29,
+        "p50": 0.1913,
+        "p95": 0.9848,
+        "min": 0.18000000000000002,
+        "max": 1.0295
+      },
+      "PayloadEncode": {
+        "count": 29,
+        "p50": 39.15,
+        "p95": 40.934200000000004,
+        "min": 33.6333,
+        "max": 41.4394
+      },
+      "PayloadUtf8Hash": {
+        "count": 29,
+        "p50": 10.4433,
+        "p95": 13.167,
+        "min": 10.007900000000001,
+        "max": 13.785300000000001
+      },
+      "EnvelopeEncode": {
+        "count": 29,
+        "p50": 13.4739,
+        "p95": 14.463600000000001,
+        "min": 9.8268,
+        "max": 15.663200000000002
+      },
+      "TempSetupProtection": {
+        "count": 29,
+        "p50": 0.6257,
+        "p95": 3.2108000000000003,
+        "min": 0.2594,
+        "max": 3.6733000000000002
+      },
+      "EnvelopeUtf8Write": {
+        "count": 29,
+        "p50": 0.8771,
+        "p95": 1.2371,
+        "min": 0.7195,
+        "max": 1.9905000000000002
+      },
+      "FlushClose": {
+        "count": 29,
+        "p50": 0.8308000000000001,
+        "p95": 1.7734,
+        "min": 0.49420000000000003,
+        "max": 4.490200000000001
+      },
+      "MoveReplace": {
+        "count": 29,
+        "p50": 0.6862,
+        "p95": 0.8851,
+        "min": 0.5688,
+        "max": 0.8893000000000001
+      },
+      "DirectorySync": {
+        "count": 29,
+        "p50": 0.0364,
+        "p95": 0.0504,
+        "min": 0.0261,
+        "max": 0.0596
+      }
+    },
+    "payloadBytes": {
+      "count": 29,
+      "p50": 1745898,
+      "p95": 1747138,
+      "min": 1745087,
+      "max": 1747473
+    },
+    "envelopeBytes": {
+      "count": 29,
+      "p50": 2024359,
+      "p95": 2025863,
+      "min": 2023374,
+      "max": 2026222
+    },
+    "encodingHashSubtotalMilliseconds": {
+      "count": 29,
+      "p50": 63.2569,
+      "p95": 65.3875,
+      "min": 54.1876,
+      "max": 65.6922
+    },
+    "encodingHashShareOfSummedTotal": 0.9404788807517166,
+    "filesystemShareOfSummedTotal": 0.05556633674505036,
+    "framePairCount": 12,
+    "pairs": [
+      {
+        "sequence": 18,
+        "frameIndex": 5310,
+        "followingFrameIndex": 5311,
+        "authorityTotalMilliseconds": 71.06920000000001,
+        "outerSaveMilliseconds": 71.0984,
+        "presentationAndBoundaryMilliseconds": 0.02919999999998879,
+        "followingIntervalMilliseconds": 99.99771118164062
+      },
+      {
+        "sequence": 19,
+        "frameIndex": 5604,
+        "followingFrameIndex": 5605,
+        "authorityTotalMilliseconds": 67.3471,
+        "outerSaveMilliseconds": 67.3728,
+        "presentationAndBoundaryMilliseconds": 0.0257000000000005,
+        "followingIntervalMilliseconds": 83.32757568359375
+      },
+      {
+        "sequence": 20,
+        "frameIndex": 5897,
+        "followingFrameIndex": 5898,
+        "authorityTotalMilliseconds": 71.0659,
+        "outerSaveMilliseconds": 71.0921,
+        "presentationAndBoundaryMilliseconds": 0.026200000000002888,
+        "followingIntervalMilliseconds": 83.3652114868164
+      },
+      {
+        "sequence": 21,
+        "frameIndex": 6194,
+        "followingFrameIndex": 6195,
+        "authorityTotalMilliseconds": 68.6774,
+        "outerSaveMilliseconds": 68.7082,
+        "presentationAndBoundaryMilliseconds": 0.030799999999999272,
+        "followingIntervalMilliseconds": 82.4018325805664
+      },
+      {
+        "sequence": 22,
+        "frameIndex": 6488,
+        "followingFrameIndex": 6489,
+        "authorityTotalMilliseconds": 69.0403,
+        "outerSaveMilliseconds": 69.0708,
+        "presentationAndBoundaryMilliseconds": 0.030500000000003524,
+        "followingIntervalMilliseconds": 83.13812255859375
+      },
+      {
+        "sequence": 23,
+        "frameIndex": 6786,
+        "followingFrameIndex": 6787,
+        "authorityTotalMilliseconds": 67.3497,
+        "outerSaveMilliseconds": 67.3787,
+        "presentationAndBoundaryMilliseconds": 0.028999999999996362,
+        "followingIntervalMilliseconds": 83.3365478515625
+      },
+      {
+        "sequence": 24,
+        "frameIndex": 7081,
+        "followingFrameIndex": 7082,
+        "authorityTotalMilliseconds": 68.32430000000001,
+        "outerSaveMilliseconds": 68.3549,
+        "presentationAndBoundaryMilliseconds": 0.030599999999992633,
+        "followingIntervalMilliseconds": 82.64179229736328
+      },
+      {
+        "sequence": 25,
+        "frameIndex": 7374,
+        "followingFrameIndex": 7375,
+        "authorityTotalMilliseconds": 68.7151,
+        "outerSaveMilliseconds": 68.7483,
+        "presentationAndBoundaryMilliseconds": 0.03319999999999368,
+        "followingIntervalMilliseconds": 83.37059020996094
+      },
+      {
+        "sequence": 26,
+        "frameIndex": 7669,
+        "followingFrameIndex": 7670,
+        "authorityTotalMilliseconds": 69.04560000000001,
+        "outerSaveMilliseconds": 69.0728,
+        "presentationAndBoundaryMilliseconds": 0.02719999999999345,
+        "followingIntervalMilliseconds": 83.33404541015625
+      },
+      {
+        "sequence": 27,
+        "frameIndex": 7966,
+        "followingFrameIndex": 7967,
+        "authorityTotalMilliseconds": 65.3249,
+        "outerSaveMilliseconds": 65.347,
+        "presentationAndBoundaryMilliseconds": 0.02209999999999468,
+        "followingIntervalMilliseconds": 84.21337127685547
+      },
+      {
+        "sequence": 28,
+        "frameIndex": 8261,
+        "followingFrameIndex": 8262,
+        "authorityTotalMilliseconds": 65.40310000000001,
+        "outerSaveMilliseconds": 65.4279,
+        "presentationAndBoundaryMilliseconds": 0.024799999999984834,
+        "followingIntervalMilliseconds": 83.36912536621094
+      },
+      {
+        "sequence": 29,
+        "frameIndex": 8559,
+        "followingFrameIndex": 8560,
+        "authorityTotalMilliseconds": 65.65350000000001,
+        "outerSaveMilliseconds": 65.6774,
+        "presentationAndBoundaryMilliseconds": 0.02389999999999759,
+        "followingIntervalMilliseconds": 82.6932601928711
+      }
+    ],
+    "presentationAndBoundaryMilliseconds": {
+      "count": 12,
+      "p50": 0.028999999999996362,
+      "p95": 0.03319999999999368,
+      "min": 0.02209999999999468,
+      "max": 0.03319999999999368
+    },
+    "pairedFollowingIntervalMilliseconds": {
+      "count": 12,
+      "p50": 83.3365478515625,
+      "p95": 99.99771118164062,
+      "min": 82.4018325805664,
+      "max": 99.99771118164062
+    },
+    "allFollowingIntervals": {
+      "count": 3600,
+      "p50": 16.666292190551758,
+      "p95": 17.570167541503906,
+      "min": 15.64229679107666,
+      "max": 100.02070617675781
+    },
+    "slowIntervalsAbove25ms": 34,
+    "withoutSaveOrEvidence": {
+      "intervals": {
+        "count": 3582,
+        "p50": 16.666086196899414,
+        "p95": 17.564462661743164,
+        "min": 15.64229679107666,
+        "max": 100.02070617675781
+      },
+      "slowIntervalsAbove25ms": 16
+    }
+  },
+  "workloads": {
+    "profile150": {
+      "population": 150,
+      "buildings": 54,
+      "workingCats": 10,
+      "frames": 3600,
+      "steps": 3002,
+      "economyTicks": 150,
+      "width": 2400,
+      "height": 1500,
+      "speed": 1.0,
+      "frameP50": 16.666292190551758,
+      "frameP95": 17.570167541503906,
+      "stepP50": 0.4208,
+      "stepP95": 1.2321,
+      "economyP50": 0.5928,
+      "economyP95": 1.4967000000000001
+    },
+    "ordinary150": {
+      "population": 150,
+      "buildings": 54,
+      "workingCats": 10,
+      "frames": 3600,
+      "steps": 2803,
+      "economyTicks": 140,
+      "width": 2400,
+      "height": 1500,
+      "speed": 1.0,
+      "frameP50": 16.667078018188477,
+      "frameP95": 17.64362907409668,
+      "stepP50": 0.4118,
+      "stepP95": 1.1007,
+      "economyP50": 0.601,
+      "economyP95": 1.3372000000000002
+    }
+  },
+  "ordinaryRecordingDisabled": true,
+  "limits": [
+    "Elapsed stages include scheduling and preemption. Host load uncontrolled.",
+    "Independent fixture runs are not a profiling-overhead or before/after experiment.",
+    "Only retained complete frame records are joined. Initialization and post-report saves are absent.",
+    "Stage percentiles are not additive. Authority total and parent Save must not be added.",
+    "No GPU, Unity rendering, frame-limiter, global cadence or mature-economy conclusion."
+  ]
+}

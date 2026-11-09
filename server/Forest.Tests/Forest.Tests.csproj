@@ -11,4 +11,8 @@
     <ProjectReference Include="../Forest.Server/Forest.Server.csproj" />
     <ProjectReference Include="../../tools/save-import/Forest.SaveImport/Forest.SaveImport.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <Compile Include="../../unity/Assets/Forest/Tests/EditMode/Acceptance/RenewableGrainScenarios.cs" Link="Acceptance/RenewableGrainScenarios.cs" />
+    <Compile Include="../../unity/Assets/Forest/Tests/EditMode/Acceptance/PrimaryQueueContinuityScenarios.cs" Link="Acceptance/PrimaryQueueContinuityScenarios.cs" />
+  </ItemGroup>
 </Project>

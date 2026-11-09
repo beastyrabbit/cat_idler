@@ -529,6 +529,13 @@ namespace IdleCatForest.Simulation
             route.BlockedReason = "";
             return false;
         }
+        private bool ShippingRouteEdge(TransportRoute route, Int2 from, int next)
+        {
+            var destination = route.Path[next];
+            var tile = TileAt(destination);
+            // A ship floats above the lake bed, but fences and building walls still block it.
+            return !tile.Wall && !tile.Mountain && (tile.Water || tile.Dock || next == 0 || next == route.Path.Count - 1) && Crossable(from, destination, null, 0, false);
+        }
         private void ReturnVessel(Village v, TransportRoute route, Vehicle vehicle, Cat driver, double dt)
         {
             if (driver == null)
@@ -564,8 +571,7 @@ namespace IdleCatForest.Simulation
             if (route.PathIndex > 0)
             {
                 int next = route.PathIndex - 1;
-                var tile = TileAt(route.Path[next]);
-                if (next > 0 && !tile.Water && !tile.Dock)
+                if (!ShippingRouteEdge(route, vehicle.Position, next))
                 {
                     route.BlockedReason = "return_route_blocked";
                     AdvanceTraveler(ref vehicle.X, ref vehicle.Z, vehicle.Position, 1, SpendActorTime(driver));
@@ -574,6 +580,7 @@ namespace IdleCatForest.Simulation
                     driver.Z = vehicle.Z;
                     return;
                 }
+                double startX = vehicle.X, startZ = vehicle.Z;
                 if (AdvanceTraveler(ref vehicle.X, ref vehicle.Z, route.Path[next], 1, SpendActorTime(driver)))
                 {
                     route.PathIndex = next;
@@ -583,6 +590,8 @@ namespace IdleCatForest.Simulation
                 driver.Position = vehicle.Position;
                 driver.X = vehicle.X;
                 driver.Z = vehicle.Z;
+                if (vehicle.X != startX || vehicle.Z != startZ)
+                    route.BlockedReason = "";
                 return;
             }
             var source = v.Stockpiles.Find(p => p.Id == route.SourceId);
@@ -722,7 +731,7 @@ namespace IdleCatForest.Simulation
                     continue;
                 }
                 var tile = TileAt(route.Path[next]);
-                if (route.Mode == "rail" ? !tile.Rail || !Walkable(v, route.Path[next]) || !Crossable(vehicle.Position, route.Path[next]) : (!tile.Water && !tile.Dock && next != 0 && next != route.Path.Count - 1))
+                if (route.Mode == "rail" ? !tile.Rail || !Walkable(v, route.Path[next]) || !Crossable(vehicle.Position, route.Path[next]) : !ShippingRouteEdge(route, vehicle.Position, next))
                 {
                     route.BlockedReason = "route_blocked";
                     AdvanceTraveler(ref vehicle.X, ref vehicle.Z, vehicle.Position, 1, SpendActorTime(c));

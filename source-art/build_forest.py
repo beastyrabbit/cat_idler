@@ -364,18 +364,21 @@ def book(pos, cover="cloth", size=0.35, upright=False):
 
 def flower(pos, mat="flower", height=0.45):
     x, y, z = pos
-    beam("Herb stem", (x, y, z), (x + 0.035, y, z + height), 0.035, "leaf")
+    plants = [beam("Herb stem", (x, y, z), (x + 0.035, y, z + height), 0.035, "leaf")]
     for side in (-1, 1):
-        orb("Herb leaf", (x + side * 0.11, y, z + height * 0.5), (0.15, 0.07, 0.05), "leaf_light")
-    orb("Flower cluster", (x + 0.035, y, z + height), (0.12, 0.11, 0.12), mat)
+        plants.append(orb("Herb leaf", (x + side * 0.11, y, z + height * 0.5),
+                          (0.15, 0.07, 0.05), "leaf_light"))
+    ripe = [orb("Flower cluster", (x + 0.035, y, z + height), (0.12, 0.11, 0.12), mat)]
+    return plants, ripe
 
 
-def garden(kind="herbs", width=2.4, depth=1.8):
-    box("Raised earth", (0, 0, 0.1), (width, depth, 0.2), "soil", edge=0.06)
+def garden(kind="herbs", width=2.4, depth=1.8, split=False):
+    bed = [box("Raised earth", (0, 0, 0.1), (width, depth, 0.2), "soil", edge=0.06)]
     for x in (-width / 2, width / 2):
-        box("Garden edging", (x, 0, 0.14), (0.12, depth + 0.16, 0.25), "wood")
+        bed.append(box("Garden edging", (x, 0, 0.14), (0.12, depth + 0.16, 0.25), "wood"))
     for y in (-depth / 2, depth / 2):
-        box("Garden edging", (0, y, 0.14), (width, 0.12, 0.25), "wood")
+        bed.append(box("Garden edging", (0, y, 0.14), (width, 0.12, 0.25), "wood"))
+    plants, ripe = [], []
     for i in range(4):
         for j in range(3):
             x, y = (i - 1.5) * width / 4.8, (j - 1) * depth / 3.7
@@ -383,10 +386,21 @@ def garden(kind="herbs", width=2.4, depth=1.8):
                 for n in range(3):
                     xx, yy = x + (n - 1) * 0.08, y + (n % 2) * 0.07
                     h = 0.68 + RNG.random() * 0.16
-                    beam("Wheat stem", (xx, yy, 0.2), (xx + 0.05, yy, h), 0.028, "straw")
-                    orb("Wheat ear", (xx + 0.05, yy, h), (0.07, 0.065, 0.2), "grain")
+                    plants.append(beam("Wheat stem", (xx, yy, 0.2), (xx + 0.05, yy, h),
+                                       0.028, "leaf" if split else "straw"))
+                    ripe.append(orb("Wheat ear", (xx + 0.05, yy, h), (0.07, 0.065, 0.2), "grain"))
             else:
-                flower((x, y, 0.19), "flower" if kind == "catnip" else "herb", 0.34 + RNG.random() * 0.15)
+                stems, heads = flower((x, y, 0.2 if split else 0.19),
+                                      "flower" if kind == "catnip" else "herb", 0.34 + RNG.random() * 0.15)
+                plants.extend(stems)
+                ripe.extend(heads)
+    if split:
+        for label, objects, pivot in (("Bed", bed, (0, 0, 0)),
+                                      ("Plants", plants, (0, 0, 0.2)),
+                                      ("Ripe", ripe, (0, 0, 0.2))):
+            part = merge_group(CURRENT.name + "_" + label, objects, pivot)
+            bpy.context.view_layer.objects.active = part
+            bpy.ops.object.transform_apply(location=False, rotation=True, scale=True)
 
 
 def wheel(pos, radius=0.5, mat="wood", spokes=8):
@@ -552,9 +566,9 @@ def vegetation():
                     (0.15, 0.1, 0.16), fleck, 1)
         finish_asset(name)
     for name, kind in [("grain_plot", "grain"), ("herb_plot", "herbs"), ("catnip_plot", "catnip")]:
-        new_asset(name, "Raised " + kind + " bed with separate readable stems")
-        garden(kind, 1.7, 1.3)
-        finish_asset(name)
+        new_asset(name, "Fixed " + kind + " bed with separate green plants and ripe heads")
+        garden(kind, 1.7, 1.3, split=True)
+        finish_asset(name, articulated=True)
     new_asset("reeds", "Waterside reeds with brown seed heads")
     for i in range(9):
         x, y, h = RNG.uniform(-0.4, 0.4), RNG.uniform(-0.3, 0.3), RNG.uniform(0.55, 1.1)

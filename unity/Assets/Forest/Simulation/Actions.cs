@@ -100,8 +100,13 @@ namespace IdleCatForest.Simulation
                     int role = Array.IndexOf(Catalog.Roles, action.Role);
                     if (role < 0 || cat == null)
                         return ActionResult.Fail("Unknown role or living cat");
-                    if (!village.Research.Contains(Catalog.RoleStudies[role]) || !village.Buildings.Any(b => b.Kind == Catalog.RoleBuildings[role] && b.Completed))
-                        return ActionResult.Fail("Office requires completed " + Catalog.RoleBuildings[role] + " and " + Catalog.RoleStudies[role]);
+                    var missingOfficeRequirements = new List<string>();
+                    if (!village.Research.Contains(Catalog.RoleStudies[role]))
+                        missingOfficeRequirements.Add("research study " + (Catalog.Study(Catalog.RoleStudies[role])?.Name ?? Catalog.RoleStudies[role]));
+                    if (!village.Buildings.Any(b => b.Kind == Catalog.RoleBuildings[role] && b.Completed))
+                        missingOfficeRequirements.Add("completed building " + Catalog.RoleBuildings[role]);
+                    if (missingOfficeRequirements.Count > 0)
+                        return ActionResult.Fail("Office requires " + string.Join("; ", missingOfficeRequirements));
                     if (village.Officers.Any(o => o.CatId == cat.Id && o.Role != action.Role))
                         return ActionResult.Fail("Cat already holds an office");
                     foreach (var replaced in village.Officers.Where(o => o.Role == action.Role))
@@ -196,12 +201,13 @@ namespace IdleCatForest.Simulation
                         return ActionResult.Fail("Survival and construction reserve protected");
                     return CreateInputJob(village, cat, "offering", village.Center, offering, 5, 10, "");
                 case "trainwarrior":
+                    if (!string.IsNullOrEmpty(action.CatId) && cat == null)
+                        return ActionResult.Fail("Selected living cat does not belong to this village");
                     return Request(village, "train", cat, true);
                 case "defendraid":
-                    if (village.Raids.Count == 0)
-                        return ActionResult.Fail("No active raid");
-                    village.Raids[0].Health -= 6;
-                    return ActionResult.Ok();
+                    return OrderRaidDefense(village, cat, action);
+                case "canceldefense":
+                    return CancelRaidDefense(village, cat, action.TargetId);
                 case "castvote":
                     if (village.Election == null || cat == null)
                         return ActionResult.Fail("Open election and living candidate required");
@@ -245,6 +251,8 @@ namespace IdleCatForest.Simulation
                 case "unequipitem":
                 case "repairitem":
                     return Equipment(village, cat, action, kind);
+                case "cancelequipment":
+                    return CancelEquipment(village, cat, action.TargetId);
                 case "entercatcontrol":
                 case "entercat":
                     if (cat == null)
@@ -296,6 +304,8 @@ namespace IdleCatForest.Simulation
                 case "exploredungeon":
                     return ExploreDungeon(village, cat, action.TargetId);
                 case "recallexplorer":
+                    if (cat != null && cat.ControlledBy != "" && cat.ControlledBy != context.PlayerId && cat.ControlLeaseUntil > TimeSeconds)
+                        return ActionResult.Fail("Cat controlled by another player");
                     return RecallExplorer(village, cat);
                 case "attackcreature":
                     if (cat == null || cat.ControlledBy != context.PlayerId)
@@ -326,19 +336,36 @@ namespace IdleCatForest.Simulation
             Note(v, "research", node.Name, id);
             return ActionResult.Ok(id);
         }
+        public static string WorkplaceOfficerRole(string buildingKind) => Catalog.Recipes.Any(r => r.Building == buildingKind) || new[] { "research_hut", "school", "accounting_tent", "mouse_farm" }.Contains(buildingKind) ? StationOfficer(buildingKind) : "";
+        public bool ProductionBatchInProgress(Village v, Building b, WorkSlot slot) => v != null && b != null && slot != null && slot.CatId != "" && slot.Queue.Count > 0 && v.Jobs.Any(j => !j.Completed && j.Kind == "production" && j.TargetId == b.Id && j.CatId == slot.CatId && j.RecipeId == slot.Queue[0].RecipeId && j.Phase != "output_delivery");
         private ActionResult EditQueue(Village v, Building b, Cat c, GameAction a, bool exact)
         {
             if (b == null || !b.Completed)
                 return ActionResult.Fail("Completed station required");
+            string edit = (a.Edit ?? "").Replace("_", "").ToLowerInvariant();
+            if (!exact && b.Kind == "barracks" && edit == "pause")
+            {
+                b.Paused = a.Enabled;
+                return ActionResult.Ok();
+            }
             if (exact && (c == null || !b.Slots.Any(s => s.CatId == c.Id)))
                 return ActionResult.Fail("Exact staffed slot required");
             var slot = exact ? b.Slots.Find(s => s.CatId == c.Id) : b.Slots.FirstOrDefault();
+            if (edit == "delegate")
+            {
+                if (!exact || c.BuildingId != b.Id)
+                    return ActionResult.Fail("Exact staffed slot required");
+                string officer = WorkplaceOfficerRole(b.Kind);
+                if (officer == "")
+                    return ActionResult.Fail("This station has no officer production role");
+                if (!HasOfficer(v, officer))
+                    return ActionResult.Fail("Appointed " + officer.Replace('_', ' ') + " officer required");
+                // Existing manual orders stay manual. The officer plans only after
+                // they empty, while the same worker keeps current work and pauses.
+                slot.AutomatedBy = officer;
+                return ActionResult.Ok();
+            }
             var queue = slot?.Queue ?? b.Queue;
-            if (slot != null)
-                slot.AutomatedBy = "";
-            foreach (var entry in queue)
-                entry.AutomatedBy = "";
-            string edit = (a.Edit ?? "").Replace("_", "").ToLowerInvariant();
             if (edit == "add")
             {
                 var r = Catalog.Recipe(a.RecipeId);
@@ -351,7 +378,15 @@ namespace IdleCatForest.Simulation
             else if (edit == "setpaused" || edit == "pause")
             {
                 if (slot != null)
+                {
+                    if (b.Paused)
+                    {
+                        foreach (var position in b.Slots)
+                            position.Paused = true;
+                        b.Paused = false;
+                    }
                     slot.Paused = a.Enabled;
+                }
                 else
                     b.Paused = a.Enabled;
             }
@@ -360,7 +395,11 @@ namespace IdleCatForest.Simulation
                 if (a.Index < 0 || a.Index >= queue.Count)
                     return ActionResult.Fail("Queue index out of range");
                 if (edit == "remove")
+                {
+                    if (a.Index == 0 && ProductionBatchInProgress(v, b, slot))
+                        return ActionResult.Fail("This batch is in progress; let it finish before moving or removing it");
                     queue.RemoveAt(a.Index);
+                }
                 else if (edit == "setrepeat" || edit == "repeat")
                     queue[a.Index].Repeat = a.Enabled;
                 else if (edit == "move")
@@ -368,6 +407,8 @@ namespace IdleCatForest.Simulation
                     int to = a.Index + (a.Direction < 0 ? -1 : 1);
                     if (to < 0 || to >= queue.Count)
                         return ActionResult.Fail("Queue edge");
+                    if ((a.Index == 0 || to == 0) && ProductionBatchInProgress(v, b, slot))
+                        return ActionResult.Fail("This batch is in progress; let it finish before moving or removing it");
                     var q = queue[a.Index];
                     queue.RemoveAt(a.Index);
                     queue.Insert(to, q);
@@ -375,11 +416,21 @@ namespace IdleCatForest.Simulation
                 else
                     return ActionResult.Fail("Unknown queue edit");
             }
-            if (slot != null && b.Slots.IndexOf(slot) == 0)
-                b.Queue = slot.Queue;
+            if (slot != null)
+                slot.AutomatedBy = "";
+            foreach (var entry in queue)
+                entry.AutomatedBy = "";
+            MirrorPrimaryQueue(b, slot);
             return ActionResult.Ok();
         }
-        private ActionResult Assign(Village v, Cat c, Building b, GameAction a)
+        private static void MirrorPrimaryQueue(Building building, WorkSlot slot)
+        {
+            // Position zero stays primary even when vacant or WorkerId names a
+            // later position. Strict JSON reloads do not retain this alias.
+            if (slot != null && building.Slots.Count > 0 && ReferenceEquals(building.Slots[0], slot))
+                building.Queue = slot.Queue;
+        }
+        private ActionResult Assign(Village v, Cat c, Building b, GameAction a, bool officerAssignment = false)
         {
             if (c == null || c.ControlledBy != "")
                 return ActionResult.Fail("Available living cat required");
@@ -387,19 +438,21 @@ namespace IdleCatForest.Simulation
                 return ActionResult.Fail("Recall the explorer and wait for its return before assigning work");
             if (v.Routes.Any(r => r.CatId == c.Id && (r.Mode == "shipping" && r.PathIndex > 0 || v.Vehicles.Any(vehicle => vehicle.Id == r.VehicleId && vehicle.HasContinuousPosition && Math.Abs(vehicle.X - vehicle.Position.X) + Math.Abs(vehicle.Z - vehicle.Position.Z) > 1e-9))))
                 return ActionResult.Fail("Return the vehicle to a safe stopping point before reassigning its driver");
-            if (b == null && a.TargetId != "")
+            if (b == null && !string.IsNullOrEmpty(a.BuildingId))
+                return ActionResult.Fail("Unknown building");
+            if (b == null && !string.IsNullOrEmpty(a.TargetId))
             {
                 var farm = v.Farms.Find(f => f.Id == a.TargetId);
-                if (farm != null)
-                {
-                    var previous = v.Cats.Find(x => x.Id == farm.WorkerId);
-                    if (previous != null && previous.Id != c.Id)
-                        CancelWork(v, previous);
-                    CancelWork(v, c);
-                    farm.WorkerId = c.Id;
-                    c.BuildingId = farm.Id;
-                    return ActionResult.Ok();
-                }
+                if (farm == null)
+                    return ActionResult.Fail("Unknown farm");
+                var previous = v.Cats.Find(x => x.Id == farm.WorkerId);
+                if (previous != null && previous.Id != c.Id)
+                    CancelWork(v, previous);
+                CancelWork(v, c);
+                farm.WorkerId = c.Id;
+                farm.AutomatedBy = "";
+                c.BuildingId = farm.Id;
+                return ActionResult.Ok();
             }
             if (b != null && !b.Completed)
             {
@@ -411,10 +464,18 @@ namespace IdleCatForest.Simulation
             }
             if (b != null && b.Slots.Count(s => s.CatId != "" && s.CatId != c.Id) >= (int)Catalog.BuildingEffect(v, b.Kind, "worker_slots", 1))
                 return ActionResult.Fail("All work positions staffed");
+            WorkSlot officerVacancy = null;
+            if (b != null && officerAssignment)
+            {
+                int capacity = (int)Catalog.BuildingEffect(v, b.Kind, "worker_slots", 1);
+                officerVacancy = b.Slots.Take(capacity).FirstOrDefault(s => s.CatId == "" && !s.Paused);
+                if (b.Paused || officerVacancy == null && b.Slots.Count >= capacity)
+                    return ActionResult.Fail("No unpaused work position available");
+            }
             CancelWork(v, c);
             if (b == null)
                 return ActionResult.Ok();
-            var vacancy = b.Slots.FirstOrDefault(s => s.CatId == "");
+            var vacancy = officerAssignment ? officerVacancy : b.Slots.FirstOrDefault(s => s.CatId == "");
             if (vacancy != null)
             {
                 vacancy.CatId = c.Id;
@@ -558,30 +619,16 @@ namespace IdleCatForest.Simulation
                 item.Condition = item.MaxCondition;
                 return ActionResult.Ok();
             }
-            if (c == null)
-                return ActionResult.Fail("Living bearer required");
-            if (IsDungeonExplorer(c))
-                return ActionResult.Fail("Recall the explorer before changing its equipment");
-            if (kind == "equipitem")
-            {
-                if (!new[] { "tool", "weapon", "armor" }.Contains(item.Kind) || item.Condition <= 0 || !v.Stockpiles.Any(p => p.Id == item.LocationId) || v.Items.Any(i => i.LocationId == c.Id && i.Kind == item.Kind))
-                    return ActionResult.Fail("Unavailable or occupied equipment slot");
-                item.LocationId = c.Id;
-                c.Equipment.Add(item.Id);
-            }
-            else
-            {
-                if (item.LocationId != c.Id || !c.Equipment.Contains(item.Id))
-                    return ActionResult.Fail("Item not equipped by this cat");
-                var storage = Storage(v, ItemResource(item.Kind), 1, c.Position);
-                if (storage == null)
-                    return ActionResult.Fail("No reachable equipment storage");
-                item.LocationId = storage.Id;
-                c.Equipment.Remove(item.Id);
-            }
-            return ActionResult.Ok();
+            return OrderEquipment(v, c, item, kind == "equipitem");
         }
         private static string ItemResource(string kind) => kind == "tool" ? "tools" : kind == "weapon" ? "weapons" : kind == "armor" ? "armor" : kind + "s";
+        public bool CanInteractWithPile(Village village, Cat cat, Stockpile pile)
+        {
+            return village != null && cat != null && pile != null && cat.Position.Level == pile.Position.Level
+                && Int2.Distance(cat.Position, pile.Position) <= 1
+                && Math.Abs(cat.X - pile.Position.X) + Math.Abs(cat.Z - pile.Position.Z) <= 1 + 1e-8
+                && GetTile(pile.Position) != null && Walkable(village, pile.Position) && Crossable(cat.Position, pile.Position);
+        }
         private ActionResult Interact(Village v, Cat c, GameAction a)
         {
             if (a.Mode == "eat" || a.Mode == "drink" || a.Mode == "rest")
@@ -602,8 +649,8 @@ namespace IdleCatForest.Simulation
             var pile = v.Stockpiles.Find(s => s.Id == a.TargetId);
             if (pile != null)
             {
-                if (Int2.Distance(c.Position, pile.Position) > 1)
-                    return ActionResult.Fail("Walk to the pile first");
+                if (!CanInteractWithPile(v, c, pile))
+                    return ActionResult.Fail("Walk to an unobstructed edge of the pile first");
                 if (c.Cargo.Count > 0)
                 {
                     if (c.Cargo.Any(s => !HasRoom(v, pile, s.Resource, s.Amount)) || c.Cargo.Where(s => !pile.ResourceLimits.Any(limit => limit.Resource == s.Resource)).Any(s => PileLoad(v, pile) + c.Cargo.Sum(g => g.Amount) > ResourceCapacity(v, pile, s.Resource)))
@@ -622,7 +669,7 @@ namespace IdleCatForest.Simulation
                 Add(c.Cargo, resource, amount);
                 return ActionResult.Ok();
             }
-            if (Int2.Distance(c.Position, v.Center) <= 1 && c.Cargo.Count > 0)
+            if (CanReachControlledDestination(v, c, v.Center) && c.Cargo.Count > 0)
             {
                 foreach (var s in c.Cargo.ToArray())
                     if (new[] { "food", "herbs", "materials" }.Contains(s.Resource))

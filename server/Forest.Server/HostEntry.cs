@@ -42,12 +42,13 @@ public static class HostEntry
         builder.WebHost.UseUrls(address);
         // HTTP request logging never includes bodies, session credentials, or snapshots.
         builder.Logging.ClearProviders();
-        var app = builder.Build();
         var peers = new ConcurrentDictionary<string, int>();
         var actionBudget = new ActionBudget();
         var identityLimits = new SlidingLimits(8, TimeSpan.FromHours(1));
         var clients = new ConcurrentDictionary<Guid, SocketPeer>();
         var failures = 0;
+        if (automaticTicks) builder.Services.AddHostedService(_ => new SimulationWorker(RunTicks));
+        var app = builder.Build();
         app.UseWebSockets(new WebSocketOptions { KeepAliveInterval = TimeSpan.FromSeconds(20) });
         app.MapGet("/health", () => Results.Text("ok"));
         app.MapGet("/ready", () => Volatile.Read(ref failures) < 3 ? Results.Ok() : Results.StatusCode(503));
@@ -113,50 +114,58 @@ public static class HostEntry
             }
             finally { peers.AddOrUpdate(peerIp, 0, (_, count) => Math.Max(0, count - 1)); }
         });
-        if (automaticTicks)
-            app.Lifetime.ApplicationStarted.Register(() => _ = Task.Run(async () =>
+        async Task RunTicks(CancellationToken stopping)
+        {
+            var clock = Stopwatch.StartNew();
+            var last = clock.Elapsed.TotalSeconds;
+            var saveAt = last + 5;
+            var snapshotAt = last + 0.1;
+            Task broadcast = Task.CompletedTask;
+            using var timer = new PeriodicTimer(TimeSpan.FromSeconds(World.SimulationStepSeconds));
+            try
             {
-                var clock = Stopwatch.StartNew();
-                var last = clock.Elapsed.TotalSeconds;
-                var saveAt = last + 5;
-                var snapshotAt = last + 0.1;
-                Task broadcast = Task.CompletedTask;
-                using var timer = new PeriodicTimer(TimeSpan.FromSeconds(World.SimulationStepSeconds));
-                try
+                while (await timer.WaitForNextTickAsync(stopping))
                 {
-                    while (await timer.WaitForNextTickAsync(app.Lifetime.ApplicationStopping))
+                    var current = clock.Elapsed.TotalSeconds;
+                    runtime.Advance(Math.Min(1, current - last)); last = current;
+                    if (current >= snapshotAt && broadcast.IsCompleted)
                     {
-                        var current = clock.Elapsed.TotalSeconds;
-                        runtime.Advance(Math.Min(1, current - last)); last = current;
-                        if (current >= snapshotAt && broadcast.IsCompleted)
+                        snapshotAt = current + 0.1;
+                        broadcast = Task.Run(async () =>
                         {
-                            snapshotAt = current + 0.1;
-                            broadcast = Task.Run(async () =>
+                            await Task.WhenAll(clients.Values.Select(async peer =>
                             {
-                                await Task.WhenAll(clients.Values.Select(async peer =>
+                                try
                                 {
-                                    try
-                                    {
-                                        WorldFrame frame;
-                                        lock (runtime.Sync) frame = runtime.Project(peer.Identity);
-                                        await peer.Send(new ServerMessage { Frame = frame }, app.Lifetime.ApplicationStopping);
-                                    }
-                                    catch (Exception error) when (error is WebSocketException || error is OperationCanceledException || error is IOException) { peer.Socket.Abort(); }
-                                }));
-                            });
-                        }
-                        if (current >= saveAt)
-                        {
-                            saveAt = current + 5;
-                            try { runtime.Save(); Interlocked.Exchange(ref failures, 0); }
-                            catch (Exception error) when (error is IOException || error is UnauthorizedAccessException) { Interlocked.Increment(ref failures); }
-                        }
+                                    WorldFrame frame;
+                                    lock (runtime.Sync) frame = runtime.Project(peer.Identity);
+                                    await peer.Send(new ServerMessage { Frame = frame }, stopping);
+                                }
+                                catch (Exception error) when (error is WebSocketException || error is OperationCanceledException || error is IOException) { peer.Socket.Abort(); }
+                            }));
+                        });
+                    }
+                    if (current >= saveAt)
+                    {
+                        saveAt = current + 5;
+                        try { runtime.Save(); Interlocked.Exchange(ref failures, 0); }
+                        catch (Exception error) when (error is IOException || error is UnauthorizedAccessException) { Interlocked.Increment(ref failures); }
                     }
                 }
-                catch (OperationCanceledException) { }
+            }
+            catch (OperationCanceledException) { }
+            finally
+            {
+                try { await broadcast; }
                 finally { try { runtime.Save(); } catch (Exception error) when (error is IOException || error is UnauthorizedAccessException) { Interlocked.Increment(ref failures); } }
-            }));
+            }
+        }
         return app;
+    }
+
+    private sealed class SimulationWorker(Func<CancellationToken, Task> execute) : BackgroundService
+    {
+        protected override Task ExecuteAsync(CancellationToken stoppingToken) => execute(stoppingToken);
     }
 
     private static async Task<string> Read(WebSocket socket, CancellationToken cancellation)

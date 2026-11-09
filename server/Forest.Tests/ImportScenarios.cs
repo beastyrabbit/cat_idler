@@ -31,6 +31,39 @@ static class ImportScenarios
     static World Convert(JObject source) => LegacyImport.Convert(source.ToString());
     static World Restart(World world)
     { var path = Path.Combine(Path.GetTempPath(), "forest-import-roundtrip-" + Guid.NewGuid().ToString("N") + ".json"); try { SaveStore.Save(path, world, true); return SaveStore.Load<World>(path); } finally { if (File.Exists(path)) File.Delete(path); } }
+    static PlayerContext ReserveEquipmentReceiver(World world, Village village, string catId, Action<bool, string> check)
+    {
+        var cat = village.Cats.Single(c => c.Id == catId);
+        check(cat.JobId == "" && cat.ResumeJobId == "" && cat.BuildingId == "" && cat.ControlledBy == "" && cat.Cargo.Count == 0, "equipment receiver must be free before the fixture reserves it");
+        var context = new PlayerContext { PlayerId = "fixture-equipment-receiver-" + catId, VillageId = village.Id };
+        var result = world.Apply(context, new GameAction { Kind = "EnterCatControl", CatId = catId });
+        check(result.Success, "could not reserve the free equipment receiver through public control: " + result.Error);
+        return context;
+    }
+    static void RenewEquipmentReceiver(World world, PlayerContext context, string catId, Action<bool, string> check)
+    {
+        var result = world.Apply(context, new GameAction { Kind = "KeepCatControl", CatId = catId });
+        check(result.Success, "equipment receiver control lease expired during fixture work: " + result.Error);
+    }
+    static void RetrieveForCapacity(World world, Village village, PlayerContext context, string catId, string itemId, Action<bool, string> check)
+    {
+        var released = world.Apply(context, new GameAction { Kind = "LeaveCatControl", CatId = catId });
+        check(released.Success, "could not release the reserved equipment receiver: " + released.Error);
+        var item = village.Items.Single(i => i.Id == itemId); var source = village.Stockpiles.Single(p => p.Id == item.LocationId);
+        string resource = item.Kind == "armor" ? "armor" : item.Kind + "s";
+        int count = village.Items.Count;
+        var result = world.Apply(context, new GameAction { Kind = "EquipItem", CatId = catId, TargetId = itemId });
+        check(result.Success, "public equipment retrieval rejected: " + result.Error);
+        var retrieval = village.Jobs.Single(j => j.Id == result.EntityId);
+        check(retrieval.Kind == "equip" && !retrieval.Completed && item.LocationId == retrieval.Id && !village.Cats.Single(c => c.Id == catId).Equipment.Contains(itemId), "capacity release teleported its exact source item before physical pickup");
+        for (int tick = 0; tick < 1200 && !retrieval.Completed; tick++)
+        {
+            check(item.LocationId == retrieval.Id && !world.HasRoom(village, source, resource, 1), "pending exact retrieval prematurely freed its physical per-kind source capacity");
+            world.Step(World.SimulationStepSeconds);
+            check(village.Items.Count == count && village.Items.Count(i => i.LocationId == source.Id && i.Kind == item.Kind) <= 1, "physical capacity release duplicated exact output or overfilled its source");
+        }
+        check(retrieval.Completed && retrieval.ItemIds.Count == 0 && item.LocationId == catId && village.Cats.Single(c => c.Id == catId).Equipment.Contains(itemId), "equipment receiver did not physically retrieve its exact item within bounded time");
+    }
     static JObject ReturningTrade(string phase = "returning", bool exactPayment = false)
     {
         var input = Base(); AddVillage(Tables(input), "d", false, 10);
@@ -63,16 +96,16 @@ static class ImportScenarios
                 items.Add(Row("id", "leftover", "item", equipment.Kind + ":metal:2", "durability", 22, "maxDurability", 47, "location", Row("kind", "station", "building_id", "bench", "compartment", "local_output")));
                 Colony(input)["items"] = Json(new { nextSerial = 6, instances = items });
                 var world = Restart(Convert(input)); var v = world.Village("c"); var job = v.Jobs.Single(); var store = v.Stockpiles.Single();
+                var receiverContexts = new[] { "keeper", "receiver" }.ToDictionary(id => id, id => ReserveEquipmentReceiver(world, v, "c\u001f" + id, check));
                 check(job.ItemIds.Count == 3 && v.Items.Where(i => i.Id.StartsWith("c\u001fcarried-", StringComparison.Ordinal)).All(i => i.LocationId == job.Id) && v.Cats.Single(c => c.Id == "c\u001fworker").Cargo.Count == 0, "unsuffixed functional cargo left exact identities on the cat or retained scalar compatibility goods");
                 check(World.Amount(v.Buildings.Single().Outputs, equipment.Resource) == 0 && World.Amount(v.Buildings.Single().Outputs, "planks") == 2, "resident exact station output retained its functional scalar mirror or lost unrelated planks");
                 check(v.Items.Single(i => i.Id == "c\u001fequipped").LocationId == "c\u001fworker" && v.Cats.Single(c => c.Id == "c\u001fworker").Equipment.SequenceEqual(new[] { "c\u001fequipped" }) && v.Items.Single(i => i.Id == "c\u001fleftover").LocationId == "c\u001fbench", "outbound adoption took equipped or station-owned items");
                 world.Step(2); world = Restart(world); v = world.Village("c"); job = v.Jobs.Single();
                 check(!job.Completed && job.ItemIds.Count == 2 && v.Items.Count(i => i.LocationId == store.Id) == 1 && job.BlockedReason == "output_storage_full_or_unreachable", "multi-item outbound delivery bypassed one-item receiving capacity");
-                var context = new PlayerContext { PlayerId = "fixture-owner", VillageId = v.Id };
                 foreach (var receiver in new[] { "keeper", "receiver" })
                 {
                     var stored = v.Items.Single(i => i.LocationId == store.Id);
-                    check(world.Apply(context, new GameAction { Kind = "EquipItem", CatId = "c\u001f" + receiver, TargetId = stored.Id }).Success, "public equip could not free exact outbound capacity");
+                    RetrieveForCapacity(world, v, receiverContexts[receiver], "c\u001f" + receiver, stored.Id, check);
                     world.Step(1); world = Restart(world); v = world.Village("c"); job = v.Jobs.Single(j => j.Id == job.Id);
                 }
                 check(job.Completed && job.ItemIds.Count == 0 && v.Items.Count == 5 && v.Items.Count(i => i.LocationId == store.Id) == 1 && v.Items.Single(i => i.Id == "c\u001fleftover").LocationId == "c\u001fbench" && v.Items.Single(i => i.Id == "c\u001fequipped").LocationId == "c\u001fworker", "outbound completion lost identities, moved station leftovers, or unequipped the worker");
@@ -199,6 +232,7 @@ static class ImportScenarios
                 });
                 var world = Restart(Convert(input)); var v = world.Village("c"); var station = v.Buildings.Single(); var store = v.Stockpiles.Single();
                 var context = new PlayerContext { PlayerId = "fixture-owner", VillageId = v.Id };
+                var receiverContext = ReserveEquipmentReceiver(world, v, "c\u001freceiver", check);
                 check(station.Queue.Count == 0 && station.Slots.All(s => s.CatId == "" && s.Queue.Count == 0) && v.Jobs.Count == 0 && v.Items.All(i => i.LocationId == station.Id), "unstaffed import did not retain exact station output with an empty queue");
                 foreach (var worker in new[] { "worker", "keeper" }.Take(workerCount))
                     check(world.Apply(context, new GameAction { Kind = "AssignWorker", BuildingId = station.Id, CatId = "c\u001f" + worker }).Success, "public staffing failed");
@@ -206,6 +240,7 @@ static class ImportScenarios
                 check(v.Items.All(i => i.LocationId == station.Id), "distant worker picked up exact output without reaching the station");
                 for (int tick = 0; tick < 40; tick++)
                 {
+                    RenewEquipmentReceiver(world, receiverContext, "c\u001freceiver", check);
                     world.Step(1);
                     check(v.Items.Count == 2 && v.Items.Count(i => i.LocationId == store.Id) <= 1, "station recovery duplicated items or exceeded receiving capacity");
                     check(v.Jobs.Where(j => j.Kind == "production").SelectMany(j => j.ItemIds).Distinct().Count() == v.Jobs.Where(j => j.Kind == "production").Sum(j => j.ItemIds.Count), "workers double-claimed exact output");
@@ -218,7 +253,7 @@ static class ImportScenarios
                 world.Step(2);
                 check(!delivery.Completed && delivery.ItemIds.Count == 1 && v.Jobs.Count(j => j.Kind == "production") == 1, "restart duplicated the station delivery or discarded pending output");
                 var first = v.Items.Single(i => i.LocationId == store.Id);
-                check(world.Apply(context, new GameAction { Kind = "EquipItem", CatId = "c\u001freceiver", TargetId = first.Id }).Success, "public equip did not free receiving capacity");
+                RetrieveForCapacity(world, v, receiverContext, "c\u001freceiver", first.Id, check);
                 for (int tick = 0; tick < 40 && !delivery.Completed; tick++) world.Step(1);
                 check(delivery.Completed && delivery.ItemIds.Count == 0, "freeing capacity did not finish the adopted output delivery");
                 world = Restart(world); v = world.Village("c");
@@ -247,16 +282,19 @@ static class ImportScenarios
             });
             var world = Restart(Convert(input)); var v = world.Village("c"); var store = v.Stockpiles.Single(p => p.Id == "c\u001fstore"); var armory = v.Stockpiles.Single(p => p.Id == "c\u001farmory");
             var station = v.Buildings.Single();
+            var receiverContext = ReserveEquipmentReceiver(world, v, "c\u001fkeeper", check);
             check(v.Jobs.Count == 0 && v.Items.Count == 3 && v.Items.All(i => i.LocationId == station.Id), "import moved exact station output before physical pickup");
             for (int tick = 0; tick < 400 && v.Jobs.Count == 0; tick++)
             {
                 check(v.Items.All(i => i.LocationId == station.Id), "unclaimed exact output left the station");
+                RenewEquipmentReceiver(world, receiverContext, "c\u001fkeeper", check);
                 world.Step(World.SimulationStepSeconds);
             }
             var job = v.Jobs.Single(j => j.Kind == "production");
             check(v.Cats.Single(c => c.Id == job.CatId).Position.Equals(station.Position) && job.Phase == "output_delivery" && job.ItemIds.Count == 3 && v.Items.All(i => i.LocationId == job.Id), "physical pickup did not transfer the complete exact output batch to its worker");
             for (int tick = 0; tick < 8; tick++)
             {
+                RenewEquipmentReceiver(world, receiverContext, "c\u001fkeeper", check);
                 world.Step(1);
                 check(v.Items.Count(i => i.LocationId == store.Id && i.Kind == "tool") <= 1, "imported station delivered multiple exact items into one-item receiving capacity");
                 check(v.Items.Count == 3 && v.Items.All(i => i.LocationId == store.Id || i.LocationId == armory.Id || i.LocationId == job.Id), "capacity blocking lost exact output ownership");
@@ -268,8 +306,7 @@ static class ImportScenarios
             job = v.Jobs.Single(j => j.Kind == "production");
             check(!job.Completed && job.ItemIds.Count > 0, "partially delivered station job finished with pending exact items");
             var first = v.Items.Single(i => i.LocationId == store.Id && i.Kind == "tool");
-            var context = new PlayerContext { PlayerId = "fixture-owner", VillageId = v.Id };
-            check(world.Apply(context, new GameAction { Kind = "EquipItem", CatId = "c\u001fkeeper", TargetId = first.Id }).Success, "public equip failed to free receiving capacity for the pending output");
+            RetrieveForCapacity(world, v, receiverContext, "c\u001fkeeper", first.Id, check);
             world = Restart(world); v = world.Village("c"); job = v.Jobs.Single(j => j.Kind == "production");
             for (int tick = 0; tick < 60 && !job.Completed; tick++)
             {
@@ -309,14 +346,29 @@ static class ImportScenarios
                     check(Json(v) == before, "rejected unequip changed item ownership or condition");
                     world = Restart(world); v = world.Village("c");
                 }
-                check(world.Apply(context, new GameAction { Kind = "EquipItem", CatId = "c\u001fkeeper", TargetId = "c\u001fstored" }).Success, "public equip did not free the occupied per-kind slot");
-                check(world.Apply(context, new GameAction { Kind = "UnequipItem", CatId = "c\u001fworker", TargetId = "c\u001fequipped" }).Success, "unrelated exact item kinds incorrectly consumed the freed slot");
+                var workerControl = ReserveEquipmentReceiver(world, v, "c\u001fworker", check);
+                var keeperControl = ReserveEquipmentReceiver(world, v, "c\u001fkeeper", check);
+                RetrieveForCapacity(world, v, keeperControl, "c\u001fkeeper", "c\u001fstored", check);
+                keeperControl = ReserveEquipmentReceiver(world, v, "c\u001fkeeper", check);
+                check(world.Apply(workerControl, new GameAction { Kind = "LeaveCatControl", CatId = "c\u001fworker" }).Success, "could not release the reserved equipment returner");
+                var returning = world.Apply(context, new GameAction { Kind = "UnequipItem", CatId = "c\u001fworker", TargetId = "c\u001fequipped" });
+                check(returning.Success, "unrelated exact item kinds incorrectly consumed the freed slot: " + returning.Error);
+                var returnJob = v.Jobs.Single(j => j.Id == returning.EntityId);
+                check(!returnJob.Completed && v.Items.Single(i => i.Id == "c\u001fequipped").LocationId == "c\u001fworker", "unequip teleported an exact imported item to storage");
+                for (int tick = 0; tick < 1200 && !returnJob.Completed; tick++)
+                {
+                    RenewEquipmentReceiver(world, keeperControl, "c\u001fkeeper", check);
+                    world.Step(World.SimulationStepSeconds);
+                }
+                check(returnJob.Completed, "imported equipment return did not physically arrive within bounded time");
                 world = Restart(world); v = world.Village("c"); store = v.Stockpiles.Single();
                 var stored = v.Items.Single(i => i.Id == "c\u001fstored"); var returned = v.Items.Single(i => i.Id == "c\u001fequipped");
                 check(v.Items.Count == 4 && stored.LocationId == "c\u001fkeeper" && returned.LocationId == store.Id && v.Cats.Single(c => c.Id == "c\u001fkeeper").Equipment.Contains(stored.Id), "restart changed exact item identity or location");
                 check(stored.Condition == 17 && stored.MaxCondition == 42 && stored.Quality == 3 && returned.Condition == 9 && returned.MaxCondition == 31 && returned.Quality == 2, "capacity rejection or transfer changed equipment condition");
                 check(new[] { "tools", "weapons", "armor" }.All(r => World.Amount(store.Goods, r) == 0), "capacity recovery invented scalar equipment counters");
-                check(!world.Apply(context, new GameAction { Kind = "UnequipItem", CatId = "c\u001fkeeper", TargetId = stored.Id }).Success, "reloaded receiving pile exceeded its exact-item limit");
+                check(world.Apply(keeperControl, new GameAction { Kind = "LeaveCatControl", CatId = "c\u001fkeeper" }).Success, "could not release the receiver before the reloaded capacity refusal");
+                var refused = world.Apply(context, new GameAction { Kind = "UnequipItem", CatId = "c\u001fkeeper", TargetId = stored.Id });
+                check(!refused.Success && refused.Error == "No reachable accepting equipment storage", "reloaded receiving pile exceeded its exact-item limit or refused a busy receiver instead: " + refused.Error);
                 check(world.Validate().Count == 0, "capacity recovery violated world invariants");
             });
         test("import keeps colony coordinates recipe queues and refunded retired research", () =>

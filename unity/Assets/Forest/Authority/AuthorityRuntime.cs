@@ -100,6 +100,29 @@ namespace IdleCatForest.Authority
             lock (Sync) World.Step(seconds);
         }
         public void Save() { lock (Sync) { ValidateWorld(World); SaveStore.Save(path, World); } }
+        public void Save(out SaveTiming timing)
+        {
+            timing = SaveTiming.Start();
+            var success = false;
+            try
+            {
+                timing.Begin(SaveStage.LockWait);
+                lock (Sync)
+                {
+                    try
+                    {
+                        timing.EndStage(true);
+                        timing.Begin(SaveStage.Validation);
+                        ValidateWorld(World);
+                        timing.EndStage(true);
+                        SaveStore.Save(path, World, false, timing);
+                    }
+                    catch { timing.EndStage(false); throw; }
+                }
+                success = true;
+            }
+            finally { timing.Complete(success); }
+        }
         public void Dispose() { writerLease.Dispose(); }
 
         public WorldFrame Project(ConnectionIdentity connection)
@@ -119,23 +142,23 @@ namespace IdleCatForest.Authority
                 foreach (var village in projected.Villages)
                 {
                     if (playerId.Length > 0 && CanControl(village, playerId)) frame.ControlledVillageIds.Add(village.Id);
-                    var exactEquipment = village.Id == selected && playerId.Length > 0 && CanControl(village, playerId) && BooksCurrent(village);
+                    var selectedControl = village.Id == selected && playerId.Length > 0 && CanControl(village, playerId);
+                    var exactEquipment = selectedControl && BooksCurrent(village);
+                    var knownEquipment = village.Items.Where(item => Functional(item.Kind) && selectedControl && item.VillageId == village.Id &&
+                        village.Cats.Any(cat => cat.Alive && item.LocationId == cat.Id && cat.Equipment.Contains(item.Id))).Select(item => item.Id).ToHashSet();
+                    if (selectedControl)
+                        foreach (var job in village.Jobs.Where(job => !job.Completed && job.Kind == "equip" && job.Phase == "item_fetch" && job.ItemIds.Count == 1 && job.ItemIds[0] == job.TargetId))
+                            if (village.Cats.Any(cat => cat.Alive && cat.Id == job.CatId && (cat.JobId == job.Id || cat.ResumeJobId == job.Id)) &&
+                                village.Stockpiles.Any(pile => pile.Id == job.SourceId && pile.Position.Equals(job.Position)))
+                                foreach (var item in village.Items.Where(item => Functional(item.Kind) && item.VillageId == village.Id && item.Id == job.TargetId && item.LocationId == job.Id))
+                                    knownEquipment.Add(item.Id);
                     village.OwnerId = "";
                     foreach (var pile in village.Stockpiles) pile.Goods = WireJson.Clone(pile.Report);
-                    if (!exactEquipment)
-                    {
-                        village.Items.RemoveAll(item => Functional(item.Kind));
-                        foreach (var cat in village.Cats) cat.Equipment.Clear();
-                        foreach (var job in village.Jobs) job.ItemIds.Clear();
-                    }
-                    else
-                    {
-                        var unreported = village.Stockpiles.Where(pile => pile.Kind != "storage").Select(pile => pile.Id).ToHashSet();
-                        var hiddenItems = village.Items.Where(item => Functional(item.Kind) && unreported.Contains(item.LocationId)).Select(item => item.Id).ToHashSet();
-                        village.Items.RemoveAll(item => hiddenItems.Contains(item.Id));
-                        foreach (var cat in village.Cats) cat.Equipment.RemoveAll(id => hiddenItems.Contains(id));
-                        foreach (var job in village.Jobs) job.ItemIds.RemoveAll(id => hiddenItems.Contains(id));
-                    }
+                    var countedStorage = village.Stockpiles.Where(pile => pile.Kind == "storage").Select(pile => pile.Id).ToHashSet();
+                    village.Items.RemoveAll(item => Functional(item.Kind) && !knownEquipment.Contains(item.Id) && !(exactEquipment && countedStorage.Contains(item.LocationId)));
+                    var visibleItems = village.Items.Select(item => item.Id).ToHashSet();
+                    foreach (var cat in village.Cats) cat.Equipment.RemoveAll(id => !visibleItems.Contains(id));
+                    foreach (var job in village.Jobs) job.ItemIds.RemoveAll(id => !visibleItems.Contains(id));
                     foreach (var job in village.Jobs) job.Reserved.Clear();
                     foreach (var cat in village.Cats) if (cat.ControlledBy.Length > 0 && cat.ControlledBy != playerId) cat.ControlledBy = "another-player";
                     if (village.Election != null) foreach (var ballot in village.Election.Votes) if (ballot.PlayerId != playerId) ballot.PlayerId = "other-voter";
@@ -180,7 +203,8 @@ namespace IdleCatForest.Authority
             {
                 if (pile.CountedAt < 0) return false;
                 var actual = pile.Goods.Select(good => new Stack(good.Resource, good.Amount)).ToList();
-                foreach (var item in village.Items.Where(item => item.LocationId == pile.Id && Functional(item.Kind)))
+                foreach (var item in village.Items.Where(item => Functional(item.Kind) && (item.LocationId == pile.Id ||
+                    village.Jobs.Any(job => !job.Completed && job.Phase == "item_fetch" && job.SourceId == pile.Id && item.LocationId == job.Id && job.ItemIds.Contains(item.Id)))))
                     World.Add(actual, item.Kind == "armor" ? "armor" : item.Kind + "s", 1);
                 return actual.Select(good => good.Resource).Concat(pile.Report.Select(report => report.Resource)).Distinct()
                     .All(resource => Math.Abs(World.Amount(actual, resource) - World.Amount(pile.Report, resource)) < 0.000001);

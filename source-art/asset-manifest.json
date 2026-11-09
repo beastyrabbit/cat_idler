@@ -240,7 +240,7 @@
       ]
     },
     "grain_plot": {
-      "description": "Raised grain bed with separate readable stems",
+      "description": "Fixed grain bed with separate green plants and ripe heads",
       "vertices": 1416,
       "triangles": 2524,
       "bounds_blender": [
@@ -255,13 +255,15 @@
           1.0358
         ]
       ],
-      "mesh_count": 1,
+      "mesh_count": 3,
       "parts": [
-        "grain_plot_mesh"
+        "grain_plot_Bed",
+        "grain_plot_Plants",
+        "grain_plot_Ripe"
       ]
     },
     "herb_plot": {
-      "description": "Raised herbs bed with separate readable stems",
+      "description": "Fixed herbs bed with separate green plants and ripe heads",
       "vertices": 840,
       "triangles": 1468,
       "bounds_blender": [
@@ -273,16 +275,18 @@
         [
           0.91,
           0.73,
-          0.7955
+          0.8055
         ]
       ],
-      "mesh_count": 1,
+      "mesh_count": 3,
       "parts": [
-        "herb_plot_mesh"
+        "herb_plot_Bed",
+        "herb_plot_Plants",
+        "herb_plot_Ripe"
       ]
     },
     "catnip_plot": {
-      "description": "Raised catnip bed with separate readable stems",
+      "description": "Fixed catnip bed with separate green plants and ripe heads",
       "vertices": 840,
       "triangles": 1468,
       "bounds_blender": [
@@ -294,12 +298,14 @@
         [
           0.91,
           0.73,
-          0.7902
+          0.8002
         ]
       ],
-      "mesh_count": 1,
+      "mesh_count": 3,
       "parts": [
-        "catnip_plot_mesh"
+        "catnip_plot_Bed",
+        "catnip_plot_Plants",
+        "catnip_plot_Ripe"
       ]
     },
     "reeds": {

@@ -4,6 +4,20 @@
 
 Idle Cat Forest is developed and distributed solely as a non-commercial game project.
 
+## Continuing development direction
+
+Use Dwarf Fortress as the reference for connected material chains, workshops,
+labor specialization, stockpile logistics, enemies and meaningful management
+decisions. Keep the colony suitable for idle play through reliable officers and
+clear player controls. A larger catalog is useful only when its systems work
+together and the player can understand their consequences.
+
+Spend roughly 90% of development effort improving existing gameplay, autonomous
+decisions, assets, usability and performance, and roughly 10% adding connected
+depth. Each pass includes an independent agent review from the player's
+perspective. Test success does not imply a finished game. The active loop and
+next candidates are recorded in [unity/DEVELOPMENT_LOOP.md](unity/DEVELOPMENT_LOOP.md).
+
 ## Pillars
 1. **Readable 3D places.** An orthographic management camera shows the forest's
    tiles, workshops, stockpiles and cats. Blender-authored geometry also works in
@@ -24,7 +38,7 @@ Idle Cat Forest is developed and distributed solely as a non-commercial game pro
    - **Loremaster/Ritualist** — research labor/building automation + shrine/rituals.
    - **Cloth Leader** — fibre, thread, hide, cloth, leather, and clothing stations.
    The always-present founding Leader retains a narrow, deficit-scaled safety floor: at the
-   15-cat founding population, at most six primitive hunters, two emergency water fetchers, and
+   baseline population of 15 cats, at most six primitive hunters, two emergency water fetchers, and
    one scout; those ceilings scale proportionally as the population changes. Specialist
    vacancies still make farming, production,
    hauling policy, research labor, rituals, and defense manual; a fresh idle village must not repeatedly
@@ -77,6 +91,22 @@ Cats **improve at labors over time** (extends the existing `roleXp`/specializati
 that hauls a lot becomes a faster hauler; one that mills becomes a better miller. Skilled
 cats are faster / higher-yield, so *who* does *what* accumulates value — you grow experts.
 
+Raid defense assigns a real adult to a specific enemy. Defenders travel, fight
+within reach, wear their equipment and interrupt duty for needs. Reinforcements
+use their own time. The player can cancel a manual order; ordinary needs suspend
+it until the cat returns. The Leader retains its existing emergency survival
+preemption. An unfilled Captain office leaves defense manual.
+
+The Captain dispatches free trained adults without taking other workers' jobs.
+Between raids it prepares one trainee at a time, aiming for one trained cat per
+15 living cats while retaining a scaled idle reserve. Manual and automatic
+training use reachable, completed Barracks and respect their training pause.
+Equipment remains a manual choice in Stores. A free adult retrieves the exact
+chosen item from its physical source. It gains the item's benefit on arrival.
+Returning equipment keeps it worn until the cat reaches accepting storage.
+Needs suspend these trips; the player can cancel the exact order without moving
+the item remotely or replacing its identity.
+
 ### Manual → role-automation, one building at a time
 Each production/management category starts **manual** (a god/player triggers it), then you
 unlock a **role-officer** that automates it. Roles live in **role-buildings**, which are
@@ -89,23 +119,46 @@ unlock a **role-officer** that automates it. Roles live in **role-buildings**, w
   **Captain** (defense/warriors), **Loremaster** (research labor/rituals) — same manual→auto pattern.
 Unlocking a role hands its slice of decisions to the AI (the existing leader director,
 specialized per role); unfilled roles stay manual.
+Returning a staffed position to its officer keeps the cat and its current work.
+Manual orders remain manual; the officer selects future work when they empty.
+Pause and Resume take manual control, so the visible handback follows Resume.
+Officers fill empty unpaused positions within the station's researched capacity.
+A paused position keeps its queue while another open position can work. Officers
+can add a position when capacity remains. A reduced capacity retains existing
+crew and queues but prevents officers from refilling positions beyond that limit.
 
 ### Production chains + farming (lots to do, always slightly cat)
 - **Farms are in the overworld outside the walled settlement interior**: designate farm
   plots and **see the tiles being farmed** (DF farm plots). Grow **catnip**, **grain**,
   herbs, etc. Trees, stone/deposits, and fields do not occupy the village interior.
+  The Farmer staffs processing workshops before claiming more plots. New automatic
+  processing and plot assignments retain a population-scaled reserve of eligible
+  free adults, four at thirty living cats. Existing workers keep their assignments;
+  manual assignment can use that reserve.
 - **Processing chains**: grain → **Mill** → flour → food; fibre → **Clothier** → thread → cloth/clothing;
   hide → **Tannery** → leather; ore → **Smelter** → metal → **Smithy** → weapons/armor;
   planks + blocks → **Woodworking** → tools;
   logs → **Wood Cutter** → fine planks or **Sawmill** → structural lumber. Stone is dressed into
   blocks before construction. Each step is an open-top workshop cats walk to and haul between;
   one worker advances one selected recipe rather than several invisible parallel cycles.
+  Recipe ingredients come from a reachable stockpile tile with a route back to the
+  workshop. When that route closes before pickup, the worker can claim another
+  source while retaining delivered ingredients and the player's finite order.
+  Paused stations keep their assigned crews, but do not take new automatic workers.
+  A finite batch keeps its queue position while collecting inputs and working,
+  including during needs interruptions. Future orders remain editable. Once the
+  batch produces its output, the remaining queue can change during delivery.
+  Rejected queue edits preserve officer control and every existing order.
 - Everything is lightly cat-flavoured (catnip, mouse-farms, naps) but there's a deep to-do list.
 
 ### Visible stockpiles
 Stockpiles are **real places in the world** — piles of wood/food/stone/cloth that grow and
 shrink and that the player designates. The **Accountant** physically visits and counts them;
 unvisited or unreachable piles remain visibly stale.
+Workshop input bills use counted reports, their observation times and uncounted
+coverage. They name suppliers without exposing hidden live goods.
+An unstaffed workshop previews its selected recipe's researched bill, reports and
+suppliers before the player assigns a cat. Recipe choices respect research unlocks.
 
 ### Buildings & upgrade tree
 - **Role-buildings** and later workshops are gated behind the **upgrade tree** and cost
@@ -118,9 +171,9 @@ unvisited or unreachable piles remain visibly stale.
   affordable nodes. The Leader may autonomously choose at most one node per rolling real-life day.
 
 ### Founding, housing, breeding, and migration
-- A new village starts with **15 adult cats and three early Dens**; each Den provides exactly
-  five permanent beds. The founding blueprint therefore starts full, not with spare breeding
-  capacity.
+- A personal village starts with **15 adult cats and three early Dens**. The communal village
+  starts with **30 adult cats and six Dens**. Each unupgraded Den provides five permanent beds,
+  so both founding blueprints start full, without spare breeding capacity.
 - Breeding is deliberately slow: a pregnancy may begin only after the establishment window and
   only when a permanent bed can be reserved for the future kitten. Gestation takes 18 game-hours,
   and the reservation prevents a migrant or another pregnancy from silently overbooking it.
@@ -129,8 +182,8 @@ unvisited or unreachable piles remain visibly stale.
   unhoused arrival remains on 36 game-hours of probation, then physically leaves unless a
   permanent bed becomes available first.
 - Extinction recovery is deterministic and atomic: a reset clears the failed run's transient
-  work and restores the complete 15-adult/three-Den founding state without ghost cats, stale
-  housing reservations, or reused migrant identities.
+  work and restores that village's complete communal or personal founding state without ghost
+  cats, stale housing reservations, or reused migrant identities.
 - Water recovery remains physical even in an emergency. The director may pre-empt a worker and
   dispatch a real fetch from a known water source, but the simulation never conjures an
   emergency bucket directly into storage.
@@ -138,22 +191,23 @@ unvisited or unreachable piles remain visibly stale.
   leaders and healers receive the same 20% extension and begin at **288 game-hours**. This is a
   deliberate current-design replacement for the archived web prototype's 48/57.6-hour values.
 
-## Post-cutover completion status
+## Historical Rust/Bevy completion record
 
-The Rust/Bevy cutover and maintained P12–P19 design are complete. Skills, seven specialist roles,
+The retired Rust/Bevy cutover recorded the maintained P12–P19 design as complete. Skills, seven specialist roles,
 spatial stockpiles and physical Accountant rounds, visible exterior farms, all ten processor types,
 108 physical recipes, shrine-return scouting, authored/traffic roads, global and personal villages,
 physical trade, the 487-study research graph, housing/migration pressure, and native/WASM player
-paths are implemented. The focused and generalized acceptance evidence lives in
-`docs/IMPLEMENTATION_AUDIT.md` and `docs/FIX_LOG.md`; the integrated correction gate is verified.
+paths were implemented there. The historical acceptance evidence lives in
+`docs/IMPLEMENTATION_AUDIT.md` and `docs/FIX_LOG.md`. These completion claims do not establish
+Unity acceptance; [unity/ACCEPTANCE.md](unity/ACCEPTANCE.md) records current verification.
 
 P9–P19 remain useful historical delivery groupings, not an active backlog. The integrated
 correction set in `docs/FIX_LOG.md` passed its generalized passive, player-guided, persistence,
-and multi-frame visual gate. The first pushed
-Forgejo quality run and optional WASM transfer tuning remain external follow-ups. New design work
-should be promoted here deliberately rather than inferred from old phase prose.
+and multi-frame visual gate for the Rust/Bevy implementation. The first pushed Forgejo quality run
+and optional WASM transfer tuning were follow-ups to that implementation. New design work should
+be promoted here deliberately rather than inferred from old phase prose.
 
 ## Fidelity note
-The Rust sim is a "same idea" port of the TS game; this vision *extends* it, so new systems
-(roles, spatial stockpiles) are designed fresh in Rust, not ported. The web game on
-`archive/web-game` is the frozen predecessor, not the target.
+The retired Rust simulation was a "same idea" port of the TypeScript game. This vision extended
+it with systems such as roles and spatial stockpiles. Both implementations provide historical
+evidence; Unity is the current target. The web game remains frozen on `archive/web-game`.

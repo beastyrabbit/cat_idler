@@ -28,6 +28,7 @@ namespace IdleCatForest.Authority
         public ActionResult Apply(GameAction action) => runtime.Apply(connection, action);
         public void Advance(double seconds) => runtime.Advance(seconds);
         public void Save() => runtime.Save();
+        public void Save(out SaveTiming timing) => runtime.Save(out timing);
         public void Dispose() => runtime.Dispose();
     }
 }

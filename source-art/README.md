@@ -34,13 +34,28 @@ Roads tile at exact 1 m intervals. `fence_rail` contains two rails running from 
 
 The cat has seven mesh transforms: `Body`, `Head`, `Tail`, `PawFrontLeft`, `PawFrontRight`, `PawBackLeft` and `PawBackRight`. Head and tail origins sit at their attachment points; paw origins sit at the upper legs. The left/right labels refer to the cat's left/right. Animate local rotations relative to the imported bind transforms. The kit uses rigid procedural articulation and needs no armature, skin weights or animation controller. The model does not contain gameplay state.
 
-All other assets have one joined mesh. Overlapping timber, foliage and stone pieces are intentional. Flat and smooth shading are authored per face, normals are recalculated outwards, and export triangulates the meshes. Runtime colliders should follow gameplay footprints rather than every plank, leaf or stair. Use one simple collider per solid obstacle and keep workplace interaction positions outside those colliders.
+The three designated crop models, `grain_plot`, `herb_plot` and `catnip_plot`, each
+have three meshes named with the asset prefix and `_Bed`, `_Plants` or `_Ripe`.
+The timber and soil bed stays fixed at a ground origin. Green plants and ripe
+ears or flower heads have separate origins at the soil surface, Blender Z=0.2 m
+and Unity Y=0.2 m. Their local rotation is zero and scale is one. Runtime growth
+scales the plants around that surface and reveals ripe heads late in the cycle;
+an empty bed can hide both without shrinking its footprint. The raised beds
+remain 1.82 by 1.46 m before runtime tile normalization. Field and Herb Garden
+building geometry keeps its existing single-mesh mature plants.
+
+All assets except the cat and those three crop models have one joined mesh.
+Overlapping timber, foliage and stone pieces are intentional. Flat and smooth
+shading are authored per face, normals are recalculated outwards, and export
+triangulates the meshes. Runtime colliders should follow gameplay footprints
+rather than every plank, leaf or stair. Use one simple collider per solid
+obstacle and keep workplace interaction positions outside those colliders.
 
 ## Materials and rendering cost
 
 Materials use plain Principled BSDF base colors, high roughness and no procedural nodes or image textures. Each exported material starts with `Forest_`. `asset-manifest.json` records the named palette and hex values. Unity should share one material per palette entry across imported models. Preserve those colors when mapping to the project's render pipeline; Blender preview lighting and AgX tone mapping are not material data.
 
-The complete library has 145,611 triangles across 82 assets and 88 meshes. A cat has 2,572 triangles and seven mesh renderers, an oak 1,280, a pine 1,788, a den 6,288, a shrine 3,540, a mill 4,772, and a sawmill 5,056. The modular fence post has 134 triangles and its rail has 176; the gate has 2,700. Static meshes retain material submeshes, so one mesh does not mean one draw call. Repeated assets should share meshes and materials, with GPU instancing or Unity batching where appropriate. No asset needs real-time transparency, skeletal skinning, tessellation or shader displacement. The Unity scene owns shadow distance, occlusion, colliders and measured population budgets. The added shingle, furniture and branch geometry increases the complete library by 53,018 triangles; native measurements determine its effect on the active view.
+The complete library has 145,611 triangles across 82 assets and 94 meshes. A cat has 2,572 triangles and seven mesh renderers, an oak 1,280, a pine 1,788, a den 6,288, a shrine 3,540, a mill 4,772, and a sawmill 5,056. Each crop model has three mesh renderers; splitting the bed, plants and ripe heads adds no triangles. The modular fence post has 134 triangles and its rail has 176; the gate has 2,700. Static meshes retain material submeshes, so one mesh does not mean one draw call. Repeated assets should share meshes and materials, with GPU instancing or Unity batching where appropriate. No asset needs real-time transparency, skeletal skinning, tessellation or shader displacement. The Unity scene owns shadow distance, occlusion, colliders and measured population budgets. The added shingle, furniture and branch geometry increases the complete library by 53,018 triangles; native measurements determine its effect on the active view.
 
 ## Asset mapping
 

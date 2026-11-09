@@ -53,6 +53,80 @@ Test("strict JSON rejects duplicate properties nonfinite values and type metadat
         try { WireJson.Decode<SaveFixture>(json); throw new Exception("invalid payload accepted"); } catch (Newtonsoft.Json.JsonException) { }
     }
 });
+Test("strict JSON rejects numeric strings and case variant duplicate members", () =>
+{
+    var accepted = new List<string>();
+    foreach (var json in new[] { "{\"Cargo\":\"NaN\"}", "{\"Cargo\":\"Infinity\"}", "{\"Cargo\":\"-Infinity\"}", "{\"Cargo\":\"1e400\"}", "{\"Cargo\":1,\"cargo\":2}" })
+    {
+        try { WireJson.Decode<SaveFixture>(json); accepted.Add(json); }
+        catch (Newtonsoft.Json.JsonException) { }
+    }
+    Check(accepted.Count == 0, "ambiguous or nonfinite payloads accepted: " + string.Join("; ", accepted));
+    var valid = WireJson.Decode<SaveFixture>("{\"Identity\":\"NaN\",\"Cargo\":2.25,\"Reserved\":1}");
+    Check(valid.Identity == "NaN" && valid.Cargo == 2.25 && valid.Reserved == 1, "strict numeric parsing rejected valid strings or numbers");
+    var directory = Path.Combine(Path.GetTempPath(), "forest-nonfinite-save-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(directory);
+    try
+    {
+        var path = Path.Combine(directory, "world.json");
+        SaveStore.Save(path, new { Identity = "cat-13", Cargo = "NaN", Reserved = 1.5 }, true);
+        var original = File.ReadAllBytes(path);
+        try { SaveStore.Load<SaveFixture>(path); throw new Exception("checksummed save admitted a quoted nonfinite payload"); }
+        catch (InvalidDataException) { }
+        Check(File.ReadAllBytes(path).SequenceEqual(original) && !File.Exists(path + ".previous"), "rejected save was changed or replaced");
+    }
+    finally { Directory.Delete(directory, true); }
+});
+
+await AsyncTest("shared host awaits final durable save before completing shutdown", async () =>
+{
+    var directory = Path.Combine(Path.GetTempPath(), "forest-shutdown-test-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(directory);
+    try
+    {
+        var path = Path.Combine(directory, "world.json");
+        using var runtime = new AuthorityRuntime(path, 41);
+        var owner = runtime.Connect(null, 1000);
+        var cat = runtime.World.Villages.Single().Cats[0];
+        cat.Cargo.Add(new IdleCatForest.Simulation.Stack("logs", 2.25));
+        await using var app = HostEntry.Build(runtime, "http://127.0.0.1:0", true);
+        await app.StartAsync();
+        using var acquired = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        var holder = Task.Run(() =>
+        {
+            lock (runtime.Sync) { acquired.Set(); release.Wait(); }
+        });
+        acquired.Wait();
+        Task stopped = null;
+        using var stopping = new ManualResetEventSlim();
+        using var stoppingRegistration = app.Lifetime.ApplicationStopping.Register(stopping.Set);
+        try
+        {
+            // Cancellation may run the worker's final save synchronously. Keep the
+            // lock-holding test thread free to release it after observing shutdown.
+            stopped = Task.Run(() => app.StopAsync());
+            Check(stopping.Wait(TimeSpan.FromSeconds(5)), "host did not begin shutdown");
+            var first = await Task.WhenAny(stopped, Task.Delay(50));
+            Check(first != stopped, "host completed shutdown while its final save was still blocked");
+        }
+        finally
+        {
+            release.Set();
+            await holder;
+            if (stopped != null) await stopped;
+        }
+        var saved = SaveStore.Load<World>(path);
+        Check(saved.Players.Any(player => player.Id == owner.Credential.PlayerId), "shutdown returned before persisting the current authority identity");
+        var expected = WireJson.Encode(runtime.World);
+        Check(WireJson.Encode(saved) == expected, "shutdown omitted part of the final authoritative world");
+        AuthorityRuntime.ValidateWorld(saved);
+        runtime.Dispose();
+        using var resumed = new AuthorityRuntime(path, 999);
+        Check(WireJson.Encode(resumed.World) == expected && World.Amount(resumed.World.Cat(cat.Id).Cargo, "logs") == 2.25, "immediate restart changed the saved identity or exact cargo");
+    }
+    finally { Directory.Delete(directory, true); }
+});
 
 Test("versioned save roundtrip preserves exact cargo and fails closed on corruption", () =>
 {
@@ -194,6 +268,73 @@ Test("socket projection never exposes private villages owners or stale exact sto
     }
     finally { Directory.Delete(directory, true); }
 });
+Test("known equipment orders and worn items remain actionable without revealing stale storage", () =>
+{
+    var directory = Path.Combine(Path.GetTempPath(), "forest-known-equipment-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(directory);
+    try
+    {
+        using var runtime = new AuthorityRuntime(Path.Combine(directory, "world.json"), 41);
+        var owner = runtime.Connect(null, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        var village = runtime.World.Village(owner.SelectedVillageId); var pile = village.Stockpiles[0];
+        var bearer = village.Cats[3]; var returner = village.Cats[4];
+        var fetch = new Job { Id = "known-equipment-fetch", Kind = "equip", Phase = "item_fetch", SourceId = pile.Id, TargetId = "known-equipment-tool", Position = pile.Position, CatId = bearer.Id, Manual = true, ItemIds = new List<string> { "known-equipment-tool" } };
+        village.Jobs.Add(fetch); bearer.JobId = fetch.Id;
+        var returning = new Job { Id = "known-equipment-return", Kind = "unequip", Phase = "item_return", SourceId = returner.Id, TargetId = pile.Id, Position = pile.Position, CatId = returner.Id, Manual = true, ItemIds = new List<string> { "known-equipment-armor" } };
+        village.Jobs.Add(returning); returner.JobId = returning.Id;
+        village.Items.Add(new Item { Id = "known-equipment-tool", Kind = "tool", VillageId = village.Id, LocationId = fetch.Id, Quality = 3, Condition = 17, MaxCondition = 42 });
+        village.Items.Add(new Item { Id = "known-equipment-weapon", Kind = "weapon", VillageId = village.Id, LocationId = bearer.Id }); bearer.Equipment.Add("known-equipment-weapon");
+        village.Items.Add(new Item { Id = "known-equipment-armor", Kind = "armor", VillageId = village.Id, LocationId = returner.Id }); returner.Equipment.Add("known-equipment-armor");
+        village.Items.Add(new Item { Id = "hidden-stored-tool", Kind = "tool", VillageId = village.Id, LocationId = pile.Id });
+        var unreported = new Stockpile { Id = "hidden-equipment-spill", Kind = "spill", Position = village.Center }; village.Stockpiles.Add(unreported);
+        village.Items.Add(new Item { Id = "hidden-spill-tool", Kind = "tool", VillageId = village.Id, LocationId = unreported.Id });
+        string canonical = WireJson.Encode(runtime.World);
+        var visible = runtime.Project(owner).World.Village(village.Id);
+        Check(visible.Items.Select(i => i.Id).OrderBy(id => id).SequenceEqual(new[] { "known-equipment-armor", "known-equipment-tool", "known-equipment-weapon" }), "stale books hid an exact equipment order or visibly worn gear, or exposed unrelated storage");
+        Check(visible.Jobs.Single(j => j.Id == fetch.Id).ItemIds.Single() == "known-equipment-tool" && visible.Jobs.Single(j => j.Id == returning.Id).ItemIds.Single() == "known-equipment-armor", "projection removed the exact cancelable equipment order identity");
+        Check(visible.Cats.Single(c => c.Id == bearer.Id).Equipment.Single() == "known-equipment-weapon" && visible.Cats.Single(c => c.Id == returner.Id).Equipment.Single() == "known-equipment-armor", "projection removed visibly worn equipment references");
+        Check(WireJson.Encode(runtime.World) == canonical, "equipment projection mutated authoritative ownership");
+        bearer.JobId = ""; bearer.ResumeJobId = fetch.Id; bearer.Goal = "need_drink";
+        visible = runtime.Project(owner).World.Village(village.Id);
+        Check(visible.Items.Any(i => i.Id == "known-equipment-tool") && visible.Cats.Single(c => c.Id == bearer.Id).ResumeJobId == fetch.Id, "needs interruption hid the pending exact retrieval");
+        Check(runtime.Project(null).World.Village(village.Id).Items.Count == 0, "anonymous projection revealed known equipment");
+        string selected = owner.SelectedVillageId; owner.SelectedVillageId = "not-selected";
+        Check(runtime.Project(owner).World.Village(village.Id).Items.Count == 0, "unselected village revealed known equipment"); owner.SelectedVillageId = selected;
+        foreach (var storage in village.Stockpiles.Where(p => p.Kind == "storage"))
+        {
+            storage.CountedAt = runtime.World.TimeSeconds;
+            storage.Report = storage.Goods.Select(s => new IdleCatForest.Simulation.Stack(s.Resource, s.Amount)).ToList();
+        }
+        World.Add(pile.Report, "tools", 2);
+        visible = runtime.Project(owner).World.Village(village.Id);
+        Check(visible.Items.Any(i => i.Id == "hidden-stored-tool") && visible.Items.All(i => i.Id != "hidden-spill-tool"), "an uncollected source claim falsely made unchanged physical storage stale or exposed the spill");
+        World.Add(pile.Goods, "logs", 1);
+        visible = runtime.Project(owner).World.Village(village.Id);
+        Check(visible.Items.All(i => i.Id != "hidden-stored-tool") && visible.Items.Any(i => i.Id == "known-equipment-tool"), "real storage changes exposed stale inventory or removed the known order");
+        AuthorityRuntime.ValidateWorld(runtime.World);
+    }
+    finally { Directory.Delete(directory, true); }
+});
+Test("known equipment retrieval from a spill preserves only its ordered item", () =>
+{
+    var directory = Path.Combine(Path.GetTempPath(), "forest-known-spill-equipment-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(directory);
+    try
+    {
+        using var runtime = new AuthorityRuntime(Path.Combine(directory, "world.json"), 41);
+        var owner = runtime.Connect(null, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        var village = runtime.World.Village(owner.SelectedVillageId); var runner = village.Cats[1];
+        var spill = new Stockpile { Id = "known-equipment-spill-source", Kind = "spill", Position = runner.Position }; village.Stockpiles.Add(spill);
+        var job = new Job { Id = "known-equipment-spill-order", Kind = "equip", Phase = "item_fetch", SourceId = spill.Id, TargetId = "known-equipment-spill-tool", Position = spill.Position, CatId = runner.Id, Manual = true, ItemIds = new List<string> { "known-equipment-spill-tool" } };
+        village.Jobs.Add(job); runner.JobId = job.Id;
+        village.Items.Add(new Item { Id = job.TargetId, Kind = "tool", VillageId = village.Id, LocationId = job.Id });
+        village.Items.Add(new Item { Id = "hidden-equipment-spill-weapon", Kind = "weapon", VillageId = village.Id, LocationId = spill.Id });
+        var visible = runtime.Project(owner).World.Village(village.Id);
+        Check(visible.Items.Count == 1 && visible.Items.Single().Id == job.TargetId && visible.Jobs.Single(j => j.Id == job.Id).ItemIds.Single() == job.TargetId, "projection hid a known spill-source order or exposed unrelated spill inventory");
+        AuthorityRuntime.ValidateWorld(runtime.World);
+    }
+    finally { Directory.Delete(directory, true); }
+});
 await AsyncTest("counted equipment remains selectable over a real socket until its ledger becomes stale", async () =>
 {
     var directory = Path.Combine(Path.GetTempPath(), "forest-counted-equipment-" + Guid.NewGuid().ToString("N"));
@@ -204,6 +345,10 @@ await AsyncTest("counted equipment remains selectable over a real socket until i
         var owner = runtime.Connect(null, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
         var village = runtime.World.Village(owner.SelectedVillageId);
         var pile = village.Stockpiles[0]; var accountant = village.Cats[2]; var bearer = village.Cats[3];
+        // Keep this socket projection case away from emergency labor preemption.
+        World.Add(pile.Goods, "food", 400); World.Add(pile.Goods, "water", 400); World.Add(pile.Goods, "logs", 20);
+        village.LastLeaderResearch = runtime.World.TimeSeconds;
+        bearer.Hunger = bearer.Thirst = bearer.Rest = 80;
         var tent = new Building { Id = "fixture-accounting-tent", Kind = "accounting_tent", Completed = true, Position = pile.Position };
         tent.Slots.Add(new WorkSlot { CatId = accountant.Id }); village.Buildings.Add(tent); accountant.BuildingId = tent.Id;
         village.Officers.Add(new Officer { Role = "accountant", CatId = accountant.Id });
@@ -235,14 +380,23 @@ await AsyncTest("counted equipment remains selectable over a real socket until i
         Check(visible.Items.Count(i => i.Id.StartsWith("counted-", StringComparison.Ordinal)) == 3, "fresh counted stored equipment was removed from authorized socket snapshot");
         Check(visible.Cats.Single(c => c.Id == bearer.Id).Equipment.Contains("worn-weapon"), "fresh counted snapshot removed equipped item references");
         Check(visible.Items.All(i => i.Id != "unreported-pile-tool") && visible.Stockpiles.Single(p => p.Id == gather.Id).Goods.Count == 0, "unreported nonstorage pile contents became visible");
-        Check((await client.SendAsync(new GameAction { Kind = "EquipItem", CatId = bearer.Id, TargetId = "counted-tool" })).Success, "authorized client could not select and equip its counted item");
-        Check(client.LatestWorld.Village(village.Id).Items.Count == 0 && client.LatestWorld.Village(village.Id).Cats.Single(c => c.Id == bearer.Id).Equipment.Count == 0, "stale equipment count exposed exact inventory");
+        var retrieval = await client.SendAsync(new GameAction { Kind = "EquipItem", CatId = bearer.Id, TargetId = "counted-tool" });
+        Check(retrieval.Success, "authorized client could not order retrieval of its counted item");
+        Check(village.Items.Single(i => i.Id == "counted-tool").LocationId == retrieval.EntityId && !bearer.Equipment.Contains("counted-tool"), "socket equipment action teleported its reserved item to the bearer");
+        visible = client.LatestWorld.Village(village.Id);
+        Check(visible.Items.Count(i => i.Id.StartsWith("counted-", StringComparison.Ordinal)) == 3 && visible.Jobs.Single(j => j.Id == retrieval.EntityId).ItemIds.Single() == "counted-tool", "source reservation falsely invalidated its unchanged physical count or hid its exact order");
+        for (int tick = 0; tick < 600 && !village.Jobs.Single(j => j.Id == retrieval.EntityId).Completed; tick++) runtime.Advance(.05);
+        Check(village.Jobs.Single(j => j.Id == retrieval.EntityId).Completed && bearer.Equipment.Contains("counted-tool"), "socket equipment retrieval did not physically arrive");
+        await client.SendAsync(new GameAction { Kind = "Presence" });
+        visible = client.LatestWorld.Village(village.Id);
+        Check(visible.Items.Count == 2 && visible.Items.All(i => i.LocationId == bearer.Id) && visible.Cats.Single(c => c.Id == bearer.Id).Equipment.Count == 2, "stale counts hid worn gear or exposed other exact stored inventory");
         CountStorage(); await client.SendAsync(new GameAction { Kind = "Presence" });
         visible = client.LatestWorld.Village(village.Id);
         Check(visible.Items.Single(i => i.Id == "counted-tool").LocationId == bearer.Id && visible.Cats.Single(c => c.Id == bearer.Id).Equipment.Contains("counted-tool"), "recount failed to restore the equipped item identity");
         lock (runtime.Sync) World.Add(pile.Goods, "logs", 1);
         await client.SendAsync(new GameAction { Kind = "Presence" });
-        Check(client.LatestWorld.Village(village.Id).Items.Count == 0, "stale scalar count exposed exact equipment");
+        visible = client.LatestWorld.Village(village.Id);
+        Check(visible.Items.Count == 2 && visible.Items.All(i => i.LocationId == bearer.Id), "stale scalar count exposed stored exact equipment or removed visibly worn gear");
         Check(village.Items.Count == 5 && gather.Goods.Single().Amount == 17, "projection changed the canonical item or pile ledger");
         client.Dispose(); await app.StopAsync();
     }
@@ -509,6 +663,77 @@ Test("live simulation resumes fractional saves without replaying elapsed work", 
     }
     finally { Directory.Delete(directory, true); }
 });
+Test("physical defense survives need interruption projection restart and exact cancellation", () =>
+{
+    var directory = Path.Combine(Path.GetTempPath(), "forest-defense-restart-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(directory);
+    try
+    {
+        var path = Path.Combine(directory, "world.json");
+        SessionCredential credential; string catId, raidId, jobId, armorId, expected; World uninterrupted;
+        using (var runtime = new AuthorityRuntime(path, 41))
+        {
+            var owner = runtime.Connect(null, 1000); credential = owner.Credential;
+            var world = runtime.World; var village = world.Villages.Single(); var cat = village.Cats[1]; var pile = village.Stockpiles[0];
+            village.Buildings.RemoveAll(b => b.Kind != "den" && b.Kind != "shrine");
+            foreach (var other in village.Cats.Where(c => c.Id != cat.Id)) { other.ControlledBy = "fixture-observer"; other.ControlLeaseUntil = 10000; }
+            cat.Position = pile.Position; cat.X = pile.Position.X; cat.Z = pile.Position.Z; cat.BuildingId = ""; cat.Path.Clear();
+            // Keep finite supplies above the founding Leader's emergency floors,
+            // so this case exercises need/restart recovery rather than preemption.
+            pile.Goods.Clear(); World.Add(pile.Goods, "water", 400); World.Add(pile.Goods, "food", 400); World.Add(pile.Goods, "logs", 7);
+            var armor = new Item { Id = world.Id("defense-armor"), Kind = "armor", Material = "leather", VillageId = village.Id, LocationId = cat.Id, Condition = 17, MaxCondition = 42, Quality = 3 };
+            village.Items.Add(armor); cat.Equipment.Add(armor.Id);
+            var raid = new Raid { Id = world.Id("defense-raid"), Position = cat.Position, Health = 100 };
+            raid.Loot.Add(new Stack("logs", 3)); village.Raids.Add(raid);
+            var order = runtime.Apply(owner, new GameAction { Kind = "DefendRaid", CatId = cat.Id, TargetId = raid.Id });
+            Check(order.Success && raid.Health == 100, "defense action failed or dealt damage before actor time");
+            var job = village.Jobs.Single(j => j.Id == order.EntityId);
+            Check(runtime.Apply(owner, new GameAction { Kind = "DefendRaid", CatId = cat.Id, TargetId = raid.Id }).EntityId == job.Id && village.Jobs.Count(j => j.Kind == "defend_raid") == 1, "repeated signed order duplicated the defender");
+            runtime.Advance(.075);
+            Check(job.Progress > 0 && raid.Health < 100 && armor.Condition < 17, "physical combat did not spend time and equipment condition");
+            cat.Thirst = 34; runtime.Advance(.05);
+            Check(cat.Goal == "need_drink" && cat.ResumeJobId == job.Id && !job.Completed, "defender did not suspend its exact order for a real need");
+            var canonical = WireJson.Encode(world); var visible = runtime.Project(owner).World.Villages.Single();
+            var projectedCat = visible.Cats.Single(c => c.Id == cat.Id); var projectedJob = visible.Jobs.Single(j => j.Id == job.Id);
+            Check(projectedCat.ResumeJobId == job.Id && projectedJob.CatId == cat.Id && projectedJob.TargetId == raid.Id && projectedJob.Manual && !projectedJob.Completed, "authorized projection lost actionable suspended-defense ownership");
+            Check(WireJson.Encode(world) == canonical && village.Items.Single(i => i.Id == armor.Id).LocationId == cat.Id, "projection mutated real equipment or work ownership");
+            catId = cat.Id; raidId = raid.Id; jobId = job.Id; armorId = armor.Id;
+            runtime.Save(); expected = WireJson.Encode(world); uninterrupted = WireJson.Clone(world);
+        }
+        using (var runtime = new AuthorityRuntime(path, 999))
+        {
+            var owner = runtime.Connect(credential, 1001); var world = runtime.World; var village = world.Villages.Single();
+            Check(WireJson.Encode(world) == expected, "restart changed the durable full defense and need state");
+            var cat = village.Cats.Single(c => c.Id == catId); var job = village.Jobs.Single(j => j.Id == jobId); var raid = village.Raids.Single(r => r.Id == raidId); var armor = village.Items.Single(i => i.Id == armorId);
+            double before = job.Progress, condition = armor.Condition;
+            var repeated = runtime.Apply(owner, new GameAction { Kind = "DefendRaid", CatId = catId, TargetId = raidId });
+            Check(repeated.Success && repeated.EntityId == jobId && village.Jobs.Count(j => !j.Completed && j.Kind == "defend_raid") == 1, "restart made a suspended order claimable twice");
+            runtime.Advance(.025); runtime.Advance(.025); uninterrupted.Step(.05);
+            Check(cat.Goal == "need_drink" && job.Progress == before && armor.Condition == condition, "need travel also spent combat time or equipment");
+            for (int i = 0; i < 120 && job.Progress == before; i++)
+            { runtime.Advance(.25); runtime.Advance(.25); uninterrupted.Step(.5); }
+            Check(cat.Goal == "defending" && cat.ResumeJobId == "" && cat.JobId == jobId && job.Progress > before && raid.Health < 100 && armor.Condition < condition,
+                "restarted need did not physically resume its original combat target; goal=" + cat.Goal + " resume=" + cat.ResumeJobId + " job=" + cat.JobId + " progress=" + job.Progress + " before=" + before + " completed=" + job.Completed + " cat=" + cat.X + "," + cat.Z + " raid=" + raid.X + "," + raid.Z + " raid_present=" + village.Raids.Contains(raid) + " thirst=" + cat.Thirst + " cargo=" + string.Join(",", cat.Cargo.Select(s => s.Resource + ":" + s.Amount)) + " blocked=" + cat.BlockedReason);
+            Check(JToken.DeepEquals(JToken.Parse(WireJson.Encode(world)), JToken.Parse(WireJson.Encode(uninterrupted))), "restart or elapsed partitions changed defense, needs, wear or identities");
+            Check(village.Stockpiles.Sum(p => World.Amount(p.Goods, "water")) == 399 && cat.Cargo.Count == 0, "need recovery lost or duplicated its finite water serving");
+            Check(village.Stockpiles.Sum(p => World.Amount(p.Goods, "logs")) + village.Cats.Sum(c => World.Amount(c.Cargo, "logs")) + village.Raids.Sum(r => World.Amount(r.Loot, "logs")) == 10, "defense/restart created or lost finite goods");
+            Check(!runtime.Apply(owner, new GameAction { Kind = "CancelDefense", CatId = village.Cats[2].Id, TargetId = jobId }).Success && !job.Completed, "restarted cancellation ignored the exact owner");
+            Check(runtime.Apply(owner, new GameAction { Kind = "CancelDefense", CatId = catId, TargetId = jobId }).Success && job.Completed && cat.JobId == "" && cat.ResumeJobId == "", "restarted manual defense could not release its exact ownership");
+            Check(village.Items.Count(i => i.Id == armorId) == 1 && armor.LocationId == catId && cat.Equipment.Contains(armorId) && world.Reservations.Count == 0, "cancellation duplicated equipment or retained resource claims");
+            runtime.Save();
+        }
+        using (var runtime = new AuthorityRuntime(path, 123))
+        {
+            var owner = runtime.Connect(credential, 1002); var village = runtime.World.Villages.Single(); var cat = village.Cats.Single(c => c.Id == catId);
+            double health = village.Raids.Single(r => r.Id == raidId).Health;
+            Check(!runtime.Apply(owner, new GameAction { Kind = "CancelDefense", CatId = catId, TargetId = jobId }).Success, "completed cancellation replayed after restart");
+            runtime.Advance(.05); runtime.Save();
+            Check(cat.JobId == "" && cat.ResumeJobId == "" && village.Jobs.Single(j => j.Id == jobId).Completed && village.Raids.Single(r => r.Id == raidId).Health == health, "cancelled defender resumed combat after another restart");
+            AuthorityRuntime.ValidateWorld(SaveStore.Load<World>(path));
+        }
+    }
+    finally { Directory.Delete(directory, true); }
+});
 Test("failed path retry cache survives fractional save and resumes once", () =>
 {
     var directory = Path.Combine(Path.GetTempPath(), "forest-path-retry-restart-" + Guid.NewGuid().ToString("N"));
@@ -630,6 +855,539 @@ Test("scalar haul retargets blocked destination across restart", () =>
     }
     finally { Directory.Delete(directory, true); }
 });
+Test("manual production retargets closed ingredient claims across cargo restarts", () =>
+{
+    var directory = Path.Combine(Path.GetTempPath(), "forest-production-claims-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(directory);
+    try
+    {
+        var path = Path.Combine(directory, "world.json"); var world = World.Create(41); var village = world.Villages.Single();
+        village.Buildings.RemoveAll(b => b.Kind != "den" && b.Kind != "shrine");
+        village.Stockpiles.Clear(); village.LastLeaderResearch = world.TimeSeconds;
+        var worker = village.Cats.First(c => c.Id != village.LeaderId);
+        foreach (var cat in village.Cats)
+        {
+            cat.ControlledBy = cat.Id == worker.Id ? "" : "fixture-observer"; cat.ControlLeaseUntil = 100000;
+            cat.Position = new Int2(1, 3); cat.X = 1; cat.Z = 3; cat.Path.Clear();
+        }
+        var store = new Stockpile { Id = "production-receiving-store", Position = new Int2(3, 2), Width = 1, Depth = 1, Capacity = 10000, Goods = new List<Stack> { new Stack("food", 1000), new Stack("water", 1000) } };
+        Stockpile Supply(string id, string resource, double amount, Int2 position)
+        {
+            var pile = new Stockpile { Id = id, Position = position, Width = 1, Depth = 1, Capacity = 100, Accepts = new List<string> { resource }, Goods = new List<Stack> { new Stack(resource, amount) } };
+            village.Stockpiles.Add(pile); return pile;
+        }
+        village.Stockpiles.Add(store);
+        var blocked = Supply("aaa-inaccessible-planks", "planks", 2, new Int2(-5, 1));
+        var first = Supply("bbb-original-planks", "planks", 2, new Int2(3, 3));
+        var alternate = Supply("ccc-alternate-planks", "planks", 2, new Int2(-1, 3));
+        var blocks = Supply("ddd-finite-blocks", "blocks", 2, new Int2(3, 5));
+        world.TileAt(blocked.Position).Wall = true;
+        var station = new Building { Id = world.Id("production-restart-station"), Kind = "woodworking", Completed = true, Position = worker.Position };
+        village.Buildings.Add(station);
+        var context = new PlayerContext { PlayerId = "fixture-production-restart", VillageId = village.Id };
+        void Apply(GameAction action) { var result = world.Apply(context, action); Check(result.Success, action.Kind + " rejected: " + result.Error); }
+        Apply(new GameAction { Kind = "AssignWorker", BuildingId = station.Id, CatId = worker.Id });
+        Apply(new GameAction { Kind = "EditProductionWorkSlot", BuildingId = station.Id, CatId = worker.Id, Edit = "add", RecipeId = "planks_and_blocks_to_tools" });
+        world.Step(1.05);
+        var job = village.Jobs.Single(j => j.Kind == "production" && !j.Completed && j.CatId == worker.Id);
+        string jobId = job.Id, catId = worker.Id, stationId = station.Id;
+        string queued = WireJson.Encode(station.Slots.Single().Queue);
+        Check(world.Reservations.Any(r => r.OwnerId == jobId && r.PileId == first.Id && r.Amount == 2) && world.Reservations.Any(r => r.OwnerId == jobId && r.PileId == blocks.Id && r.Amount == 2), "manual recipe did not claim its reachable finite ingredient piles");
+        Check(!world.Reservations.Any(r => r.OwnerId == jobId && r.PileId == blocked.Id) && worker.Cargo.Count == 0, "recipe claimed inaccessible goods or moved inputs before pickup");
+        void Restart()
+        {
+            AuthorityRuntime.ValidateWorld(world); SaveStore.Save(path, world); string expected = WireJson.Encode(world);
+            world = SaveStore.Load<World>(path); Check(WireJson.Encode(world) == expected, "restart changed complete production claims, work, cargo or queue state");
+            AuthorityRuntime.ValidateWorld(world); village = world.Villages.Single(); worker = village.Cats.Single(c => c.Id == catId); job = village.Jobs.Single(j => j.Id == jobId); station = village.Buildings.Single(b => b.Id == stationId);
+            blocked = village.Stockpiles.Single(p => p.Id == blocked.Id); first = village.Stockpiles.Single(p => p.Id == first.Id); alternate = village.Stockpiles.Single(p => p.Id == alternate.Id); blocks = village.Stockpiles.Single(p => p.Id == blocks.Id); store = village.Stockpiles.Single(p => p.Id == store.Id);
+        }
+        void CheckUnconsumed()
+        {
+            Check(worker.JobId == jobId && job.CatId == catId && station.Slots.Single().CatId == catId && WireJson.Encode(station.Slots.Single().Queue) == queued, "ingredient recovery replaced the player's worker, job, position or finite queue");
+            foreach (var material in new[] { (Name: "planks", Amount: 6.0), (Name: "blocks", Amount: 2.0) })
+                Check(village.Stockpiles.Sum(p => World.Amount(p.Goods, material.Name)) + village.Cats.Sum(c => World.Amount(c.Cargo, material.Name)) + village.Jobs.Where(j => !j.Completed).Sum(j => World.Amount(j.Local, material.Name)) + village.Buildings.Sum(b => World.Amount(b.Inputs, material.Name)) == material.Amount, "production recovery lost or duplicated finite " + material.Name);
+        }
+        Restart(); CheckUnconsumed();
+        world.TileAt(first.Position).Wall = true;
+        world.Step(1);
+        Check(!world.Reservations.Any(r => r.OwnerId == jobId && (r.PileId == blocked.Id || r.PileId == first.Id)) && world.Reservations.Any(r => r.OwnerId == jobId && r.PileId == alternate.Id && r.Amount == 2), "saved claim did not recover to the remaining reachable planks");
+        CheckUnconsumed(); Restart();
+        for (int tick = 0; tick < 200 && World.Amount(worker.Cargo, "planks") == 0; tick++) { world.Step(.05); CheckUnconsumed(); }
+        Check(World.Amount(worker.Cargo, "planks") == 2 && World.Amount(alternate.Goods, "planks") == 0 && World.Amount(job.Local, "planks") == 0, "replacement source did not require a real exclusive pickup before delivery");
+        Restart(); CheckUnconsumed();
+        for (int tick = 0; tick < 300 && World.Amount(job.Local, "planks") != 2; tick++) { world.Step(.05); CheckUnconsumed(); }
+        Check(World.Amount(job.Local, "planks") == 2 && !world.Reservations.Any(r => r.OwnerId == jobId && r.Resource == "planks"), "restarted carrier did not stage its exact planks at the original workshop");
+        Restart(); CheckUnconsumed();
+        for (int second = 0; second < 900 && !job.Completed; second++) world.Step(1);
+        Check(job.Completed && worker.JobId == "" && worker.Cargo.Count == 0 && job.Local.Count == 0 && world.Reservations.All(r => r.OwnerId != jobId), "finite restarted recipe failed to finish or release its cargo and claims");
+        var tool = village.Items.Single(i => i.Kind == "tool"); string toolId = tool.Id;
+        Check(tool.Material == "wood" && tool.LocationId == store.Id && tool.Condition == tool.MaxCondition && World.Amount(store.Goods, "tools") == 0, "recipe did not deliver exactly one intact physical wooden tool");
+        Check(World.Amount(blocked.Goods, "planks") == 2 && World.Amount(first.Goods, "planks") == 2 && world.Total(village, "planks") == 4 && world.Total(village, "blocks") == 0 && station.Slots.Single().Queue.Count == 0, "completion changed inaccessible goods or consumed more than the manual recipe bill");
+        Restart(); world.Step(2);
+        Check(village.Items.Count(i => i.Id == toolId) == 1 && village.Items.Single(i => i.Id == toolId).LocationId == store.Id && village.Jobs.Count(j => j.Id == jobId) == 1 && job.Completed && station.Slots.Single().Queue.Count == 0 && world.Reservations.Count == 0 && world.Total(village, "planks") == 4 && world.Total(village, "blocks") == 0, "completed production replayed or duplicated output after the final restart");
+        AuthorityRuntime.ValidateWorld(world);
+    }
+    finally { Directory.Delete(directory, true); }
+});
+Test("officer reachable recipe choice and finite textile chain survive durable restarts", () =>
+{
+    var directory = Path.Combine(Path.GetTempPath(), "forest-officer-inputs-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(directory);
+    try
+    {
+        var path = Path.Combine(directory, "world.json"); var world = World.Create(41); var village = world.Villages.Single();
+        village.Buildings.RemoveAll(b => b.Kind != "den" && b.Kind != "shrine");
+        village.Stockpiles.Clear(); village.LastLeaderResearch = world.TimeSeconds;
+        var worker = village.Cats.First(c => c.Id != village.LeaderId); string workerId = worker.Id;
+        foreach (var cat in village.Cats)
+        {
+            cat.ControlledBy = cat.Id == workerId ? "" : "fixture-observer"; cat.ControlLeaseUntil = 100000;
+            cat.Position = new Int2(1, 3); cat.X = 1; cat.Z = 3; cat.Path.Clear();
+        }
+        var store = new Stockpile { Id = "officer-receiving-store", Position = new Int2(3, 2), Width = 1, Depth = 1, Capacity = 10000, Goods = new List<Stack> { new Stack("food", 1000), new Stack("water", 1000), new Stack("fibre", 5) } };
+        var blocked = new Stockpile { Id = "aaa-officer-blocked-thread", Position = new Int2(-3, 2), Width = 1, Depth = 1, Capacity = 100, Goods = new List<Stack> { new Stack("thread", 5) } };
+        village.Stockpiles.Add(store); village.Stockpiles.Add(blocked); world.TileAt(blocked.Position).Wall = true;
+        var station = new Building { Id = world.Id("officer-restart-station"), Kind = "clothier", Completed = true, Position = worker.Position }; string stationId = station.Id;
+        village.Buildings.Add(station); village.Research.Add("textiles");
+        var context = new PlayerContext { PlayerId = "fixture-officer-restart", VillageId = village.Id };
+        void Apply(GameAction action) { var result = world.Apply(context, action); Check(result.Success, action.Kind + " rejected: " + result.Error); }
+        Apply(new GameAction { Kind = "AssignOfficer", Role = "cloth_leader", CatId = village.LeaderId });
+        Apply(new GameAction { Kind = "AssignWorker", BuildingId = stationId, CatId = workerId });
+        station.Slots.Single().AutomatedBy = "cloth_leader";
+        station.Slots.Single().Queue.Add(new QueueEntry { RecipeId = "fibre_to_cloth", AutomatedBy = "cloth_leader" });
+        void Restart()
+        {
+            AuthorityRuntime.ValidateWorld(world); SaveStore.Save(path, world); string expected = WireJson.Encode(world);
+            world = SaveStore.Load<World>(path); Check(WireJson.Encode(world) == expected, "durable restart changed officer work, exact claims or inventory");
+            AuthorityRuntime.ValidateWorld(world); village = world.Villages.Single(); worker = village.Cats.Single(c => c.Id == workerId); station = village.Buildings.Single(b => b.Id == stationId);
+            store = village.Stockpiles.Single(p => p.Id == "officer-receiving-store"); blocked = village.Stockpiles.Single(p => p.Id == "aaa-officer-blocked-thread");
+        }
+        Restart(); world.Step(11.05);
+        var job = village.Jobs.Single(j => !j.Completed && j.Kind == "production" && j.CatId == workerId); string jobId = job.Id;
+        Check(job.RecipeId == "fibre_to_thread" && station.Slots.Single().Queue.Single().AutomatedBy == "cloth_leader", "restored stale automatic queue did not choose the reachable physical ingredient");
+        Check(World.Amount(blocked.Goods, "thread") == 5 && world.Reservations.All(r => r.PileId != blocked.Id), "automatic choice claimed inaccessible thread");
+        Restart();
+        for (int tick = 0; tick < 400 && World.Amount(worker.Cargo, "fibre") == 0; tick++) world.Step(.05);
+        Check(World.Amount(worker.Cargo, "fibre") == 5 && World.Amount(store.Goods, "fibre") == 0, "restored worker did not physically collect its finite fibre");
+        Restart(); world.Step(1600);
+        Check(world.Total(village, "fibre") == 0 && world.Total(village, "thread") == 5 && world.Total(village, "cloth") == 1, "finite reachable fibre did not become five Thread and then one Cloth while blocked Thread stayed intact");
+        Check(World.Amount(blocked.Goods, "thread") == 5 && worker.Cargo.Count == 0 && world.Reservations.Count == 0 && !village.Jobs.Any(j => !j.Completed && j.Kind == "production"), "completed finite chain retained cargo, claims or an active recipe");
+        Check(village.Events.Any(e => e.Kind == "completed" && e.EntityId == jobId), "physical production did not retain completion evidence");
+        Restart(); world.Step(20);
+        Check(world.Total(village, "thread") == 5 && world.Total(village, "cloth") == 1 && world.Reservations.Count == 0, "restart replayed the finite textile chain or claimed blocked Thread");
+        AuthorityRuntime.ValidateWorld(world);
+    }
+    finally { Directory.Delete(directory, true); }
+});
+Test("officer delegation preserves exact production ownership and manual queue across durable restarts", () =>
+{
+    var directory = Path.Combine(Path.GetTempPath(), "forest-workshop-delegation-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(directory);
+    try
+    {
+        var path = Path.Combine(directory, "world.json"); var world = World.Create(41); var village = world.Villages.Single();
+        village.Buildings.RemoveAll(b => b.Kind != "den" && b.Kind != "shrine");
+        village.Stockpiles.Clear(); village.LastLeaderResearch = world.TimeSeconds;
+        var worker = village.Cats.First(c => c.Id != village.LeaderId); string workerId = worker.Id;
+        foreach (var cat in village.Cats)
+        {
+            cat.ControlledBy = cat.Id == workerId ? "" : "fixture-observer"; cat.ControlLeaseUntil = 100000;
+            cat.Position = new Int2(1, 3); cat.X = 1; cat.Z = 3; cat.Path.Clear();
+        }
+        var store = new Stockpile { Id = "delegation-receiving-store", Position = new Int2(3, 2), Width = 1, Depth = 1, Capacity = 10000, Goods = new List<Stack> { new Stack("food", 1000), new Stack("water", 1000) } };
+        village.Stockpiles.Add(store);
+        village.Stockpiles.Add(new Stockpile { Id = "delegation-finite-planks", Position = new Int2(3, 3), Width = 1, Depth = 1, Capacity = 100, Accepts = new List<string> { "planks" }, Goods = new List<Stack> { new Stack("planks", 2) } });
+        village.Stockpiles.Add(new Stockpile { Id = "delegation-finite-blocks", Position = new Int2(3, 5), Width = 1, Depth = 1, Capacity = 100, Accepts = new List<string> { "blocks" }, Goods = new List<Stack> { new Stack("blocks", 2) } });
+        var station = new Building { Id = world.Id("delegation-station"), Kind = "woodworking", Completed = true, Position = worker.Position }; string stationId = station.Id;
+        village.Buildings.Add(station);
+        village.Buildings.Add(new Building { Id = world.Id("delegation-office"), Kind = "sawmill", Completed = true, Position = new Int2(-6, 0) });
+        village.Research.Add("sawmill");
+        var context = new PlayerContext { PlayerId = "fixture-workshop-delegation", VillageId = village.Id };
+        void Apply(GameAction action) { var result = world.Apply(context, action); Check(result.Success, action.Kind + " rejected: " + result.Error); }
+        GameAction Edit(string edit, bool enabled = true) => new GameAction { Kind = "EditProductionWorkSlot", BuildingId = stationId, CatId = workerId, Edit = edit, Enabled = enabled };
+        Apply(new GameAction { Kind = "AssignOfficer", Role = "forester", CatId = village.LeaderId });
+        Apply(new GameAction { Kind = "AssignWorker", BuildingId = stationId, CatId = workerId });
+        Apply(new GameAction { Kind = "EditProductionWorkSlot", BuildingId = stationId, CatId = workerId, Edit = "add", RecipeId = "planks_and_blocks_to_tools" });
+        Apply(new GameAction { Kind = "EditProductionWorkSlot", BuildingId = stationId, CatId = workerId, Edit = "add", RecipeId = "planks_and_blocks_to_tools", Repeat = true });
+        string manualQueue = WireJson.Encode(station.Slots.Single().Queue);
+        string jobId = "";
+        Job Job() => village.Jobs.Single(j => j.Id == jobId);
+        void Restart()
+        {
+            AuthorityRuntime.ValidateWorld(world); SaveStore.Save(path, world); string expected = WireJson.Encode(world);
+            world = SaveStore.Load<World>(path); Check(WireJson.Encode(world) == expected, "durable restart changed delegated production, exact claims, cargo, pause or queue state");
+            AuthorityRuntime.ValidateWorld(world); village = world.Villages.Single(); worker = village.Cats.Single(c => c.Id == workerId); station = village.Buildings.Single(b => b.Id == stationId);
+            store = village.Stockpiles.Single(p => p.Id == "delegation-receiving-store");
+        }
+        void CheckUnconsumed()
+        {
+            Check(worker.JobId == jobId && Job().CatId == workerId && station.Slots.Single().CatId == workerId && WireJson.Encode(station.Slots.Single().Queue) == manualQueue, "delegation or restart replaced the exact job, worker or deliberate manual orders");
+            foreach (string material in new[] { "planks", "blocks" })
+                Check(village.Stockpiles.Sum(p => World.Amount(p.Goods, material)) + village.Cats.Sum(c => World.Amount(c.Cargo, material)) + village.Jobs.Where(j => !j.Completed).Sum(j => World.Amount(j.Local, material)) + village.Buildings.Sum(b => World.Amount(b.Inputs, material)) == 2, "delegation lost or duplicated unconsumed " + material);
+        }
+        void DelegateUnchanged()
+        {
+            var expected = WireJson.Decode<World>(WireJson.Encode(world));
+            expected.Villages.Single().Buildings.Single(b => b.Id == stationId).Slots.Single().AutomatedBy = "forester";
+            Apply(Edit("delegate"));
+            Check(JToken.DeepEquals(JToken.Parse(WireJson.Encode(world)), JToken.Parse(WireJson.Encode(expected))), "delegation changed more than the exact slot's officer provenance");
+        }
+        void Reach(string phase)
+        {
+            for (int tick = 0; tick < 4000; tick++)
+            {
+                world.Step(.05);
+                var active = village.Jobs.Find(j => !j.Completed && j.Kind == "production" && j.CatId == workerId);
+                if (active == null) continue;
+                if (jobId == "") jobId = active.Id;
+                Check(active.Id == jobId, "production changed identity between ownership checkpoints");
+                CheckUnconsumed();
+                if (phase == "claimed" ? world.Reservations.Any(r => r.OwnerId == jobId) : phase == "carried" ? World.Amount(worker.Cargo, "planks") == 2 : phase == "staged" ? World.Amount(active.Local, "planks") == 2 : active.Phase == "working" && active.Progress > 0)
+                    return;
+            }
+            throw new Exception("delegated production did not reach its " + phase + " checkpoint");
+        }
+        foreach (string phase in new[] { "claimed", "carried", "staged", "working" })
+        {
+            Reach(phase);
+            Apply(Edit("pause"));
+            DelegateUnchanged(); CheckUnconsumed(); Restart(); CheckUnconsumed();
+            Check(station.Slots.Single().Paused && station.Slots.Single().AutomatedBy == "forester", "delegation restart lost a deliberate pause or officer handback during " + phase);
+            var heldJob = WireJson.Decode<Job>(WireJson.Encode(Job()));
+            string heldCargo = WireJson.Encode(worker.Cargo), heldClaims = WireJson.Encode(world.Reservations), heldPath = WireJson.Encode(worker.Path);
+            var heldPosition = worker.Position; double heldX = worker.X, heldZ = worker.Z;
+            world.Step(.2);
+            Check(Job().BlockedReason == "queue_paused" && Job().Phase == heldJob.Phase && Job().Progress == heldJob.Progress, "paused delegated work lost its diagnostic or advanced its phase/progress after restart during " + phase);
+            // Paused ticks still refresh the retry clock and publish the pause reason.
+            // Every other job field and all physical ownership must remain unchanged.
+            heldJob.NextPlanningAt = Job().NextPlanningAt;
+            heldJob.BlockedReason = "queue_paused";
+            Check(WireJson.Encode(Job()) == WireJson.Encode(heldJob) && worker.Position.Equals(heldPosition) && worker.X == heldX && worker.Z == heldZ && WireJson.Encode(worker.Path) == heldPath && WireJson.Encode(worker.Cargo) == heldCargo && WireJson.Encode(world.Reservations) == heldClaims, "paused delegated work changed physical state or ingredient ownership after restart during " + phase);
+            Apply(Edit("pause", false));
+            DelegateUnchanged(); Restart(); CheckUnconsumed();
+        }
+        for (int second = 0; second < 900 && !Job().Completed; second++) world.Step(1);
+        Check(Job().Completed && worker.JobId == "" && worker.Cargo.Count == 0 && Job().Local.Count == 0 && world.Reservations.Count == 0, "delegated finite batch did not finish and release exact ingredient ownership");
+        var tool = village.Items.Single(i => i.Kind == "tool"); string toolId = tool.Id;
+        Check(tool.Material == "wood" && tool.Condition == tool.MaxCondition && world.Total(village, "planks") == 0 && world.Total(village, "blocks") == 0, "delegated finite material accounting failed: material=" + tool.Material + " condition=" + tool.Condition + "/" + tool.MaxCondition + " planks=" + world.Total(village, "planks") + " blocks=" + world.Total(village, "blocks"));
+        Check(tool.LocationId == store.Id, "delegated tool was not physically delivered to its designated accepting store: actual=" + tool.LocationId + " expected=" + store.Id);
+        var tail = station.Slots.Single().Queue.Single();
+        Check(station.Slots.Single().AutomatedBy == "forester" && tail.RecipeId == "planks_and_blocks_to_tools" && tail.Repeat && tail.AutomatedBy == "", "delegation replaced, relabeled or lost the player's repeating tail order");
+        Restart(); world.Step(20);
+        Check(village.Items.Count(i => i.Id == toolId) == 1 && village.Items.Single(i => i.Id == toolId).LocationId == store.Id && village.Jobs.Count(j => j.Id == jobId) == 1 && Job().Completed && !village.Jobs.Any(j => !j.Completed && j.Kind == "production") && world.Reservations.Count == 0, "completed delegated production replayed after its final restart");
+        tail = station.Slots.Single().Queue.Single();
+        Check(tail.Repeat && tail.AutomatedBy == "" && station.Slots.Single().AutomatedBy == "forester" && station.Slots.Single().CatId == workerId, "the officer replaced a deliberate unfunded repeating order after restart");
+        AuthorityRuntime.ValidateWorld(world);
+    }
+    finally { Directory.Delete(directory, true); }
+});
+Test("officer reuses later open position and preserves paused manual orders across durable restarts", () =>
+{
+    var directory = Path.Combine(Path.GetTempPath(), "forest-officer-open-position-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(directory);
+    try
+    {
+        var path = Path.Combine(directory, "world.json"); var world = World.Create(41); var village = world.Villages.Single();
+        village.Buildings.RemoveAll(b => b.Kind != "den" && b.Kind != "shrine");
+        village.Stockpiles.Clear(); village.LastLeaderResearch = world.TimeSeconds; village.ResearchPoints = 20000;
+        var worker = village.Cats[1]; string workerId = worker.Id;
+        foreach (var cat in village.Cats)
+        {
+            cat.Position = new Int2(1, 3); cat.X = 1; cat.Z = 3; cat.Path.Clear();
+            cat.Skills.Clear(); cat.Preferences.Clear(); cat.Hunger = cat.Thirst = cat.Rest = 100;
+        }
+        World.Add(worker.Skills, "textile", 40); worker.Preferences.Add("textile");
+        var knownLogs = world.Tiles.First(t => t.Resource == "logs" && t.Amount > 0).Position;
+        if (!village.Known.Contains(knownLogs)) village.Known.Add(knownLogs);
+        var store = new Stockpile { Id = "open-position-receiving-store", Position = new Int2(3, 2), Width = 1, Depth = 1, Capacity = 10000, Goods = new List<Stack> { new Stack("food", 1000), new Stack("water", 1000) } };
+        var fibre = new Stockpile { Id = "open-position-finite-fibre", Position = new Int2(-3, 3), Width = 1, Depth = 1, Capacity = 100, Accepts = new List<string> { "fibre" }, Goods = new List<Stack> { new Stack("fibre", 5) } };
+        village.Stockpiles.Add(store); village.Stockpiles.Add(fibre);
+        var station = new Building { Id = world.Id("open-position-clothier"), Kind = "clothier", Completed = true, Position = worker.Position }; string stationId = station.Id;
+        village.Buildings.Add(station);
+        var context = new PlayerContext { PlayerId = "fixture-open-position", VillageId = village.Id };
+        void Apply(GameAction action) { var result = world.Apply(context, action); Check(result.Success, action.Kind + " rejected: " + result.Error); }
+        void Research(string id)
+        {
+            if (village.Research.Contains(id)) return;
+            foreach (var prerequisite in Catalog.Study(id).Prerequisites) Research(prerequisite);
+            Apply(new GameAction { Kind = "ResearchNode", NodeId = id });
+        }
+        Research("clothier_crews");
+        Check(Catalog.BuildingEffect(village, "clothier", "worker_slots", 1) == 2, "Fixture requires ordinary researched two-cat capacity");
+        var first = village.Cats[6]; var second = village.Cats[7];
+        Apply(new GameAction { Kind = "AssignWorker", BuildingId = stationId, CatId = first.Id });
+        Apply(new GameAction { Kind = "EditProductionWorkSlot", BuildingId = stationId, CatId = first.Id, Edit = "add", RecipeId = "fibre_to_thread", Repeat = true });
+        Apply(new GameAction { Kind = "EditProductionWorkSlot", BuildingId = stationId, CatId = first.Id, Edit = "pause", Enabled = true });
+        Apply(new GameAction { Kind = "AssignWorker", BuildingId = stationId, CatId = second.Id });
+        foreach (string recipe in new[] { "fibre_to_thread", "fibre_to_cloth" })
+            Apply(new GameAction { Kind = "EditProductionWorkSlot", BuildingId = stationId, CatId = second.Id, Edit = "add", RecipeId = recipe });
+        Apply(new GameAction { Kind = "AssignWorker", CatId = first.Id });
+        Apply(new GameAction { Kind = "AssignWorker", CatId = second.Id });
+        Check(station.Slots.Count == 2 && station.Slots.All(s => s.CatId == "") && station.Slots[0].Paused && !station.Slots[1].Paused && !station.Paused, "Public edits did not leave a paused first vacancy and later open vacancy");
+        string pausedSlot = WireJson.Encode(station.Slots[0]), manualQueue = WireJson.Encode(station.Slots[1].Queue);
+        var heldIds = village.Cats.Where(c => c.Id != workerId && !village.Cats.Skip(2).Take(4).Any(free => free.Id == c.Id)).Select(c => c.Id).ToArray();
+        foreach (string heldId in heldIds)
+        {
+            var holder = new PlayerContext { PlayerId = "open-position-holder-" + heldId, VillageId = village.Id };
+            Check(world.Apply(holder, new GameAction { Kind = "EnterCatControl", CatId = heldId }).Success, "Could not reserve a nonparticipant through public control");
+        }
+        Apply(new GameAction { Kind = "AssignOfficer", Role = "cloth_leader", CatId = village.LeaderId });
+        void Step(double seconds)
+        {
+            foreach (string heldId in heldIds)
+                Check(world.Apply(new PlayerContext { PlayerId = "open-position-holder-" + heldId, VillageId = village.Id }, new GameAction { Kind = "KeepCatControl", CatId = heldId }).Success, "Nonparticipant control lease expired");
+            world.Step(seconds);
+        }
+        void CheckSlots(bool beforeCompletion)
+        {
+            Check(station.Slots.Count == 2 && WireJson.Encode(station.Slots[0]) == pausedSlot, "Officer or restart changed the paused empty position or deliberate repeating order");
+            Check(station.Slots[1].CatId == workerId && station.Slots[1].AutomatedBy == "cloth_leader" && worker.BuildingId == stationId && station.WorkerId == workerId, "Officer failed to reuse only the later open position with the intended specialist");
+            if (beforeCompletion) Check(WireJson.Encode(station.Slots[1].Queue) == manualQueue, "Officer changed or relabeled the later position's finite manual chain");
+        }
+        void Restart()
+        {
+            AuthorityRuntime.ValidateWorld(world); SaveStore.Save(path, world); string expected = WireJson.Encode(world);
+            world = SaveStore.Load<World>(path); Check(WireJson.Encode(world) == expected, "Durable restart changed open-position work, exact inputs, cargo, pause or manual queues");
+            AuthorityRuntime.ValidateWorld(world); village = world.Villages.Single(); worker = village.Cats.Single(c => c.Id == workerId); station = village.Buildings.Single(b => b.Id == stationId);
+            store = village.Stockpiles.Single(p => p.Id == "open-position-receiving-store"); fibre = village.Stockpiles.Single(p => p.Id == "open-position-finite-fibre");
+        }
+        Restart(); Step(10.05); CheckSlots(true);
+        string jobId = "";
+        foreach (string phase in new[] { "claimed", "carried", "working" })
+        {
+            bool reached = false;
+            for (int tick = 0; tick < 4000 && !reached; tick++)
+            {
+                Step(.05);
+                var active = village.Jobs.Find(j => !j.Completed && j.Kind == "production" && j.CatId == workerId);
+                if (active == null) continue;
+                if (jobId == "") jobId = active.Id;
+                Check(active.Id == jobId && active.RecipeId == "fibre_to_thread", "Officer changed the finite job identity before its restart checkpoints");
+                CheckSlots(true);
+                double unconsumed = village.Stockpiles.Sum(p => World.Amount(p.Goods, "fibre")) + village.Cats.Sum(c => World.Amount(c.Cargo, "fibre")) + village.Jobs.Where(j => !j.Completed).Sum(j => World.Amount(j.Local, "fibre")) + village.Buildings.Sum(b => World.Amount(b.Inputs, "fibre"));
+                Check(unconsumed == 5, "Restarted open-position job lost or duplicated the five finite Fibre");
+                reached = phase == "claimed" ? world.Reservations.Any(r => r.OwnerId == jobId && r.PileId == fibre.Id && r.Amount == 5) : phase == "carried" ? World.Amount(worker.Cargo, "fibre") == 5 : active.Phase == "working" && active.Progress > 0;
+            }
+            Check(reached, "Later open position did not reach its " + phase + " checkpoint");
+            CheckSlots(true);
+            if (phase == "claimed") Check(village.Cats.Count(c => c.Alive && c.ControlledBy == "" && c.JobId == "" && c.BuildingId == "") == 4, "Automatic staffing consumed the four-cat idle reserve");
+            Restart(); CheckSlots(true);
+        }
+        // The simulation prunes completed jobs after ten minutes from start.
+        // Keep the exact jobs observed during this finite chain, including their
+        // completed snapshots, rather than requiring both tombstones to coexist.
+        var observedProduction = new Dictionary<string, Job>();
+        void ObserveProduction()
+        {
+            foreach (var production in village.Jobs.Where(j => j.Kind == "production" && j.TargetId == stationId))
+                observedProduction[production.Id] = WireJson.Decode<Job>(WireJson.Encode(production));
+        }
+        ObserveProduction();
+        for (int secondElapsed = 0; secondElapsed < 1600 && observedProduction.Values.Count(j => j.Completed) < 2; secondElapsed++)
+        {
+            Step(1); ObserveProduction();
+        }
+        CheckSlots(false);
+        var finished = observedProduction.Values.OrderBy(j => j.StartedAt).ThenBy(j => j.Id, StringComparer.Ordinal).ToArray();
+        double output = Catalog.BuildingEffect(village, "clothier", "output", 1);
+        Check(finished.Length == 2 && finished.All(j => j.Completed) && finished.Select(j => j.RecipeId).SequenceEqual(new[] { "fibre_to_thread", "fibre_to_cloth" }), "Finite manual chain did not finish exactly two jobs in order: " + string.Join(", ", finished.Select(j => j.Id + "/" + j.RecipeId + "/" + j.Phase + "/completed=" + j.Completed + "/work=" + j.Progress + "/" + j.RequiredWork)) + "; time=" + world.TimeSeconds + "; worker=" + worker.Goal + "; queue=" + WireJson.Encode(station.Slots[1].Queue));
+        Check(finished.Single(j => j.Id == jobId).Completed && worker.JobId == "" && worker.Cargo.Count == 0 && finished.All(j => j.Local.Count == 0) && world.Reservations.Count == 0 && !village.Jobs.Any(j => !j.Completed && j.Kind == "production" && j.TargetId == stationId), "Finished open-position chain retained active ownership");
+        Check(world.Total(village, "fibre") == 0 && Math.Abs(World.Amount(store.Goods, "thread") - (5 * output - 5)) < 1e-8 && Math.Abs(World.Amount(store.Goods, "cloth") - output) < 1e-8 && station.Slots[1].Queue.Count == 0, "Finite Fibre did not become the exact researched Thread surplus and Cloth output in accepting storage");
+        var completedIds = finished.Select(j => j.Id).ToHashSet(StringComparer.Ordinal);
+        var completionEvents = village.Events.Where(e => e.Kind == "completed" && completedIds.Contains(e.EntityId)).ToArray();
+        Check(completionEvents.Select(e => e.EntityId).SequenceEqual(finished.Select(j => j.Id)), "Finite chain did not retain exactly one completion event per observed job in order");
+        string completionEvidence = WireJson.Encode(completionEvents); double thread = world.Total(village, "thread"), cloth = world.Total(village, "cloth");
+        Restart(); Step(20); CheckSlots(false);
+        Check(village.Jobs.Where(j => j.Kind == "production" && j.TargetId == stationId).All(j => completedIds.Contains(j.Id) && j.Completed && WireJson.Encode(j) == WireJson.Encode(observedProduction[j.Id])) && WireJson.Encode(village.Events.Where(e => e.Kind == "completed" && completedIds.Contains(e.EntityId)).ToArray()) == completionEvidence && world.Total(village, "thread") == thread && world.Total(village, "cloth") == cloth && world.Reservations.Count == 0 && station.Slots[1].Queue.Count == 0, "Completed finite chain replayed after restart");
+        AuthorityRuntime.ValidateWorld(world);
+    }
+    finally { Directory.Delete(directory, true); }
+});
+Test("finite three-workshop chain preserves rejected officer edits and exact output across durable restarts", () =>
+{
+    var directory = Path.Combine(Path.GetTempPath(), "forest-finite-workshop-chain-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(directory);
+    try
+    {
+        var path = Path.Combine(directory, "world.json"); var world = World.Create(41); var village = world.Villages.Single();
+        village.Buildings.RemoveAll(b => b.Kind != "den" && b.Kind != "shrine");
+        village.Stockpiles.Clear(); village.LastLeaderResearch = world.TimeSeconds;
+        var workers = village.Cats.Where(c => c.Id != village.LeaderId).Take(3).ToArray();
+        var workerIds = workers.Select(c => c.Id).ToArray();
+        foreach (var cat in village.Cats)
+        {
+            cat.ControlledBy = workerIds.Contains(cat.Id) ? "" : "fixture-observer"; cat.ControlLeaseUntil = 100000;
+            cat.Position = new Int2(1, 3); cat.X = 1; cat.Z = 3; cat.Path.Clear();
+        }
+        village.Stockpiles.Add(new Stockpile { Id = "finite-chain-provisions-and-tools", Position = new Int2(3, 2), Width = 1, Depth = 1, Capacity = 10000, Accepts = new List<string> { "food", "water", "tools" }, Goods = new List<Stack> { new Stack("food", 1000), new Stack("water", 1000) } });
+        village.Stockpiles.Add(new Stockpile { Id = "finite-chain-logs", Position = new Int2(3, 3), Width = 1, Depth = 1, Capacity = 20, Accepts = new List<string> { "logs" }, Goods = new List<Stack> { new Stack("logs", 10) } });
+        village.Stockpiles.Add(new Stockpile { Id = "finite-chain-stone", Position = new Int2(3, 5), Width = 1, Depth = 1, Capacity = 20, Accepts = new List<string> { "stone" }, Goods = new List<Stack> { new Stack("stone", 10) } });
+        village.Stockpiles.Add(new Stockpile { Id = "finite-chain-planks", Position = new Int2(-1, 3), Width = 1, Depth = 1, Capacity = 10, Accepts = new List<string> { "planks" } });
+        village.Stockpiles.Add(new Stockpile { Id = "finite-chain-blocks", Position = new Int2(-1, 5), Width = 1, Depth = 1, Capacity = 10, Accepts = new List<string> { "blocks" } });
+        var stations = new[]
+        {
+            new Building { Id = world.Id("finite-chain-cutter"), Kind = "wood_cutter", Completed = true, Position = new Int2(-3, 3) },
+            new Building { Id = world.Id("finite-chain-stone-prep"), Kind = "stone_prep", Completed = true, Position = new Int2(-3, 6) },
+            new Building { Id = world.Id("finite-chain-woodworking"), Kind = "woodworking", Completed = true, Position = new Int2(-6, 3) }
+        };
+        village.Buildings.AddRange(stations); var stationIds = stations.Select(b => b.Id).ToArray();
+        village.Buildings.Add(new Building { Id = world.Id("finite-chain-office"), Kind = "sawmill", Completed = true, Position = new Int2(-6, 0) });
+        village.Research.Add("sawmill");
+        var context = new PlayerContext { PlayerId = "fixture-finite-chain", VillageId = village.Id };
+        void Apply(GameAction action) { var result = world.Apply(context, action); Check(result.Success, action.Kind + " rejected: " + result.Error); }
+        Apply(new GameAction { Kind = "AssignOfficer", Role = "forester", CatId = village.LeaderId });
+        var recipeIds = new[] { "logs_to_planks", "stone_to_blocks", "planks_and_blocks_to_tools" };
+        for (int i = 0; i < workers.Length; i++)
+        {
+            var recipe = Catalog.Recipe(recipeIds[i]);
+            Check(recipe.Inputs.All(s => world.RecipeInput(village, recipe, s.Amount) == s.Amount) && recipe.Outputs.All(s => world.RecipeOutput(village, recipe, s.Amount) == s.Amount), "Finite chain requires unmodified founding recipe bills and yields");
+            Apply(new GameAction { Kind = "AssignWorker", BuildingId = stationIds[i], CatId = workerIds[i] });
+            for (int order = 0; order < (i == 2 ? 1 : 2); order++)
+                Apply(new GameAction { Kind = "EditProductionWorkSlot", BuildingId = stationIds[i], CatId = workerIds[i], Edit = "add", RecipeId = recipeIds[i] });
+        }
+        Apply(new GameAction { Kind = "EditProductionWorkSlot", BuildingId = stationIds[2], CatId = workerIds[2], Edit = "delegate" });
+        string beforeRejected = WireJson.Encode(world);
+        var rejected = world.Apply(context, new GameAction { Kind = "EditProductionWorkSlot", BuildingId = stationIds[2], CatId = workerIds[2], Edit = "add", RecipeId = "fibre_to_cloth" });
+        Check(!rejected.Success && rejected.Error == "Recipe locked or wrong station", "Wrong-station recipe edit was not rejected for its recipe");
+        Check(WireJson.Encode(world) == beforeRejected, "Rejected queue edit changed officer ownership before the finite upstream chain could fund its work");
+        var observed = new Dictionary<string, Job>(StringComparer.Ordinal);
+        double Physical(string resource) => village.Stockpiles.Sum(p => World.Amount(p.Goods, resource)) + village.Cats.Sum(c => World.Amount(c.Cargo, resource)) + village.Jobs.Where(j => !j.Completed).Sum(j => World.Amount(j.Local, resource)) + village.Buildings.Sum(b => World.Amount(b.Inputs, resource) + World.Amount(b.Outputs, resource));
+        void Conserved()
+        {
+            int tools = village.Items.Count(i => i.Kind == "tool");
+            Check(Math.Abs(Physical("logs") + 5 * Physical("planks") + 10 * tools - 10) < 1e-8 && Math.Abs(Physical("stone") + 5 * Physical("blocks") + 10 * tools - 10) < 1e-8, "Finite three-workshop chain lost or duplicated a raw-material equivalent");
+            Check(village.Items.All(i => i.Kind == "tool") && village.Stockpiles.Sum(p => World.Amount(p.Goods, "tools")) == 0 && village.Cats.Sum(c => World.Amount(c.Cargo, "tools")) == 0, "Exact tool gained a scalar duplicate or unrelated item");
+            Check(stations.All(b => b.Slots.Single().CatId == workerIds[Array.IndexOf(stations, b)]) && stations[2].Slots.Single().AutomatedBy == "forester", "Chain changed exact labor or lost officer ownership");
+        }
+        void Step(double seconds)
+        {
+            world.Step(seconds);
+            foreach (var job in village.Jobs.Where(j => j.Completed && j.Kind == "production" && stationIds.Contains(j.TargetId) && !observed.ContainsKey(j.Id)))
+                observed.Add(job.Id, WireJson.Decode<Job>(WireJson.Encode(job)));
+            Conserved();
+        }
+        void Reach(Func<bool> predicate, int maximumSeconds, string reason)
+        {
+            for (int tick = 0; tick < maximumSeconds * 20 && !predicate(); tick++) Step(.05);
+            Check(predicate(), reason);
+        }
+        void Restart()
+        {
+            AuthorityRuntime.ValidateWorld(world); SaveStore.Save(path, world); string expected = WireJson.Encode(world);
+            world = SaveStore.Load<World>(path); Check(WireJson.Encode(world) == expected, "Durable restart changed finite upstream work, queues, ownership or exact output");
+            AuthorityRuntime.ValidateWorld(world); village = world.Villages.Single();
+            workers = workerIds.Select(id => village.Cats.Single(c => c.Id == id)).ToArray();
+            stations = stationIds.Select(id => village.Buildings.Single(b => b.Id == id)).ToArray(); Conserved();
+        }
+        Conserved(); Restart();
+        Reach(() => village.Jobs.Any(j => !j.Completed && j.TargetId == stationIds[0] && j.Phase == "output_delivery" && World.Amount(j.Local, "planks") + World.Amount(workers[0].Cargo, "planks") == 1), 900, "Upstream workshop never exposed its physical first Plank delivery");
+        Check(world.Total(village, "planks") == 0 && !village.Jobs.Any(j => j.TargetId == stationIds[2]), "Downstream work used an upstream output before storage delivery"); Restart();
+        Reach(() => village.Jobs.Any(j => !j.Completed && j.TargetId == stationIds[2]) && world.Reservations.Any(r => village.Jobs.Any(j => !j.Completed && j.TargetId == stationIds[2] && j.Id == r.OwnerId)), 1500, "Downstream station never claimed both physically delivered finite inputs");
+        string toolJobId = village.Jobs.Single(j => !j.Completed && j.TargetId == stationIds[2]).Id;
+        Job ToolJob() => village.Jobs.Single(j => j.Id == toolJobId);
+        Check(world.Reservations.Where(r => r.OwnerId == toolJobId).Sum(r => r.Amount) == 4 && workers[2].Cargo.Count == 0 && ToolJob().Local.Count == 0, "Downstream claims did not exclusively own two Planks and two Blocks before pickup");
+        string beforeActiveRemoval = WireJson.Encode(world);
+        var rejectedRemoval = world.Apply(context, new GameAction { Kind = "EditProductionWorkSlot", BuildingId = stationIds[2], CatId = workerIds[2], Edit = "remove", Index = 0 });
+        Check(!rejectedRemoval.Success && WireJson.Encode(world) == beforeActiveRemoval, "Removing an in-flight finite order changed its exact queue or officer ownership"); Restart();
+        Reach(() => World.Amount(workers[2].Cargo, "planks") == 2, 60, "Downstream worker never physically carried its two upstream Planks"); Restart();
+        Reach(() => World.Amount(ToolJob().Local, "planks") == 2, 60, "Downstream worker never staged the exact upstream Planks");
+        Apply(new GameAction { Kind = "EditProductionWorkSlot", BuildingId = stationIds[2], CatId = workerIds[2], Edit = "pause", Enabled = true });
+        Apply(new GameAction { Kind = "EditProductionWorkSlot", BuildingId = stationIds[2], CatId = workerIds[2], Edit = "delegate" }); Restart();
+        string pausedCargo = WireJson.Encode(workers[2].Cargo), pausedClaims = WireJson.Encode(world.Reservations), pausedLocal = WireJson.Encode(ToolJob().Local);
+        double pausedProgress = ToolJob().Progress; var pausedPosition = workers[2].Position; double pausedX = workers[2].X, pausedZ = workers[2].Z;
+        Step(.2);
+        Check(ToolJob().BlockedReason == "queue_paused" && ToolJob().Progress == pausedProgress && WireJson.Encode(ToolJob().Local) == pausedLocal && WireJson.Encode(workers[2].Cargo) == pausedCargo && WireJson.Encode(world.Reservations) == pausedClaims && workers[2].Position.Equals(pausedPosition) && workers[2].X == pausedX && workers[2].Z == pausedZ, "Restarted downstream pause advanced physical work or changed ingredient ownership");
+        Apply(new GameAction { Kind = "EditProductionWorkSlot", BuildingId = stationIds[2], CatId = workerIds[2], Edit = "pause", Enabled = false });
+        Apply(new GameAction { Kind = "EditProductionWorkSlot", BuildingId = stationIds[2], CatId = workerIds[2], Edit = "delegate" }); Restart();
+        Reach(() => ToolJob().Phase == "output_delivery" && village.Items.Any(i => i.LocationId == toolJobId), 900, "Finite tool did not become one exact in-flight output");
+        var tool = village.Items.Single(); string toolId = tool.Id;
+        Check(tool.Kind == "tool" && tool.Material == "wood" && tool.Quality == 1 && tool.Condition == tool.MaxCondition && tool.Condition == 100 && world.Total(village, "tools") == 0, "Tool output identity, metadata or pre-delivery ownership is incorrect"); Restart();
+        Reach(() => ToolJob().Completed, 60, "Exact finite tool was never physically delivered");
+        Check(village.Items.Single().Id == toolId && village.Items.Single().LocationId == "finite-chain-provisions-and-tools" && world.Total(village, "tools") == 1 && new[] { "logs", "stone", "planks", "blocks" }.All(r => Physical(r) == 0) && world.Reservations.Count == 0 && workers.All(c => c.JobId == "" && c.Cargo.Count == 0) && stations.All(b => b.Slots.Single().Queue.Count == 0), "Completed chain retained input material, orders or claims, or delivered the wrong exact item");
+        Check(observed.Values.Count(j => j.RecipeId == "logs_to_planks" && j.Completed) == 2 && observed.Values.Count(j => j.RecipeId == "stone_to_blocks" && j.Completed) == 2 && observed.Values.Count(j => j.RecipeId == "planks_and_blocks_to_tools" && j.Completed) == 1 && observed.Count == 5, "Finite chain did not record exactly its five completed public orders");
+        string completedTool = WireJson.Encode(village.Items.Single()); int completions = village.Events.Count(e => e.Kind == "completed" && observed.ContainsKey(e.EntityId));
+        Check(completions == 5, "Finite chain completion events do not match all five observed jobs"); Restart(); Step(20);
+        Check(village.Items.Count == 1 && WireJson.Encode(village.Items.Single()) == completedTool && village.Events.Count(e => e.Kind == "completed" && observed.ContainsKey(e.EntityId)) == completions && !village.Jobs.Any(j => !j.Completed && j.Kind == "production") && world.Reservations.Count == 0 && stations.All(b => b.Slots.Single().Queue.Count == 0), "Restart replayed a completed finite workshop order or duplicated its exact output");
+        AuthorityRuntime.ValidateWorld(world);
+    }
+    finally { Directory.Delete(directory, true); }
+});
+Test("physical equipment LocalAuthority restarts conserve exact claims needs and returns", () =>
+{
+    var directory = Path.Combine(Path.GetTempPath(), "forest-equipment-restart-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(directory); LocalAuthority authority = null;
+    try
+    {
+        var path = Path.Combine(directory, "world.json"); authority = LocalAuthority.CreateNew(path, 41);
+        var world = authority.World; var village = world.Villages.Single(); var runner = village.Cats.First(c => c.Id != village.LeaderId); string runnerId = runner.Id;
+        var other = village.Cats.First(c => c.Id != runnerId && c.Id != village.LeaderId); string otherId = other.Id;
+        foreach (var cat in village.Cats.Where(c => c.Id != runnerId)) { cat.ControlledBy = "fixture-observer"; cat.ControlLeaseUntil = 100000; }
+        village.Buildings.RemoveAll(b => b.Kind != "den" && b.Kind != "shrine"); village.Stockpiles.Clear(); village.LastLeaderResearch = world.TimeSeconds;
+        runner.Position = new Int2(0, 3); runner.X = 0; runner.Z = 3; runner.Path.Clear(); runner.Hunger = runner.Thirst = runner.Rest = 80;
+        var source = new Stockpile { Id = "equipment-restart-source", Position = new Int2(6, 3), Width = 1, Depth = 1, Capacity = 1, Accepts = new List<string> { "tools" } };
+        var destination = new Stockpile { Id = "equipment-restart-destination", Position = new Int2(-6, 3), Width = 1, Depth = 1, Capacity = 1, Accepts = new List<string> { "tools" } };
+        village.Stockpiles.Add(source); village.Stockpiles.Add(destination);
+        village.Stockpiles.Add(new Stockpile { Id = "equipment-restart-needs", Position = runner.Position, Width = 1, Depth = 1, Capacity = 1000, Accepts = new List<string> { "food", "water", "logs" }, Goods = new List<IdleCatForest.Simulation.Stack> { new IdleCatForest.Simulation.Stack("food", 400), new IdleCatForest.Simulation.Stack("water", 400), new IdleCatForest.Simulation.Stack("logs", 20) } });
+        string itemId = "equipment-restart-exact-tool";
+        village.Items.Add(new Item { Id = itemId, Kind = "tool", Material = "wood", VillageId = village.Id, LocationId = source.Id, Quality = 3, Condition = 17, MaxCondition = 42 });
+        Check(world.Path(runner.Position, source.Position, village) != null && world.Path(source.Position, destination.Position, village) != null, "equipment restart fixture lacks physical routes");
+        ActionResult Apply(GameAction action) { var result = authority.Apply(action); Check(result.Success, action.Kind + " rejected: " + result.Error); return result; }
+        Item Exact() => village.Items.Single(i => i.Id == itemId);
+        Job Order(string id) => village.Jobs.Single(j => j.Id == id);
+        void Conserved()
+        {
+            Check(village.Items.Count == 1 && Exact().Kind == "tool" && Exact().Material == "wood" && Exact().Quality == 3 && Exact().Condition == 17 && Exact().MaxCondition == 42, "physical equipment lost or copied its exact identity or metadata");
+            Check(village.Stockpiles.All(p => World.Amount(p.Goods, "tools") == 0) && village.Cats.All(c => World.Amount(c.Cargo, "tools") == 0) && world.Reservations.Count == 0, "exact equipment acquired a duplicate scalar or resource claim");
+            AuthorityRuntime.ValidateWorld(world);
+        }
+        void Restart()
+        {
+            Conserved(); authority.Save(); string expected = WireJson.Encode(world); authority.Dispose(); authority = null;
+            authority = new LocalAuthority(path, 999); world = authority.World; village = world.Villages.Single(); runner = village.Cats.Single(c => c.Id == runnerId); other = village.Cats.Single(c => c.Id == otherId);
+            source = village.Stockpiles.Find(p => p.Id == "equipment-restart-source"); destination = village.Stockpiles.Single(p => p.Id == "equipment-restart-destination");
+            Check(WireJson.Encode(world) == expected, "LocalAuthority restart changed exact equipment ownership, needs, route or consumed clock"); Conserved();
+        }
+        void Finish(string jobId)
+        {
+            for (int tick = 0; tick < 2400 && !Order(jobId).Completed; tick++) { authority.Advance(.05); Conserved(); }
+            Check(Order(jobId).Completed, "physical equipment order did not finish after bounded travel: " + jobId + " phase=" + Order(jobId).Phase + " reason=" + Order(jobId).BlockedReason); Conserved();
+        }
+        string firstJob = Apply(new GameAction { Kind = "EquipItem", CatId = runnerId, TargetId = itemId }).EntityId;
+        Check(Order(firstJob).Kind == "equip" && Order(firstJob).Phase == "item_fetch" && Exact().LocationId == firstJob && !runner.Equipment.Contains(itemId), "retrieval did not reserve the exact item at its physical source");
+        Check(!world.HasRoom(village, source, "tools", 1), "equipment claim prematurely freed its source capacity");
+        other.ControlledBy = "";
+        Check(!authority.Apply(new GameAction { Kind = "EquipItem", CatId = otherId, TargetId = itemId }).Success, "a second cat claimed the same exact equipment"); other.ControlledBy = "fixture-observer";
+        Check(!authority.Apply(new GameAction { Kind = "CancelEquipment", CatId = otherId, TargetId = firstJob }).Success && !Order(firstJob).Completed, "another cat canceled the exact equipment owner");
+        authority.Advance(.2); Restart();
+        Check(Exact().LocationId == firstJob && runner.JobId == firstJob && !runner.Equipment.Contains(itemId), "travel restart teleported equipment or replaced its claim");
+        runner.Thirst = 34; authority.Advance(.05);
+        Check(runner.Goal == "need_drink" && runner.ResumeJobId == firstJob && !Order(firstJob).Completed && Exact().LocationId == firstJob, "need interruption dropped or equipped its reserved item"); Restart();
+        for (int tick = 0; tick < 1000 && runner.ResumeJobId == firstJob; tick++) { authority.Advance(.05); Conserved(); }
+        Check(runner.JobId == firstJob && runner.ResumeJobId == "" && !Order(firstJob).Completed, "restarted need did not resume the same uncollected equipment order");
+        Apply(new GameAction { Kind = "CancelEquipment", CatId = runnerId, TargetId = firstJob }); Restart();
+        Check(Order(firstJob).Completed && Order(firstJob).ItemIds.Count == 0 && runner.JobId == "" && runner.ResumeJobId == "" && Exact().LocationId == source.Id && !runner.Equipment.Contains(itemId), "cancelled retrieval did not restore its exact physical source");
+        string fetchJob = Apply(new GameAction { Kind = "EquipItem", CatId = runnerId, TargetId = itemId }).EntityId;
+        Check(!authority.Apply(new GameAction { Kind = "CancelEquipment", CatId = runnerId, TargetId = firstJob }).Success && runner.JobId == fetchJob, "a stale cancellation removed the replacement equipment order"); Restart();
+        var corrupt = WireJson.Clone(world); corrupt.Villages.Single().Items.Single(i => i.Id == itemId).LocationId = source.Id;
+        string corruptPath = Path.Combine(directory, "corrupt-equipment.json"); SaveStore.Save(corruptPath, corrupt, true); var corruptBytes = File.ReadAllBytes(corruptPath);
+        bool rejected = false; try { using var invalid = new LocalAuthority(corruptPath, 41); } catch (InvalidDataException) { rejected = true; }
+        Check(rejected && File.ReadAllBytes(corruptPath).SequenceEqual(corruptBytes) && !File.Exists(corruptPath + ".previous"), "corrupt exact equipment claim was accepted or rewritten");
+        Finish(fetchJob); Restart();
+        Check(Exact().LocationId == runnerId && runner.Equipment.Count(id => id == itemId) == 1 && runner.JobId == "" && runner.ResumeJobId == "", "arrival restart did not retain exactly one physically worn item");
+        Apply(new GameAction { Kind = "RemoveStockpile", TargetId = source.Id }); source = null;
+        string returnJob = Apply(new GameAction { Kind = "UnequipItem", CatId = runnerId, TargetId = itemId }).EntityId;
+        Check(Order(returnJob).Kind == "unequip" && Order(returnJob).Phase == "item_return" && Order(returnJob).TargetId == destination.Id && Exact().LocationId == runnerId && runner.Equipment.Contains(itemId), "return teleported the worn item before physical arrival");
+        authority.Advance(.2); Restart();
+        Check(Exact().LocationId == runnerId && runner.Equipment.Contains(itemId) && runner.JobId == returnJob, "return restart lost the exact bearer");
+        Apply(new GameAction { Kind = "CancelEquipment", CatId = runnerId, TargetId = returnJob }); Restart();
+        Check(Order(returnJob).Completed && Exact().LocationId == runnerId && runner.Equipment.Contains(itemId) && runner.JobId == "", "canceling a return detached or duplicated worn equipment");
+        string finalReturn = Apply(new GameAction { Kind = "UnequipItem", CatId = runnerId, TargetId = itemId }).EntityId;
+        Check(!authority.Apply(new GameAction { Kind = "CancelEquipment", CatId = runnerId, TargetId = returnJob }).Success && runner.JobId == finalReturn, "stale return cancellation removed the new physical order"); Restart();
+        Finish(finalReturn); Restart(); authority.Advance(2); Conserved();
+        Check(Exact().LocationId == destination.Id && runner.Equipment.Count == 0 && runner.JobId == "" && runner.ResumeJobId == "" && Order(finalReturn).Completed && village.Jobs.Count(j => j.Id == finalReturn) == 1 && village.Jobs.All(j => j.Completed), "completed equipment return replayed or retained exact work ownership");
+    }
+    finally { authority?.Dispose(); Directory.Delete(directory, true); }
+});
 Test("exact crafted haul survives claimed pickup and full-storage restarts", () =>
 {
     var directory = Path.Combine(Path.GetTempPath(), "forest-exact-haul-" + Guid.NewGuid().ToString("N"));
@@ -677,6 +1435,12 @@ Test("exact crafted haul survives claimed pickup and full-storage restarts", () 
     }
     finally { Directory.Delete(directory, true); }
 });
+FoodChainScenarios.Run(Test, Check);
+RenewableGrainPersistenceScenarios.Run(Test, Check);
+PrimaryQueueScenarios.Run(Test, Check);
+PrimaryQueuePersistenceScenarios.Run(Test, Check);
+SaveTimingScenarios.Run(Test, Check);
+SaveEncodingScenarios.Run(Test, Check);
 ImportScenarios.Run(Test, Check);
 WorldGenerationTests.Run(Test, Check);
 if (Environment.GetEnvironmentVariable("FOREST_IMPORTED_WORLD") is string importedWorld)

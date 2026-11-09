@@ -8,6 +8,7 @@ namespace IdleCatForest.Simulation
     {
         private void TickVillage(Village v, double dt, bool planning)
         {
+            CleanEquipmentOrders(v);
             if (planning)
                 foreach (var pending in v.Jobs.Where(j => !j.Completed && j.CatId == "" && (j.AutomatedBy == "" || j.AutomatedBy == "leader" || HasOfficer(v, j.AutomatedBy))).ToArray())
                 {
@@ -151,11 +152,20 @@ namespace IdleCatForest.Simulation
                 {
                     var choices = c.Goal == "need_drink" ? (!c.PersonalBrewUsed && Available(v, "water") >= 0.75 ? new[] { "brew", "water" } : new[] { "water" }) : c.Goal == "need_heal" ? new[] { "medicine", "herbs" } : new[] { "fish", "preserves", "food" };
                     Stockpile pile = v.Stockpiles.Find(s => s.Id == c.NeedSourceId && s.Kind == "storage");
+                    Int2? access = null;
                     if (pile != null)
                     {
                         resource = choices.FirstOrDefault(choice => Amount(pile.Goods, choice) - Reservations.Where(r => r.PileId == pile.Id && r.Resource == choice).Sum(r => r.Amount) >= (choice == "brew" ? 0.25 : choice == "water" && c.PersonalBrewUsed ? 0.75 : 1));
                         if (resource == null)
                             pile = null;
+                        else
+                        {
+                            // Reuse the physical endpoint; Move still validates its
+                            // intermediate edges and retraces interrupted travel.
+                            access = DeliveryAccess(v, c, pile);
+                            if (!access.HasValue)
+                                pile = null;
+                        }
                     }
                     if (pile == null && TimeSeconds < c.NextNeedAttemptAt)
                         return true;
@@ -164,7 +174,14 @@ namespace IdleCatForest.Simulation
                         {
                             resource = choice;
                             double serving = resource == "brew" ? 0.25 : resource == "water" && c.PersonalBrewUsed ? 0.75 : 1;
-                            pile = v.Stockpiles.Where(s => s.Kind == "storage" && Amount(s.Goods, resource) - Reservations.Where(r => r.PileId == s.Id && r.Resource == resource).Sum(r => r.Amount) >= serving).OrderBy(s => Int2.Distance(c.Position, s.Position)).FirstOrDefault(s => Path(c.Position, s.Position, v) != null);
+                            foreach (var candidate in v.Stockpiles.Where(s => s.Kind == "storage" && Amount(s.Goods, resource) - Reservations.Where(r => r.PileId == s.Id && r.Resource == resource).Sum(r => r.Amount) >= serving).OrderBy(s => Int2.Distance(c.Position, s.Position)))
+                            {
+                                access = StockpileAccess(v, candidate, c.Position);
+                                if (!access.HasValue)
+                                    continue;
+                                pile = candidate;
+                                break;
+                            }
                             if (pile != null)
                                 break;
                         }
@@ -176,7 +193,7 @@ namespace IdleCatForest.Simulation
                         return false;
                     }
                     c.NeedSourceId = pile.Id;
-                    if (!Move(c, pile.Position, dt))
+                    if (!Move(c, access.Value, dt))
                     {
                         if (c.BlockedReason == "blocked_route")
                         {
@@ -346,7 +363,7 @@ namespace IdleCatForest.Simulation
                 {
                     var den = v.Buildings.Where(b => b.Completed && b.Kind == "den").FirstOrDefault(b => v.Cats.Count(x => x.Alive && x.BedId == b.Id) < DenCapacity(v));
                     int reserved = alive.Count(x => x.PregnantUntil > 0);
-                    if (den != null && alive.Count(x => x.BedId != "") + reserved < beds)
+                    if (den != null && v.Cats.Count(x => x.Alive && x.BedId != "") + reserved < beds)
                     {
                         c.BedId = den.Id;
                         c.Migration = "resident";
@@ -386,6 +403,8 @@ namespace IdleCatForest.Simulation
                 if (c.AgeHours >= (c.Id == v.LeaderId || c.OfficerRole == "loremaster" ? 288 : 240) && Roll() < 0.0002 / Service(v, "elder_corner", "elderProtection", 1))
                     Die(v, c, "old age");
             }
+            // Births and deaths change both occupied beds and the population thresholds below.
+            alive = v.Cats.Where(c => c.Alive).ToArray();
             if ((long)TimeSeconds % 3600 == 0 && TimeSeconds - v.FoundedAt >= 36 * 3600 && Total(v, "food") >= alive.Length * 2.5 && Total(v, "water") >= alive.Length * 2.5)
             {
                 int reservations = alive.Count(c => c.PregnantUntil > 0);
@@ -456,9 +475,14 @@ namespace IdleCatForest.Simulation
             {
                 if (Total(v, "fibre") < 10 && !v.Jobs.Any(j => j.Kind == "fibre" && !j.Completed))
                     MarkOfficerJob(v, Request(v, "fibre", null, false), "farmer");
+                StaffOfficers(v, farmerOnly: true);
+                int reserve = Math.Max(2, (int)Math.Ceiling(alive * 2.0 / 15));
                 foreach (var f in v.Farms.Where(f => f.WorkerId == ""))
                 {
-                    var c = AvailableCat(v, "farm");
+                    if (AvailableCats(v, "farm").Count() <= reserve)
+                        break;
+                    var c = Walkable(v, f.Position) ? AvailableCats(v, "farm")
+                        .FirstOrDefault(candidate => Path(candidate.Position, f.Position, v) != null) : null;
                     if (c != null)
                     {
                         f.WorkerId = c.Id;
@@ -475,7 +499,8 @@ namespace IdleCatForest.Simulation
                         MarkOfficerJob(v, StartHaul(v, null, pile), "steward");
                 }
             }
-            StaffOfficers(v);
+            StaffOfficers(v, farmerOnly: false);
+            PlanCaptainPreparation(v);
             PlanHousing(v);
             if (HasOfficer(v, "loremaster") && v.Blessings < 10 && Total(v, "materials") > 30 && !v.Jobs.Any(j => j.Kind == "offering" && !j.Completed))
                 MarkOfficerJob(v, CreateInputJob(v, null, "offering", v.Center, "materials", 5, 30, ""), "loremaster");
@@ -555,7 +580,7 @@ namespace IdleCatForest.Simulation
                         slot.BlockedReason = b.BlockedReason = "missing_input";
                         continue;
                     }
-                    if (recipe.Outputs.Any(s => Storage(v, s.Resource, s.Amount, b.Position) == null))
+                    if (recipe.Outputs.Any(s => DeliveryStorage(v, s.Resource, Math.Min(CarryCapacity(v, s.Resource), RecipeOutput(v, recipe, s.Amount)), b.Position, out _) == null))
                     {
                         slot.BlockedReason = b.BlockedReason = "output_storage_full";
                         continue;
@@ -571,7 +596,7 @@ namespace IdleCatForest.Simulation
                     foreach (var input in recipe.Inputs)
                     {
                         double missing = Math.Max(0, RecipeInput(v, recipe, input.Amount) - Amount(b.Inputs, input.Resource));
-                        if (missing > 0 && !Reserve(v, id, input.Resource, missing))
+                        if (missing > 0 && !Reserve(v, id, input.Resource, missing, c.Position, b.Position))
                         {
                             funded = false;
                             break;
@@ -580,7 +605,7 @@ namespace IdleCatForest.Simulation
                     if (!funded)
                     {
                         Release(id);
-                        slot.BlockedReason = b.BlockedReason = "input_claimed";
+                        slot.BlockedReason = b.BlockedReason = "input_unreachable";
                         continue;
                     }
                     var production = new Job { Id = id, Kind = "production", RecipeId = recipe.Id, Position = b.Position, TargetId = b.Id, Phase = "fetch", RequiredWork = RecipeDuration(v, recipe), Reserved = recipe.Inputs.Select(s => new Stack(s.Resource, RecipeInput(v, recipe, s.Amount))).ToList() };
@@ -615,22 +640,16 @@ namespace IdleCatForest.Simulation
                 {
                     if (c.Cargo.Count == 0)
                     {
-                        if (!Move(c, f.Position, dt))
-                        {
-                            f.BlockedReason = "blocked_harvest_route";
+                        if (!MoveFarmWorker(f, c, f.Position, dt, "blocked_harvest_route"))
                             continue;
-                        }
                         double take = Math.Min(8, f.Harvest);
                         Add(c.Cargo, f.Crop, take);
                         f.Harvest -= take;
                         f.Phase = "hauling";
                         continue;
                     }
-                    if (!Move(c, f.Handoff, dt))
-                    {
-                        f.BlockedReason = "blocked_handoff_route";
+                    if (!MoveFarmWorker(f, c, f.Handoff, dt, "blocked_handoff_route"))
                         continue;
-                    }
                     var pile = v.Stockpiles.Find(s => s.ManagedBy == f.Id);
                     if (pile == null)
                     {
@@ -649,12 +668,8 @@ namespace IdleCatForest.Simulation
                     f.BlockedReason = "";
                     continue;
                 }
-                if (!Move(c, f.Position, dt))
-                {
-                    f.BlockedReason = "blocked_route";
+                if (!MoveFarmWorker(f, c, f.Position, dt, "blocked_route"))
                     continue;
-                }
-                f.BlockedReason = "";
                 double worked = SpendActorTime(c);
                 f.Growth += worked * WorkRate(v, c, "farm", "field") * Service(v, "field", "fieldStewardship", 1) * (f.FertilityAffectsGrowth ? Math.Max(0, f.Fertility) : 1);
                 Add(c.Skills, "farm", worked / 3600);
@@ -667,6 +682,18 @@ namespace IdleCatForest.Simulation
                     f.Phase = "harvesting";
                 }
             }
+        }
+        private bool MoveFarmWorker(Farm farm, Cat cat, Int2 destination, double dt, string routeWarning)
+        {
+            bool attempted = Math.Min(dt, ActorTime(cat)) > 1e-12;
+            // Move can return during a partial retrace without updating feedback.
+            // Only a fresh failure from an attempted move establishes obstruction.
+            if (attempted && cat.BlockedReason == "blocked_route")
+                cat.BlockedReason = "";
+            bool arrived = Move(cat, destination, dt);
+            if (arrived || attempted)
+                farm.BlockedReason = cat.BlockedReason == "blocked_route" ? routeWarning : "";
+            return arrived;
         }
         private void TickAccounting(Village v, double dt)
         {
@@ -709,10 +736,10 @@ namespace IdleCatForest.Simulation
                 {
                     string id = round.Pending[0];
                     round.Pending.RemoveAt(0);
-                    var next = v.Stockpiles.Find(s => s.Id == id);
+                    var next = v.Stockpiles.Find(s => s.Id == id && s.Kind == "storage");
                     if (next == null)
                         continue;
-                    if (Path(c.Position, next.Position, v) == null)
+                    if (!StockpileAccess(v, next, c.Position).HasValue)
                     {
                         round.Unreachable.Add(id);
                         continue;
@@ -731,16 +758,21 @@ namespace IdleCatForest.Simulation
                     return;
                 }
             }
-            var pile = v.Stockpiles.Find(s => s.Id == round.TargetId);
+            var pile = v.Stockpiles.Find(s => s.Id == round.TargetId && s.Kind == "storage");
             if (pile == null)
             {
                 round.TargetId = "";
                 return;
             }
             c.Goal = "accounting · " + pile.Id;
-            if (!Move(c, pile.Position, dt))
+            // Keep a valid walking endpoint before an intermediate footprint tile.
+            // After arrival clears the path, retain the physical counting tile.
+            bool cachedAccess = c.Path.Count > 0 && Contains(pile.Position, pile.Width, pile.Depth, c.Path[c.Path.Count - 1]) && Walkable(v, c.Path[c.Path.Count - 1]);
+            Int2? access = !cachedAccess && Contains(pile.Position, pile.Width, pile.Depth, c.Position) && Walkable(v, c.Position) && Math.Abs(c.X - c.Position.X) + Math.Abs(c.Z - c.Position.Z) < 1e-9
+                ? c.Position : DeliveryAccess(v, c, pile);
+            if (!access.HasValue || !Move(c, access.Value, dt))
             {
-                if (c.BlockedReason == "blocked_route")
+                if (!access.HasValue || c.BlockedReason == "blocked_route")
                 {
                     round.Unreachable.Add(pile.Id);
                     round.TargetId = "";

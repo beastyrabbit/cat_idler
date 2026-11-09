@@ -63,6 +63,39 @@ namespace IdleCatForest.Tests
             Assert.That(Vector3.Distance(before, GroundAt(cursor)), Is.LessThan(.03f), "The world point under the cursor must stay under the cursor while zooming.");
         }
 
+        [UnityTest]
+        public IEnumerator DropdownPopupOwnsWheelInputUntilItCloses()
+        {
+            game.View.enabled = false;
+            var root = game.GetComponent<UIDocument>().rootVisualElement;
+            var field = new DropdownField("Cat", Enumerable.Range(1, 150).Select(i => "Cat " + i).ToList(), 0);
+            root.Add(field);
+            var menu = new GenericDropdownMenu();
+            foreach (var choice in field.choices) menu.AddItem(choice, false, () => { });
+            menu.DropDown(new Rect(root.worldBound.width * .65f, root.worldBound.height * .25f, 160, 24), field, true, false);
+            yield return null; yield return null;
+            var popup = root.panel.visualTree.Q<VisualElement>(className: GenericDropdownMenu.ussClassName);
+            Assert.That(popup, Is.Not.Null, "Exercise a real runtime chooser outside the marked management drawer.");
+            var list = popup.Q<ScrollView>();
+            Assert.That(list.contentViewport.worldBound.height, Is.GreaterThan(0));
+            var point = list.contentViewport.worldBound.center;
+            var panelOrigin = RuntimePanelUtils.ScreenToPanel(root.panel, Vector2.zero);
+            var panelExtent = RuntimePanelUtils.ScreenToPanel(root.panel, new Vector2(Screen.width, Screen.height)) - panelOrigin;
+            var cursor = new Vector2((point.x - panelOrigin.x) / panelExtent.x * Screen.width, Screen.height - (point.y - panelOrigin.y) / panelExtent.y * Screen.height);
+            InputSystem.QueueStateEvent(mouse, new MouseState { position = cursor, scroll = new Vector2(0, 1) });
+            InputSystem.Update();
+            float initial = game.View.ManagementZoom;
+            typeof(ForestView).GetMethod("ReadInput", Private).Invoke(game.View, null);
+            Assert.That(game.View.ManagementZoom, Is.EqualTo(initial), "Scrolling the cat chooser must not zoom the forest underneath it.");
+            popup.RemoveFromHierarchy();
+            foreach (var element in root.Query<VisualElement>().ToList()) element.RemoveFromClassList("interactive");
+            yield return null;
+            InputSystem.QueueStateEvent(mouse, new MouseState { position = cursor, scroll = new Vector2(0, 1) });
+            InputSystem.Update();
+            typeof(ForestView).GetMethod("ReadInput", Private).Invoke(game.View, null);
+            Assert.That(game.View.ManagementZoom, Is.LessThan(initial * .95f), "Closing the chooser must restore wheel zoom over the forest.");
+        }
+
         [Test]
         public void ZoomButtonsAreReversibleAndRespectCloseAndWideLimits()
         {
