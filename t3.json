@@ -1,0 +1,28 @@
+{
+  "$schema": "https://t3.codes/schema/t3.json",
+  "defaultThreadEnvMode": "worktree",
+  "scripts": [
+    {
+      "name": "Restore packages",
+      "command": "dotnet restore IdleCatForest.slnx --locked-mode",
+      "icon": "configure",
+      "runOnWorktreeCreate": true,
+      "async": false
+    },
+    {
+      "name": "Build",
+      "command": "dotnet build IdleCatForest.slnx --no-restore -warnaserror",
+      "icon": "build"
+    },
+    {
+      "name": "Server tests",
+      "command": "bash tools/forest.sh server-test",
+      "icon": "test"
+    },
+    {
+      "name": "Scenarios",
+      "command": "dotnet run --project tools/scenarios/Forest.Scenarios.csproj -- --exclude-campaigns",
+      "icon": "test"
+    }
+  ]
+}
